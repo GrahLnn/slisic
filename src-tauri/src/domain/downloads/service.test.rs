@@ -652,6 +652,7 @@ fn persist_downloaded_leaf_music_replaces_only_the_matching_group_copy() {
             folder: "youtube/demo".to_string(),
             musics: vec![
                 Music {
+    occurrence_id: String::new(),
                     name: "Original First".to_string(),
                     alias: "Pinned First".to_string(),
                     group: first_group.clone(),
@@ -665,9 +666,10 @@ fn persist_downloaded_leaf_music_replaces_only_the_matching_group_copy() {
                     start_ms: 0,
                     end_ms: 10_000,
                     liked: false,
-                    loudness: 0.0,
+                    loudness_profile: None,
                 },
                 Music {
+    occurrence_id: String::new(),
                     name: "Original Second".to_string(),
                     alias: "Pinned Second".to_string(),
                     group: second_group.clone(),
@@ -681,7 +683,7 @@ fn persist_downloaded_leaf_music_replaces_only_the_matching_group_copy() {
                     start_ms: 0,
                     end_ms: 10_000,
                     liked: false,
-                    loudness: 0.0,
+                    loudness_profile: None,
                 },
             ],
             last_updated: "2026-04-12T00:00:00+00:00".to_string(),
@@ -797,6 +799,7 @@ fn normalize_music_titles_removes_common_group_affixes_inside_collection() {
         folder: "example/root".to_string(),
         musics: vec![
             Music {
+    occurrence_id: String::new(),
                 name: "ZWEI2 - Disturbing Atmosphere".to_string(),
                 alias: "ZWEI2 - Disturbing Atmosphere".to_string(),
                 group: group.clone(),
@@ -806,9 +809,10 @@ fn normalize_music_titles_removes_common_group_affixes_inside_collection() {
                 start_ms: 0,
                 end_ms: 79_000,
                 liked: false,
-                loudness: 0.0,
+                loudness_profile: None,
             },
             Music {
+    occurrence_id: String::new(),
                 name: "ZWEI2 - Zahar's Ambition".to_string(),
                 alias: "Pinned Alias".to_string(),
                 group,
@@ -818,9 +822,10 @@ fn normalize_music_titles_removes_common_group_affixes_inside_collection() {
                 start_ms: 0,
                 end_ms: 152_000,
                 liked: false,
-                loudness: 0.0,
+                loudness_profile: None,
             },
             Music {
+    occurrence_id: String::new(),
                 name: "Ludvig Forssell - A Heartfelt Apology | Death Stranding 2 On The Beach Original Video Game Score".to_string(),
                 alias: "Ludvig Forssell - A Heartfelt Apology | Death Stranding 2 On The Beach Original Video Game Score".to_string(),
                 group: death_stranding_group.clone(),
@@ -830,9 +835,10 @@ fn normalize_music_titles_removes_common_group_affixes_inside_collection() {
                 start_ms: 0,
                 end_ms: 213_000,
                 liked: false,
-                loudness: 0.0,
+                loudness_profile: None,
             },
             Music {
+    occurrence_id: String::new(),
                 name: "Ludvig Forssell - Drawbridge | Death Stranding 2 On The Beach Original Video Game Score".to_string(),
                 alias: "Ludvig Forssell - Drawbridge | Death Stranding 2 On The Beach Original Video Game Score".to_string(),
                 group: death_stranding_group,
@@ -842,7 +848,7 @@ fn normalize_music_titles_removes_common_group_affixes_inside_collection() {
                 start_ms: 0,
                 end_ms: 180_000,
                 liked: false,
-                loudness: 0.0,
+                loudness_profile: None,
             },
         ],
         last_updated: "2026-04-12T00:00:00+00:00".to_string(),
@@ -874,6 +880,7 @@ fn normalize_music_titles_keeps_multi_part_track_title_language_core() {
         folder: "youtube/death-stranding-2".to_string(),
         musics: vec![
             Music {
+    occurrence_id: String::new(),
                 name: "Ludvig Forssell - One Last Fight Pt.1 - Death Stranding 2- On The Beach (Original Video Game Score)".to_string(),
                 alias: "Ludvig Forssell - One Last Fight Pt.1 - Death Stranding 2- On The Beach (Original Video Game Score)".to_string(),
                 group: group.clone(),
@@ -883,9 +890,10 @@ fn normalize_music_titles_keeps_multi_part_track_title_language_core() {
                 start_ms: 0,
                 end_ms: 180_000,
                 liked: false,
-                loudness: 0.0,
+                loudness_profile: None,
             },
             Music {
+    occurrence_id: String::new(),
                 name: "Ludvig Forssell - One Last Fight Pt.2 - Death Stranding 2- On The Beach (Original Video Game Score)".to_string(),
                 alias: "Ludvig Forssell - One Last Fight Pt.2 - Death Stranding 2- On The Beach (Original Video Game Score)".to_string(),
                 group: group.clone(),
@@ -895,9 +903,10 @@ fn normalize_music_titles_keeps_multi_part_track_title_language_core() {
                 start_ms: 0,
                 end_ms: 180_000,
                 liked: false,
-                loudness: 0.0,
+                loudness_profile: None,
             },
             Music {
+    occurrence_id: String::new(),
                 name: "Ludvig Forssell - One Last Fight Pt.3 - Death Stranding 2- On The Beach (Original Video Game Score)".to_string(),
                 alias: "Ludvig Forssell - One Last Fight Pt.3 - Death Stranding 2- On The Beach (Original Video Game Score)".to_string(),
                 group,
@@ -907,7 +916,7 @@ fn normalize_music_titles_keeps_multi_part_track_title_language_core() {
                 start_ms: 0,
                 end_ms: 180_000,
                 liked: false,
-                loudness: 0.0,
+                loudness_profile: None,
             },
         ],
         last_updated: "2026-04-12T00:00:00+00:00".to_string(),
@@ -940,6 +949,7 @@ fn normalize_music_titles_does_not_compare_across_download_groups() {
         folder: "example/root".to_string(),
         musics: vec![
             Music {
+    occurrence_id: String::new(),
                 name: "Album - Alpha".to_string(),
                 alias: "Album - Alpha".to_string(),
                 group: first_group,
@@ -953,9 +963,10 @@ fn normalize_music_titles_does_not_compare_across_download_groups() {
                 start_ms: 0,
                 end_ms: 120_000,
                 liked: false,
-                loudness: 0.0,
+                loudness_profile: None,
             },
             Music {
+    occurrence_id: String::new(),
                 name: "Album - Beta".to_string(),
                 alias: "Album - Beta".to_string(),
                 group: second_group,
@@ -969,7 +980,7 @@ fn normalize_music_titles_does_not_compare_across_download_groups() {
                 start_ms: 0,
                 end_ms: 120_000,
                 liked: false,
-                loudness: 0.0,
+                loudness_profile: None,
             },
         ],
         last_updated: "2026-04-12T00:00:00+00:00".to_string(),
@@ -995,6 +1006,7 @@ fn normalize_music_titles_uses_file_name_evidence_without_renaming_paths() {
         folder: "youtube/zwei2".to_string(),
         musics: vec![
             Music {
+    occurrence_id: String::new(),
                 name: "Help Alwen".to_string(),
                 alias: "Help Alwen".to_string(),
                 group: group.clone(),
@@ -1008,9 +1020,10 @@ fn normalize_music_titles_uses_file_name_evidence_without_renaming_paths() {
                 start_ms: 0,
                 end_ms: 137_000,
                 liked: false,
-                loudness: 0.0,
+                loudness_profile: None,
             },
             Music {
+    occurrence_id: String::new(),
                 name: "ZWEI2 - Help Alwen −Rushing in Version−".to_string(),
                 alias: "ZWEI2 - Help Alwen −Rushing in Version−".to_string(),
                 group,
@@ -1024,7 +1037,7 @@ fn normalize_music_titles_uses_file_name_evidence_without_renaming_paths() {
                 start_ms: 0,
                 end_ms: 136_000,
                 liked: false,
-                loudness: 0.0,
+                loudness_profile: None,
             },
         ],
         last_updated: "2026-05-26T00:00:00+00:00".to_string(),
@@ -1494,6 +1507,7 @@ fn existing_leaf_identities_only_count_entries_with_present_files() {
         folder: folder.to_string(),
         musics: vec![
             Music {
+    occurrence_id: String::new(),
                 name: "Present".to_string(),
                 alias: "Present".to_string(),
                 group: collection_group("Demo", "https://example.com/playlist", folder),
@@ -1507,9 +1521,10 @@ fn existing_leaf_identities_only_count_entries_with_present_files() {
                 start_ms: 0,
                 end_ms: 60_000,
                 liked: false,
-                loudness: 0.0,
+                loudness_profile: None,
             },
             Music {
+    occurrence_id: String::new(),
                 name: "Missing".to_string(),
                 alias: "Missing".to_string(),
                 group: collection_group("Demo", "https://example.com/playlist", folder),
@@ -1523,7 +1538,7 @@ fn existing_leaf_identities_only_count_entries_with_present_files() {
                 start_ms: 0,
                 end_ms: 60_000,
                 liked: false,
-                loudness: 0.0,
+                loudness_profile: None,
             },
         ],
         last_updated: "2026-04-12T00:00:00+00:00".to_string(),
@@ -1581,6 +1596,7 @@ fn existing_leaf_identities_keep_same_video_distinct_across_playlist_groups() {
         url: "https://example.com/playlist".to_string(),
         folder: folder.to_string(),
         musics: vec![Music {
+    occurrence_id: String::new(),
             name: "Track".to_string(),
             alias: "Track".to_string(),
             group: collection_group("Disc 1", "https://example.com/disc-1", "Disc 1"),
@@ -1594,7 +1610,7 @@ fn existing_leaf_identities_keep_same_video_distinct_across_playlist_groups() {
             start_ms: 0,
             end_ms: 60_000,
             liked: false,
-            loudness: 0.0,
+            loudness_profile: None,
         }],
         last_updated: "2026-04-12T00:00:00+00:00".to_string(),
         enable_updates: Some(false),
@@ -1692,6 +1708,7 @@ fn existing_planned_leaf_completions_match_manifest_identity_with_group_context(
         url: "https://example.com/root".to_string(),
         folder: folder.to_string(),
         musics: vec![Music {
+    occurrence_id: String::new(),
             name: "Shared Track".to_string(),
             alias: "Shared Track".to_string(),
             group: second_group.clone(),
@@ -1705,7 +1722,7 @@ fn existing_planned_leaf_completions_match_manifest_identity_with_group_context(
             start_ms: 0,
             end_ms: 120_000,
             liked: false,
-            loudness: 0.0,
+            loudness_profile: None,
         }],
         last_updated: "2026-05-27T00:00:00+00:00".to_string(),
         enable_updates: Some(false),
@@ -3505,6 +3522,7 @@ fn create_collection_shell_reuses_existing_music_and_updates_collection_metadata
         url: "https://example.com/list".to_string(),
         folder: "youtube/original-list".to_string(),
         musics: vec![Music {
+    occurrence_id: String::new(),
             name: "Track 1".to_string(),
             alias: "Track 1".to_string(),
             group: collection_group("Disc 1", "https://example.com/list#disc-1", "Disc 1"),
@@ -3518,7 +3536,7 @@ fn create_collection_shell_reuses_existing_music_and_updates_collection_metadata
             start_ms: 0,
             end_ms: 120_000,
             liked: false,
-            loudness: 0.0,
+            loudness_profile: None,
         }],
         last_updated: "2026-04-12T00:00:00+00:00".to_string(),
         enable_updates: Some(false),
@@ -3772,6 +3790,7 @@ liked = false
             url: "https://example.com/root".to_string(),
             folder: collection_folder.to_string(),
             musics: vec![Music {
+    occurrence_id: String::new(),
                 name: "What Now".to_string(),
                 alias: "What Now".to_string(),
                 group: collection_group(
@@ -3789,7 +3808,7 @@ liked = false
                 start_ms: 0,
                 end_ms: 344_000,
                 liked: false,
-                loudness: 0.0,
+                loudness_profile: None,
             }],
             last_updated: "2026-05-27T00:00:00+00:00".to_string(),
             enable_updates: Some(false),

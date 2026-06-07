@@ -2,9 +2,9 @@ use super::model::{
     AddExcludeResult, AudioStyleTrainingMusicView, AudioStyleTrainingMusicViewParams,
     AudioStyleTrainingTrackInput, Collection, CollectionGroupMembershipView, CollectionGroupOwner,
     CollectionSurfaceView, ConfigLibraryView, Exclude, ExcludeAvailability, Group,
-    GroupSurfaceView, Music, MusicSpectrumView, PlayList, PlayListConfigView, PlayListListView,
-    PlayListWriteRequest, PlaylistCollectionRef, PlaylistGroupRef, PlaylistMusicGroupView,
-    PlaylistMusicGroupViewParams, PlaylistMusicSourceCollectionView,
+    GroupSurfaceView, LoudnessProfile, Music, MusicSpectrumView, PlayList, PlayListConfigView,
+    PlayListListView, PlayListWriteRequest, PlaylistCollectionRef, PlaylistGroupRef,
+    PlaylistMusicGroupView, PlaylistMusicGroupViewParams, PlaylistMusicSourceCollectionView,
     PlaylistMusicSourceCollectionViewParams, PlaylistRecordPlayableTrackView,
     PlaylistRecordPlayableTrackViewParams, PlaylistRelationPlayableTrackView,
     PlaylistRelationPlayableTrackViewParams, RandomPlaylistRelationPlayableTrackView,
@@ -203,6 +203,7 @@ pub async fn list_config_library() -> Result<ConfigLibraryView> {
 }
 
 pub async fn add_exclude(music: Music) -> Result<AddExcludeResult> {
+    let music = with_music_occurrence_id(music);
     let record = exclude_record_id(&music);
     let saved = Repo::<StoredExclude>::upsert_at(
         RecordId::new(StoredExclude::table_name(), record.to_string()),
@@ -247,15 +248,15 @@ pub async fn set_music_liked_by_identity(
     Ok(first_updated)
 }
 
-pub async fn set_music_loudness_by_identity(
+pub async fn set_music_loudness_profile_by_identity(
     url: &str,
     start_ms: u32,
     end_ms: u32,
-    loudness: f32,
+    profile: LoudnessProfile,
 ) -> Result<Option<Music>> {
     ensure_collection_graph_schema().await?;
-    if !loudness.is_finite() || loudness == 0.0 {
-        bail!("music loudness evidence must be a finite non-zero LUFS value");
+    if !profile.is_valid() {
+        bail!("music loudness profile evidence must be finite and include non-zero integrated LUFS");
     }
 
     let canonical_music_id = canonical_music_id_for_source(url, start_ms, end_ms);
@@ -264,7 +265,7 @@ pub async fn set_music_loudness_by_identity(
 
     for record in records {
         let mut music = Music::get_record(record.clone()).await?;
-        music.loudness = loudness;
+        music.loudness_profile = Some(profile);
         let updated = Repo::<Music>::update_at(record, music).await?;
 
         if first_updated.is_none() {
@@ -275,14 +276,14 @@ pub async fn set_music_loudness_by_identity(
     Ok(first_updated)
 }
 
-pub async fn get_music_loudness_by_identity(
+pub async fn get_music_loudness_profile_by_identity(
     url: &str,
     start_ms: u32,
     end_ms: u32,
-) -> Result<Option<f32>> {
+) -> Result<Option<LoudnessProfile>> {
     ensure_collection_graph_schema().await?;
     let canonical_music_id = canonical_music_id_for_source(url, start_ms, end_ms);
-    canonical_music_id_loudness_evidence(&canonical_music_id).await
+    canonical_music_id_loudness_profile_evidence(&canonical_music_id).await
 }
 
 pub async fn is_music_identity_excluded_for_playback(
@@ -1058,6 +1059,7 @@ pub async fn update_music(
         music.end_ms = next_end_ms;
         music.canonical_music_id =
             canonical_music_id_for_source(&music.url, music.start_ms, music.end_ms);
+        assign_music_occurrence_id(&mut music);
         let updated = Repo::<Music>::update_at(record.clone(), music).await?;
         changed_records.push(record);
         previous_musics.push(previous_music);
@@ -1081,6 +1083,7 @@ pub async fn create_music(source_collection_url: &str, music: &Music) -> Result<
     let mut music = music.clone();
     music.canonical_music_id =
         canonical_music_id_for_source(&music.url, music.start_ms, music.end_ms);
+    assign_music_occurrence_id(&mut music);
 
     let Some(mut collection) = get_collection_by_url(source_collection_url).await? else {
         bail!("collection `{source_collection_url}` not found");
@@ -1397,8 +1400,9 @@ pub async fn list_auto_update_collections() -> Result<Vec<Collection>> {
 pub async fn upsert_collection(collection: &Collection) -> Result<Collection> {
     ensure_collection_graph_schema().await?;
 
-    let collection =
-        bind_collection_groups(&inherit_canonical_music_evidence(collection).await?);
+    let collection = assign_collection_music_occurrence_ids(&bind_collection_groups(
+        &inherit_canonical_music_evidence(collection).await?,
+    ));
     let existing_record =
         find_unique_record_id_by_string_field::<Collection>("url", &collection.url).await?;
     let record = existing_record
@@ -1457,15 +1461,37 @@ async fn inherit_canonical_music_evidence(collection: &Collection) -> Result<Col
         if !music.liked && canonical_music_id_has_liked_record(&music.canonical_music_id).await? {
             music.liked = true;
         }
-        if music.loudness == 0.0
-            && let Some(loudness) =
-                canonical_music_id_loudness_evidence(&music.canonical_music_id).await?
+        if music.loudness_profile.is_none()
+            && let Some(profile) =
+                canonical_music_id_loudness_profile_evidence(&music.canonical_music_id).await?
         {
-            music.loudness = loudness;
+            music.loudness_profile = Some(profile);
         }
     }
 
     Ok(collection)
+}
+
+fn assign_collection_music_occurrence_ids(collection: &Collection) -> Collection {
+    let mut collection = collection.clone();
+    for music in &mut collection.musics {
+        assign_music_occurrence_id(music);
+    }
+    collection
+}
+
+fn assign_music_occurrence_id(music: &mut Music) {
+    music.occurrence_id = music_occurrence_id(
+        &music.group.url,
+        &music.url,
+        music.start_ms,
+        music.end_ms,
+    );
+}
+
+fn with_music_occurrence_id(mut music: Music) -> Music {
+    assign_music_occurrence_id(&mut music);
+    music
 }
 
 async fn canonical_music_id_has_liked_record(canonical_music_id: &str) -> Result<bool> {
@@ -1496,14 +1522,16 @@ async fn canonical_music_id_has_liked_record(canonical_music_id: &str) -> Result
     Ok(count.unwrap_or(0) > 0)
 }
 
-async fn canonical_music_id_loudness_evidence(
+async fn canonical_music_id_loudness_profile_evidence(
     canonical_music_id: &str,
-) -> Result<Option<f32>> {
+) -> Result<Option<LoudnessProfile>> {
     let records = find_music_record_ids_by_canonical_id(canonical_music_id).await?;
     for record in records {
         let music = Music::get_record(record).await?;
-        if music.loudness != 0.0 && music.loudness.is_finite() {
-            return Ok(Some(music.loudness));
+        if let Some(profile) = music.loudness_profile
+            && profile.is_valid()
+        {
+            return Ok(Some(profile));
         }
     }
 
@@ -2360,6 +2388,7 @@ fn playable_track_music_from_relation_row(
     group: Group,
 ) -> Option<Music> {
     Some(Music {
+        occurrence_id: row.occurrence_id,
         name: row.name,
         alias: row.alias,
         group,
@@ -2369,7 +2398,7 @@ fn playable_track_music_from_relation_row(
         start_ms: row.start_ms,
         end_ms: row.end_ms,
         liked: row.liked,
-        loudness: row.loudness,
+        loudness_profile: row.loudness_profile,
     })
 }
 
@@ -2378,6 +2407,7 @@ fn playable_track_music_from_random_relation_row(
     group: Group,
 ) -> Option<Music> {
     Some(Music {
+        occurrence_id: row.occurrence_id,
         name: row.name,
         alias: row.alias,
         group,
@@ -2387,7 +2417,7 @@ fn playable_track_music_from_random_relation_row(
         start_ms: row.start_ms,
         end_ms: row.end_ms,
         liked: row.liked,
-        loudness: row.loudness,
+        loudness_profile: row.loudness_profile,
     })
 }
 
@@ -2396,6 +2426,7 @@ fn playable_track_music_from_record_row(
     group: Group,
 ) -> Option<Music> {
     Some(Music {
+        occurrence_id: row.occurrence_id,
         name: row.name,
         alias: row.alias,
         group,
@@ -2405,7 +2436,7 @@ fn playable_track_music_from_record_row(
         start_ms: row.start_ms,
         end_ms: row.end_ms,
         liked: row.liked,
-        loudness: row.loudness,
+        loudness_profile: row.loudness_profile,
     })
 }
 
@@ -2490,6 +2521,7 @@ fn audio_style_training_music_from_row(
     let absolute_path = project_audio_style_training_path(save_root, owner_folder, relative_path);
 
     Some(AudioStyleTrainingTrackInput {
+        occurrence_id: row.occurrence_id,
         alias: row.alias,
         canonical_music_id: row.canonical_music_id,
         url: row.url,
@@ -2497,7 +2529,7 @@ fn audio_style_training_music_from_row(
         start_ms: row.start_ms,
         end_ms: row.end_ms,
         liked: row.liked,
-        loudness: row.loudness,
+        loudness_profile: row.loudness_profile,
     })
 }
 
@@ -3153,7 +3185,9 @@ async fn resolve_playlist_foreign_record_ids(
     let mut extra = Vec::with_capacity(playlist.extra.len());
     let mut seen_extra = HashSet::new();
     for music in &playlist.extra {
-        let record = music.resolve_record_id().await?;
+        let record = with_music_occurrence_id(music.clone())
+            .resolve_record_id()
+            .await?;
         if seen_extra.insert(record.clone()) {
             extra.push(record);
         }
@@ -3234,6 +3268,10 @@ async fn music_parent_count(record: &RecordId) -> Result<i64> {
 
 fn collection_record_id(url: &str) -> RecordId {
     RecordId::new(Collection::table_name(), stable_record_key(url))
+}
+
+pub(crate) fn music_occurrence_id(group_url: &str, url: &str, start_ms: u32, end_ms: u32) -> String {
+    stable_record_key(&format!("{group_url}:{url}:{start_ms}:{end_ms}"))
 }
 
 fn group_record_id(url: &str) -> RecordId {

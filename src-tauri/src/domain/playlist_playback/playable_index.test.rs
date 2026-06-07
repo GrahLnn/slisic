@@ -10,7 +10,7 @@ use super::playable_index::{
 };
 use crate::domain::loudness_evidence::LoudnessEvidenceRequest;
 use crate::domain::playlists::model::{
-    CollectionGroupOwner, Group, Music, canonical_music_id_for_source,
+    CollectionGroupOwner, Group, LoudnessProfile, Music, canonical_music_id_for_source,
 };
 use crate::domain::playlists::repo::{
     PlaylistPlaybackCollectionRef, PlaylistPlaybackSelection, PlaylistPlaybackTrackSource,
@@ -46,6 +46,7 @@ fn group() -> Group {
 fn music(index: usize) -> Music {
     let url = format!("https://example.com/watch?v={index}");
     Music {
+        occurrence_id: String::new(),
         name: format!("Track {index}"),
         alias: format!("Track {index}"),
         group: group(),
@@ -55,7 +56,7 @@ fn music(index: usize) -> Music {
         start_ms: 0,
         end_ms: 180_000,
         liked: false,
-        loudness: 0.0,
+        loudness_profile: None,
     }
 }
 
@@ -154,8 +155,11 @@ async fn playable_index_loudness_evidence_updates_prepared_first_slot_cargo_with
             .expect("prepared playback track should exist"),
     );
 
-    publish_first_slot_loudness_evidence(&request, -14.25)
-        .expect("first-slot evidence should publish");
+    publish_first_slot_loudness_evidence(
+        &request,
+        LoudnessProfile::from_integrated_lufs(-14.25).expect("test LUFS should be valid"),
+    )
+    .expect("first-slot evidence should publish");
 
     let updated = read_playlist_source("Focus")
         .expect("index read should succeed")
@@ -164,14 +168,22 @@ async fn playable_index_loudness_evidence_updates_prepared_first_slot_cargo_with
         .track
         .as_ref()
         .expect("prepared playback track should exist");
-    assert_eq!(updated_track.loudness, -14.25);
+    assert_eq!(
+        updated_track
+            .loudness_profile
+            .expect("updated track should carry loudness profile")
+            .integrated_lufs,
+        -14.25
+    );
     assert_eq!(
         updated
             .source
             .as_ref()
             .expect("prepared source should exist")
             .music
-            .loudness,
+            .loudness_profile
+            .expect("source should carry loudness profile")
+            .integrated_lufs,
         -14.25
     );
     assert_eq!(
@@ -179,7 +191,9 @@ async fn playable_index_loudness_evidence_updates_prepared_first_slot_cargo_with
             .source_music
             .as_ref()
             .expect("source music should stay attached")
-            .loudness,
+            .loudness_profile
+            .expect("source music should carry loudness profile")
+            .integrated_lufs,
         -14.25
     );
     assert!(
@@ -204,8 +218,11 @@ async fn playable_index_loudness_evidence_updates_only_matching_first_slot_ident
     .await
     .expect("second snapshot should commit");
 
-    publish_first_slot_loudness_evidence(&loudness_request_for_source(&second_source), -20.5)
-        .expect("second source evidence should publish");
+    publish_first_slot_loudness_evidence(
+        &loudness_request_for_source(&second_source),
+        LoudnessProfile::from_integrated_lufs(-20.5).expect("test LUFS should be valid"),
+    )
+    .expect("second source evidence should publish");
 
     let first = read_playlist_source("Focus")
         .expect("index read should succeed")
@@ -215,8 +232,8 @@ async fn playable_index_loudness_evidence_updates_only_matching_first_slot_ident
             .track
             .as_ref()
             .expect("first track should exist")
-            .loudness,
-        0.0
+            .loudness_profile,
+        None
     );
     assert!(consume_playlist_source(&first).expect("first source should consume"));
     let second = read_playlist_source("Focus")
@@ -227,13 +244,18 @@ async fn playable_index_loudness_evidence_updates_only_matching_first_slot_ident
             .track
             .as_ref()
             .expect("second track should exist")
-            .loudness,
+            .loudness_profile
+            .expect("second track should carry loudness profile")
+            .integrated_lufs,
         -20.5
     );
 
     let mut wrong_range = loudness_request_for_source(&second_source);
     wrong_range.end_ms += 1;
-    publish_first_slot_loudness_evidence(&wrong_range, -8.0)
+    publish_first_slot_loudness_evidence(
+        &wrong_range,
+        LoudnessProfile::from_integrated_lufs(-8.0).expect("test LUFS should be valid"),
+    )
         .expect("nonmatching evidence should be ignored");
     let unchanged_second = read_playlist_source("Focus")
         .expect("index read should succeed")
@@ -243,7 +265,9 @@ async fn playable_index_loudness_evidence_updates_only_matching_first_slot_ident
             .track
             .as_ref()
             .expect("second track should exist")
-            .loudness,
+            .loudness_profile
+            .expect("second track should keep loudness profile")
+            .integrated_lufs,
         -20.5
     );
 }

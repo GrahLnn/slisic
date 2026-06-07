@@ -245,6 +245,9 @@ pub struct RemoveExcludeResult {
 
 #[derive(Debug, Serialize, Deserialize, Clone, SurrealValue, Store, Type)]
 pub struct Music {
+    #[unique]
+    #[serde(default)]
+    pub occurrence_id: String,
     pub name: String,
     pub alias: String,
     #[back_relate("grouped")]
@@ -255,7 +258,69 @@ pub struct Music {
     pub start_ms: u32,
     pub end_ms: u32,
     pub liked: bool,
-    pub loudness: f32,
+    #[serde(default)]
+    pub loudness_profile: Option<LoudnessProfile>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, SurrealValue, Type)]
+pub struct LoudnessProfile {
+    pub integrated_lufs: f32,
+    #[serde(default)]
+    pub true_peak_dbtp: Option<f32>,
+    #[serde(default)]
+    pub lra: Option<f32>,
+    #[serde(default)]
+    pub short_lufs_p50: Option<f32>,
+    #[serde(default)]
+    pub short_lufs_p80: Option<f32>,
+    #[serde(default)]
+    pub short_lufs_p95: Option<f32>,
+    #[serde(default)]
+    pub short_lufs_max: Option<f32>,
+    #[serde(default)]
+    pub presence_db: Option<f32>,
+    #[serde(default)]
+    pub model_adjustment_db: Option<f32>,
+}
+
+impl LoudnessProfile {
+    pub fn from_integrated_lufs(integrated_lufs: f32) -> Option<Self> {
+        if !is_valid_loudness_evidence(integrated_lufs) {
+            return None;
+        }
+
+        Some(Self {
+            integrated_lufs,
+            true_peak_dbtp: None,
+            lra: None,
+            short_lufs_p50: None,
+            short_lufs_p80: None,
+            short_lufs_p95: None,
+            short_lufs_max: None,
+            presence_db: None,
+            model_adjustment_db: None,
+        })
+    }
+
+    pub fn is_valid(self) -> bool {
+        is_valid_loudness_evidence(self.integrated_lufs)
+            && self.true_peak_dbtp.is_none_or(is_finite_optional_evidence)
+            && self.lra.is_none_or(is_finite_optional_evidence)
+            && self.short_lufs_p50.is_none_or(is_finite_optional_evidence)
+            && self.short_lufs_p80.is_none_or(is_finite_optional_evidence)
+            && self.short_lufs_p95.is_none_or(is_finite_optional_evidence)
+            && self.short_lufs_max.is_none_or(is_finite_optional_evidence)
+            && self.presence_db.is_none_or(is_finite_optional_evidence)
+            && self.model_adjustment_db.is_none_or(is_finite_optional_evidence)
+    }
+}
+
+pub fn is_valid_loudness_evidence(loudness: f32) -> bool {
+    loudness.is_finite() && loudness != 0.0
+}
+
+fn is_finite_optional_evidence(value: f32) -> bool {
+    value.is_finite()
 }
 
 #[async_trait::async_trait]
@@ -270,6 +335,7 @@ impl appdb::ViewShape for Music {
 #[derive(Debug, Serialize, Deserialize, Clone, SurrealValue, View, Type)]
 #[view(source = Music)]
 pub struct MusicSpectrumView {
+    pub occurrence_id: String,
     pub name: String,
     pub alias: String,
     pub canonical_music_id: String,
@@ -278,12 +344,14 @@ pub struct MusicSpectrumView {
     pub start_ms: u32,
     pub end_ms: u32,
     pub liked: bool,
-    pub loudness: f32,
+    #[serde(default)]
+    pub loudness_profile: Option<LoudnessProfile>,
 }
 
 impl MusicSpectrumView {
     pub fn into_music(self, group: Group) -> Music {
         Music {
+            occurrence_id: self.occurrence_id,
             name: self.name,
             alias: self.alias,
             group,
@@ -293,7 +361,7 @@ impl MusicSpectrumView {
             start_ms: self.start_ms,
             end_ms: self.end_ms,
             liked: self.liked,
-            loudness: self.loudness,
+            loudness_profile: self.loudness_profile,
         }
     }
 }
@@ -326,6 +394,7 @@ impl ViewParams for PlaylistRelationPlayableTrackViewParams {
             in AS owner_record,
             out AS music_record,
             position,
+            out.occurrence_id AS occurrence_id,
             out.name AS name,
             out.alias AS alias,
             out.canonical_music_id AS canonical_music_id,
@@ -334,7 +403,7 @@ impl ViewParams for PlaylistRelationPlayableTrackViewParams {
             out.start_ms AS start_ms,
             out.end_ms AS end_ms,
             out.liked AS liked,
-            out.loudness AS loudness
+            out.loudness_profile AS loudness_profile
         FROM $relation
         WHERE in IN $owner_records
             AND record::tb(out) = $music_table
@@ -350,6 +419,7 @@ pub struct PlaylistRelationPlayableTrackView {
     pub owner_record: RecordId,
     pub music_record: RecordId,
     pub position: i64,
+    pub occurrence_id: String,
     pub name: String,
     pub alias: String,
     pub canonical_music_id: String,
@@ -358,7 +428,8 @@ pub struct PlaylistRelationPlayableTrackView {
     pub start_ms: u32,
     pub end_ms: u32,
     pub liked: bool,
-    pub loudness: f32,
+    #[serde(default)]
+    pub loudness_profile: Option<LoudnessProfile>,
 }
 
 #[derive(Debug, Clone)]
@@ -387,6 +458,7 @@ impl ViewParams for RandomPlaylistRelationPlayableTrackViewParams {
             in AS owner_record,
             out AS music_record,
             position,
+            out.occurrence_id AS occurrence_id,
             out.name AS name,
             out.alias AS alias,
             out.canonical_music_id AS canonical_music_id,
@@ -395,7 +467,7 @@ impl ViewParams for RandomPlaylistRelationPlayableTrackViewParams {
             out.start_ms AS start_ms,
             out.end_ms AS end_ms,
             out.liked AS liked,
-            out.loudness AS loudness
+            out.loudness_profile AS loudness_profile
         FROM $relation
         WHERE in IN $owner_records
             AND record::tb(out) = $music_table
@@ -410,6 +482,7 @@ pub struct RandomPlaylistRelationPlayableTrackView {
     pub owner_record: RecordId,
     pub music_record: RecordId,
     pub position: i64,
+    pub occurrence_id: String,
     pub name: String,
     pub alias: String,
     pub canonical_music_id: String,
@@ -418,7 +491,8 @@ pub struct RandomPlaylistRelationPlayableTrackView {
     pub start_ms: u32,
     pub end_ms: u32,
     pub liked: bool,
-    pub loudness: f32,
+    #[serde(default)]
+    pub loudness_profile: Option<LoudnessProfile>,
 }
 
 #[derive(Debug, Clone)]
@@ -441,6 +515,7 @@ impl ViewParams for PlaylistRecordPlayableTrackViewParams {
     sql = r#"
         SELECT
             id AS music_record,
+            occurrence_id,
             name,
             alias,
             canonical_music_id,
@@ -449,7 +524,7 @@ impl ViewParams for PlaylistRecordPlayableTrackViewParams {
             start_ms,
             end_ms,
             liked,
-            loudness
+            loudness_profile
         FROM $music_table
         WHERE id IN $music_records
             AND path IS NOT NONE
@@ -459,6 +534,7 @@ impl ViewParams for PlaylistRecordPlayableTrackViewParams {
 )]
 pub struct PlaylistRecordPlayableTrackView {
     pub music_record: RecordId,
+    pub occurrence_id: String,
     pub name: String,
     pub alias: String,
     pub canonical_music_id: String,
@@ -467,7 +543,8 @@ pub struct PlaylistRecordPlayableTrackView {
     pub start_ms: u32,
     pub end_ms: u32,
     pub liked: bool,
-    pub loudness: f32,
+    #[serde(default)]
+    pub loudness_profile: Option<LoudnessProfile>,
 }
 
 #[derive(Debug, Clone)]
@@ -484,6 +561,7 @@ impl ViewParams for AudioStyleTrainingMusicViewParams {
     sql = r#"
         SELECT
             id AS music_record,
+            occurrence_id,
             alias,
             canonical_music_id,
             url,
@@ -491,7 +569,7 @@ impl ViewParams for AudioStyleTrainingMusicViewParams {
             start_ms,
             end_ms,
             liked,
-            loudness
+            loudness_profile
         FROM $music_table
         WHERE path IS NOT NONE
             AND path != '';
@@ -500,6 +578,7 @@ impl ViewParams for AudioStyleTrainingMusicViewParams {
 )]
 pub struct AudioStyleTrainingMusicView {
     pub music_record: RecordId,
+    pub occurrence_id: String,
     pub alias: String,
     pub canonical_music_id: String,
     pub url: String,
@@ -507,11 +586,13 @@ pub struct AudioStyleTrainingMusicView {
     pub start_ms: u32,
     pub end_ms: u32,
     pub liked: bool,
-    pub loudness: f32,
+    #[serde(default)]
+    pub loudness_profile: Option<LoudnessProfile>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AudioStyleTrainingTrackInput {
+    pub occurrence_id: String,
     pub alias: String,
     pub canonical_music_id: String,
     pub url: String,
@@ -519,7 +600,7 @@ pub struct AudioStyleTrainingTrackInput {
     pub start_ms: u32,
     pub end_ms: u32,
     pub liked: bool,
-    pub loudness: f32,
+    pub loudness_profile: Option<LoudnessProfile>,
 }
 
 #[derive(Debug, Clone)]

@@ -827,6 +827,7 @@ pub(crate) fn materialize_music_entries(
     if probe.chapters.is_empty() {
         let name = probe.title.clone();
         return vec![Music {
+    occurrence_id: String::new(),
             name: name.clone(),
             alias: name,
             group,
@@ -840,7 +841,7 @@ pub(crate) fn materialize_music_entries(
             start_ms: 0,
             end_ms: probe_duration_ms(probe),
             liked: false,
-            loudness: 0.0,
+            loudness_profile: None,
         }];
     }
 
@@ -848,6 +849,7 @@ pub(crate) fn materialize_music_entries(
         .chapters
         .iter()
         .map(|chapter| Music {
+    occurrence_id: String::new(),
             name: chapter.title.clone(),
             alias: chapter.title.clone(),
             group: group.clone(),
@@ -861,7 +863,7 @@ pub(crate) fn materialize_music_entries(
             start_ms: chapter.start_ms,
             end_ms: chapter.end_ms,
             liked: false,
-            loudness: 0.0,
+            loudness_profile: None,
         })
         .collect()
 }
@@ -1035,7 +1037,7 @@ fn manifest_restored_music_matches(left: &Music, right: &Music) -> bool {
         && left.start_ms == right.start_ms
         && left.end_ms == right.end_ms
         && left.liked == right.liked
-        && left.loudness == right.loudness
+        && left.loudness_profile == right.loudness_profile
 }
 
 pub(crate) fn normalize_music_titles_within_collection(collection: &mut Collection) {
@@ -1864,6 +1866,7 @@ pub(crate) fn restore_single_source_musics_from_task(
             .unwrap_or(&collection.name)
             .to_string();
         restored.push(Music {
+    occurrence_id: String::new(),
             name: name.clone(),
             alias: name,
             group: default_group.clone(),
@@ -1873,7 +1876,7 @@ pub(crate) fn restore_single_source_musics_from_task(
             start_ms: 0,
             end_ms: leaf_duration_ms(leaf),
             liked: false,
-            loudness: 0.0,
+            loudness_profile: None,
         });
     }
 
@@ -2032,6 +2035,7 @@ fn collection_from_manifest(
 
         manifest_file_paths.insert(relative_path.clone());
         musics.push(Music {
+    occurrence_id: String::new(),
             name,
             alias,
             group,
@@ -2041,7 +2045,7 @@ fn collection_from_manifest(
             start_ms: music.start_ms,
             end_ms,
             liked: music.liked,
-            loudness: 0.0,
+            loudness_profile: None,
         });
     }
 
@@ -2244,6 +2248,7 @@ fn local_music_from_audio_file(
     let name = local_music_name_from_path(&file.absolute_path);
     let url = local_music_url(collection_url, &file.relative_path);
     Music {
+        occurrence_id: String::new(),
         name: name.clone(),
         alias: name,
         group: group.clone(),
@@ -2253,7 +2258,7 @@ fn local_music_from_audio_file(
         start_ms: 0,
         end_ms: file.duration_ms,
         liked: false,
-        loudness: 0.0,
+        loudness_profile: None,
     }
 }
 

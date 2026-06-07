@@ -25,14 +25,9 @@ use rustfft::{FftPlanner, num_complex::Complex};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::ffi::OsString;
 use std::fs;
-use std::io::{BufReader, Read};
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 #[cfg(not(test))]
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
@@ -42,9 +37,6 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 #[cfg(not(test))]
 use tauri::{AppHandle, Manager};
-
-#[cfg(windows)]
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 const AUDIO_STYLE_EMBEDDING_VERSION: &str = "audio-style-watermark-transition-v2";
 #[cfg(test)]
@@ -4722,102 +4714,23 @@ fn decode_audio_style_interval(
     input: &Path,
     start_seconds: f64,
 ) -> Result<Vec<f32>, String> {
-    let mut command = Command::new(ffmpeg_path);
-    for arg in build_audio_style_ffmpeg_args(input, start_seconds) {
-        command.arg(arg);
-    }
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    #[cfg(windows)]
-    {
-        command.creation_flags(CREATE_NO_WINDOW);
-    }
-
-    let mut child = command.spawn().map_err(|error| error.to_string())?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "ffmpeg stdout pipe is missing".to_string())?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| "ffmpeg stderr pipe is missing".to_string())?;
-    let stderr_reader = std::thread::spawn(move || {
-        let mut reader = BufReader::new(stderr);
-        let mut message = String::new();
-        let _ = reader.read_to_string(&mut message);
-        message
-    });
-
-    let mut samples = read_f32le_samples(stdout)?;
-    let status = child.wait().map_err(|error| error.to_string())?;
-    let stderr_message = stderr_reader.join().unwrap_or_default();
-    if !status.success() {
-        return Err(format!(
-            "ffmpeg audio style decode failed: {stderr_message}"
-        ));
-    }
+    let mut samples = ffplayr::decode_audio_pcm_f32_with_binary(
+        ffmpeg_path,
+        ffplayr::AudioPcmDecodeRequest::new(input.to_path_buf(), AUDIO_STYLE_SAMPLE_RATE)
+            .with_time_range(ffplayr::PlaybackTimeRange {
+                start_ms: seconds_to_millis_f64(start_seconds),
+                duration_ms: Some(seconds_to_millis_f64(AUDIO_STYLE_INTERVAL_SECONDS)),
+            }),
+    )?;
     normalize_samples(&mut samples);
     if samples.is_empty() {
-        return Err("ffmpeg audio style decode produced no samples".to_string());
+        return Err("audio style decode produced no samples".to_string());
     }
     Ok(samples)
 }
 
-fn build_audio_style_ffmpeg_args(input: &Path, start_seconds: f64) -> Vec<OsString> {
-    vec![
-        OsString::from("-hide_banner"),
-        OsString::from("-loglevel"),
-        OsString::from("error"),
-        OsString::from("-nostdin"),
-        OsString::from("-ss"),
-        OsString::from(format!("{start_seconds:.3}")),
-        OsString::from("-t"),
-        OsString::from(format!("{AUDIO_STYLE_INTERVAL_SECONDS:.3}")),
-        OsString::from("-i"),
-        input.as_os_str().to_owned(),
-        OsString::from("-vn"),
-        OsString::from("-sn"),
-        OsString::from("-dn"),
-        OsString::from("-ac"),
-        OsString::from("1"),
-        OsString::from("-ar"),
-        OsString::from(AUDIO_STYLE_SAMPLE_RATE.to_string()),
-        OsString::from("-f"),
-        OsString::from("f32le"),
-        OsString::from("-c:a"),
-        OsString::from("pcm_f32le"),
-        OsString::from("pipe:1"),
-    ]
-}
-
-fn read_f32le_samples(stdout: std::process::ChildStdout) -> Result<Vec<f32>, String> {
-    let mut reader = BufReader::new(stdout);
-    let mut buffer = [0_u8; 64 * 1024];
-    let mut pending = Vec::<u8>::new();
-    let mut samples = Vec::new();
-
-    loop {
-        let read = reader
-            .read(&mut buffer)
-            .map_err(|error| format!("failed to read ffmpeg audio style output: {error}"))?;
-        if read == 0 {
-            break;
-        }
-        pending.extend_from_slice(&buffer[..read]);
-        let aligned_len = pending.len() / 4 * 4;
-        for chunk in pending[..aligned_len].chunks_exact(4) {
-            samples.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
-        }
-        pending.drain(..aligned_len);
-    }
-
-    if !pending.is_empty() {
-        return Err("ffmpeg audio style output ended with an incomplete f32 sample".to_string());
-    }
-    Ok(samples)
+fn seconds_to_millis_f64(seconds: f64) -> u32 {
+    ((seconds.max(0.0) * 1_000.0).round()).min(u32::MAX as f64) as u32
 }
 
 fn normalize_samples(samples: &mut [f32]) {
@@ -5509,7 +5422,7 @@ fn resolve_audio_style_training_track(
         start_ms: music.start_ms,
         end_ms: music.end_ms,
         liked: music.liked,
-        loudness: music.loudness,
+        loudness_profile: music.loudness_profile,
     };
     let source = PlaylistPlaybackTrackSource {
         collection_folder: String::new(),
@@ -5535,6 +5448,7 @@ fn audio_style_training_path_is_transient(path: &Path) -> bool {
 
 fn playback_track_source_music_from_track(track: &PlaybackTrack) -> Music {
     Music {
+        occurrence_id: String::new(),
         name: track.music_name.clone(),
         alias: track.music_name.clone(),
         group: Group {
@@ -5555,7 +5469,7 @@ fn playback_track_source_music_from_track(track: &PlaybackTrack) -> Music {
         start_ms: track.start_ms,
         end_ms: track.end_ms,
         liked: track.liked,
-        loudness: track.loudness,
+        loudness_profile: track.loudness_profile,
     }
 }
 

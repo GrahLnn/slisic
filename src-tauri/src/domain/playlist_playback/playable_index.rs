@@ -14,6 +14,7 @@ use crate::domain::playlist_playback::recommendation::{
 use crate::domain::playlist_playback::service as playlist_playback_service;
 #[cfg(not(test))]
 use crate::domain::playlists::repo as playlist_repo;
+use crate::domain::playlists::model::LoudnessProfile;
 use crate::domain::playlists::repo::{PlaylistPlaybackSelection, PlaylistPlaybackTrackSource};
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
@@ -359,11 +360,11 @@ pub(crate) fn discard_playlist_source(snapshot: &PlaylistPlayableIndexSnapshot) 
 
 pub(crate) fn publish_first_slot_loudness_evidence(
     request: &LoudnessEvidenceRequest,
-    loudness: f32,
+    profile: LoudnessProfile,
 ) -> Result<()> {
-    if !loudness.is_finite() || loudness == 0.0 {
+    if !profile.is_valid() {
         return Err(anyhow!(
-            "first-slot loudness evidence must be finite and non-zero"
+            "first-slot loudness profile evidence must be finite and include non-zero integrated LUFS"
         ));
     }
     let runtime = try_runtime()?;
@@ -378,11 +379,11 @@ pub(crate) fn publish_first_slot_loudness_evidence(
             let mut pool_changed = false;
             for credential in &mut pool.sources {
                 if !prepared_credential_matches_loudness_request(credential, request)
-                    || credential.track.loudness == loudness
+                    || credential.track.loudness_profile == Some(profile)
                 {
                     continue;
                 }
-                apply_prepared_credential_loudness(credential, loudness);
+                apply_prepared_credential_loudness(credential, profile);
                 changed += 1;
                 pool_changed = true;
             }
@@ -411,15 +412,15 @@ pub(crate) fn publish_first_slot_loudness_evidence(
                     index_trace_detail("canonicalMusicId", &request.canonical_music_id),
                     index_trace_detail("startMs", request.start_ms),
                     index_trace_detail("endMs", request.end_ms),
-                    index_trace_detail("loudness", format!("{loudness:.3}")),
+                    index_trace_detail("integratedLufs", format!("{:.3}", profile.integrated_lufs)),
                 ],
             );
         }
         log::info!(
             target: PLAYABLE_INDEX_LOG_TARGET,
-            "first_slot_loudness_evidence_applied canonical_music_id=\"{}\" loudness={:.3} credentials={}",
+            "first_slot_loudness_evidence_applied canonical_music_id=\"{}\" integrated_lufs={:.3} credentials={}",
             escape_log_value(&request.canonical_music_id),
-            loudness,
+            profile.integrated_lufs,
             changed
         );
     }
@@ -458,12 +459,12 @@ fn prepared_credential_matches_loudness_request(
 
 fn apply_prepared_credential_loudness(
     credential: &mut PreparedPlaylistSourceCredential,
-    loudness: f32,
+    profile: LoudnessProfile,
 ) {
-    credential.track.loudness = loudness;
-    credential.source.music.loudness = loudness;
+    credential.track.loudness_profile = Some(profile);
+    credential.source.music.loudness_profile = Some(profile);
     if let Some(music) = credential.track.source_music.as_mut() {
-        music.loudness = loudness;
+        music.loudness_profile = Some(profile);
     }
 }
 
@@ -1136,7 +1137,11 @@ fn append_credential_trace_details(
     ));
     details.push(index_trace_detail(
         "trackLoudness",
-        format!("{:.3}", credential.track.loudness),
+        credential
+            .track
+            .loudness_profile
+            .map(|profile| format!("{:.3}", profile.integrated_lufs))
+            .unwrap_or_else(|| "none".to_string()),
     ));
 }
 
@@ -2773,7 +2778,7 @@ fn playback_track_from_source_for_test(
         start_ms: source.music.start_ms,
         end_ms: source.music.end_ms,
         liked: source.music.liked,
-        loudness: source.music.loudness,
+        loudness_profile: source.music.loudness_profile,
     }
 }
 

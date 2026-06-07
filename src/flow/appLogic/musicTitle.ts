@@ -751,7 +751,7 @@ export function createMusicDraftCreateFromDraft(
       start_ms: startMs,
       end_ms: endMs,
       liked: false,
-      loudness: 0,
+      loudness_profile: null,
       url,
     },
   };

@@ -6,7 +6,7 @@ use super::service::{
     PlaylistPlaybackRecommendationMode, PlaylistPlaybackRecommendationRequest,
     PlaylistPlaybackRecommender, PlaylistQueueRecommendationReadiness,
     RandomPlaylistPlaybackRecommender, audio_style_playlist_playback_proposal_is_complete,
-    apply_initial_track_loudness_evidence, create_start_anchor_playback_queue,
+    apply_initial_track_loudness_profile, create_start_anchor_playback_queue,
     initial_track_release_requires_loudness_gate,
     place_track_at_queue_start,
     playlist_playback_proposal_contains_next_track,
@@ -24,7 +24,7 @@ use crate::domain::downloads::model::{
 };
 use crate::domain::player::model::{PlaybackContinuationMode, PlaybackTrack};
 use crate::domain::playlists::model::{
-    CollectionGroupOwner, Group, Music, canonical_music_id_for_source,
+    CollectionGroupOwner, Group, LoudnessProfile, Music, canonical_music_id_for_source,
 };
 use crate::domain::playlists::repo::{
     PlaylistPlaybackCollectionRef, PlaylistPlaybackGroupRef, PlaylistPlaybackSelection,
@@ -55,7 +55,7 @@ fn playback_track(name: &str) -> PlaybackTrack {
         end_ms: 60_000,
         source_music: None,
         liked: false,
-        loudness: 0.0,
+        loudness_profile: None,
     }
 }
 
@@ -82,6 +82,7 @@ fn group(name: &str, url: &str, folder: &str) -> Group {
 
 fn music(name: &str, url: &str, path: &str, group: Group) -> Music {
     Music {
+        occurrence_id: String::new(),
         name: name.to_string(),
         alias: name.to_string(),
         group,
@@ -91,12 +92,13 @@ fn music(name: &str, url: &str, path: &str, group: Group) -> Music {
         start_ms: 0,
         end_ms: 180_000,
         liked: false,
-        loudness: 0.0,
+        loudness_profile: None,
     }
 }
 
 fn music_with_alias(name: &str, alias: &str, url: &str, path: &str, group: Group) -> Music {
     Music {
+        occurrence_id: String::new(),
         name: name.to_string(),
         alias: alias.to_string(),
         group,
@@ -106,7 +108,7 @@ fn music_with_alias(name: &str, alias: &str, url: &str, path: &str, group: Group
         start_ms: 0,
         end_ms: 180_000,
         liked: false,
-        loudness: 0.0,
+        loudness_profile: None,
     }
 }
 
@@ -361,7 +363,7 @@ fn random_recommender_shuffle_preserves_candidate_identity_set() {
             end_ms: index * 1_000 + 500,
             source_music: None,
             liked: false,
-            loudness: 0.0,
+            loudness_profile: None,
         })
         .collect::<Vec<_>>();
     let mut before = tracks
@@ -406,7 +408,7 @@ fn random_recommender_keeps_current_track_at_the_queue_start() {
         end_ms: 60_000,
         source_music: None,
         liked: false,
-        loudness: 0.0,
+        loudness_profile: None,
     };
     let next = PlaybackTrack {
         playlist_name: "Focus".to_string(),
@@ -418,7 +420,7 @@ fn random_recommender_keeps_current_track_at_the_queue_start() {
         end_ms: 60_000,
         source_music: None,
         liked: false,
-        loudness: 0.0,
+        loudness_profile: None,
     };
 
     let proposed =
@@ -451,7 +453,7 @@ fn queue_start_projection_preserves_the_initial_playback_anchor() {
         end_ms: 60_000,
         source_music: None,
         liked: false,
-        loudness: 0.0,
+        loudness_profile: None,
     };
     let next = PlaybackTrack {
         playlist_name: "Focus".to_string(),
@@ -463,7 +465,7 @@ fn queue_start_projection_preserves_the_initial_playback_anchor() {
         end_ms: 60_000,
         source_music: None,
         liked: false,
-        loudness: 0.0,
+        loudness_profile: None,
     };
 
     let reordered =
@@ -537,7 +539,7 @@ fn random_recommender_after_exclude_does_not_reinsert_current_track() {
         end_ms: 60_000,
         source_music: None,
         liked: false,
-        loudness: 0.0,
+        loudness_profile: None,
     };
     let next = PlaybackTrack {
         playlist_name: "Focus".to_string(),
@@ -549,7 +551,7 @@ fn random_recommender_after_exclude_does_not_reinsert_current_track() {
         end_ms: 60_000,
         source_music: None,
         liked: false,
-        loudness: 0.0,
+        loudness_profile: None,
     };
 
     let proposed = RandomPlaylistPlaybackRecommender.propose_queue_after_exclude(
@@ -582,7 +584,7 @@ fn random_queue_after_exclude_filters_current_track_before_selecting_next() {
         end_ms: 60_000,
         source_music: None,
         liked: false,
-        loudness: 0.0,
+        loudness_profile: None,
     };
     let next = PlaybackTrack {
         playlist_name: "Focus".to_string(),
@@ -594,7 +596,7 @@ fn random_queue_after_exclude_filters_current_track_before_selecting_next() {
         end_ms: 60_000,
         source_music: None,
         liked: false,
-        loudness: 0.0,
+        loudness_profile: None,
     };
     let mut candidates = vec![current.clone(), next.clone(), current.clone()];
 
@@ -617,7 +619,7 @@ fn random_recommender_keeps_current_track_ahead_of_newly_loaded_queue_window() {
         end_ms: 60_000,
         source_music: None,
         liked: false,
-        loudness: 0.0,
+        loudness_profile: None,
     };
     let next = PlaybackTrack {
         playlist_name: "Focus".to_string(),
@@ -629,7 +631,7 @@ fn random_recommender_keeps_current_track_ahead_of_newly_loaded_queue_window() {
         end_ms: 60_000,
         source_music: None,
         liked: false,
-        loudness: 0.0,
+        loudness_profile: None,
     };
 
     let proposed =
@@ -756,7 +758,7 @@ fn playlist_playback_keep_current_proposal_without_next_track_is_not_complete() 
         end_ms: 60_000,
         source_music: None,
         liked: false,
-        loudness: 0.0,
+        loudness_profile: None,
     };
 
     assert!(!playlist_playback_proposal_contains_next_track(
@@ -777,7 +779,7 @@ fn playlist_playback_keep_current_proposal_with_distinct_next_track_is_complete(
         end_ms: 60_000,
         source_music: None,
         liked: false,
-        loudness: 0.0,
+        loudness_profile: None,
     };
     let next = PlaybackTrack {
         playlist_name: "Focus".to_string(),
@@ -789,7 +791,7 @@ fn playlist_playback_keep_current_proposal_with_distinct_next_track_is_complete(
         end_ms: 60_000,
         source_music: None,
         liked: false,
-        loudness: 0.0,
+        loudness_profile: None,
     };
 
     assert!(playlist_playback_proposal_contains_next_track(
@@ -907,7 +909,7 @@ fn playlist_track_loudness_warmup_requires_missing_evidence_and_real_file() {
     assert!(playlist_track_needs_loudness_evidence(&missing));
 
     let mut measured = missing.clone();
-    measured.loudness = -21.0;
+    measured.loudness_profile = LoudnessProfile::from_integrated_lufs(-21.0);
     assert!(!playlist_track_needs_loudness_evidence(&measured));
 
     let mut invalid_range = missing.clone();
@@ -959,17 +961,30 @@ fn preparing_initial_track_requires_loudness_before_playback_gate_opens() {
     track.file_path = file_path;
 
     assert!(
-        apply_initial_track_loudness_evidence(track.clone(), None).is_err(),
+        apply_initial_track_loudness_profile(track.clone(), None).is_err(),
         "preparing must not release a track that still needs LUFS evidence"
     );
     assert!(
-        apply_initial_track_loudness_evidence(track.clone(), Some(0.0)).is_err(),
+        apply_initial_track_loudness_profile(
+            track.clone(),
+            LoudnessProfile::from_integrated_lufs(0.0)
+        )
+        .is_err(),
         "zero LUFS is missing evidence, not a playable normalization value"
     );
 
-    let ready = apply_initial_track_loudness_evidence(track, Some(-13.0))
-        .expect("finite non-zero LUFS should release the preparing gate");
-    assert_eq!(ready.loudness, -13.0);
+    let ready = apply_initial_track_loudness_profile(
+        track,
+        LoudnessProfile::from_integrated_lufs(-13.0),
+    )
+    .expect("finite non-zero LUFS should release the preparing gate");
+    assert_eq!(
+        ready
+            .loudness_profile
+            .expect("ready track should carry loudness profile")
+            .integrated_lufs,
+        -13.0
+    );
 
     std::fs::remove_dir_all(root).expect("temp root should be removed");
 }
@@ -990,16 +1005,27 @@ fn preparing_initial_track_loudness_updates_source_music_cargo() {
     track.file_path = file_path;
     track.source_music = Some(Box::new(source_music));
 
-    let ready = apply_initial_track_loudness_evidence(track, Some(-17.5))
-        .expect("finite non-zero LUFS should update source cargo");
+    let ready = apply_initial_track_loudness_profile(
+        track,
+        LoudnessProfile::from_integrated_lufs(-17.5),
+    )
+    .expect("finite non-zero LUFS should update source cargo");
 
-    assert_eq!(ready.loudness, -17.5);
+    assert_eq!(
+        ready
+            .loudness_profile
+            .expect("ready track should carry loudness profile")
+            .integrated_lufs,
+        -17.5
+    );
     assert_eq!(
         ready
             .source_music
             .as_ref()
             .expect("source music should stay attached")
-            .loudness,
+            .loudness_profile
+            .expect("source music should carry loudness profile")
+            .integrated_lufs,
         -17.5
     );
 

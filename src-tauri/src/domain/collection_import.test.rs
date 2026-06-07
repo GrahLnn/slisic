@@ -808,6 +808,7 @@ fn collection_group(name: &str, url: &str, folder: &str) -> Group {
 
 fn music_with_group(name: &str, url: &str, path: &str, group: Group) -> Music {
     Music {
+        occurrence_id: String::new(),
         name: name.to_string(),
         alias: name.to_string(),
         group,
@@ -817,7 +818,7 @@ fn music_with_group(name: &str, url: &str, path: &str, group: Group) -> Music {
         start_ms: 0,
         end_ms: 60_000,
         liked: false,
-        loudness: 0.0,
+        loudness_profile: None,
     }
 }
 

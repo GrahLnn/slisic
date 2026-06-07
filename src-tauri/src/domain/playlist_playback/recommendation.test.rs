@@ -28,7 +28,7 @@ fn track(name: &str) -> PlaybackTrack {
         end_ms: 60_000,
         source_music: None,
         liked: false,
-        loudness: 0.0,
+        loudness_profile: None,
     }
 }
 
@@ -60,6 +60,7 @@ fn source_from_track(
     PlaylistPlaybackTrackSource {
         collection_folder: collection_folder.to_string(),
         music: Music {
+    occurrence_id: String::new(),
             name: track.music_name.clone(),
             alias: track.music_name.clone(),
             group: Group {
@@ -80,7 +81,7 @@ fn source_from_track(
             start_ms: track.start_ms,
             end_ms: track.end_ms,
             liked: track.liked,
-            loudness: 0.0,
+            loudness_profile: None,
         },
     }
 }

@@ -1031,8 +1031,8 @@ async fn wait_for_initial_track_loudness_evidence(
             .elapsed(trace_start)
             .status("waiting_loudness"),
     );
-    let loudness = loudness_evidence::wait_for_playback_track_loudness_evidence(&track).await?;
-    track = apply_initial_track_loudness_evidence(track, loudness)?;
+    let profile = loudness_evidence::wait_for_playback_track_loudness_profile(&track).await?;
+    track = apply_initial_track_loudness_profile(track, profile)?;
     emit_playlist_playback_trace(
         "playlist-play-backend-first-slot-loudness-ready",
         PlaylistPlaybackTrace::new(app)
@@ -1045,28 +1045,28 @@ async fn wait_for_initial_track_loudness_evidence(
     Ok(track)
 }
 
-pub(crate) fn apply_initial_track_loudness_evidence(
+pub(crate) fn apply_initial_track_loudness_profile(
     mut track: PlaybackTrack,
-    loudness: Option<f32>,
+    profile: Option<crate::domain::playlists::model::LoudnessProfile>,
 ) -> anyhow::Result<PlaybackTrack> {
     if !playlist_track_needs_loudness_evidence(&track) {
         return Ok(track);
     }
-    let loudness = loudness.ok_or_else(|| {
+    let profile = profile.ok_or_else(|| {
         anyhow::anyhow!(
-            "playlist initial track loudness evidence was not ready for {}",
+            "playlist initial track loudness profile evidence was not ready for {}",
             track.canonical_music_id
         )
     })?;
-    if loudness == 0.0 || !loudness.is_finite() {
+    if !profile.is_valid() {
         anyhow::bail!(
-            "playlist initial track loudness evidence must be finite and non-zero for {}",
+            "playlist initial track loudness profile evidence must be finite and include non-zero integrated LUFS for {}",
             track.canonical_music_id
         );
     }
-    track.loudness = loudness;
+    track.loudness_profile = Some(profile);
     if let Some(music) = track.source_music.as_mut() {
-        music.loudness = loudness;
+        music.loudness_profile = Some(profile);
     }
     Ok(track)
 }
@@ -1637,7 +1637,7 @@ fn request_next_track_loudness_evidence(
 }
 
 pub(crate) fn playlist_track_needs_loudness_evidence(track: &PlaybackTrack) -> bool {
-    track.loudness == 0.0 && track.start_ms < track.end_ms && track.file_path.is_file()
+    track.loudness_profile.is_none() && track.start_ms < track.end_ms && track.file_path.is_file()
 }
 
 #[cfg(not(test))]
@@ -1997,11 +1997,14 @@ fn log_playlist_playback_next_track_selection(
 
     log::info!(
         target: PLAYLIST_PLAYBACK_LOG_TARGET,
-        "next track selected source={source} requested_source={requested_source} mode={} model_generation={model_generation} probability={probability:.6} uniform_probability={uniform_probability:.6} similarity={similarity} best_similarity={best_similarity} local_rank_fraction={local_rank_fraction} draw={draw} candidates={candidate_count} anchor_embedded={anchor_embedded} embedded_candidates={embedded_candidate_count} valid_similarities={valid_similarity_count} selected_basin=\"{selected_basin}\" candidate_basin_top=\"{candidate_basin_top}\" reason={reason} playlist=\"{}\" title=\"{}\" loudness={:.3}",
+        "next track selected source={source} requested_source={requested_source} mode={} model_generation={model_generation} probability={probability:.6} uniform_probability={uniform_probability:.6} similarity={similarity} best_similarity={best_similarity} local_rank_fraction={local_rank_fraction} draw={draw} candidates={candidate_count} anchor_embedded={anchor_embedded} embedded_candidates={embedded_candidate_count} valid_similarities={valid_similarity_count} selected_basin=\"{selected_basin}\" candidate_basin_top=\"{candidate_basin_top}\" reason={reason} playlist=\"{}\" title=\"{}\" integrated_lufs={}",
         mode.as_str(),
         escape_log_value(&next_track.playlist_name),
         escape_log_value(&next_track.music_name),
-        next_track.loudness,
+        next_track
+            .loudness_profile
+            .map(|profile| format!("{:.3}", profile.integrated_lufs))
+            .unwrap_or_else(|| "none".to_string()),
     );
 }
 
@@ -2159,7 +2162,7 @@ pub(crate) fn project_playlist_playback_track_for_playlist(
         start_ms: source.music.start_ms,
         end_ms: source.music.end_ms,
         liked: source.music.liked,
-        loudness: source.music.loudness,
+        loudness_profile: source.music.loudness_profile,
     }
 }
 

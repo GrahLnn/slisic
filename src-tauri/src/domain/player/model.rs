@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::path::PathBuf;
 
-use crate::domain::playlists::model::Music;
+use crate::domain::playlists::model::{LoudnessProfile, Music};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -21,7 +21,8 @@ pub struct PlaybackTrackPayload {
     pub start_ms: u32,
     pub end_ms: u32,
     pub liked: bool,
-    pub loudness: f32,
+    #[serde(default)]
+    pub loudness_profile: Option<LoudnessProfile>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -84,7 +85,7 @@ pub struct PlaybackTrack {
     pub start_ms: u32,
     pub end_ms: u32,
     pub liked: bool,
-    pub loudness: f32,
+    pub loudness_profile: Option<LoudnessProfile>,
 }
 
 impl PlaybackTrack {
@@ -117,7 +118,7 @@ impl PlaybackTrack {
             start_ms: payload.start_ms,
             end_ms: payload.end_ms,
             liked: payload.liked,
-            loudness: payload.loudness,
+            loudness_profile: payload.loudness_profile,
         })
     }
 
@@ -131,7 +132,7 @@ impl PlaybackTrack {
             start_ms: self.start_ms,
             end_ms: self.end_ms,
             liked: self.liked,
-            loudness: self.loudness,
+            loudness_profile: self.loudness_profile,
         }
     }
 }

@@ -35,7 +35,6 @@ function createMusic(overrides: Partial<Music> = {}): Music {
     start_ms: 0,
     end_ms: 120_000,
     liked: false,
-    loudness: 0,
     ...overrides,
   };
 }

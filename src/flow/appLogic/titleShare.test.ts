@@ -35,7 +35,6 @@ describe("titleShare", () => {
     start_ms: 0,
     end_ms: 120_000,
     liked: false,
-    loudness: 0,
   };
 
   test("treats config-entering states as an outgoing source transition only", () => {

@@ -66,7 +66,6 @@ function createMusic(overrides: Partial<Music> = {}): Music {
     start_ms: 0,
     end_ms: 120_000,
     liked: false,
-    loudness: 0,
     ...overrides,
   };
 }
@@ -778,7 +777,7 @@ describe("appLogic machine", () => {
             start_ms: music.start_ms,
             end_ms: music.end_ms,
             liked: music.liked,
-            loudness: music.loudness,
+            loudness_profile: music.loudness_profile,
           },
         },
       }),

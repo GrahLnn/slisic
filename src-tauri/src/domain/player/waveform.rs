@@ -2,27 +2,18 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use specta::Type;
 use std::collections::HashMap;
-use std::ffi::OsString;
 use std::fs;
-use std::io::{BufReader, Read, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::time::UNIX_EPOCH;
 
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
-
-#[cfg(windows)]
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-
-const WAVEFORM_SAMPLE_RATE: u32 = 48_000;
-const WAVEFORM_BASE_POINTS_PER_SECOND: u32 = 3200;
-const WAVEFORM_SAMPLES_PER_POINT: u32 = WAVEFORM_SAMPLE_RATE / WAVEFORM_BASE_POINTS_PER_SECOND;
+const WAVEFORM_SAMPLE_RATE: u32 = ffplayr::DEFAULT_WAVEFORM_SAMPLE_RATE;
+const WAVEFORM_BASE_POINTS_PER_SECOND: u32 = ffplayr::DEFAULT_WAVEFORM_BASE_POINTS_PER_SECOND;
+const WAVEFORM_SAMPLES_PER_POINT: u32 = ffplayr::DEFAULT_WAVEFORM_SAMPLES_PER_POINT;
 const WAVEFORM_CACHE_VERSION: &str = "waveform-v6";
 const WAVEFORM_CHUNK_DURATION_MS: u32 = 60_000;
 const WAVEFORM_CACHE_LEVELS: [u32; 7] = [50, 100, 200, 400, 800, 1600, 3200];
 const WAVEFORM_POINT_INDEX_EPSILON: f64 = 1.0e-9;
-const WAVEFORM_RESAMPLE_FILTER_SIZE: u32 = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
 pub struct WaveformPeak {
@@ -103,52 +94,6 @@ pub fn resolve_waveform_decode_range(
     }
 }
 
-pub fn build_waveform_ffmpeg_args(input: &Path, range: WaveformDecodeRange) -> Vec<OsString> {
-    let mut args = vec![
-        OsString::from("-hide_banner"),
-        OsString::from("-loglevel"),
-        OsString::from("error"),
-        OsString::from("-nostdin"),
-        OsString::from("-threads"),
-        OsString::from("0"),
-    ];
-
-    if range.start_ms > 0 {
-        args.push(OsString::from("-ss"));
-        args.push(OsString::from(format_millis_as_seconds(range.start_ms)));
-    }
-
-    args.push(OsString::from("-i"));
-    args.push(input.as_os_str().to_owned());
-
-    if let Some(duration_ms) = range.duration_ms {
-        args.push(OsString::from("-t"));
-        args.push(OsString::from(format_millis_as_seconds(duration_ms)));
-    }
-
-    args.extend([
-        OsString::from("-vn"),
-        OsString::from("-sn"),
-        OsString::from("-dn"),
-        OsString::from("-ac"),
-        OsString::from("1"),
-        OsString::from("-ar"),
-        OsString::from(WAVEFORM_SAMPLE_RATE.to_string()),
-        OsString::from("-filter:a"),
-        OsString::from(format!(
-            "aresample={}:filter_size={}:phase_shift=0:linear_interp=1",
-            WAVEFORM_SAMPLE_RATE, WAVEFORM_RESAMPLE_FILTER_SIZE
-        )),
-        OsString::from("-f"),
-        OsString::from("f32le"),
-        OsString::from("-c:a"),
-        OsString::from("pcm_f32le"),
-        OsString::from("pipe:1"),
-    ]);
-
-    args
-}
-
 pub fn prepare_track_waveform_cache(
     ffmpeg: &Path,
     cache_root: &Path,
@@ -185,30 +130,25 @@ pub fn prepare_track_waveform_cache(
         )
     })?;
 
-    let mut child = spawn_waveform_decode(ffmpeg, &input, range)?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "ffmpeg stdout pipe is missing".to_string())?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| "ffmpeg stderr pipe is missing".to_string())?;
-    let stderr_reader = std::thread::spawn(move || {
-        let mut reader = BufReader::new(stderr);
-        let mut message = String::new();
-        let _ = reader.read_to_string(&mut message);
-        message
-    });
-
-    let mut writer = WaveformChunkCacheWriter::new(cache_dir.clone(), range.start_ms)?;
-    read_waveform_samples(stdout, &mut writer)?;
-
-    let status = child.wait().map_err(|error| error.to_string())?;
-    let stderr_message = stderr_reader.join().unwrap_or_default();
-    if !status.success() {
-        let _ = fs::remove_dir_all(&cache_dir);
-        return Err(format!("ffmpeg waveform decode failed: {stderr_message}"));
+    let analysis = ffplayr::analyze_waveform_with_binary(
+        ffmpeg,
+        ffplayr::AudioWaveformAnalysisRequest {
+            path: input.clone(),
+            time_range: Some(ffplayr::PlaybackTimeRange {
+                start_ms: range.start_ms,
+                duration_ms: range.duration_ms,
+            }),
+            sample_rate: WAVEFORM_SAMPLE_RATE,
+            points_per_second: WAVEFORM_BASE_POINTS_PER_SECOND,
+        },
+    )?;
+    let mut writer =
+        WaveformChunkCacheWriter::new(cache_dir.clone(), analysis.start_ms, analysis.duration_ms)?;
+    for peak in analysis.peaks {
+        writer.push_base_peak(WaveformPeak {
+            min: peak.min,
+            max: peak.max,
+        })?;
     }
 
     let manifest = writer.finish()?;
@@ -276,186 +216,44 @@ pub fn analyze_track_waveform_with_binary(
     }
 
     let range = resolve_waveform_decode_range(start_seconds, end_seconds);
-    let mut child = spawn_waveform_decode(ffmpeg, &input, range)?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "ffmpeg stdout pipe is missing".to_string())?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| "ffmpeg stderr pipe is missing".to_string())?;
-    let stderr_reader = std::thread::spawn(move || {
-        let mut reader = BufReader::new(stderr);
-        let mut message = String::new();
-        let _ = reader.read_to_string(&mut message);
-        message
-    });
-
-    let mut accumulator = WaveformPeakAccumulator::new(WAVEFORM_SAMPLES_PER_POINT);
-    read_waveform_samples(stdout, &mut accumulator)?;
-
-    let status = child.wait().map_err(|error| error.to_string())?;
-    let stderr_message = stderr_reader.join().unwrap_or_default();
-    if !status.success() {
-        return Err(format!("ffmpeg waveform decode failed: {stderr_message}"));
-    }
-
-    let frame_count = accumulator.frame_count();
-    if frame_count == 0 {
-        return Err("ffmpeg waveform decode produced no audio frames".to_string());
-    }
+    let analysis = ffplayr::analyze_waveform_with_binary(
+        ffmpeg,
+        ffplayr::AudioWaveformAnalysisRequest {
+            path: input,
+            time_range: Some(ffplayr::PlaybackTimeRange {
+                start_ms: range.start_ms,
+                duration_ms: range.duration_ms,
+            }),
+            sample_rate: WAVEFORM_SAMPLE_RATE,
+            points_per_second: WAVEFORM_BASE_POINTS_PER_SECOND,
+        },
+    )?;
 
     Ok(TrackWaveform {
-        sample_rate: WAVEFORM_SAMPLE_RATE,
-        samples_per_point: WAVEFORM_SAMPLES_PER_POINT,
-        points_per_second: WAVEFORM_SAMPLE_RATE / WAVEFORM_SAMPLES_PER_POINT,
-        start_ms: range.start_ms,
-        duration_ms: duration_ms_from_frames(frame_count, WAVEFORM_SAMPLE_RATE),
-        peaks: accumulator.finish(),
+        sample_rate: analysis.sample_rate,
+        samples_per_point: analysis.samples_per_point,
+        points_per_second: analysis.points_per_second,
+        start_ms: analysis.start_ms,
+        duration_ms: analysis.duration_ms,
+        peaks: analysis
+            .peaks
+            .into_iter()
+            .map(|peak| WaveformPeak {
+                min: peak.min,
+                max: peak.max,
+            })
+            .collect(),
     })
 }
 
-fn spawn_waveform_decode(
-    ffmpeg: &Path,
-    input: &Path,
-    range: WaveformDecodeRange,
-) -> Result<std::process::Child, String> {
-    let mut command = Command::new(ffmpeg);
-    for arg in build_waveform_ffmpeg_args(input, range) {
-        command.arg(arg);
-    }
-
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-
-    #[cfg(windows)]
-    {
-        command.creation_flags(CREATE_NO_WINDOW);
-    }
-
-    command.spawn().map_err(|error| error.to_string())
-}
-
-fn read_waveform_samples(
-    stdout: std::process::ChildStdout,
-    sink: &mut impl WaveformSampleSink,
-) -> Result<(), String> {
-    let mut reader = BufReader::new(stdout);
-    let mut buffer = [0_u8; 64 * 1024];
-    let mut pending = Vec::<u8>::new();
-
-    loop {
-        let read = reader
-            .read(&mut buffer)
-            .map_err(|error| format!("failed to read ffmpeg waveform output: {error}"))?;
-        if read == 0 {
-            break;
-        }
-
-        pending.extend_from_slice(&buffer[..read]);
-        let aligned_len = pending.len() / 4 * 4;
-        for chunk in pending[..aligned_len].chunks_exact(4) {
-            sink.push_sample(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))?;
-        }
-        pending.drain(..aligned_len);
-    }
-
-    if !pending.is_empty() {
-        return Err("ffmpeg waveform output ended with an incomplete f32 sample".to_string());
-    }
-
-    Ok(())
-}
-
-pub trait WaveformSampleSink {
-    fn push_sample(&mut self, sample: f32) -> Result<(), String>;
-}
-
-pub struct WaveformPeakAccumulator {
-    samples_per_point: u32,
-    frame_count: u64,
-    current_count: u32,
-    current_min: f32,
-    current_max: f32,
-    peaks: Vec<WaveformPeak>,
-}
-
-impl WaveformPeakAccumulator {
-    pub fn new(samples_per_point: u32) -> Self {
-        Self {
-            samples_per_point: samples_per_point.max(1),
-            frame_count: 0,
-            current_count: 0,
-            current_min: 0.0,
-            current_max: 0.0,
-            peaks: Vec::new(),
-        }
-    }
-
-    pub fn push_sample(&mut self, sample: f32) -> Result<(), String> {
-        let sample = sanitize_pcm_sample(sample);
-        if self.current_count == 0 {
-            self.current_min = sample;
-            self.current_max = sample;
-        } else {
-            self.current_min = self.current_min.min(sample);
-            self.current_max = self.current_max.max(sample);
-        }
-
-        self.current_count += 1;
-        self.frame_count += 1;
-
-        if self.current_count >= self.samples_per_point {
-            self.flush_current_peak();
-        }
-
-        Ok(())
-    }
-
-    pub fn frame_count(&self) -> u64 {
-        self.frame_count
-    }
-
-    pub fn finish(mut self) -> Vec<WaveformPeak> {
-        self.flush_current_peak();
-        self.peaks
-    }
-
-    fn flush_current_peak(&mut self) {
-        if self.current_count == 0 {
-            return;
-        }
-
-        self.peaks.push(WaveformPeak {
-            min: self.current_min,
-            max: self.current_max,
-        });
-        self.current_count = 0;
-        self.current_min = 0.0;
-        self.current_max = 0.0;
-    }
-}
-
-impl WaveformSampleSink for WaveformPeakAccumulator {
-    fn push_sample(&mut self, sample: f32) -> Result<(), String> {
-        WaveformPeakAccumulator::push_sample(self, sample)
-    }
-}
-
 struct WaveformChunkCacheWriter {
-    frame_count: u64,
-    current_count: u32,
-    current_min: f32,
-    current_max: f32,
     levels: Vec<WaveformLevelChunkWriter>,
     start_ms: u32,
+    duration_ms: u32,
 }
 
 impl WaveformChunkCacheWriter {
-    fn new(cache_dir: PathBuf, start_ms: u32) -> Result<Self, String> {
+    fn new(cache_dir: PathBuf, start_ms: u32, duration_ms: u32) -> Result<Self, String> {
         let mut levels = Vec::with_capacity(WAVEFORM_CACHE_LEVELS.len());
 
         for points_per_second in WAVEFORM_CACHE_LEVELS {
@@ -466,19 +264,13 @@ impl WaveformChunkCacheWriter {
         }
 
         Ok(Self {
-            frame_count: 0,
-            current_count: 0,
-            current_min: 0.0,
-            current_max: 0.0,
             levels,
             start_ms,
+            duration_ms,
         })
     }
 
-    fn finish(mut self) -> Result<WaveformCacheManifest, String> {
-        self.flush_current_peak()?;
-
-        let duration_ms = duration_ms_from_frames(self.frame_count, WAVEFORM_SAMPLE_RATE);
+    fn finish(self) -> Result<WaveformCacheManifest, String> {
         let mut levels = Vec::with_capacity(self.levels.len());
 
         for level in self.levels {
@@ -492,50 +284,15 @@ impl WaveformChunkCacheWriter {
             base_points_per_second: WAVEFORM_BASE_POINTS_PER_SECOND,
             chunk_duration_ms: WAVEFORM_CHUNK_DURATION_MS,
             start_ms: self.start_ms,
-            duration_ms,
+            duration_ms: self.duration_ms,
             levels,
         })
     }
 
-    fn flush_current_peak(&mut self) -> Result<(), String> {
-        if self.current_count == 0 {
-            return Ok(());
-        }
-
-        let peak = WaveformPeak {
-            min: self.current_min,
-            max: self.current_max,
-        };
-
+    fn push_base_peak(&mut self, peak: WaveformPeak) -> Result<(), String> {
         for level in &mut self.levels {
             level.push_base_peak(peak)?;
         }
-
-        self.current_count = 0;
-        self.current_min = 0.0;
-        self.current_max = 0.0;
-        Ok(())
-    }
-}
-
-impl WaveformSampleSink for WaveformChunkCacheWriter {
-    fn push_sample(&mut self, sample: f32) -> Result<(), String> {
-        let sample = sanitize_pcm_sample(sample);
-        if self.current_count == 0 {
-            self.current_min = sample;
-            self.current_max = sample;
-        } else {
-            self.current_min = self.current_min.min(sample);
-            self.current_max = self.current_max.max(sample);
-        }
-
-        self.current_count += 1;
-        self.frame_count += 1;
-
-        if self.current_count >= WAVEFORM_SAMPLES_PER_POINT {
-            self.flush_current_peak()?;
-        }
-
         Ok(())
     }
 }
@@ -859,25 +616,8 @@ pub(crate) fn quantize_waveform_peak(value: f32) -> i8 {
         .clamp(-127.0, 127.0) as i8
 }
 
-fn duration_ms_from_frames(frame_count: u64, sample_rate: u32) -> u32 {
-    if sample_rate == 0 {
-        return 0;
-    }
-
-    let sample_rate = sample_rate as u64;
-    let duration_ms = frame_count
-        .saturating_mul(1000)
-        .saturating_add(sample_rate / 2)
-        / sample_rate;
-    duration_ms.min(u32::MAX as u64) as u32
-}
-
 fn seconds_to_millis(seconds: u32) -> u32 {
     seconds.saturating_mul(1000)
-}
-
-fn format_millis_as_seconds(ms: u32) -> String {
-    format!("{:.3}", ms as f64 / 1000.0)
 }
 
 fn build_waveform_cache_key(input: &Path, range: WaveformDecodeRange) -> Result<String, String> {

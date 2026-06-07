@@ -2191,7 +2191,7 @@ fn request_downloaded_leaf_loudness_evidence(
         .musics
         .iter()
         .filter(|music| music.path.as_deref() == Some(relative_path))
-        .filter(|music| music.loudness == 0.0)
+        .filter(|music| music.loudness_profile.is_none())
         .filter(|music| music.start_ms < music.end_ms)
         .for_each(|music| {
             loudness_evidence::request_track_loudness_evidence(LoudnessEvidenceRequest {

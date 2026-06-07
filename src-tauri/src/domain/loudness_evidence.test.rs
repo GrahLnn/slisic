@@ -6,6 +6,7 @@ use super::{
     should_close_loudness_request_after_error_for_test, upsert_loudness_pending_task_file_for_test,
 };
 use crate::domain::player::model::PlaybackTrack;
+use crate::domain::playlists::model::LoudnessProfile;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -50,7 +51,7 @@ fn playback_track(loudness: f32) -> PlaybackTrack {
         start_ms: 0,
         end_ms: 60_000,
         liked: false,
-        loudness,
+        loudness_profile: LoudnessProfile::from_integrated_lufs(loudness),
     }
 }
 

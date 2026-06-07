@@ -2,7 +2,7 @@ use super::model::CollectionSourceKind;
 use anyhow::{Context, Result, bail};
 use reqwest::Url;
 use serde_json::Value;
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader};
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -17,9 +17,7 @@ const YOUTUBE_PLAYLIST_EXTRACTOR_ARGS: &str = "youtube:playlist_ajax=true;tab_ma
 const PYTHON_UTF8_ENV_VAR: &str = "PYTHONUTF8";
 const PYTHON_IO_ENCODING_ENV_VAR: &str = "PYTHONIOENCODING";
 const UTF8_ENCODING_VALUE: &str = "utf-8";
-pub(crate) const LOCAL_AUDIO_PROBE_SAMPLE_RATE: u32 = 48_000;
 pub(crate) const LOCAL_AUDIO_DURATION_BOUNDARY_TOLERANCE_MS: u32 = 1_000;
-const LOCAL_AUDIO_PROBE_RESAMPLE_FILTER_SIZE: u32 = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlaylistRoot {
@@ -673,107 +671,7 @@ pub(crate) fn probe_downloaded_audio_duration_ms(
     ffmpeg_path: &Path,
     file_path: &Path,
 ) -> Result<Option<u32>> {
-    let mut command = Command::new(ffmpeg_path);
-    command
-        .arg("-hide_banner")
-        .arg("-nostdin")
-        .arg("-loglevel")
-        .arg("error")
-        .arg("-threads")
-        .arg("0")
-        .arg("-i")
-        .arg(file_path)
-        .arg("-map")
-        .arg("0:a:0")
-        .arg("-vn")
-        .arg("-sn")
-        .arg("-dn")
-        .arg("-ac")
-        .arg("1")
-        .arg("-ar")
-        .arg(LOCAL_AUDIO_PROBE_SAMPLE_RATE.to_string())
-        .arg("-filter:a")
-        .arg(format!(
-            "aresample={}:filter_size={}:phase_shift=0:linear_interp=1",
-            LOCAL_AUDIO_PROBE_SAMPLE_RATE, LOCAL_AUDIO_PROBE_RESAMPLE_FILTER_SIZE
-        ))
-        .arg("-f")
-        .arg("f32le")
-        .arg("-c:a")
-        .arg("pcm_f32le")
-        .arg("pipe:1")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-
-    #[cfg(windows)]
-    {
-        command.creation_flags(CREATE_NO_WINDOW);
-    }
-
-    let mut child = command
-        .spawn()
-        .with_context(|| format!("failed to run ffmpeg at {}", ffmpeg_path.display()))?;
-    let stdout = child
-        .stdout
-        .take()
-        .context("ffmpeg downloaded audio probe stdout pipe is missing")?;
-    let stderr = child
-        .stderr
-        .take()
-        .context("ffmpeg downloaded audio probe stderr pipe is missing")?;
-    let stderr_handle = thread::spawn(move || {
-        let mut reader = BufReader::new(stderr);
-        let mut message = String::new();
-        let _ = reader.read_to_string(&mut message);
-        message
-    });
-
-    let decoded_bytes = read_audio_probe_output(stdout)?;
-    let status = child
-        .wait()
-        .context("failed to wait for ffmpeg downloaded audio probe")?;
-    let _stderr_message = stderr_handle.join().unwrap_or_default();
-    if !status.success() {
-        return Ok(None);
-    }
-
-    Ok(Some(duration_ms_from_f32le_bytes(
-        decoded_bytes,
-        LOCAL_AUDIO_PROBE_SAMPLE_RATE,
-    )))
-}
-
-fn read_audio_probe_output(stdout: std::process::ChildStdout) -> Result<u64> {
-    let mut reader = BufReader::new(stdout);
-    let mut buffer = [0_u8; 64 * 1024];
-    let mut decoded_bytes = 0_u64;
-
-    loop {
-        let read = reader
-            .read(&mut buffer)
-            .context("failed to read ffmpeg downloaded audio probe output")?;
-        if read == 0 {
-            break;
-        }
-        decoded_bytes = decoded_bytes.saturating_add(read as u64);
-    }
-
-    Ok(decoded_bytes)
-}
-
-pub(crate) fn duration_ms_from_f32le_bytes(decoded_bytes: u64, sample_rate: u32) -> u32 {
-    if sample_rate == 0 {
-        return 0;
-    }
-
-    let frame_count = decoded_bytes / 4;
-    let sample_rate = sample_rate as u64;
-    let duration_ms = frame_count
-        .saturating_mul(1_000)
-        .saturating_add(sample_rate / 2)
-        / sample_rate;
-    duration_ms.min(u32::MAX as u64) as u32
+    ffplayr::probe_audio_duration_ms_with_binary(ffmpeg_path, file_path).map_err(anyhow::Error::msg)
 }
 
 pub(crate) fn audio_duration_boundary_matches(boundary_ms: u32, duration_ms: u32) -> bool {

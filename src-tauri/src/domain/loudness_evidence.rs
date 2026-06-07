@@ -3,6 +3,7 @@ use super::player::model::PlaybackTrack;
 use super::player::service as player_service;
 #[cfg(not(test))]
 use super::playlist_playback::playable_index;
+use super::playlists::model::LoudnessProfile;
 #[cfg(not(test))]
 use super::playlists::repo as playlists_repo;
 #[cfg(not(test))]
@@ -226,11 +227,11 @@ pub(crate) fn request_first_slot_playback_track_loudness_evidence(track: &Playba
 }
 
 #[cfg(not(test))]
-pub(crate) async fn wait_for_playback_track_loudness_evidence(
+pub(crate) async fn wait_for_playback_track_loudness_profile(
     track: &PlaybackTrack,
-) -> Result<Option<f32>> {
+) -> Result<Option<LoudnessProfile>> {
     let Some(request) = loudness_request_from_playback_track(track) else {
-        return Ok(Some(track.loudness));
+        return Ok(track.loudness_profile);
     };
     let Some(runtime) = LOUDNESS_EVIDENCE_RUNTIME.get().cloned() else {
         log::warn!(
@@ -242,7 +243,8 @@ pub(crate) async fn wait_for_playback_track_loudness_evidence(
     };
 
     if let Some(persisted) =
-        persisted_loudness_for_request(&request, LoudnessEvidenceSource::DirectRequest).await?
+        persisted_loudness_profile_for_request(&request, LoudnessEvidenceSource::DirectRequest)
+            .await?
     {
         return Ok(Some(persisted));
     }
@@ -252,11 +254,11 @@ pub(crate) async fn wait_for_playback_track_loudness_evidence(
         request.clone(),
         LoudnessEvidenceSource::DirectRequest,
     );
-    wait_for_loudness_request_result(&runtime, &request).await
+    wait_for_loudness_profile_request_result(&runtime, &request).await
 }
 
 fn loudness_request_from_playback_track(track: &PlaybackTrack) -> Option<LoudnessEvidenceRequest> {
-    if track.loudness != 0.0 {
+    if track.loudness_profile.is_some() {
         return None;
     }
     Some(LoudnessEvidenceRequest {
@@ -284,9 +286,9 @@ pub(crate) fn request_first_slot_playback_track_loudness_evidence(
 }
 
 #[cfg(test)]
-pub(crate) async fn wait_for_playback_track_loudness_evidence(
+pub(crate) async fn wait_for_playback_track_loudness_profile(
     _track: &super::player::model::PlaybackTrack,
-) -> anyhow::Result<Option<f32>> {
+) -> anyhow::Result<Option<LoudnessProfile>> {
     Ok(None)
 }
 
@@ -599,18 +601,18 @@ fn claim_loudness_identity(
 }
 
 #[cfg(not(test))]
-async fn wait_for_loudness_request_result(
+async fn wait_for_loudness_profile_request_result(
     runtime: &Arc<LoudnessEvidenceRuntime>,
     request: &LoudnessEvidenceRequest,
-) -> Result<Option<f32>> {
+) -> Result<Option<LoudnessProfile>> {
     let key = loudness_identity_key(request);
     let wait = async {
         loop {
-            if let Some(loudness) =
-                persisted_loudness_for_request(request, LoudnessEvidenceSource::DirectRequest)
+            if let Some(profile) =
+                persisted_loudness_profile_for_request(request, LoudnessEvidenceSource::DirectRequest)
                     .await?
             {
-                return Ok(Some(loudness));
+                return Ok(Some(profile));
             }
             if !loudness_identity_active(runtime, &key)? {
                 return Ok(None);
@@ -886,20 +888,21 @@ async fn measure_and_persist_loudness(
         );
     }
 
-    if let Some(persisted) = persisted_loudness_for_request(request, source).await? {
+    if let Some(persisted) = persisted_loudness_profile_for_request(request, source).await? {
         runtime.completion_notify.notify_waiters();
-        return Ok(persisted);
+        return Ok(persisted.integrated_lufs);
     }
 
     let _guard = ActiveLoudnessBinaryTaskGuard::new(Arc::clone(&runtime));
     let ffmpeg_path = ensure_managed_binary(&runtime.app, ManagedBinary::Ffmpeg)
         .map_err(|error| anyhow!(error))?;
     let analysis = run_loudness_analysis(ffmpeg_path, request.clone()).await?;
-    let persisted = playlists_repo::set_music_loudness_by_identity(
+    let profile = loudness_profile_from_analysis(analysis)?;
+    let persisted = playlists_repo::set_music_loudness_profile_by_identity(
         &request.url,
         request.start_ms,
         request.end_ms,
-        analysis.integrated_lufs,
+        profile,
     )
     .await?
     .ok_or_else(|| {
@@ -910,26 +913,29 @@ async fn measure_and_persist_loudness(
             request.end_ms
         )
     })?
-    .loudness;
+    .loudness_profile
+    .unwrap_or(profile);
     publish_persisted_loudness_evidence(request, persisted);
     runtime.completion_notify.notify_waiters();
     log::info!(
         target: LOUDNESS_EVIDENCE_LOG_TARGET,
-        "loudness_evidence_persisted source={} canonical_music_id=\"{}\" loudness={:.3}",
+        "loudness_evidence_persisted source={} canonical_music_id=\"{}\" integrated={:.3} true_peak={} lra={}",
         source.as_str(),
         request.canonical_music_id,
-        persisted
+        persisted.integrated_lufs,
+        format_optional_loudness(persisted.true_peak_dbtp),
+        format_optional_loudness(persisted.lra),
     );
 
-    Ok(persisted)
+    Ok(persisted.integrated_lufs)
 }
 
 #[cfg(not(test))]
-async fn persisted_loudness_for_request(
+async fn persisted_loudness_profile_for_request(
     request: &LoudnessEvidenceRequest,
     source: LoudnessEvidenceSource,
-) -> Result<Option<f32>> {
-    let Some(persisted) = playlists_repo::get_music_loudness_by_identity(
+) -> Result<Option<LoudnessProfile>> {
+    let Some(persisted) = playlists_repo::get_music_loudness_profile_by_identity(
         &request.url,
         request.start_ms,
         request.end_ms,
@@ -942,10 +948,12 @@ async fn persisted_loudness_for_request(
     publish_persisted_loudness_evidence(request, persisted);
     log::info!(
         target: LOUDNESS_EVIDENCE_LOG_TARGET,
-        "loudness_evidence_reused source={} canonical_music_id=\"{}\" loudness={:.3}",
+        "loudness_evidence_reused source={} canonical_music_id=\"{}\" integrated={:.3} true_peak={} lra={}",
         source.as_str(),
         request.canonical_music_id,
-        persisted
+        persisted.integrated_lufs,
+        format_optional_loudness(persisted.true_peak_dbtp),
+        format_optional_loudness(persisted.lra),
     );
     Ok(Some(persisted))
 }
@@ -953,7 +961,7 @@ async fn persisted_loudness_for_request(
 #[cfg(not(test))]
 fn publish_persisted_loudness_evidence(
     request: &LoudnessEvidenceRequest,
-    persisted: f32,
+    persisted: LoudnessProfile,
 ) {
     if let Err(error) =
         player_service::publish_loudness_evidence_to_current_session(request, persisted)
@@ -973,6 +981,33 @@ fn publish_persisted_loudness_evidence(
             error
         );
     }
+}
+
+fn loudness_profile_from_analysis(
+    analysis: ffplayr::AudioLoudnessAnalysis,
+) -> Result<LoudnessProfile> {
+    let mut profile = LoudnessProfile::from_integrated_lufs(analysis.integrated_lufs)
+        .ok_or_else(|| anyhow!("music loudness evidence must be a finite non-zero LUFS value"))?;
+    profile.true_peak_dbtp = analysis.true_peak_dbtp;
+    profile.lra = analysis.lra;
+    profile.short_lufs_p50 = analysis.short_lufs_p50;
+    profile.short_lufs_p80 = analysis.short_lufs_p80;
+    profile.short_lufs_p95 = analysis.short_lufs_p95;
+    profile.short_lufs_max = analysis.short_lufs_max;
+    profile.presence_db = analysis.presence_db;
+    if !profile.is_valid() {
+        anyhow::bail!(
+            "music loudness profile evidence must be finite and include non-zero integrated LUFS"
+        );
+    }
+
+    Ok(profile)
+}
+
+fn format_optional_loudness(value: Option<f32>) -> String {
+    value
+        .map(|value| format!("{value:.3}"))
+        .unwrap_or_else(|| "none".to_string())
 }
 
 #[cfg(not(test))]

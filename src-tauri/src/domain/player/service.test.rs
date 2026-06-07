@@ -4,7 +4,7 @@ use super::model::{
 use super::service::{
     BACKEND_PLAYBACK_TARGET_LUFS, PlaybackRangeCompletion, PlaybackStartRequestRegistry,
     SpectrumPlaybackScope, are_playback_tracks_equal, backend_playback_normalization,
-    playback_normalization_for_track_loudness, playback_tracks_match,
+    playback_normalization_for_track_loudness_profile, playback_tracks_match,
     resolve_playback_absolute_position_ms, resolve_playback_range_completion,
     resolve_playback_request_position, resolve_playback_seek_pause_after_request,
     resolve_playback_seek_range, resolve_playback_status_track_identity,
@@ -14,6 +14,7 @@ use super::service::{
     resolve_spectrum_playback_loop_signal, should_accept_spectrum_playback_signal,
     should_commit_spectrum_playback_scope_exit, should_resume_playback_seek_cancel,
 };
+use crate::domain::playlists::model::LoudnessProfile;
 use super::track_identity_substitution::{
     PlaybackTrackIdentityUpdate, resolve_active_request_track_identity_update,
     resolve_identity_update_playback_restart_position, resolve_session_track_identity_update,
@@ -31,7 +32,7 @@ fn track(name: &str) -> PlaybackTrack {
         end_ms: 60_000,
         source_music: None,
         liked: false,
-        loudness: 0.0,
+        loudness_profile: None,
     }
 }
 
@@ -45,7 +46,7 @@ fn track_payload(name: &str) -> PlaybackTrackPayload {
         start_ms: 0,
         end_ms: 60_000,
         liked: false,
-        loudness: 0.0,
+        loudness_profile: None,
     }
 }
 
@@ -65,10 +66,13 @@ fn backend_playback_normalization_targets_negative_eighteen_lufs() {
 
 #[test]
 fn playback_normalization_requires_loudness_evidence() {
-    assert_eq!(playback_normalization_for_track_loudness(0.0), None);
+    assert_eq!(playback_normalization_for_track_loudness_profile(None), None);
 
     let normalization =
-        playback_normalization_for_track_loudness(-24.0).expect("non-zero LUFS is evidence");
+        playback_normalization_for_track_loudness_profile(
+            LoudnessProfile::from_integrated_lufs(-24.0).as_ref(),
+        )
+        .expect("non-zero LUFS profile is evidence");
 
     assert_eq!(normalization.target_lufs, BACKEND_PLAYBACK_TARGET_LUFS);
     assert_eq!(normalization.integrated_lufs, Some(-24.0));

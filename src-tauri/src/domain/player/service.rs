@@ -24,6 +24,7 @@ use super::waveform::{self, TrackWaveform, TrackWaveformSummary, TrackWaveformTi
 #[cfg(not(test))]
 #[cfg(not(test))]
 use crate::domain::loudness_evidence::{self, LoudnessEvidenceRequest};
+use crate::domain::playlists::model::LoudnessProfile;
 #[cfg(not(test))]
 use crate::utils::binaries::{ManagedBinary, ensure_managed_binary};
 #[cfg(not(test))]
@@ -54,6 +55,38 @@ const PLAYBACK_SESSION_STATUS_POLL_MS: u64 = 250;
 #[cfg(not(test))]
 const SPECTRUM_LOOP_SIGNAL_STATUS_POLL_MS: u64 = 16;
 pub(crate) const BACKEND_PLAYBACK_TARGET_LUFS: f32 = -18.0;
+const PLAYBACK_LOUDNESS_SHORT_TERM_REFERENCE_LUFS: f32 = -18.0;
+const PLAYBACK_LOUDNESS_SHORT_TERM_CORRECTION_SLOPE: f32 = -0.5;
+const PLAYBACK_LOUDNESS_SHORT_TERM_CORRECTION_LIMIT_DB: f32 = 2.0;
+const PLAYBACK_LOUDNESS_PRESENCE_CORRECTION_SLOPE: f32 = -0.3;
+const PLAYBACK_LOUDNESS_PRESENCE_CORRECTION_LIMIT_DB: f32 = 1.0;
+const PLAYBACK_LOUDNESS_LRA_REFERENCE: f32 = 7.0;
+const PLAYBACK_LOUDNESS_LRA_CORRECTION_SLOPE: f32 = -0.08;
+const PLAYBACK_LOUDNESS_LRA_CORRECTION_LIMIT_DB: f32 = 1.0;
+const PLAYBACK_LOUDNESS_MODEL_CORRECTION_LIMIT_DB: f32 = 2.0;
+const PLAYBACK_LOUDNESS_TOTAL_CORRECTION_LIMIT_DB: f32 = 3.0;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct PlaybackLoudnessPlan {
+    pub(crate) integrated_lufs: f32,
+    pub(crate) true_peak_dbtp: Option<f32>,
+    pub(crate) lra: Option<f32>,
+    pub(crate) short_lufs_p50: Option<f32>,
+    pub(crate) short_lufs_p80: Option<f32>,
+    pub(crate) short_lufs_p95: Option<f32>,
+    pub(crate) short_lufs_max: Option<f32>,
+    pub(crate) presence_db: Option<f32>,
+    pub(crate) model_adjustment_db: Option<f32>,
+    pub(crate) base_gain_db: f32,
+    pub(crate) short_term_correction_db: f32,
+    pub(crate) presence_correction_db: f32,
+    pub(crate) lra_correction_db: f32,
+    pub(crate) model_correction_db: f32,
+    pub(crate) total_correction_db: f32,
+    pub(crate) final_gain_db: f32,
+    pub(crate) target_lufs: f32,
+    pub(crate) reason: &'static str,
+}
 
 #[cfg(not(test))]
 pub struct PlayerRuntime {
@@ -2207,25 +2240,56 @@ async fn run_playback_session(
                 end_ms: track.end_ms,
             });
         let request = playback_request_for_track_range(&track, active_range);
+        let loudness_plan = track
+            .loudness_profile
+            .as_ref()
+            .and_then(playback_loudness_plan_for_profile);
         loudness_evidence::request_playback_track_loudness_evidence(&track);
         log::info!(
             target: "player",
-            "[now play] playlist=\"{}\" title=\"{}\" loudness={:.3} normalization={} target_lufs={} integrated_lufs={} range={}..{}",
+            "[now play] playlist=\"{}\" title=\"{}\" integrated={} base_gain={} final_gain={} target_lufs={} true_peak={} lra={} short_p50={} short_p80={} short_p95={} short_max={} presence={} correction={} reason={} normalization={} range={}..{}",
             track.playlist_name,
             track.music_name,
-            track.loudness,
+            loudness_plan
+                .map(|plan| format!("{:.3}", plan.integrated_lufs))
+                .unwrap_or_else(|| "none".to_string()),
+            loudness_plan
+                .map(|plan| format!("{:.3}", plan.base_gain_db))
+                .unwrap_or_else(|| "none".to_string()),
+            loudness_plan
+                .map(|plan| format!("{:.3}", plan.final_gain_db))
+                .unwrap_or_else(|| "none".to_string()),
+            loudness_plan
+                .map(|plan| format!("{:.3}", plan.target_lufs))
+                .unwrap_or_else(|| "none".to_string()),
+            loudness_plan
+                .map(|plan| format_optional_loudness(plan.true_peak_dbtp))
+                .unwrap_or_else(|| "none".to_string()),
+            loudness_plan
+                .map(|plan| format_optional_loudness(plan.lra))
+                .unwrap_or_else(|| "none".to_string()),
+            loudness_plan
+                .map(|plan| format_optional_loudness(plan.short_lufs_p50))
+                .unwrap_or_else(|| "none".to_string()),
+            loudness_plan
+                .map(|plan| format_optional_loudness(plan.short_lufs_p80))
+                .unwrap_or_else(|| "none".to_string()),
+            loudness_plan
+                .map(|plan| format_optional_loudness(plan.short_lufs_p95))
+                .unwrap_or_else(|| "none".to_string()),
+            loudness_plan
+                .map(|plan| format_optional_loudness(plan.short_lufs_max))
+                .unwrap_or_else(|| "none".to_string()),
+            loudness_plan
+                .map(|plan| format_optional_loudness(plan.presence_db))
+                .unwrap_or_else(|| "none".to_string()),
+            loudness_plan
+                .map(|plan| format!("{:.3}", plan.total_correction_db))
+                .unwrap_or_else(|| "none".to_string()),
+            loudness_plan
+                .map(|plan| plan.reason)
+                .unwrap_or("none"),
             request.normalization.is_some(),
-            request
-                .normalization
-                .as_ref()
-                .map(|normalization| format!("{:.3}", normalization.target_lufs))
-                .unwrap_or_else(|| "none".to_string()),
-            request
-                .normalization
-                .as_ref()
-                .and_then(|normalization| normalization.integrated_lufs)
-                .map(|loudness| format!("{:.3}", loudness))
-                .unwrap_or_else(|| "none".to_string()),
             active_range.start_ms,
             active_range.end_ms,
         );
@@ -2452,8 +2516,10 @@ fn replace_session_track_loudness(
         .map_err(|_| anyhow!("player runtime session tracks lock is poisoned"))?;
     let mut changed = false;
     for track in tracks.iter_mut() {
-        if are_playback_tracks_equal(track, measured) && track.loudness != measured.loudness {
-            track.loudness = measured.loudness;
+        if are_playback_tracks_equal(track, measured)
+            && track.loudness_profile != measured.loudness_profile
+        {
+            track.loudness_profile = measured.loudness_profile;
             sync_playback_track_source_music(track);
             changed = true;
         }
@@ -2473,10 +2539,10 @@ fn replace_session_track_loudness(
 #[cfg(not(test))]
 pub(crate) fn publish_loudness_evidence_to_current_session(
     request: &LoudnessEvidenceRequest,
-    loudness: f32,
+    profile: LoudnessProfile,
 ) -> Result<()> {
-    if loudness == 0.0 || !loudness.is_finite() {
-        bail!("player session loudness evidence must be finite and non-zero");
+    if !profile.is_valid() {
+        bail!("player session loudness profile evidence must be finite and include non-zero integrated LUFS");
     }
     let runtime = runtime()?;
     let Some(active) = runtime.active_session_snapshot()? else {
@@ -2494,7 +2560,7 @@ pub(crate) fn publish_loudness_evidence_to_current_session(
         return Ok(());
     };
 
-    track.loudness = loudness;
+    track.loudness_profile = Some(profile);
     sync_playback_track_source_music(&mut track);
     replace_session_track_loudness(&active.tracks, &track)?;
     notify_playback_track_revision(&active.track_revision);
@@ -2533,7 +2599,7 @@ pub(crate) fn playback_tracks_match(left: &[PlaybackTrack], right: &[PlaybackTra
                 && left.start_ms == right.start_ms
                 && left.end_ms == right.end_ms
                 && left.liked == right.liked
-                && left.loudness == right.loudness
+                && left.loudness_profile == right.loudness_profile
         })
 }
 
@@ -2616,7 +2682,7 @@ fn sync_playback_track_source_music(track: &mut PlaybackTrack) {
     music.start_ms = track.start_ms;
     music.end_ms = track.end_ms;
     music.liked = track.liked;
-    music.loudness = track.loudness;
+    music.loudness_profile = track.loudness_profile;
 }
 
 #[cfg(not(test))]
@@ -2642,21 +2708,142 @@ fn playback_request_for_track_range(
         &track.file_path,
         resolve_playback_request_position(range),
     );
-    if let Some(normalization) = playback_normalization_for_track_loudness(track.loudness) {
+    if let Some(normalization) =
+        playback_normalization_for_track_loudness_profile(track.loudness_profile.as_ref())
+    {
         request = request.with_normalization(normalization);
     }
 
     request
 }
 
-pub(crate) fn playback_normalization_for_track_loudness(
-    loudness: f32,
+pub(crate) fn playback_normalization_for_track_loudness_profile(
+    profile: Option<&LoudnessProfile>,
 ) -> Option<PlaybackNormalization> {
-    (loudness != 0.0).then_some(PlaybackNormalization {
-        target_lufs: BACKEND_PLAYBACK_TARGET_LUFS,
-        integrated_lufs: Some(loudness),
-        true_peak_dbtp: None,
+    let profile = profile?;
+    playback_normalization_for_loudness_plan(playback_loudness_plan_for_profile(profile)?)
+}
+
+fn playback_normalization_for_loudness_plan(
+    plan: PlaybackLoudnessPlan,
+) -> Option<PlaybackNormalization> {
+    Some(PlaybackNormalization {
+        target_lufs: plan.target_lufs,
+        integrated_lufs: Some(plan.integrated_lufs),
+        true_peak_dbtp: plan.true_peak_dbtp,
     })
+}
+
+pub(crate) fn playback_loudness_plan_for_profile(
+    profile: &LoudnessProfile,
+) -> Option<PlaybackLoudnessPlan> {
+    if !profile.is_valid() {
+        return None;
+    }
+
+    let base_gain_db = BACKEND_PLAYBACK_TARGET_LUFS - profile.integrated_lufs;
+    let short_term_correction_db = profile
+        .short_lufs_p95
+        .map(|short_lufs_p95| {
+            let short_after_base = short_lufs_p95 + base_gain_db;
+            ((short_after_base - PLAYBACK_LOUDNESS_SHORT_TERM_REFERENCE_LUFS)
+                * PLAYBACK_LOUDNESS_SHORT_TERM_CORRECTION_SLOPE)
+                .clamp(
+                    -PLAYBACK_LOUDNESS_SHORT_TERM_CORRECTION_LIMIT_DB,
+                    PLAYBACK_LOUDNESS_SHORT_TERM_CORRECTION_LIMIT_DB,
+                )
+        })
+        .unwrap_or(0.0);
+    let presence_correction_db = profile
+        .presence_db
+        .map(|presence| {
+            (presence * PLAYBACK_LOUDNESS_PRESENCE_CORRECTION_SLOPE).clamp(
+                -PLAYBACK_LOUDNESS_PRESENCE_CORRECTION_LIMIT_DB,
+                PLAYBACK_LOUDNESS_PRESENCE_CORRECTION_LIMIT_DB,
+            )
+        })
+        .unwrap_or(0.0);
+    let lra_correction_db = profile
+        .lra
+        .map(|lra| {
+            ((lra - PLAYBACK_LOUDNESS_LRA_REFERENCE) * PLAYBACK_LOUDNESS_LRA_CORRECTION_SLOPE)
+                .clamp(
+                    -PLAYBACK_LOUDNESS_LRA_CORRECTION_LIMIT_DB,
+                    PLAYBACK_LOUDNESS_LRA_CORRECTION_LIMIT_DB,
+                )
+        })
+        .unwrap_or(0.0);
+    let model_correction_db = profile
+        .model_adjustment_db
+        .map(|adjustment| {
+            adjustment.clamp(
+                -PLAYBACK_LOUDNESS_MODEL_CORRECTION_LIMIT_DB,
+                PLAYBACK_LOUDNESS_MODEL_CORRECTION_LIMIT_DB,
+            )
+        })
+        .unwrap_or(0.0);
+    let total_correction_db = (short_term_correction_db
+        + presence_correction_db
+        + lra_correction_db
+        + model_correction_db)
+        .clamp(
+            -PLAYBACK_LOUDNESS_TOTAL_CORRECTION_LIMIT_DB,
+            PLAYBACK_LOUDNESS_TOTAL_CORRECTION_LIMIT_DB,
+        );
+    let target_lufs = BACKEND_PLAYBACK_TARGET_LUFS + total_correction_db;
+    let final_gain_db = target_lufs - profile.integrated_lufs;
+
+    Some(PlaybackLoudnessPlan {
+        integrated_lufs: profile.integrated_lufs,
+        true_peak_dbtp: profile.true_peak_dbtp,
+        lra: profile.lra,
+        short_lufs_p50: profile.short_lufs_p50,
+        short_lufs_p80: profile.short_lufs_p80,
+        short_lufs_p95: profile.short_lufs_p95,
+        short_lufs_max: profile.short_lufs_max,
+        presence_db: profile.presence_db,
+        model_adjustment_db: profile.model_adjustment_db,
+        base_gain_db,
+        short_term_correction_db,
+        presence_correction_db,
+        lra_correction_db,
+        model_correction_db,
+        total_correction_db,
+        final_gain_db,
+        target_lufs,
+        reason: playback_loudness_plan_reason(
+            short_term_correction_db,
+            presence_correction_db,
+            lra_correction_db,
+            model_correction_db,
+        ),
+    })
+}
+
+fn playback_loudness_plan_reason(
+    short_term_correction_db: f32,
+    presence_correction_db: f32,
+    lra_correction_db: f32,
+    model_correction_db: f32,
+) -> &'static str {
+    const AUDIBLE_CORRECTION_EPSILON_DB: f32 = 0.05;
+    if model_correction_db.abs() >= AUDIBLE_CORRECTION_EPSILON_DB {
+        "model_adjusted"
+    } else if short_term_correction_db.abs() >= AUDIBLE_CORRECTION_EPSILON_DB {
+        "short_term_adjusted"
+    } else if presence_correction_db.abs() >= AUDIBLE_CORRECTION_EPSILON_DB {
+        "presence_adjusted"
+    } else if lra_correction_db.abs() >= AUDIBLE_CORRECTION_EPSILON_DB {
+        "lra_adjusted"
+    } else {
+        "integrated_only"
+    }
+}
+
+fn format_optional_loudness(value: Option<f32>) -> String {
+    value
+        .map(|value| format!("{value:.3}"))
+        .unwrap_or_else(|| "none".to_string())
 }
 
 pub(crate) fn resolve_playback_seek_range(
