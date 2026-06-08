@@ -258,6 +258,58 @@ pub async fn set_music_loudness_profile_by_identity(
     apply_music_mutation_to_records(&records, MusicMutation::LoudnessProfile { profile }).await
 }
 
+pub async fn project_music_loudness_identity(
+    url: &str,
+    file_path: &Path,
+    start_ms: u32,
+    end_ms: u32,
+) -> Result<Option<Music>> {
+    ensure_collection_graph_schema().await?;
+
+    if start_ms >= end_ms {
+        bail!("music loudness identity range must be valid");
+    }
+
+    let records = find_music_record_ids_by_identity(url, start_ms, end_ms).await?;
+    for record in records {
+        let music = Music::get_record(record).await?;
+        if music_path_matches_loudness_file(&music, file_path) {
+            return Ok(Some(music));
+        }
+    }
+
+    let candidates = find_music_record_ids_by_url_and_start(url, start_ms).await?;
+    let mut projected: Option<Music> = None;
+    for record in candidates {
+        let music = Music::get_record(record).await?;
+        if music.start_ms == start_ms
+            && music.end_ms <= end_ms
+            && music.start_ms < music.end_ms
+            && music_path_matches_loudness_file(&music, file_path)
+        {
+            match &projected {
+                Some(current) if current.end_ms >= music.end_ms => {}
+                _ => projected = Some(music),
+            }
+        }
+    }
+
+    Ok(projected)
+}
+
+fn music_path_matches_loudness_file(music: &Music, file_path: &Path) -> bool {
+    let Some(relative_path) = music.path.as_deref() else {
+        return false;
+    };
+    let file_path = normalize_path_text(&file_path.to_string_lossy());
+    let relative_path = normalize_path_text(relative_path);
+    file_path.ends_with(&relative_path)
+}
+
+fn normalize_path_text(path: &str) -> String {
+    path.replace('\\', "/").to_lowercase()
+}
+
 pub async fn get_music_loudness_profile_by_identity(
     url: &str,
     start_ms: u32,
@@ -2915,6 +2967,34 @@ async fn find_music_record_ids_by_identity(
         .bind(("url", url.to_string()))
         .bind(("start_ms", start_ms))
         .bind(("end_ms", end_ms))
+        .await
+    {
+        Ok(result) => match result.check() {
+            Ok(result) => result,
+            Err(error) => match DBError::from(error) {
+                DBError::MissingTable(_) => return Ok(vec![]),
+                other => return Err(other.into()),
+            },
+        },
+        Err(error) => match classify_db_error(&error.into()) {
+            DBError::MissingTable(_) => return Ok(vec![]),
+            other => return Err(other.into()),
+        },
+    };
+
+    Ok(result.take(0)?)
+}
+
+async fn find_music_record_ids_by_url_and_start(url: &str, start_ms: u32) -> Result<Vec<RecordId>> {
+    let db = get_db()?;
+    let mut result = match db
+        .query(
+            "SELECT VALUE id FROM $table
+             WHERE url = $url AND start_ms = $start_ms;",
+        )
+        .bind(("table", Table::from(Music::table_name())))
+        .bind(("url", url.to_string()))
+        .bind(("start_ms", start_ms))
         .await
     {
         Ok(result) => match result.check() {

@@ -38,6 +38,8 @@ const LOUDNESS_MEASUREMENT_COOLDOWN: Duration = Duration::from_millis(1500);
 const LOUDNESS_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 #[cfg(not(test))]
 const LOUDNESS_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(50);
+#[cfg(not(test))]
+const LOUDNESS_REQUEST_REBIND_ATTEMPT_LIMIT: usize = 3;
 pub(crate) const LOUDNESS_PENDING_TASK_FILE_NAME: &str = "loudness-evidence-pending.json";
 const LOUDNESS_PENDING_TASK_FILE_VERSION: &str = "loudness-evidence-pending.v1";
 
@@ -1028,46 +1030,143 @@ async fn measure_and_persist_loudness(
         );
     }
 
-    if let Some(persisted) = persisted_loudness_profile_for_request(request, source).await? {
+    for _attempt in 0..LOUDNESS_REQUEST_REBIND_ATTEMPT_LIMIT {
+        let Some(current_request) = project_loudness_request_to_current_music(request).await?
+        else {
+            bail!(
+                "music loudness evidence target not found for {} {}..{}",
+                request.url,
+                request.start_ms,
+                request.end_ms
+            );
+        };
+        log_loudness_request_rebound(source, request, &current_request, "before_analysis");
+
+        if let Some(persisted) =
+            persisted_loudness_profile_for_request(&current_request, source).await?
+        {
+            if current_request != *request {
+                publish_persisted_loudness_evidence(request, persisted);
+            }
+            runtime.completion_notify.notify_waiters();
+            return Ok(persisted.integrated_lufs);
+        }
+
+        let _guard = ActiveLoudnessBinaryTaskGuard::new(Arc::clone(&runtime));
+        let ffmpeg_path = ensure_managed_binary(&runtime.app, ManagedBinary::Ffmpeg)
+            .map_err(|error| anyhow!(error))?;
+        let analysis = run_loudness_analysis(ffmpeg_path, current_request.clone()).await?;
+        let profile = loudness_profile_from_analysis(analysis)?;
+        drop(_guard);
+
+        let Some(commit_request) = project_loudness_request_to_current_music(request).await? else {
+            bail!(
+                "music loudness evidence target not found for {} {}..{}",
+                request.url,
+                request.start_ms,
+                request.end_ms
+            );
+        };
+        if commit_request != current_request {
+            log_loudness_request_rebound(
+                source,
+                &current_request,
+                &commit_request,
+                "after_analysis",
+            );
+            continue;
+        }
+
+        let persisted = playlists_repo::set_music_loudness_profile_by_identity(
+            &commit_request.url,
+            commit_request.start_ms,
+            commit_request.end_ms,
+            profile,
+        )
+        .await?
+        .ok_or_else(|| {
+            anyhow!(
+                "music loudness evidence target not found for {} {}..{}",
+                commit_request.url,
+                commit_request.start_ms,
+                commit_request.end_ms
+            )
+        })?
+        .loudness_profile
+        .unwrap_or(profile);
+        publish_persisted_loudness_evidence(&commit_request, persisted);
+        if commit_request != *request {
+            publish_persisted_loudness_evidence(request, persisted);
+        }
         runtime.completion_notify.notify_waiters();
+        log::info!(
+            target: LOUDNESS_EVIDENCE_LOG_TARGET,
+            "loudness_evidence_persisted source={} canonical_music_id=\"{}\" integrated={:.3} true_peak={} lra={}",
+            source.as_str(),
+            commit_request.canonical_music_id,
+            persisted.integrated_lufs,
+            format_optional_loudness(persisted.true_peak_dbtp),
+            format_optional_loudness(persisted.lra),
+        );
+
         return Ok(persisted.integrated_lufs);
     }
 
-    let _guard = ActiveLoudnessBinaryTaskGuard::new(Arc::clone(&runtime));
-    let ffmpeg_path = ensure_managed_binary(&runtime.app, ManagedBinary::Ffmpeg)
-        .map_err(|error| anyhow!(error))?;
-    let analysis = run_loudness_analysis(ffmpeg_path, request.clone()).await?;
-    let profile = loudness_profile_from_analysis(analysis)?;
-    let persisted = playlists_repo::set_music_loudness_profile_by_identity(
+    bail!(
+        "music loudness evidence target moved while measuring for {} {}..{}",
+        request.url,
+        request.start_ms,
+        request.end_ms
+    )
+}
+
+#[cfg(not(test))]
+async fn project_loudness_request_to_current_music(
+    request: &LoudnessEvidenceRequest,
+) -> Result<Option<LoudnessEvidenceRequest>> {
+    let Some(music) = playlists_repo::project_music_loudness_identity(
         &request.url,
+        &request.file_path,
         request.start_ms,
         request.end_ms,
-        profile,
     )
     .await?
-    .ok_or_else(|| {
-        anyhow!(
-            "music loudness evidence target not found for {} {}..{}",
-            request.url,
-            request.start_ms,
-            request.end_ms
-        )
-    })?
-    .loudness_profile
-    .unwrap_or(profile);
-    publish_persisted_loudness_evidence(request, persisted);
-    runtime.completion_notify.notify_waiters();
+    else {
+        return Ok(None);
+    };
+
+    Ok(Some(LoudnessEvidenceRequest {
+        canonical_music_id: music.canonical_music_id,
+        url: music.url,
+        file_path: request.file_path.clone(),
+        start_ms: music.start_ms,
+        end_ms: music.end_ms,
+    }))
+}
+
+#[cfg(not(test))]
+fn log_loudness_request_rebound(
+    source: LoudnessEvidenceSource,
+    previous: &LoudnessEvidenceRequest,
+    current: &LoudnessEvidenceRequest,
+    stage: &str,
+) {
+    if previous == current {
+        return;
+    }
+
     log::info!(
         target: LOUDNESS_EVIDENCE_LOG_TARGET,
-        "loudness_evidence_persisted source={} canonical_music_id=\"{}\" integrated={:.3} true_peak={} lra={}",
+        "loudness_evidence_request_rebound source={} stage={} from_canonical_music_id=\"{}\" from_range={}..{} to_canonical_music_id=\"{}\" to_range={}..{}",
         source.as_str(),
-        request.canonical_music_id,
-        persisted.integrated_lufs,
-        format_optional_loudness(persisted.true_peak_dbtp),
-        format_optional_loudness(persisted.lra),
+        stage,
+        previous.canonical_music_id,
+        previous.start_ms,
+        previous.end_ms,
+        current.canonical_music_id,
+        current.start_ms,
+        current.end_ms
     );
-
-    Ok(persisted.integrated_lufs)
 }
 
 #[cfg(not(test))]

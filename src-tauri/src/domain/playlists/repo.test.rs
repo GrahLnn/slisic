@@ -13,9 +13,10 @@ use super::repo::{
     list_playlists, load_audio_style_training_musics, load_liked_playlist_playback_track_sources,
     load_playlist_playback_track_sources, load_random_playlist_playback_track_sources,
     load_spectrum_music_context, music_occurrence_id, playlist_playback_owner_attempt_order,
-    push_extra, remove_exclude, remove_extra, set_collection_updates, set_music_liked_by_identity,
-    set_music_loudness_profile_by_identity, trim_collection_music_ends_by_identity, update_music,
-    upsert_collection, upsert_playlist, upsert_playlist_surface,
+    project_music_loudness_identity, push_extra, remove_exclude, remove_extra,
+    set_collection_updates, set_music_liked_by_identity, set_music_loudness_profile_by_identity,
+    trim_collection_music_ends_by_identity, update_music, upsert_collection, upsert_playlist,
+    upsert_playlist_surface,
 };
 use crate::domain::playlists::PLAYLIST_DB_TEST_LOCK;
 use appdb::connection::{InitDbOptions, get_db, reinit_db_with_options, reset_db};
@@ -1375,6 +1376,166 @@ fn stale_tail_trim_plan_is_absorbed_by_current_shorter_end() {
             canonical_music_id_for_source(&original.url, original.start_ms, first_trim_end)
         );
         assert_eq!(after_stale_plan.musics[0].loudness_profile, None);
+
+        reset_db();
+    });
+}
+
+#[test]
+fn loudness_identity_projection_rebinds_stale_tail_trim_range() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+        bootstrap_collection_write_schema().await;
+
+        let saved = upsert_collection(&grouped_collection(
+            "https://example.com/loudness-rebind-tail-trim",
+        ))
+        .await
+        .expect("collection should save before tail trim");
+        let original = saved.musics[0].clone();
+        let first_trim_end = 132_750;
+        trim_collection_music_ends_by_identity(
+            &saved.url,
+            &[MusicEndTrim {
+                url: original.url.clone(),
+                start_ms: original.start_ms,
+                end_ms: original.end_ms,
+                next_end_ms: first_trim_end,
+            }],
+        )
+        .await
+        .expect("tail trim should save")
+        .expect("collection should still exist");
+
+        let projected = project_music_loudness_identity(
+            &original.url,
+            PathBuf::from("C:/Media/youtube/grouped-demo/Disc 1/Track.m4a").as_path(),
+            original.start_ms,
+            original.end_ms,
+        )
+        .await
+        .expect("stale loudness range should project")
+        .expect("trimmed music identity should exist");
+
+        assert_eq!(projected.start_ms, original.start_ms);
+        assert_eq!(projected.end_ms, first_trim_end);
+        assert_eq!(
+            projected.canonical_music_id,
+            canonical_music_id_for_source(&original.url, original.start_ms, first_trim_end)
+        );
+
+        reset_db();
+    });
+}
+
+#[test]
+fn loudness_identity_projection_does_not_cross_file_path() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+        bootstrap_collection_write_schema().await;
+
+        let saved = upsert_collection(&grouped_collection(
+            "https://example.com/loudness-rebind-path",
+        ))
+        .await
+        .expect("collection should save before tail trim");
+        let original = saved.musics[0].clone();
+        trim_collection_music_ends_by_identity(
+            &saved.url,
+            &[MusicEndTrim {
+                url: original.url.clone(),
+                start_ms: original.start_ms,
+                end_ms: original.end_ms,
+                next_end_ms: 132_750,
+            }],
+        )
+        .await
+        .expect("tail trim should save")
+        .expect("collection should still exist");
+
+        let projected = project_music_loudness_identity(
+            &original.url,
+            PathBuf::from("C:/Media/youtube/grouped-demo/Disc 1/Other.m4a").as_path(),
+            original.start_ms,
+            original.end_ms,
+        )
+        .await
+        .expect("stale loudness range should be checked");
+
+        assert!(projected.is_none());
+
+        reset_db();
+    });
+}
+
+#[test]
+fn loudness_identity_projection_exact_match_uses_file_path() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+        bootstrap_collection_write_schema().await;
+
+        let collection_url = "https://example.com/loudness-exact-path";
+        let shared_url = format!("{collection_url}#shared");
+        let owner = collection_owner("Exact Path Demo", collection_url, "youtube/exact-path");
+        let group = Group {
+            name: "Disc 1".to_string(),
+            url: format!("{collection_url}#disc-1"),
+            collection: owner,
+            folder: "Disc 1".to_string(),
+        };
+        let first = Music {
+            occurrence_id: String::new(),
+            name: "Shared A".to_string(),
+            alias: "Shared A".to_string(),
+            group: group.clone(),
+            canonical_music_id: music_canonical_id(&shared_url, 0, 180_000),
+            url: shared_url.clone(),
+            path: Some("Disc 1/Shared A.m4a".to_string()),
+            start_ms: 0,
+            end_ms: 180_000,
+            liked: false,
+            loudness_profile: None,
+        };
+        let second = Music {
+            occurrence_id: String::new(),
+            name: "Shared B".to_string(),
+            alias: "Shared B".to_string(),
+            group,
+            canonical_music_id: music_canonical_id(&shared_url, 0, 180_000),
+            url: shared_url.clone(),
+            path: Some("Disc 1/Shared B.m4a".to_string()),
+            start_ms: 0,
+            end_ms: 180_000,
+            liked: false,
+            loudness_profile: None,
+        };
+        upsert_collection(&collection_with_musics(
+            collection_url,
+            "youtube/exact-path",
+            Some(false),
+            vec![first, second],
+        ))
+        .await
+        .expect("collection should save exact path candidates");
+
+        let projected = project_music_loudness_identity(
+            &shared_url,
+            PathBuf::from("C:/Media/youtube/exact-path/Disc 1/Shared B.m4a").as_path(),
+            0,
+            180_000,
+        )
+        .await
+        .expect("exact loudness range should project")
+        .expect("path-matched music should exist");
+
+        assert_eq!(projected.alias, "Shared B");
+        assert_eq!(projected.path.as_deref(), Some("Disc 1/Shared B.m4a"));
 
         reset_db();
     });
