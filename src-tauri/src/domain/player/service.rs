@@ -1,7 +1,7 @@
 #[cfg(not(test))]
 use super::event::{
-    NowPlayingTrackChangedEvent, PlaybackDiagnosticTraceDetail, PlaybackDiagnosticTraceEvent,
-    PlaybackSurfaceStatus, PlaybackSurfaceStatusChangedEvent,
+    NowPlayingTrackChangedEvent, NowPlayingTrackLikedChangedEvent, PlaybackDiagnosticTraceDetail,
+    PlaybackDiagnosticTraceEvent, PlaybackSurfaceStatus, PlaybackSurfaceStatusChangedEvent,
 };
 pub(crate) use super::model::ActivePlaybackRange;
 #[cfg(not(test))]
@@ -22,6 +22,7 @@ use super::track_identity_substitution::{
 #[cfg(not(test))]
 use super::waveform::{self, TrackWaveform, TrackWaveformSummary, TrackWaveformTile};
 #[cfg(not(test))]
+use crate::domain::audio_tail_trim;
 #[cfg(not(test))]
 use crate::domain::loudness_evidence::{self, LoudnessEvidenceRequest};
 use crate::domain::playlists::model::LoudnessProfile;
@@ -605,6 +606,11 @@ pub(crate) fn update_session_tracks(
     tracks: Vec<PlaybackTrack>,
 ) -> Result<bool> {
     runtime()?.replace_session_tracks(handle, tracks)
+}
+
+#[cfg(not(test))]
+pub(crate) fn current_session_handle() -> Result<Option<PlaybackSessionHandle>> {
+    runtime()?.current_session_handle()
 }
 
 #[cfg(not(test))]
@@ -1668,6 +1674,18 @@ impl PlayerRuntime {
         Ok(true)
     }
 
+    fn current_session_handle(&self) -> Result<Option<PlaybackSessionHandle>> {
+        let session = self
+            .session
+            .lock()
+            .map_err(|_| anyhow!("player runtime session lock is poisoned"))?;
+
+        Ok(session.as_ref().map(|active| PlaybackSessionHandle {
+            playlist_name: active.playlist_name.clone(),
+            session_generation: active.session_generation,
+        }))
+    }
+
     fn replace_current_session_tracks(&self, tracks: Vec<PlaybackTrack>) -> Result<bool> {
         let session = self
             .session
@@ -2002,8 +2020,11 @@ impl PlayerRuntime {
         };
 
         if let Some((session_generation, track)) = active_update {
-            NowPlayingTrackChangedEvent::from_session_track(session_generation, track.to_payload())
-                .emit(&self.app)?;
+            NowPlayingTrackLikedChangedEvent::from_session_track(
+                session_generation,
+                &track.to_payload(),
+            )
+            .emit(&self.app)?;
         }
 
         Ok(true)
@@ -2245,6 +2266,7 @@ async fn run_playback_session(
             .as_ref()
             .and_then(playback_loudness_plan_for_profile);
         loudness_evidence::request_playback_track_loudness_evidence(&track);
+        audio_tail_trim::request_playback_current_audio_tail_trim(&track);
         log::info!(
             target: "player",
             "[now play] playlist=\"{}\" title=\"{}\" integrated={} base_gain={} final_gain={} target_lufs={} true_peak={} lra={} short_p50={} short_p80={} short_p95={} short_max={} presence={} correction={} reason={} normalization={} range={}..{}",

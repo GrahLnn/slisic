@@ -269,13 +269,16 @@ fn binary_maintenance_activity_reports_busy_from_either_runtime() {
     let active_player_binary_tasks = Arc::new(AtomicUsize::new(0));
     let active_tasks = Arc::new(AtomicUsize::new(0));
     let active_loudness_binary_tasks = Arc::new(AtomicUsize::new(0));
+    let active_audio_tail_trim_binary_tasks = Arc::new(AtomicUsize::new(0));
     let player_binary_task_probe = Arc::clone(&active_player_binary_tasks);
     let task_probe = Arc::clone(&active_tasks);
     let loudness_binary_task_probe = Arc::clone(&active_loudness_binary_tasks);
+    let audio_tail_trim_binary_task_probe = Arc::clone(&active_audio_tail_trim_binary_tasks);
     let activity = BinaryMaintenanceActivity::new(
         move || player_binary_task_probe.load(Ordering::SeqCst) > 0,
         move || task_probe.load(Ordering::SeqCst) > 0,
         move || loudness_binary_task_probe.load(Ordering::SeqCst) > 0,
+        move || audio_tail_trim_binary_task_probe.load(Ordering::SeqCst) > 0,
     );
 
     assert!(!activity.is_busy());
@@ -289,6 +292,10 @@ fn binary_maintenance_activity_reports_busy_from_either_runtime() {
 
     active_tasks.store(0, Ordering::SeqCst);
     active_loudness_binary_tasks.store(1, Ordering::SeqCst);
+    assert!(activity.is_busy());
+
+    active_loudness_binary_tasks.store(0, Ordering::SeqCst);
+    active_audio_tail_trim_binary_tasks.store(1, Ordering::SeqCst);
     assert!(activity.is_busy());
 }
 

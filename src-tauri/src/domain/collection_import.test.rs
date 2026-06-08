@@ -1,12 +1,13 @@
 use super::{
     CollectionManifest, CollectionManifestCollection, CollectionManifestGroup,
     CollectionManifestMusic, LocalAudioFile, collection_folder_from_local_path,
-    collection_from_manifest, finalize_downloaded_leaf, merge_collection_manifest,
-    manifest_from_collection, normalize_manifest_relative_path,
+    collection_from_manifest, finalize_downloaded_leaf, manifest_from_raw_leaf_evidence,
+    merge_raw_leaf_manifest_evidence, normalize_manifest_relative_path,
     normalize_music_titles_within_collection, project_local_collection_shell,
 };
 use crate::domain::downloads::model::CollectionSourceKind;
 use crate::domain::downloads::model::{DownloadTaskStatus, DownloadTrigger};
+use crate::domain::downloads::yt_dlp::LeafProbe;
 use crate::domain::playlists::model::{
     Collection, CollectionGroupOwner, Group, Music, canonical_music_id_for_source,
 };
@@ -81,9 +82,12 @@ fn manifest_import_restores_download_identity_for_playable_files() {
         ],
     };
 
-    let collection =
-        collection_from_manifest("D:/Music/collection".to_string(), manifest, &local_audio_files)
-            .expect("manifest should restore playable identity records");
+    let collection = collection_from_manifest(
+        "D:/Music/collection".to_string(),
+        manifest,
+        &local_audio_files,
+    )
+    .expect("manifest should restore playable identity records");
 
     assert_eq!(collection.name, "Downloaded Collection");
     assert_eq!(collection.url, "https://example.com/playlist");
@@ -105,7 +109,10 @@ fn manifest_import_restores_download_identity_for_playable_files() {
 
     let loose_local_music = &collection.musics[1];
     assert_eq!(loose_local_music.name, "loose");
-    assert_eq!(loose_local_music.url, "https://example.com/playlist#loose.flac");
+    assert_eq!(
+        loose_local_music.url,
+        "https://example.com/playlist#loose.flac"
+    );
     assert_eq!(loose_local_music.path.as_deref(), Some("loose.flac"));
     assert_eq!(loose_local_music.start_ms, 0);
     assert_eq!(loose_local_music.end_ms, 30_000);
@@ -131,66 +138,139 @@ fn manifest_import_restores_download_identity_for_playable_files() {
 }
 
 #[test]
-fn manifest_merge_keeps_original_file_identity_once_recorded() {
-    let existing = CollectionManifest {
+fn raw_leaf_manifest_records_probe_text_and_measured_file_boundary_not_db_projection() {
+    let raw_title = "BB's Theme (Instrumental) - Death Stranding OST";
+    let normalized_title = "BB's Theme (Instrumental)";
+    let path = "BB's Theme (Instrumental) - Death Stranding OST.m4a";
+    let url = "https://www.youtube.com/watch?v=bb-theme-instrumental";
+    let group = collection_group(
+        "Death Stranding",
+        "https://example.com/playlist",
+        "youtube/Death Stranding (Original Soundtrack)",
+    );
+    let collection = Collection {
+        name: "Death Stranding".to_string(),
+        url: "https://example.com/playlist".to_string(),
+        folder: "youtube/Death Stranding (Original Soundtrack)".to_string(),
+        musics: vec![music_with_group(
+            normalized_title,
+            url,
+            path,
+            group.clone(),
+        )],
+        last_updated: "2026-06-07T00:00:00+00:00".to_string(),
+        enable_updates: Some(false),
+    };
+    let probe = LeafProbe {
+        title: raw_title.to_string(),
+        webpage_url: url.to_string(),
+        extractor_key: Some("Youtube".to_string()),
+        album: Some("Death Stranding (Original Soundtrack)".to_string()),
+        duration_ms: Some(186_688),
+        duration_seconds: Some(187),
+        chapters: vec![],
+    };
+    let polluted_existing = CollectionManifest {
         version: 1,
         collection: manifest_collection(),
         groups: vec![],
-        musics: vec![manifest_music(
-            "Original",
-            "https://example.com/watch?v=a",
-            "track.m4a",
-            0,
-            60_000,
-        )],
-    };
-    let next = CollectionManifest {
-        version: 1,
-        collection: CollectionManifestCollection {
-            last_updated: Some("2026-05-24T01:00:00+00:00".to_string()),
-            ..manifest_collection()
-        },
-        groups: vec![],
-        musics: vec![
-            manifest_music(
-                "Edited Later",
-                "https://example.com/watch?v=a",
-                "track.m4a",
-                5_000,
-                55_000,
-            ),
-            manifest_music(
-                "New Track",
-                "https://example.com/watch?v=b",
-                "new.m4a",
-                0,
-                42_000,
-            ),
-        ],
+        musics: vec![CollectionManifestMusic {
+            name: "BB's Theme (Instrumental".to_string(),
+            alias: "BB's Theme (Instrumental".to_string(),
+            url: url.to_string(),
+            path: path.to_string(),
+            group_url: group.url.clone(),
+            start_ms: 0,
+            end_ms: 180_000,
+            liked: false,
+        }],
     };
 
-    let merged = merge_collection_manifest(existing, next);
+    let raw_manifest = manifest_from_raw_leaf_evidence(
+        &collection,
+        CollectionSourceKind::List,
+        &probe,
+        path,
+        &group,
+    );
+    let merged = merge_raw_leaf_manifest_evidence(polluted_existing, raw_manifest);
 
-    assert_eq!(merged.musics.len(), 2);
-    assert_eq!(merged.musics[0].name, "Original");
-    assert_eq!(merged.musics[0].start_ms, 0);
-    assert_eq!(merged.musics[0].end_ms, 60_000);
-    assert_eq!(merged.musics[1].name, "New Track");
-    assert_eq!(merged.collection.last_updated.as_deref(), Some("2026-05-24T00:00:00+00:00"));
+    assert_eq!(collection.musics[0].name, normalized_title);
+    assert_eq!(merged.musics.len(), 1);
+    assert_eq!(merged.musics[0].name, raw_title);
+    assert_eq!(merged.musics[0].alias, raw_title);
+    assert_eq!(merged.musics[0].path, path);
+    assert_eq!(merged.musics[0].end_ms, 186_688);
 }
 
 #[test]
-fn manifest_does_not_materialize_collection_owner_as_group() {
-    let collection_owner = Group {
-        name: "Collection".to_string(),
-        url: "https://example.com/playlist".to_string(),
-        collection: test_collection_owner(
-            "Collection",
-            "https://example.com/playlist",
-            "youtube/collection",
-        ),
-        folder: "youtube/collection".to_string(),
+fn raw_leaf_manifest_keeps_existing_root_metadata_when_db_collection_was_edited() {
+    let url = "https://www.youtube.com/watch?v=next-track";
+    let group = collection_group(
+        "User Edited Collection",
+        "https://example.com/playlist",
+        "youtube/Raw Root Title",
+    );
+    let existing = CollectionManifest {
+        version: 1,
+        collection: CollectionManifestCollection {
+            name: "Raw Root Title".to_string(),
+            url: "https://example.com/playlist".to_string(),
+            folder: "youtube/Raw Root Title".to_string(),
+            source_kind: Some(CollectionSourceKind::List),
+            enable_updates: Some(false),
+            last_updated: Some("2026-06-07T00:00:00+00:00".to_string()),
+        },
+        groups: vec![],
+        musics: vec![manifest_music(
+            "Existing Raw Track",
+            "https://www.youtube.com/watch?v=existing",
+            "Existing Raw Track.m4a",
+            0,
+            120_000,
+        )],
     };
+    let edited_collection = Collection {
+        name: "User Edited Collection".to_string(),
+        url: "https://example.com/playlist".to_string(),
+        folder: "youtube/User Edited Collection".to_string(),
+        musics: vec![music_with_group(
+            "Normalized Next Track",
+            url,
+            "Next Track.m4a",
+            group.clone(),
+        )],
+        last_updated: "2026-06-07T01:00:00+00:00".to_string(),
+        enable_updates: Some(true),
+    };
+    let probe = LeafProbe {
+        title: "Next Raw Track".to_string(),
+        webpage_url: url.to_string(),
+        extractor_key: Some("Youtube".to_string()),
+        album: None,
+        duration_ms: Some(90_000),
+        duration_seconds: Some(90),
+        chapters: vec![],
+    };
+
+    let next = manifest_from_raw_leaf_evidence(
+        &edited_collection,
+        CollectionSourceKind::List,
+        &probe,
+        "Next Track.m4a",
+        &group,
+    );
+    let merged = merge_raw_leaf_manifest_evidence(existing, next);
+
+    assert_eq!(merged.collection.name, "Raw Root Title");
+    assert_eq!(merged.collection.folder, "youtube/Raw Root Title");
+    assert_eq!(merged.collection.enable_updates, Some(false));
+    assert_eq!(merged.musics.len(), 2);
+    assert_eq!(merged.musics[1].name, "Next Raw Track");
+}
+
+#[test]
+fn raw_leaf_manifest_does_not_materialize_collection_owner_as_group() {
     let nested_group = Group {
         name: "Disc 1".to_string(),
         url: "https://example.com/disc-1".to_string(),
@@ -205,25 +285,49 @@ fn manifest_does_not_materialize_collection_owner_as_group() {
         name: "Collection".to_string(),
         url: "https://example.com/playlist".to_string(),
         folder: "youtube/collection".to_string(),
-        musics: vec![
-            music_with_group(
-                "Root Track",
-                "https://example.com/watch?v=root",
-                "root.m4a",
-                collection_owner,
-            ),
-            music_with_group(
-                "Nested Track",
-                "https://example.com/watch?v=nested",
-                "Disc 1/nested.m4a",
-                nested_group,
-            ),
-        ],
+        musics: vec![],
         last_updated: "2026-05-24T00:00:00+00:00".to_string(),
         enable_updates: Some(false),
     };
-
-    let manifest = manifest_from_collection(&collection, CollectionSourceKind::List);
+    let root_probe = LeafProbe {
+        title: "Root Track".to_string(),
+        webpage_url: "https://example.com/watch?v=root".to_string(),
+        extractor_key: Some("Youtube".to_string()),
+        album: None,
+        duration_ms: Some(60_000),
+        duration_seconds: Some(60),
+        chapters: vec![],
+    };
+    let nested_probe = LeafProbe {
+        title: "Nested Track".to_string(),
+        webpage_url: "https://example.com/watch?v=nested".to_string(),
+        extractor_key: Some("Youtube".to_string()),
+        album: None,
+        duration_ms: Some(60_000),
+        duration_seconds: Some(60),
+        chapters: vec![],
+    };
+    let owner_group = collection_group(
+        "Collection",
+        "https://example.com/playlist",
+        "youtube/collection",
+    );
+    let manifest = merge_raw_leaf_manifest_evidence(
+        manifest_from_raw_leaf_evidence(
+            &collection,
+            CollectionSourceKind::List,
+            &root_probe,
+            "root.m4a",
+            &owner_group,
+        ),
+        manifest_from_raw_leaf_evidence(
+            &collection,
+            CollectionSourceKind::List,
+            &nested_probe,
+            "Disc 1/nested.m4a",
+            &nested_group,
+        ),
+    );
 
     assert_eq!(manifest.groups.len(), 1);
     assert_eq!(manifest.groups[0].url, "https://example.com/disc-1");
@@ -258,9 +362,12 @@ fn import_ignores_manifest_music_with_missing_nested_group_and_keeps_local_file_
         )],
     };
 
-    let collection =
-        collection_from_manifest("D:/Music/collection".to_string(), manifest, &local_audio_files)
-            .expect("missing nested group should not fail the whole import");
+    let collection = collection_from_manifest(
+        "D:/Music/collection".to_string(),
+        manifest,
+        &local_audio_files,
+    )
+    .expect("missing nested group should not fail the whole import");
 
     assert_eq!(collection.musics.len(), 1);
     assert_eq!(collection.musics[0].name, "nested");
@@ -291,9 +398,12 @@ fn manifest_import_restores_precise_local_duration_for_full_file_boundary() {
         )],
     };
 
-    let collection =
-        collection_from_manifest("D:/Music/collection".to_string(), manifest, &local_audio_files)
-            .expect("manifest full-file boundary should restore");
+    let collection = collection_from_manifest(
+        "D:/Music/collection".to_string(),
+        manifest,
+        &local_audio_files,
+    )
+    .expect("manifest full-file boundary should restore");
 
     assert_eq!(collection.musics.len(), 1);
     assert_eq!(collection.musics[0].end_ms, 344_455);
@@ -323,9 +433,12 @@ fn manifest_import_preserves_partial_ranges_that_do_not_target_file_end() {
         )],
     };
 
-    let collection =
-        collection_from_manifest("D:/Music/collection".to_string(), manifest, &local_audio_files)
-            .expect("manifest partial range should restore");
+    let collection = collection_from_manifest(
+        "D:/Music/collection".to_string(),
+        manifest,
+        &local_audio_files,
+    )
+    .expect("manifest partial range should restore");
 
     assert_eq!(collection.musics.len(), 1);
     assert_eq!(collection.musics[0].end_ms, 120_000);
@@ -361,10 +474,14 @@ fn local_collection_shell_uses_the_same_identity_projection_as_full_import() {
     let shell = project_local_collection_shell(&collection, &root)
         .expect("local collection shell should project identity");
     let imported = super::collection_from_local_audio_files(
-        &collection.canonicalize().expect("collection should canonicalize"),
+        &collection
+            .canonicalize()
+            .expect("collection should canonicalize"),
         &collection_folder_from_local_path(
             &root,
-            &collection.canonicalize().expect("collection should canonicalize"),
+            &collection
+                .canonicalize()
+                .expect("collection should canonicalize"),
         )
         .expect("collection folder should project"),
         &[LocalAudioFile {
@@ -413,8 +530,7 @@ fn local_collection_shell_restores_manifest_identity_without_scanning_audio() {
             60_000,
         )],
     };
-    super::write_collection_manifest_file(&collection, &manifest)
-        .expect("manifest should be writable");
+    write_manifest_fixture(&collection, &manifest).expect("manifest should be writable");
 
     let shell = project_local_collection_shell(&collection, &root)
         .expect("manifest shell should project identity");
@@ -443,8 +559,14 @@ fn local_import_task_uses_collection_url_as_active_playback_scope() {
     let task = super::create_local_import_task(&collection);
 
     assert_eq!(task.url, collection.url);
-    assert_eq!(task.collection_url.as_deref(), Some(collection.url.as_str()));
-    assert_eq!(task.collection_name.as_deref(), Some(collection.name.as_str()));
+    assert_eq!(
+        task.collection_url.as_deref(),
+        Some(collection.url.as_str())
+    );
+    assert_eq!(
+        task.collection_name.as_deref(),
+        Some(collection.name.as_str())
+    );
     assert_eq!(
         task.collection_folder.as_deref(),
         Some(collection.folder.as_str())
@@ -593,6 +715,217 @@ fn normalize_music_titles_never_projects_complete_suffix_to_partial_suffix() {
             .iter()
             .all(|music| !music.name.ends_with(" | Death"))
     );
+}
+
+#[test]
+fn normalize_music_titles_removes_download_source_notes_without_destroying_title_variants() {
+    let group = collection_group(
+        "Death Stranding 2",
+        "https://www.youtube.com/playlist?list=PLdeath-stranding-2",
+        "Death Stranding 2- On the Beach – All Official Soundtracks",
+    );
+    let mut collection = Collection {
+        name: "Death Stranding 2".to_string(),
+        url: "https://www.youtube.com/playlist?list=PLdeath-stranding-2".to_string(),
+        folder: "youtube/Death Stranding 2- On the Beach – All Official Soundtracks".to_string(),
+        musics: vec![
+            music_with_group(
+                "Any Love of Any Kind feat. Bryce Dessner (from \"DEATH STRANDING 2 : ON THE BEACH\" Soundtra...",
+                "https://www.youtube.com/watch?v=any-love",
+                "Any Love of Any Kind feat. Bryce Dessner (from -DEATH STRANDING 2 - ON THE BEACH- Soundtra.m4a",
+                group.clone(),
+            ),
+            music_with_group(
+                "To the Wilder feat. Elle Fanning (from \"DEATH STRANDING 2 : ON THE BEACH\" Soundtrack) (Off...",
+                "https://www.youtube.com/watch?v=wilder",
+                "To the Wilder feat. Elle Fanning (from -DEATH STRANDING 2 - ON THE BEACH- Soundtrack) (Off.m4a",
+                group.clone(),
+            ),
+            music_with_group(
+                "Any Love of Any Kind (Choir Version) (from \"DEATH STRANDING 2 : ON THE BEACH\" Soundtrack) ...",
+                "https://www.youtube.com/watch?v=choir",
+                "Any Love of Any Kind (Choir Version) (from -DEATH STRANDING 2 - ON THE BEACH- Soundtrack).m4a",
+                group.clone(),
+            ),
+            music_with_group(
+                "Black Drift",
+                "https://www.youtube.com/watch?v=black-drift",
+                "Woodkid - Black Drift (from -DEATH STRANDING 2 - ON THE BEACH- Soundtrack) (Official Audio).m4a",
+                group.clone(),
+            ),
+            music_with_group(
+                "Story of Rainy",
+                "https://www.youtube.com/watch?v=story-rainy",
+                "Woodkid - Story of Rainy (from -DEATH STRANDING 2 - ON THE BEACH- Soundtrack) (Official Audio).m4a",
+                group,
+            ),
+        ],
+        last_updated: "2026-06-07T00:00:00+00:00".to_string(),
+        enable_updates: Some(false),
+    };
+
+    normalize_music_titles_within_collection(&mut collection);
+
+    assert_eq!(
+        collection.musics[0].name,
+        "Any Love of Any Kind feat. Bryce Dessner"
+    );
+    assert_eq!(
+        collection.musics[1].name,
+        "To the Wilder feat. Elle Fanning"
+    );
+    assert_eq!(
+        collection.musics[2].name,
+        "Any Love of Any Kind (Choir Version)"
+    );
+    assert_eq!(collection.musics[3].name, "Black Drift");
+    assert_eq!(collection.musics[4].name, "Story of Rainy");
+}
+
+#[test]
+fn normalize_music_titles_repairs_bracketed_variant_from_file_name_evidence() {
+    let group = collection_group(
+        "Death Stranding",
+        "https://www.youtube.com/playlist?list=PLdeath-stranding",
+        "Death Stranding (Original Soundtrack)",
+    );
+    let mut collection = Collection {
+        name: "Death Stranding".to_string(),
+        url: "https://www.youtube.com/playlist?list=PLdeath-stranding".to_string(),
+        folder: "youtube/Death Stranding (Original Soundtrack)".to_string(),
+        musics: vec![
+            music_with_group(
+                "BB's Theme",
+                "https://www.youtube.com/watch?v=bb-theme",
+                "BB's Theme - Death Stranding OST.m4a",
+                group.clone(),
+            ),
+            music_with_group(
+                "BB's Theme (Instrumental",
+                "https://www.youtube.com/watch?v=bb-theme-instrumental",
+                "BB's Theme (Instrumental) - Death Stranding OST.m4a",
+                group,
+            ),
+        ],
+        last_updated: "2026-06-07T00:00:00+00:00".to_string(),
+        enable_updates: Some(false),
+    };
+
+    normalize_music_titles_within_collection(&mut collection);
+
+    assert_eq!(collection.musics[0].name, "BB's Theme");
+    assert_eq!(collection.musics[1].name, "BB's Theme (Instrumental)");
+    assert_eq!(collection.musics[1].alias, "BB's Theme (Instrumental)");
+}
+
+#[test]
+fn normalize_music_titles_handles_catalog_prefixes_without_cutting_title_apostrophes() {
+    let terraria_group = collection_group(
+        "Terraria",
+        "https://www.youtube.com/playlist?list=PLterraria",
+        "Terraria Soundtrack 2026 Terraria Music",
+    );
+    let blue_archive_group = collection_group(
+        "Blue Archive OST",
+        "https://www.youtube.com/playlist?list=PLblue-archive",
+        "Blue Archive OST",
+    );
+    let mut collection = Collection {
+        name: "Mixed Catalogs".to_string(),
+        url: "https://example.com/root".to_string(),
+        folder: "youtube/mixed".to_string(),
+        musics: vec![
+            music_with_group(
+                "Terraria OST - Journey's Beginning",
+                "https://www.youtube.com/watch?v=journey-beginning",
+                "Terraria OST - Journey's Beginning.m4a",
+                terraria_group.clone(),
+            ),
+            music_with_group(
+                "Terraria: Otherworld OST - Every Adventure Has A Beginning",
+                "https://www.youtube.com/watch?v=adventure",
+                "Terraria- Otherworld OST - Every Adventure Has A Beginning (1.4.0.1 Version).m4a",
+                terraria_group.clone(),
+            ),
+            music_with_group(
+                "Terraria Music - Space Day (Console Space)",
+                "https://www.youtube.com/watch?v=space-day",
+                "Terraria Music - Space Day (Console Space).m4a",
+                terraria_group,
+            ),
+            music_with_group(
+                "ブルーアーカイブ Blue Archive OST 19",
+                "https://www.youtube.com/watch?v=virtual-storm",
+                "ブルーアーカイブ Blue Archive OST 19. Virtual Storm.m4a",
+                blue_archive_group.clone(),
+            ),
+            music_with_group(
+                "ブルーアーカイブ Blue Archive OST 60",
+                "https://www.youtube.com/watch?v=sakura-punch",
+                "ブルーアーカイブ Blue Archive OST 60. SAKURA PUNCH (Hard Arrange).m4a",
+                blue_archive_group,
+            ),
+        ],
+        last_updated: "2026-06-07T00:00:00+00:00".to_string(),
+        enable_updates: Some(false),
+    };
+
+    normalize_music_titles_within_collection(&mut collection);
+
+    assert_eq!(collection.musics[0].name, "Journey's Beginning");
+    assert_eq!(collection.musics[1].name, "Every Adventure Has A Beginning");
+    assert_eq!(collection.musics[2].name, "Space Day (Console Space)");
+    assert_eq!(collection.musics[3].name, "Virtual Storm");
+    assert_eq!(collection.musics[4].name, "SAKURA PUNCH (Hard Arrange)");
+}
+
+#[test]
+fn normalize_music_titles_rejects_noise_deletions_that_leave_only_numbers() {
+    let group = collection_group(
+        "Numbered Album",
+        "https://www.youtube.com/playlist?list=PLnumbered",
+        "Numbered Album",
+    );
+    let mut collection = Collection {
+        name: "Numbered Album".to_string(),
+        url: "https://www.youtube.com/playlist?list=PLnumbered".to_string(),
+        folder: "youtube/numbered".to_string(),
+        musics: vec![
+            music_with_group(
+                "Album - 1",
+                "https://www.youtube.com/watch?v=one",
+                "Album - 1.m4a",
+                group.clone(),
+            ),
+            music_with_group(
+                "Album - 2",
+                "https://www.youtube.com/watch?v=two",
+                "Album - 2.m4a",
+                group.clone(),
+            ),
+            music_with_group(
+                "Album - Pt.3",
+                "https://www.youtube.com/watch?v=pt-three",
+                "Album - Pt.3.m4a",
+                group.clone(),
+            ),
+            music_with_group(
+                "Album - Pt.4",
+                "https://www.youtube.com/watch?v=pt-four",
+                "Album - Pt.4.m4a",
+                group,
+            ),
+        ],
+        last_updated: "2026-06-07T00:00:00+00:00".to_string(),
+        enable_updates: Some(false),
+    };
+
+    normalize_music_titles_within_collection(&mut collection);
+
+    assert_eq!(collection.musics[0].name, "Album - 1");
+    assert_eq!(collection.musics[1].name, "Album - 2");
+    assert_eq!(collection.musics[2].name, "Album - Pt.3");
+    assert_eq!(collection.musics[3].name, "Album - Pt.4");
 }
 
 #[test]
@@ -843,4 +1176,14 @@ fn unique_temp_path(label: &str) -> PathBuf {
         std::process::id(),
         nanos
     ))
+}
+
+fn write_manifest_fixture(
+    collection_root: &std::path::Path,
+    manifest: &CollectionManifest,
+) -> anyhow::Result<()> {
+    std::fs::create_dir_all(collection_root)?;
+    let text = toml::to_string_pretty(manifest)?;
+    std::fs::write(collection_root.join(".slisic.collection.toml"), text)?;
+    Ok(())
 }

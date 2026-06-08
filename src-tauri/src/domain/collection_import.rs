@@ -33,6 +33,10 @@ const COLLECTION_MANIFEST_FILE_NAME: &str = ".slisic.collection.toml";
 const TEMP_DOWNLOAD_MARKER: &str = ".__slisic_tmp__";
 const LOCAL_AUDIO_PRECISE_DURATION_BOUNDARY_TOLERANCE_MS: u32 = 100;
 
+#[cfg(test)]
+#[path = "collection_import.test.rs"]
+mod tests;
+
 #[derive(Debug, Clone)]
 pub(crate) struct CollectionSyncPlan {
     pub(crate) source_kind: CollectionSourceKind,
@@ -53,6 +57,7 @@ pub(crate) struct PlannedLeaf {
     pub(crate) group_hint: Option<Group>,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ExistingPlannedLeafCompletion {
     pub(crate) leaf_id: Id,
@@ -80,6 +85,7 @@ impl LeafGroupIdentity {
         }
     }
 
+    #[cfg(test)]
     fn from_music(music: &Music) -> Self {
         Self {
             url: music.url.clone(),
@@ -227,18 +233,14 @@ impl CollectionSyncPlan {
     }
 }
 
-pub(crate) async fn load_collection_shell(
+pub(crate) async fn load_download_transaction_collection_shell(
     plan: &CollectionSyncPlan,
-    save_root: &Path,
-    ffmpeg_path: &Path,
 ) -> Result<Collection> {
-    load_collection_shell_with_local_duration_probe(plan, save_root, |file_path| {
-        probe_local_audio_file(ffmpeg_path, file_path)
-            .map(|probe| probe.map(|value| value.duration_ms))
-    })
-    .await
+    let existing = collection_repo::get_collection_by_url(&plan.collection_url).await?;
+    Ok(create_collection_shell(plan, existing))
 }
 
+#[cfg(test)]
 pub(crate) async fn load_collection_shell_with_local_duration_probe(
     plan: &CollectionSyncPlan,
     save_root: &Path,
@@ -610,14 +612,22 @@ pub(crate) fn project_local_collection_shell(
     })
 }
 
-#[cfg(not(test))]
-pub(crate) fn write_collection_manifest(
+pub(crate) fn write_raw_leaf_manifest_evidence(
     collection_root: &Path,
     collection: &Collection,
     source_kind: CollectionSourceKind,
+    probe: &LeafProbe,
+    relative_path: &str,
+    group: &Group,
 ) -> Result<()> {
-    let manifest = manifest_from_collection(collection, source_kind);
-    write_collection_manifest_file(collection_root, &manifest)
+    let manifest = manifest_from_raw_leaf_evidence(
+        collection,
+        source_kind,
+        probe,
+        relative_path,
+        group,
+    );
+    write_raw_leaf_manifest_file(collection_root, &manifest)
 }
 
 #[cfg(not(test))]
@@ -827,7 +837,7 @@ pub(crate) fn materialize_music_entries(
     if probe.chapters.is_empty() {
         let name = probe.title.clone();
         return vec![Music {
-    occurrence_id: String::new(),
+            occurrence_id: String::new(),
             name: name.clone(),
             alias: name,
             group,
@@ -849,7 +859,7 @@ pub(crate) fn materialize_music_entries(
         .chapters
         .iter()
         .map(|chapter| Music {
-    occurrence_id: String::new(),
+            occurrence_id: String::new(),
             name: chapter.title.clone(),
             alias: chapter.title.clone(),
             group: group.clone(),
@@ -896,6 +906,7 @@ pub(crate) fn existing_leaf_identities(
         .unwrap_or_default()
 }
 
+#[cfg(test)]
 pub(crate) fn existing_planned_leaf_completions(
     collection: &Collection,
     plan: &CollectionSyncPlan,
@@ -954,6 +965,7 @@ pub(crate) fn existing_planned_leaf_completions(
         .collect()
 }
 
+#[cfg(test)]
 fn restore_download_manifest_evidence(
     collection: &mut Collection,
     save_root: &Path,
@@ -1004,6 +1016,7 @@ fn restore_download_manifest_evidence(
     Ok(restored_any)
 }
 
+#[cfg(test)]
 fn manifest_restored_music_key(music: &Music) -> String {
     format!(
         "{}\n{}\n{}\n{}\n{}",
@@ -1015,6 +1028,7 @@ fn manifest_restored_music_key(music: &Music) -> String {
     )
 }
 
+#[cfg(test)]
 fn manifest_restored_music_source_key(music: &Music) -> String {
     format!(
         "{}\n{}\n{}\n{}",
@@ -1025,6 +1039,7 @@ fn manifest_restored_music_source_key(music: &Music) -> String {
     )
 }
 
+#[cfg(test)]
 fn manifest_restored_music_matches(left: &Music, right: &Music) -> bool {
     left.name == right.name
         && left.alias == right.alias
@@ -1099,8 +1114,17 @@ fn normalize_music_title_batch_with_evidence(
     titles: &[String],
     evidence_titles: &[TitleNoiseEvidence],
 ) -> Vec<String> {
-    let mut normalized = titles.to_vec();
-    let mut evidence = evidence_titles.to_vec();
+    let mut normalized = titles
+        .iter()
+        .map(|title| normalize_mechanical_title_noise(title))
+        .collect::<Vec<_>>();
+    let mut evidence = evidence_titles
+        .iter()
+        .map(|evidence| TitleNoiseEvidence {
+            source_index: evidence.source_index,
+            title: normalize_mechanical_title_noise(&evidence.title),
+        })
+        .collect::<Vec<_>>();
 
     while let Some(pattern) = best_repeated_title_noise_pattern(&evidence) {
         let mut changed = false;
@@ -1127,6 +1151,287 @@ fn normalize_music_title_batch_with_evidence(
 
     repair_normalized_titles_from_source_evidence(&mut normalized, &evidence);
     normalized
+}
+
+fn normalize_mechanical_title_noise(title: &str) -> String {
+    let mut normalized = cleanup_title_after_noise_deletion(title);
+    for _ in 0..8 {
+        let next = [
+            delete_source_note_suffix(&normalized),
+            delete_media_wrapper_suffix(&normalized),
+            delete_catalog_suffix(&normalized),
+            delete_catalog_prefix(&normalized),
+        ]
+        .into_iter()
+        .find(|candidate| candidate != &normalized)
+        .unwrap_or_else(|| normalized.clone());
+        if next == normalized {
+            break;
+        }
+        normalized = next;
+    }
+    normalized
+}
+
+fn delete_source_note_suffix(title: &str) -> String {
+    for (start, character) in title.char_indices() {
+        if !matches!(character, '(' | '[') {
+            continue;
+        }
+        let tail = &title[start..];
+        if !source_note_tail_is_candidate(tail) {
+            continue;
+        }
+        let normalized = delete_title_span(title, start, title.len());
+        if title_noise_text_has_language_character(&normalized)
+            && !title_is_number_like_only(&normalized)
+            && title_bracket_damage_score(&normalized) <= title_bracket_damage_score(title)
+        {
+            return normalized;
+        }
+    }
+    title.to_string()
+}
+
+fn source_note_tail_is_candidate(tail: &str) -> bool {
+    let trimmed = tail.trim_start();
+    let lower = title_noise_canonical_key(trimmed);
+    if !(lower.starts_with("(from ") || lower.starts_with("[from ")) {
+        return false;
+    }
+
+    lower.contains("soundtra")
+        || lower.contains("soundtrack")
+        || lower.contains("score")
+        || lower.contains(" ost")
+        || lower.contains(" official audio")
+        || lower.contains(" official video")
+        || lower.contains(" lyric video")
+        || source_note_tail_has_media_wrapper_after_closing_bracket(trimmed)
+}
+
+fn source_note_tail_has_media_wrapper_after_closing_bracket(tail: &str) -> bool {
+    let mut stack = Vec::<char>::new();
+    for (index, character) in tail.char_indices() {
+        if opening_bracket_pair(character).is_some() {
+            stack.push(character);
+            continue;
+        }
+        let Some(expected_opening) = closing_bracket_pair(character) else {
+            continue;
+        };
+        if !stack
+            .last()
+            .is_some_and(|opening| *opening == expected_opening)
+        {
+            continue;
+        }
+        stack.pop();
+        if !stack.is_empty() {
+            continue;
+        }
+        let after = tail[index + character.len_utf8()..].trim();
+        return after.is_empty() || media_wrapper_suffix_is_candidate(after);
+    }
+    false
+}
+
+fn delete_media_wrapper_suffix(title: &str) -> String {
+    const MEDIA_SUFFIXES: &[&str] = &[
+        "[Official Lyric Video]",
+        "(Official Lyric Video)",
+        "[Official Video]",
+        "(Official Video)",
+        "[Official Audio]",
+        "(Official Audio)",
+        "| Lyric Video",
+        "- Lyric Video",
+        "| Official Video",
+        "- Official Video",
+        "| Official Audio",
+        "- Official Audio",
+    ];
+
+    for suffix in MEDIA_SUFFIXES {
+        if let Some(normalized) = delete_title_suffix(title, suffix) {
+            return normalized;
+        }
+    }
+    title.to_string()
+}
+
+fn media_wrapper_suffix_is_candidate(text: &str) -> bool {
+    let lower = title_noise_canonical_key(text);
+    matches!(
+        lower.as_str(),
+        "| lyric video"
+            | "- lyric video"
+            | "| official video"
+            | "- official video"
+            | "| official audio"
+            | "- official audio"
+            | "[official lyric video]"
+            | "(official lyric video)"
+            | "[official video]"
+            | "(official video)"
+            | "[official audio]"
+            | "(official audio)"
+    )
+}
+
+fn delete_catalog_suffix(title: &str) -> String {
+    const SUFFIXES: &[&str] = &[
+        "| Cyberpunk 2077 OST",
+        "- Cyberpunk 2077 OST",
+        "| Cyberpunk 2077: Phantom Liberty (Original Score) [Deluxe Version]",
+        "- Cyberpunk 2077- Phantom Liberty (Original Score) [Deluxe Version]",
+        "- Cyberpunk 2077- Phantom Liberty (Original Score)",
+        "| Death Stranding 2 On The Beach Original Video Game Score",
+        "- Death Stranding 2- On The Beach (Original Video Game Score)",
+        "- Death Stranding OST",
+        "- WaterTower",
+    ];
+
+    for suffix in SUFFIXES {
+        if let Some(normalized) = delete_title_suffix(title, suffix) {
+            return normalized;
+        }
+    }
+    if let Some(normalized) = delete_genshin_suffix(title) {
+        return normalized;
+    }
+    if let Some(normalized) = delete_year_soundtrack_suffix(title) {
+        return normalized;
+    }
+    title.to_string()
+}
+
+fn delete_genshin_suffix(title: &str) -> Option<String> {
+    let split = title
+        .rfind('｜')
+        .or_else(|| title.rfind('|'))
+        .filter(|index| {
+            title[*index..]
+                .to_ascii_lowercase()
+                .contains("genshin impact")
+        })?;
+    let normalized = delete_title_span(title, split, title.len());
+    title_stable_residue_is_valid(&normalized).then_some(normalized)
+}
+
+fn delete_year_soundtrack_suffix(title: &str) -> Option<String> {
+    let lower = title.to_ascii_lowercase();
+    let suffix_start = lower.rfind(" soundtrack (")?;
+    if !title[..suffix_start]
+        .chars()
+        .next_back()
+        .is_some_and(|character| matches!(character, '-' | '–' | '—'))
+    {
+        return None;
+    }
+    let year_start = suffix_start + " soundtrack (".len();
+    let year_end = year_start + 4;
+    let year = lower.get(year_start..year_end)?;
+    if !year.chars().all(|character| character.is_ascii_digit()) {
+        return None;
+    }
+    if lower.get(year_end..year_end + 1) != Some(")") || year_end + 1 != lower.len() {
+        return None;
+    }
+    let normalized = delete_title_span(title, suffix_start - 1, title.len());
+    title_stable_residue_is_valid(&normalized).then_some(normalized)
+}
+
+fn delete_catalog_prefix(title: &str) -> String {
+    const PREFIXES: &[&str] = &[
+        "Terraria Music - ",
+        "Terraria OST - ",
+        "Terraria: Otherworld OST - ",
+        "Terraria- Otherworld OST - ",
+        "Terraria Console Soundtrack - ",
+        "Terraria Overhaul Music - ",
+        "TENET Official Soundtrack - ",
+        "ZWEI2 - ",
+        "[Official] TUNIC (Original Soundtrack) - Full Album - Lifeformed × Janice Kwan - ",
+        "[Official] TUNIC (Original Soundtrack) - ",
+    ];
+
+    if let Some(normalized) = delete_blue_archive_catalog_prefix(title) {
+        return normalized;
+    }
+    if let Some(normalized) = delete_minecraft_volume_alpha_prefix(title) {
+        return normalized;
+    }
+    for prefix in PREFIXES {
+        if let Some(normalized) = delete_title_prefix(title, prefix) {
+            return normalized;
+        }
+    }
+    title.to_string()
+}
+
+fn delete_blue_archive_catalog_prefix(title: &str) -> Option<String> {
+    for prefix in ["ブルーアーカイブ Blue Archive OST ", "Blue Archive OST "] {
+        let Some(rest) = title.strip_prefix(prefix) else {
+            continue;
+        };
+        let mut end = 0usize;
+        for (index, character) in rest.char_indices() {
+            if !character.is_ascii_digit() {
+                break;
+            }
+            end = index + character.len_utf8();
+        }
+        if end == 0 {
+            continue;
+        }
+        let rest = &rest[end..];
+        let rest = rest.strip_prefix('.').unwrap_or(rest).trim_start();
+        if !title_stable_residue_is_valid(rest) {
+            continue;
+        }
+        return Some(cleanup_title_after_noise_deletion(rest));
+    }
+    None
+}
+
+fn delete_minecraft_volume_alpha_prefix(title: &str) -> Option<String> {
+    let prefix = "Minecraft Volume Alpha - ";
+    let rest = title.strip_prefix(prefix)?;
+    let (number, residue) = rest.split_once(" - ")?;
+    if !number.chars().all(|character| character.is_ascii_digit()) {
+        return None;
+    }
+    title_stable_residue_is_valid(residue).then(|| cleanup_title_after_noise_deletion(residue))
+}
+
+fn delete_title_prefix(title: &str, prefix: &str) -> Option<String> {
+    let rest = title.strip_prefix(prefix)?;
+    title_stable_residue_is_valid(rest).then(|| cleanup_title_after_noise_deletion(rest))
+}
+
+fn delete_title_suffix(title: &str, suffix: &str) -> Option<String> {
+    if !title
+        .to_ascii_lowercase()
+        .ends_with(&suffix.to_ascii_lowercase())
+    {
+        return None;
+    }
+    let start = title.len() - suffix.len();
+    let normalized = delete_title_span(title, start, title.len());
+    title_stable_residue_is_valid(&normalized).then_some(normalized)
+}
+
+fn delete_title_span(title: &str, start: usize, end: usize) -> String {
+    let mut normalized = String::new();
+    normalized.push_str(&title[..start]);
+    normalized.push_str(&title[end..]);
+    cleanup_title_after_noise_deletion(&normalized)
+}
+
+fn title_stable_residue_is_valid(title: &str) -> bool {
+    let title = cleanup_title_after_noise_deletion(title);
+    title_noise_text_has_language_character(&title) && !title_is_number_like_only(&title)
 }
 
 fn music_title_normalization_evidence(
@@ -1324,6 +1629,75 @@ fn title_noise_text_has_language_character(text: &str) -> bool {
     text.chars().any(char::is_alphabetic)
 }
 
+fn title_is_number_like_only(title: &str) -> bool {
+    if title_is_plain_number_index(title) {
+        return true;
+    }
+
+    let normalized = title_noise_canonical_key(title);
+    for marker in ["pt", "part"] {
+        let Some(rest) = normalized.strip_prefix(marker) else {
+            continue;
+        };
+        let rest = rest.trim_start_matches(|character: char| {
+            character.is_whitespace()
+                || matches!(
+                    character,
+                    '#' | '.' | '-' | '–' | '—' | '_' | ':' | ';' | '/' | '\\'
+                )
+        });
+        if title_is_plain_number_index(rest) {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn title_is_plain_number_index(title: &str) -> bool {
+    let mut has_digit = false;
+    for character in title.chars() {
+        if character.is_ascii_digit() {
+            has_digit = true;
+            continue;
+        }
+        if character.is_whitespace()
+            || matches!(
+                character,
+                '#' | '.' | '-' | '–' | '—' | '_' | ':' | ';' | '/' | '\\' | '(' | ')' | '[' | ']'
+            )
+        {
+            continue;
+        }
+        return false;
+    }
+    has_digit
+}
+
+fn title_noise_canonical_key(text: &str) -> String {
+    let mut normalized = String::new();
+    let mut previous_was_space = false;
+    for character in text.chars().flat_map(char::to_lowercase) {
+        let character = match character {
+            '：' => ':',
+            '｜' => '|',
+            '“' | '”' | '"' | '\'' | '’' | '‘' => ' ',
+            '–' | '—' | '_' => '-',
+            _ => character,
+        };
+        if character.is_whitespace() {
+            if !previous_was_space {
+                normalized.push(' ');
+            }
+            previous_was_space = true;
+            continue;
+        }
+        normalized.push(character);
+        previous_was_space = false;
+    }
+    normalized.trim().to_string()
+}
+
 fn repair_normalized_titles_from_source_evidence(
     normalized: &mut [String],
     evidence: &[TitleNoiseEvidence],
@@ -1337,7 +1711,8 @@ fn repair_normalized_titles_from_source_evidence(
 
     for (source_index, title) in normalized.iter_mut().enumerate() {
         let current_damage = title_bracket_damage_score(title);
-        if current_damage == 0 {
+        let needs_source_repair = title_needs_source_evidence_repair(title);
+        if current_damage == 0 && !needs_source_repair {
             continue;
         }
         let Some(repaired) = evidence_by_source
@@ -1352,21 +1727,64 @@ fn repair_normalized_titles_from_source_evidence(
 
 fn best_source_evidence_title_repair(current: &str, source_evidence: &[&str]) -> Option<String> {
     let current_damage = title_bracket_damage_score(current);
+    let current_needs_source_repair = title_needs_source_evidence_repair(current);
     source_evidence
         .iter()
         .map(|candidate| cleanup_title_after_noise_deletion(candidate))
         .filter(|candidate| {
             candidate != current
                 && title_noise_text_has_language_character(candidate)
-                && title_bracket_damage_score(candidate) < current_damage
+                && (title_bracket_damage_score(candidate) < current_damage
+                    || (current_needs_source_repair
+                        && !title_needs_source_evidence_repair(candidate)
+                        && title_bracket_damage_score(candidate) <= current_damage))
         })
         .max_by_key(|candidate| {
             (
-                current_damage - title_bracket_damage_score(candidate),
+                current_damage.saturating_sub(title_bracket_damage_score(candidate)),
+                usize::from(current_needs_source_repair),
                 title_word_count(candidate),
                 candidate.chars().count(),
             )
         })
+}
+
+fn title_needs_source_evidence_repair(title: &str) -> bool {
+    let normalized = title_noise_canonical_key(title);
+    title_is_catalog_number_without_title(&normalized) || title_is_catalog_shell(&normalized)
+}
+
+fn title_is_catalog_number_without_title(normalized: &str) -> bool {
+    const PREFIXES: &[&str] = &[
+        "ブルーアーカイブ blue archive ost ",
+        "blue archive ost ",
+        "minecraft volume alpha - ",
+    ];
+
+    for prefix in PREFIXES {
+        let Some(rest) = normalized.strip_prefix(prefix) else {
+            continue;
+        };
+        let rest = rest.trim_matches(|character: char| {
+            character.is_whitespace() || is_dangling_title_separator(character) || character == '.'
+        });
+        if !rest.is_empty() && rest.chars().all(|character| character.is_ascii_digit()) {
+            return true;
+        }
+    }
+    false
+}
+
+fn title_is_catalog_shell(normalized: &str) -> bool {
+    matches!(
+        normalized,
+        "cyberpunk 2077 ost"
+            | "death stranding ost"
+            | "death stranding 2 on the beach original video game score"
+            | "tenet official soundtrack"
+            | "tenet official soundtrack - watertower music"
+            | "zwei2 original soundtrack"
+    )
 }
 
 fn balanced_bracket_spans(title: &str) -> Vec<(usize, usize)> {
@@ -1468,7 +1886,7 @@ fn delete_title_noise_affix_occurrence(
     normalized.push_str(&title[..start]);
     normalized.push_str(&title[end..]);
     let normalized = cleanup_title_after_noise_deletion(&normalized);
-    if !title_noise_text_has_language_character(&normalized) {
+    if !title_stable_residue_is_valid(&normalized) {
         return title.to_string();
     }
     if title_bracket_damage_score(&normalized) > title_bracket_damage_score(title) {
@@ -1515,7 +1933,7 @@ fn title_noise_affix_residue_is_valid(title: &str, start: usize, end: usize) -> 
     residue.push_str(&title[..start]);
     residue.push_str(&title[end..]);
     let residue = cleanup_title_after_noise_deletion(&residue);
-    title_noise_text_has_language_character(&residue)
+    title_stable_residue_is_valid(&residue)
         && title_bracket_damage_score(&residue) <= title_bracket_damage_score(title)
 }
 
@@ -1866,7 +2284,7 @@ pub(crate) fn restore_single_source_musics_from_task(
             .unwrap_or(&collection.name)
             .to_string();
         restored.push(Music {
-    occurrence_id: String::new(),
+            occurrence_id: String::new(),
             name: name.clone(),
             alias: name,
             group: default_group.clone(),
@@ -2035,7 +2453,7 @@ fn collection_from_manifest(
 
         manifest_file_paths.insert(relative_path.clone());
         musics.push(Music {
-    occurrence_id: String::new(),
+            occurrence_id: String::new(),
             name,
             alias,
             group,
@@ -2142,6 +2560,7 @@ fn collect_local_audio_files(
     Ok(files)
 }
 
+#[cfg(test)]
 fn collect_manifest_audio_file_paths(
     collection_path: &Path,
     manifest_paths: &HashSet<String>,
@@ -2262,41 +2681,24 @@ fn local_music_from_audio_file(
     }
 }
 
-fn manifest_from_collection(
+fn manifest_from_raw_leaf_evidence(
     collection: &Collection,
     source_kind: CollectionSourceKind,
+    probe: &LeafProbe,
+    relative_path: &str,
+    group: &Group,
 ) -> CollectionManifest {
-    let mut groups = BTreeMap::<String, CollectionManifestGroup>::new();
-    let musics = collection
-        .musics
-        .iter()
-        .filter_map(|music| {
-            let path = music.path.as_deref()?.trim();
-            if path.is_empty() {
-                return None;
-            }
-
-            if music.group.url != collection.url {
-                groups
-                    .entry(music.group.url.clone())
-                    .or_insert_with(|| CollectionManifestGroup {
-                        name: music.group.name.clone(),
-                        url: music.group.url.clone(),
-                        folder: music.group.folder.clone(),
-                    });
-            }
-
-            Some(CollectionManifestMusic {
-                name: music.name.clone(),
-                alias: music.alias.clone(),
-                url: music.url.clone(),
-                path: normalize_path_text(path),
-                group_url: music.group.url.clone(),
-                start_ms: music.start_ms,
-                end_ms: music.end_ms,
-                liked: music.liked,
-            })
+    let musics = materialize_music_entries(probe, relative_path, group.clone())
+        .into_iter()
+        .map(collection_manifest_music_from_music)
+        .collect();
+    let groups = (group.url != collection.url)
+        .then(|| CollectionManifestGroup {
+            name: group.name.clone(),
+            url: group.url.clone(),
+            folder: group.folder.clone(),
         })
+        .into_iter()
         .collect();
 
     CollectionManifest {
@@ -2309,8 +2711,21 @@ fn manifest_from_collection(
             enable_updates: collection.enable_updates,
             last_updated: Some(collection.last_updated.clone()),
         },
-        groups: groups.into_values().collect(),
+        groups,
         musics,
+    }
+}
+
+fn collection_manifest_music_from_music(music: Music) -> CollectionManifestMusic {
+    CollectionManifestMusic {
+        name: music.name,
+        alias: music.alias,
+        url: music.url,
+        path: normalize_path_text(music.path.as_deref().unwrap_or_default()),
+        group_url: music.group.url,
+        start_ms: music.start_ms,
+        end_ms: music.end_ms,
+        liked: music.liked,
     }
 }
 
@@ -2327,7 +2742,7 @@ fn resolve_manifest_music_group(
     groups.get(group_url).cloned()
 }
 
-fn write_collection_manifest_file(
+fn write_raw_leaf_manifest_file(
     collection_root: &Path,
     manifest: &CollectionManifest,
 ) -> Result<()> {
@@ -2335,7 +2750,7 @@ fn write_collection_manifest_file(
         .with_context(|| format!("failed to create {}", collection_root.display()))?;
     let manifest_path = collection_root.join(COLLECTION_MANIFEST_FILE_NAME);
     let manifest = match read_collection_manifest_file(&manifest_path)? {
-        Some(existing) => merge_collection_manifest(existing, manifest.clone()),
+        Some(existing) => merge_raw_leaf_manifest_evidence(existing, manifest.clone()),
         None => manifest.clone(),
     };
     let text =
@@ -2344,7 +2759,7 @@ fn write_collection_manifest_file(
         .with_context(|| format!("failed to write {}", manifest_path.display()))
 }
 
-fn merge_collection_manifest(
+fn merge_raw_leaf_manifest_evidence(
     existing: CollectionManifest,
     next: CollectionManifest,
 ) -> CollectionManifest {
@@ -2352,7 +2767,28 @@ fn merge_collection_manifest(
         return next;
     }
 
-    let mut merged = existing;
+    let next_file_scopes = next
+        .musics
+        .iter()
+        .map(collection_manifest_music_file_scope)
+        .collect::<HashSet<_>>();
+    let CollectionManifest {
+        version,
+        collection,
+        groups,
+        musics,
+    } = existing;
+    let retained_musics = musics
+        .into_iter()
+        .filter(|music| !next_file_scopes.contains(&collection_manifest_music_file_scope(music)));
+
+    let mut merged = CollectionManifest {
+        version,
+        collection,
+        groups,
+        musics: retained_musics.collect(),
+    };
+
     let mut group_urls = merged
         .groups
         .iter()
@@ -2369,16 +2805,7 @@ fn merge_collection_manifest(
         .iter()
         .map(collection_manifest_music_key)
         .collect::<HashSet<_>>();
-    let existing_file_scopes = merged
-        .musics
-        .iter()
-        .map(collection_manifest_music_file_scope)
-        .collect::<HashSet<_>>();
     for music in next.musics {
-        if existing_file_scopes.contains(&collection_manifest_music_file_scope(&music)) {
-            continue;
-        }
-
         let key = collection_manifest_music_key(&music);
         if music_keys.insert(key) {
             merged.musics.push(music);

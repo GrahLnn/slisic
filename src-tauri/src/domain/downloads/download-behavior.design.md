@@ -315,13 +315,79 @@ Ready finalize downloaded temp -> Commit recovered temp:
 - Scheduling: recovered temp evidence enters the finalization-ready queue and
   follows the same commit path as fresh downloads.
 
-Commit leaf -> Loudness measurement:
+Commit leaf -> Post-download work requests:
 
-- Reads: persisted music rows for the committed relative path.
-- Writes: loudness values for matching music identities only.
-- Emits: task change after measuring state and after completion.
-- Rejection: measurement failure is leaf-local failure. Playback is not allowed
-  to wait on this state.
+- Owner: `downloads::service`.
+- Reads: committed collection identity, collection source kind, save root, and
+  committed relative path.
+- Writes: no audio evidence and no music identity changes.
+- Emits: two independent cargos:
+  - `LoudnessEvidenceRequest` for persisted music rows matching the committed
+    relative path.
+  - `AudioTailTrimRequest` for the owning collection immediately after this
+    single music row is stable.
+- Rejection: missing runtime or unsupported collection kind is logged by the
+  receiving owner. Download completion is not reopened by post-download work.
+
+Downloaded leaf -> Loudness evidence:
+
+- Owner: `loudness_evidence`.
+- Reads: explicit track cargo only.
+- Writes: loudness profile for the same file/range identity.
+- Rejection: invalid range, missing file, missing DB target, or ffmpeg failure
+  closes or preserves the pending task according to loudness evidence rules.
+- Closed path: loudness owner does not scan the library for missing evidence.
+
+Stable music row -> Audio tail trim:
+
+- Owner: `audio_tail_trim`.
+- Reads: explicit collection cargo only, then the current collection rows.
+- Pending store: `audio-tail-trim-pending.json`, keyed by collection URL.
+  downloaded/restored/playback cargo is retained while unfinished and removed
+  after the owner reaches a logged no-op or applied outcome.
+- Writes: `end_ms`, `canonical_music_id`, `occurrence_id`, and cleared
+  `loudness_profile` only for rows with strong common-tail evidence.
+- Cut point: common-tail evidence identifies which suffix is shared; it is not
+  itself the playback cut. `audio_tail_trim` refines each attached track's cut
+  to the nearest low-energy boundary around that suffix start, using the
+  `ffplayr` tail fingerprint `rms_db` windows and the analysis
+  `effective_end_ms` coordinate. If no quiet boundary is available, the owner
+  falls back to the common suffix start and still rejects no-op or unsafe
+  trims.
+- Does not write: `.slisic.collection.toml`; the manifest is download evidence,
+  not the normalized DB/playback projection.
+- Emits: playable library wake, audio-style wake, current-session identity
+  updates for affected playback tracks, and new loudness cargos for trimmed rows.
+- Rejection: single-file collections, too few playable files, weak common-tail
+  evidence, unsafe trim length, per-track mismatch, and missing files are no-op
+  logged outcomes, not download failures.
+- Closed path: download task terminal state, UI state, and first/next selection
+  do not infer or apply tail trimming directly.
+
+Playback current track -> Audio tail trim priority cargo:
+
+- Owner: `player` emits only the current track event; `audio_tail_trim` owns
+  scheduling and detection.
+- Reads: current playback track source music identity as focus cargo, then
+  resolves save root inside the tail-trim owner without blocking playback
+  start.
+- Writes: no playback range directly.
+- Emits: high-priority `AudioTailTrimRequest` for the source collection.
+- Focus rule: the request carries only the current music URL/path/range. The
+  tail-trim owner uses that cargo to scan the current track first and, when
+  shared-tail evidence already covers it, applies only that focused trim through
+  the normal collection commit path while the full collection scan continues.
+- Coalesced focus: if playback changes while the collection is already being
+  scanned, the active worker may read the coalesced focus cargo before choosing
+  the next candidate. This changes scan order only; it never grants playback
+  authority to infer or write tail trims.
+- Linear consumption: pure `playback_current` cargo coalesced during an active
+  scan is absorbed by that scan and removed from the pending store when the scan
+  reaches an applied or no-op outcome. `downloaded_leaf` and `restored_manifest`
+  cargo remain rerun-required because they may describe a changed collection
+  snapshot that the active scan did not observe.
+- Rejection: missing source music or collection owner is logged and does not
+  alter playback.
 
 ```mermaid
 flowchart LR
@@ -335,8 +401,12 @@ flowchart LR
     Temp --> Finalize
     Downloaded --> Finalize
     Finalize --> Commit["Commit leaf file, music, manifest, task"]
-    Commit --> Loudness["Measure loudness for matching rows"]
-    Loudness --> ResidualRemoved["Residual leaf removed"]
+    Commit --> Loudness["Request LoudnessEvidence for matching rows"]
+    Commit --> TailTrim["Request AudioTailTrim for stable music's collection"]
+    Commit --> ResidualRemoved["Residual leaf removed"]
+    ResidualRemoved --> Terminal["Task terminal"]
+    TailTrim --> TailRows["Replace DB ranges if evidence holds"]
+    TailRows --> TailLoudness["Request LoudnessEvidence for trimmed identities"]
 ```
 
 Pipeline drained -> Terminal task:
@@ -385,8 +455,12 @@ Final file committed -> Music rows persisted:
 
 Music rows persisted -> Manifest written:
 
-- Owner: `collection_import::write_collection_manifest`.
-- Writes: manifest file, creating the collection root if needed.
+- Owner: `collection_import::write_raw_leaf_manifest_evidence`.
+- Writes: manifest file from download evidence, creating the collection root if
+  needed. Raw title/chapter text comes from `LeafProbe`; measured local audio
+  duration can update `end_ms` because it is a downloaded-file fact.
+- Does not write: normalized DB title cleanup, audio tail trim, loudness, current
+  playback state, or audio-style model state.
 - Rejection: manifest serialization or file write failure.
 
 Manifest written -> Download task completion update:

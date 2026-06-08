@@ -475,6 +475,18 @@ function createNowPlayingTrackPatch(
   };
 }
 
+function currentNowPlayingCanonicalMusicId(context: Context): string | null {
+  if (
+    context.nowPlayingTrackUrl === null ||
+    context.nowPlayingTrackStartMs === null ||
+    context.nowPlayingTrackEndMs === null
+  ) {
+    return null;
+  }
+
+  return `source:${context.nowPlayingTrackUrl.trim()}:${context.nowPlayingTrackStartMs}:${context.nowPlayingTrackEndMs}`;
+}
+
 function createInitialPlaybackTrackEvidence(
   context: Context,
   playlistName: string,
@@ -805,6 +817,8 @@ const draftExtraRemoved = payloads["draft.extra.removed"];
 const collectionUpdatesRequested = payloads["collection.updates.requested"];
 const excludeAdded = payloads["exclude.added"];
 const excludeRemoved = payloads["exclude.removed"];
+const currentMusicLikedChanged = payloads["player.current_music_liked.changed"];
+const currentMusicLikedCommitted = payloads["player.current_music_liked.committed"];
 const nowPlayingTrackChanged = payloads["player.now_playing_track.changed"];
 const playbackSurfaceStatusChanged = payloads["player.playback_surface_status.changed"];
 
@@ -935,6 +949,25 @@ export const machine = src.createMachine({
       actions: assign(({ context, event }) => ({
         configLibrary: removeExcludeFromConfigLibrary(context.configLibrary, event.output),
       })),
+    },
+    [currentMusicLikedChanged.evt]: {
+      actions: assign(({ context, event }) =>
+        context.playingPlaylistName !== null &&
+        context.nowPlayingTrackUrl !== null &&
+        context.nowPlayingTrackStartMs !== null &&
+        context.nowPlayingTrackEndMs !== null
+          ? { nowPlayingTrackLiked: event.output }
+          : {},
+      ),
+    },
+    [currentMusicLikedCommitted.evt]: {
+      actions: assign(({ context, event }) =>
+        context.playingPlaylistName === event.output.playlist_name &&
+        context.playingSessionGeneration === event.output.session_generation &&
+        currentNowPlayingCanonicalMusicId(context) === event.output.canonical_music_id
+          ? { nowPlayingTrackLiked: event.output.liked }
+          : {},
+      ),
     },
     [nowPlayingTrackChanged.evt]: {
       actions: assign(({ context, event }) => {

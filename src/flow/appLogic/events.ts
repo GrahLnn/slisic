@@ -19,6 +19,7 @@ import {
   type Music,
   type DownloadTaskChangeSignal,
   type NowPlayingTrackChangedEvent,
+  type NowPlayingTrackLikedChangedEvent,
   type PlaybackExcludeCommittedEvent,
   type PlaybackDiagnosticTraceEvent,
   type PlaybackSurfaceStatusChangedEvent,
@@ -494,6 +495,12 @@ export async function listenNowPlayingTrackChanged(
   return crab.evt("nowPlayingTrackChangedEvent")(handler);
 }
 
+export async function listenNowPlayingTrackLikedChanged(
+  handler: (payload: NowPlayingTrackLikedChangedEvent) => void,
+): Promise<() => void> {
+  return crab.evt("nowPlayingTrackLikedChangedEvent")(handler);
+}
+
 export async function listenPlaybackSurfaceStatusChanged(
   handler: (payload: PlaybackSurfaceStatusChangedEvent) => void,
 ): Promise<() => void> {
@@ -783,6 +790,8 @@ export const payloads = collect(
   ...event<CollectionUpdatesChange>()("collection.updates.requested"),
   ...event<ExcludeAddedChange>()("exclude.added"),
   ...event<ExcludeRemovedChange>()("exclude.removed"),
+  ...event<boolean>()("player.current_music_liked.changed"),
+  ...event<NowPlayingTrackLikedChangedEvent>()("player.current_music_liked.committed"),
   ...event<NowPlayingTrackChangedEvent>()("player.now_playing_track.changed"),
   ...event<PlaybackSurfaceStatusChangedEvent>()("player.playback_surface_status.changed"),
 );

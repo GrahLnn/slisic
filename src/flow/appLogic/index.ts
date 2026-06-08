@@ -15,6 +15,7 @@ import {
   listenPlaybackDiagnosticTrace,
   listenPlaybackExcludeCommitted,
   listenPlaybackSurfaceStatusChanged,
+  listenNowPlayingTrackLikedChanged,
   listenNowPlayingTrackChanged,
   MainStateT,
   persistSavePath,
@@ -35,7 +36,9 @@ import {
   draftItemRemoved,
   excludeAdded,
   excludeRemoved,
+  currentMusicLikedChanged,
   nowPlayingTrackChanged,
+  currentMusicLikedCommitted,
   openPlaylist,
   playbackSurfaceStatusChanged,
   playPlaylist,
@@ -93,6 +96,7 @@ const selectContext = me.select((shot: { context: ActorSnapshot["context"] }) =>
 let started = false;
 let unsubscribeDebug: (() => void) | null = null;
 let unsubscribeNowPlayingTrackChanged: (() => void) | null = null;
+let unsubscribeNowPlayingTrackLikedChanged: (() => void) | null = null;
 let unsubscribeDownloadTaskChanged: (() => void) | null = null;
 let unsubscribePlaybackDiagnosticTrace: (() => void) | null = null;
 let unsubscribePlaybackExcludeCommitted: (() => void) | null = null;
@@ -808,6 +812,29 @@ function attachNowPlayingTrackListener() {
     });
 }
 
+function attachNowPlayingTrackLikedListener() {
+  if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) {
+    return;
+  }
+
+  void listenNowPlayingTrackLikedChanged((payload) => {
+    recordTrace("player-now-playing-liked-event-received", {
+      playlistName: payload.playlist_name,
+      sessionGeneration: payload.session_generation,
+      canonicalMusicId: payload.canonical_music_id,
+      liked: payload.liked,
+      ...traceAppSnapshotPayload(actor.getSnapshot()),
+    });
+    send(currentMusicLikedCommitted.load(payload));
+  })
+    .then((unlisten) => {
+      unsubscribeNowPlayingTrackLikedChanged = unlisten;
+    })
+    .catch((error) => {
+      console.error("Failed to subscribe to now playing track liked changes", error);
+    });
+}
+
 function attachPlaybackSurfaceStatusListener() {
   if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) {
     return;
@@ -1065,6 +1092,7 @@ export const action = {
       return;
     }
 
+    actor.send(currentMusicLikedChanged.load(liked));
     requestSetCurrentPlaybackMusicLiked(liked);
   },
   openSpectrum: () => {
@@ -1293,6 +1321,7 @@ export function ensureStarted() {
   actor.start();
   attachDebugLogger();
   attachNowPlayingTrackListener();
+  attachNowPlayingTrackLikedListener();
   attachPlaybackSurfaceStatusListener();
   attachDownloadTaskChangeListener();
   attachPlaybackDiagnosticTraceListener();
@@ -1310,6 +1339,8 @@ export function stop() {
   unsubscribeDebug = null;
   unsubscribeNowPlayingTrackChanged?.();
   unsubscribeNowPlayingTrackChanged = null;
+  unsubscribeNowPlayingTrackLikedChanged?.();
+  unsubscribeNowPlayingTrackLikedChanged = null;
   unsubscribePlaybackSurfaceStatusChanged?.();
   unsubscribePlaybackSurfaceStatusChanged = null;
   unsubscribeDownloadTaskChanged?.();

@@ -5349,6 +5349,17 @@ fn audio_style_embedding_cache_root(app: &AppHandle) -> Result<PathBuf> {
 }
 
 #[cfg(not(test))]
+pub(crate) fn audio_style_model_artifact_paths(app: &AppHandle) -> Result<Vec<PathBuf>> {
+    Ok(vec![
+        audio_style_embedding_cache_root(app)?,
+        audio_style_model_evidence_cache_path(app)?
+            .parent()
+            .ok_or_else(|| anyhow!("audio style model evidence path has no parent directory"))?
+            .to_path_buf(),
+    ])
+}
+
+#[cfg(not(test))]
 fn audio_style_model_evidence_cache_path(app: &AppHandle) -> Result<PathBuf> {
     Ok(app
         .path()

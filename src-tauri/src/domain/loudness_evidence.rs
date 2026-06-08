@@ -12,7 +12,7 @@ use crate::utils::binaries::{ManagedBinary, ensure_managed_binary};
 use anyhow::bail;
 use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 #[cfg(not(test))]
 use std::collections::VecDeque;
 use std::fs;
@@ -38,7 +38,7 @@ const LOUDNESS_MEASUREMENT_COOLDOWN: Duration = Duration::from_millis(1500);
 const LOUDNESS_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 #[cfg(not(test))]
 const LOUDNESS_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(50);
-const LOUDNESS_PENDING_TASK_FILE_NAME: &str = "loudness-evidence-pending.json";
+pub(crate) const LOUDNESS_PENDING_TASK_FILE_NAME: &str = "loudness-evidence-pending.json";
 const LOUDNESS_PENDING_TASK_FILE_VERSION: &str = "loudness-evidence-pending.v1";
 
 #[cfg(not(test))]
@@ -51,6 +51,7 @@ struct LoudnessEvidenceRuntime {
     pending_task_file_lock: Mutex<()>,
     active_binary_tasks: AtomicUsize,
     active_identities: Mutex<HashSet<String>>,
+    published_profiles: Mutex<HashMap<String, LoudnessProfile>>,
     completion_notify: tokio::sync::Notify,
     queue: Mutex<VecDeque<QueuedLoudnessEvidence>>,
     worker_running: AtomicBool,
@@ -167,6 +168,7 @@ pub(crate) fn initialize_runtime(app: AppHandle) {
                 pending_task_file_lock: Mutex::new(()),
                 active_binary_tasks: AtomicUsize::new(0),
                 active_identities: Mutex::new(HashSet::new()),
+                published_profiles: Mutex::new(HashMap::new()),
                 completion_notify: tokio::sync::Notify::new(),
                 queue: Mutex::new(VecDeque::new()),
                 worker_running: AtomicBool::new(false),
@@ -198,6 +200,34 @@ pub(crate) fn request_track_loudness_evidence(request: LoudnessEvidenceRequest) 
     };
 
     enqueue_loudness_measurement(runtime, request, LoudnessEvidenceSource::DirectRequest);
+}
+
+#[cfg(not(test))]
+pub(crate) fn request_downloaded_leaf_loudness_evidence(request: LoudnessEvidenceRequest) {
+    let Some(runtime) = LOUDNESS_EVIDENCE_RUNTIME.get().cloned() else {
+        log::warn!(
+            target: LOUDNESS_EVIDENCE_LOG_TARGET,
+            "loudness_evidence_request_skipped reason=runtime_uninitialized source=downloaded_leaf canonical_music_id=\"{}\"",
+            request.canonical_music_id
+        );
+        return;
+    };
+
+    enqueue_loudness_measurement(runtime, request, LoudnessEvidenceSource::DownloadedLeaf);
+}
+
+#[cfg(not(test))]
+pub(crate) fn request_audio_tail_trim_loudness_evidence(request: LoudnessEvidenceRequest) {
+    let Some(runtime) = LOUDNESS_EVIDENCE_RUNTIME.get().cloned() else {
+        log::warn!(
+            target: LOUDNESS_EVIDENCE_LOG_TARGET,
+            "loudness_evidence_request_skipped reason=runtime_uninitialized source=audio_tail_trim canonical_music_id=\"{}\"",
+            request.canonical_music_id
+        );
+        return;
+    };
+
+    enqueue_loudness_measurement(runtime, request, LoudnessEvidenceSource::AudioTailTrim);
 }
 
 #[cfg(not(test))]
@@ -248,6 +278,9 @@ pub(crate) async fn wait_for_playback_track_loudness_profile(
     {
         return Ok(Some(persisted));
     }
+    if let Some(profile) = published_loudness_profile_for_request(&runtime, &request)? {
+        return Ok(Some(profile));
+    }
 
     enqueue_loudness_measurement(
         Arc::clone(&runtime),
@@ -295,6 +328,8 @@ pub(crate) async fn wait_for_playback_track_loudness_profile(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LoudnessEvidenceSource {
     PendingStore,
+    DownloadedLeaf,
+    AudioTailTrim,
     DirectRequest,
     FirstSlot,
 }
@@ -304,6 +339,8 @@ impl LoudnessEvidenceSource {
     fn as_str(self) -> &'static str {
         match self {
             Self::PendingStore => "pending_store",
+            Self::DownloadedLeaf => "downloaded_leaf",
+            Self::AudioTailTrim => "audio_tail_trim",
             Self::DirectRequest => "direct_request",
             Self::FirstSlot => "first_slot",
         }
@@ -312,13 +349,18 @@ impl LoudnessEvidenceSource {
     fn priority(self) -> u8 {
         match self {
             Self::PendingStore => 0,
-            Self::DirectRequest => 1,
-            Self::FirstSlot => 2,
+            Self::DownloadedLeaf => 1,
+            Self::AudioTailTrim => 1,
+            Self::DirectRequest => 2,
+            Self::FirstSlot => 3,
         }
     }
 
     fn persists_pending(self) -> bool {
-        matches!(self, Self::DirectRequest | Self::FirstSlot)
+        matches!(
+            self,
+            Self::DownloadedLeaf | Self::AudioTailTrim | Self::DirectRequest | Self::FirstSlot
+        )
     }
 }
 
@@ -416,6 +458,16 @@ fn enqueue_loudness_measurement(
             _claim: claim,
         },
     ) {
+        if source.persists_pending() {
+            persist_pending_loudness_request(&runtime, &request);
+        }
+        log::warn!(
+            target: LOUDNESS_EVIDENCE_LOG_TARGET,
+            "loudness_evidence_request_deferred source={} reason=queue_unavailable canonical_music_id=\"{}\" pending_retained={}",
+            source.as_str(),
+            request.canonical_music_id,
+            source.persists_pending()
+        );
         return;
     }
 
@@ -481,10 +533,12 @@ fn push_loudness_queue(
 
     if queue.len() >= MAX_LOUDNESS_EVIDENCE_QUEUE_LEN {
         match queued.source {
+            LoudnessEvidenceSource::PendingStore
+            | LoudnessEvidenceSource::DownloadedLeaf
+            | LoudnessEvidenceSource::AudioTailTrim => return false,
             LoudnessEvidenceSource::DirectRequest | LoudnessEvidenceSource::FirstSlot => {
                 queue.pop_back();
             }
-            LoudnessEvidenceSource::PendingStore => return false,
         }
     }
 
@@ -608,13 +662,21 @@ async fn wait_for_loudness_profile_request_result(
     let key = loudness_identity_key(request);
     let wait = async {
         loop {
-            if let Some(profile) =
-                persisted_loudness_profile_for_request(request, LoudnessEvidenceSource::DirectRequest)
-                    .await?
+            if let Some(profile) = persisted_loudness_profile_for_request(
+                request,
+                LoudnessEvidenceSource::DirectRequest,
+            )
+            .await?
             {
                 return Ok(Some(profile));
             }
+            if let Some(profile) = published_loudness_profile_for_request(runtime, request)? {
+                return Ok(Some(profile));
+            }
             if !loudness_identity_active(runtime, &key)? {
+                if let Some(profile) = published_loudness_profile_for_request(runtime, request)? {
+                    return Ok(Some(profile));
+                }
                 return Ok(None);
             }
             let notified = runtime.completion_notify.notified();
@@ -645,6 +707,69 @@ fn loudness_identity_key(request: &LoudnessEvidenceRequest) -> String {
         "{}:{}:{}",
         request.canonical_music_id, request.start_ms, request.end_ms
     )
+}
+
+fn remember_published_loudness_profile(
+    profiles: &mut HashMap<String, LoudnessProfile>,
+    request: &LoudnessEvidenceRequest,
+    profile: LoudnessProfile,
+) {
+    profiles.insert(loudness_identity_key(request), profile);
+}
+
+fn read_published_loudness_profile(
+    profiles: &HashMap<String, LoudnessProfile>,
+    request: &LoudnessEvidenceRequest,
+) -> Option<LoudnessProfile> {
+    profiles.get(&loudness_identity_key(request)).copied()
+}
+
+#[cfg(not(test))]
+fn publish_loudness_profile_to_runtime(
+    request: &LoudnessEvidenceRequest,
+    profile: LoudnessProfile,
+) {
+    let Some(runtime) = LOUDNESS_EVIDENCE_RUNTIME.get() else {
+        return;
+    };
+    let Ok(mut profiles) = runtime.published_profiles.lock() else {
+        log::warn!(
+            target: LOUDNESS_EVIDENCE_LOG_TARGET,
+            "loudness_evidence_publish_cache_failed reason=published_profile_lock_poisoned canonical_music_id=\"{}\"",
+            request.canonical_music_id
+        );
+        return;
+    };
+    remember_published_loudness_profile(&mut profiles, request, profile);
+}
+
+#[cfg(not(test))]
+fn published_loudness_profile_for_request(
+    runtime: &LoudnessEvidenceRuntime,
+    request: &LoudnessEvidenceRequest,
+) -> Result<Option<LoudnessProfile>> {
+    let profiles = runtime
+        .published_profiles
+        .lock()
+        .map_err(|_| anyhow!("loudness evidence published profile lock is poisoned"))?;
+    Ok(read_published_loudness_profile(&profiles, request))
+}
+
+#[cfg(test)]
+pub(crate) fn remember_published_loudness_profile_for_test(
+    profiles: &mut HashMap<String, LoudnessProfile>,
+    request: &LoudnessEvidenceRequest,
+    profile: LoudnessProfile,
+) {
+    remember_published_loudness_profile(profiles, request, profile);
+}
+
+#[cfg(test)]
+pub(crate) fn read_published_loudness_profile_for_test(
+    profiles: &HashMap<String, LoudnessProfile>,
+    request: &LoudnessEvidenceRequest,
+) -> Option<LoudnessProfile> {
+    read_published_loudness_profile(profiles, request)
 }
 
 #[cfg(not(test))]
@@ -963,6 +1088,7 @@ fn publish_persisted_loudness_evidence(
     request: &LoudnessEvidenceRequest,
     persisted: LoudnessProfile,
 ) {
+    publish_loudness_profile_to_runtime(request, persisted);
     if let Err(error) =
         player_service::publish_loudness_evidence_to_current_session(request, persisted)
     {

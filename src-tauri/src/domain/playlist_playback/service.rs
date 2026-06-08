@@ -57,8 +57,6 @@ use tauri_specta::Event;
 #[cfg(not(test))]
 const INITIAL_PLAYBACK_QUEUE_LIMIT: usize = 256;
 #[cfg(not(test))]
-const PLAYLIST_PLAYBACK_IMMEDIATE_RECOVERY_SOURCE_LIMIT: usize = 16;
-#[cfg(not(test))]
 const PLAYLIST_PLAYBACK_RANDOM_WINDOW_LIMIT: usize = 96;
 #[cfg(not(test))]
 const PLAYLIST_PLAYBACK_QUEUE_REFRESH_INTERVAL_MS: u64 = 250;
@@ -411,15 +409,11 @@ pub async fn exclude_current_music_and_skip(
         return Ok(ExcludeCurrentMusicAndSkipResult::MissingMusic);
     };
     let excluded_music = project_excluded_current_music(&track, music);
-    let immediate_action = prepare_current_session_after_exclude(app, &track).await?;
-    match immediate_action {
-        ExcludeCurrentImmediatePlaybackAction::Skip => {
-            spawn_exclude_current_playback_skip(track.clone());
-        }
-        ExcludeCurrentImmediatePlaybackAction::Stop => {
-            spawn_exclude_current_playback_stop(track.clone());
-        }
+    let session_cargo = prepare_current_session_after_exclude(app, &track).await?;
+    if session_cargo.is_waiting_for_cargo() {
+        spawn_exclude_current_first_slot_wait(app.clone(), track.clone());
     }
+    spawn_exclude_current_playback_skip(track.clone());
 
     let exclude_result = playlist_repo::add_exclude(excluded_music).await?;
     PlaybackExcludeCommittedEvent {
@@ -428,17 +422,10 @@ pub async fn exclude_current_music_and_skip(
     }
     .emit(app)?;
     playable_index::notify_exclude_changed();
-    let outcome = refresh_current_session_after_exclude(app, &track).await?;
-    if let ExcludeCurrentMusicAndSkipOutcome::DeletedPlaylist { .. } = outcome
-        && !matches!(
-            immediate_action,
-            ExcludeCurrentImmediatePlaybackAction::Stop
-        )
-    {
-        spawn_exclude_current_playback_stop(track);
-    }
-
-    Ok(outcome.into_result(exclude_result))
+    Ok(ExcludeCurrentMusicAndSkipResult::Skipped {
+        exclude: exclude_result.exclude,
+        exclude_availability: exclude_result.exclude_availability,
+    })
 }
 
 #[cfg(not(test))]
@@ -455,14 +442,13 @@ fn spawn_exclude_current_playback_skip(track: PlaybackTrack) {
 }
 
 #[cfg(not(test))]
-fn spawn_exclude_current_playback_stop(track: PlaybackTrack) {
+fn spawn_exclude_current_first_slot_wait(app: AppHandle, track: PlaybackTrack) {
+    let task_playlist_name = track.playlist_name.clone();
     tauri::async_runtime::spawn(async move {
-        if let Err(error) = player_service::stop_playback().await {
+        if let Err(error) = wait_for_exclude_current_first_slot_cargo(&app, &track).await {
             eprintln!(
-                "[playlist_playback] failed to stop playback after excluding `{}`: {error}",
-                track.music_name
+                "[playlist_playback] failed to apply first-slot cargo after excluding current music from `{task_playlist_name}`: {error}"
             );
-            return;
         }
     });
 }
@@ -471,143 +457,233 @@ fn spawn_exclude_current_playback_stop(track: PlaybackTrack) {
 async fn prepare_current_session_after_exclude(
     app: &AppHandle,
     track: &PlaybackTrack,
-) -> Result<ExcludeCurrentImmediatePlaybackAction> {
+) -> Result<ExcludeCurrentSessionCargo> {
+    let trace_start = Instant::now();
     let prepared_tracks = load_current_session_track_resolution_snapshot(track)?;
     if !prepared_tracks.is_empty() {
+        let queue_count = prepared_tracks.len();
         player_service::update_current_session_tracks(prepared_tracks)?;
-        return Ok(ExcludeCurrentImmediatePlaybackAction::Skip);
+        emit_playlist_playback_trace(
+            "playlist-play-backend-exclude-session-cargo",
+            PlaylistPlaybackTrace::new(app)
+                .playlist_name(&track.playlist_name)
+                .track(track)
+                .elapsed(trace_start)
+                .queue_count(queue_count)
+                .status("next_ready"),
+        );
+        return Ok(ExcludeCurrentSessionCargo::NextReady);
     }
 
-    let fallback_candidates = load_immediate_playlist_playback_candidates(app, track).await?;
+    if let Some(initial) =
+        resolve_prepared_playlist_replacement_track_after_exclude(app, track).await?
+    {
+        let prepared_source = Some(initial.prepared_source);
+        let tracks = create_exclude_current_cargo_queue(track.clone(), initial.track.clone());
+        player_service::update_current_session_tracks(tracks)?;
+        consume_playlist_initial_prepared_source(&prepared_source);
+        emit_playlist_playback_trace(
+            "playlist-play-backend-exclude-session-cargo",
+            PlaylistPlaybackTrace::new(app)
+                .playlist_name(&track.playlist_name)
+                .track(&initial.track)
+                .elapsed(trace_start)
+                .queue_count(1)
+                .status("first_consumed"),
+        );
+        return Ok(ExcludeCurrentSessionCargo::FirstConsumed);
+    }
 
-    let fallback_tracks = propose_playlist_playback_queue_after_exclude_with_logging(
-        PlaylistPlaybackRecommendationRequest {
-            playlist_name: track.playlist_name.clone(),
-            current_track: track.clone(),
-            candidates: fallback_candidates,
-            recently_played_tracks: vec![track.clone()],
-        },
+    player_service::update_current_session_tracks(vec![])?;
+    playable_index::request_playlist_slot_refill(&track.playlist_name);
+    emit_playlist_playback_trace(
+        "playlist-play-backend-exclude-session-cargo",
+        PlaylistPlaybackTrace::new(app)
+            .playlist_name(&track.playlist_name)
+            .track(track)
+            .elapsed(trace_start)
+            .queue_count(0)
+            .status("waiting_for_cargo"),
     );
-    if fallback_tracks.is_empty() {
-        return Ok(ExcludeCurrentImmediatePlaybackAction::Stop);
-    }
-
-    player_service::update_current_session_tracks(fallback_tracks)?;
-    Ok(ExcludeCurrentImmediatePlaybackAction::Skip)
+    Ok(ExcludeCurrentSessionCargo::WaitingForCargo)
 }
 
 #[cfg(not(test))]
-async fn load_immediate_playlist_playback_candidates(
+async fn resolve_prepared_playlist_replacement_track_after_exclude(
     app: &AppHandle,
     track: &PlaybackTrack,
-) -> Result<Vec<PlaybackTrack>> {
-    let selection = playlist_repo::get_playlist_playback_selection_by_name(&track.playlist_name)
-        .await?
-        .ok_or_else(|| anyhow!("playlist `{}` not found", track.playlist_name))?;
-    let save_root = meta_service::resolve_save_root(app).await?;
-
-    let mut seen = HashSet::new();
-    let sources = load_random_playlist_playback_track_sources(
-        &selection,
-        PLAYLIST_PLAYBACK_IMMEDIATE_RECOVERY_SOURCE_LIMIT,
-    )
-    .await?;
-    for source in sources {
-        let source_key = playlist_playback_track_source_key(&source);
-        if !seen.insert(source_key) {
-            continue;
+) -> Result<Option<ResolvedPlaylistInitialTrack>> {
+    loop {
+        let Some(initial) =
+            resolve_prepared_playlist_initial_track(app, &track.playlist_name).await?
+        else {
+            return Ok(None);
+        };
+        if prepared_first_track_can_replace_excluded_current(&initial.track, track) {
+            return Ok(Some(initial));
         }
 
-        let Some(candidate) =
-            resolve_playlist_playback_source_track(&selection, source, &save_root)
-        else {
-            continue;
-        };
-        if !are_playlist_playback_tracks_equal(&candidate, track) {
-            return Ok(vec![candidate]);
+        emit_playlist_playback_trace(
+            "playlist-play-backend-exclude-first-discard",
+            PlaylistPlaybackTrace::new(app)
+                .playlist_name(&track.playlist_name)
+                .track(&initial.track)
+                .status("current_track"),
+        );
+        if let Err(error) = playable_index::discard_playlist_source(&initial.prepared_source) {
+            eprintln!(
+                "[playlist_playback] failed to discard excluded-current first slot playlist=\"{}\" generation={}: {error}",
+                initial.prepared_source.playlist_name, initial.prepared_source.generation
+            );
         }
     }
-
-    Ok(vec![])
 }
 
 #[cfg(not(test))]
 fn load_current_session_track_resolution_snapshot(
     track: &PlaybackTrack,
 ) -> Result<Vec<PlaybackTrack>> {
-    Ok(player_service::current_session_tracks_snapshot()?
-        .into_iter()
-        .filter(|candidate| !are_playlist_playback_tracks_equal(candidate, track))
-        .collect())
+    let current_tracks = player_service::current_session_tracks_snapshot()?;
+    Ok(exclude_current_next_cargo_queue(&current_tracks, track))
 }
 
-#[cfg(not(test))]
-async fn refresh_current_session_after_exclude(
-    app: &AppHandle,
-    track: &PlaybackTrack,
-) -> Result<ExcludeCurrentMusicAndSkipOutcome> {
-    let source = load_playlist_track_resolution_window(
-        app,
-        &track.playlist_name,
-        INITIAL_PLAYBACK_QUEUE_LIMIT,
-    )
-    .await?;
+pub(crate) fn exclude_current_next_cargo_queue(
+    tracks: &[PlaybackTrack],
+    anchor: &PlaybackTrack,
+) -> Vec<PlaybackTrack> {
+    let Some(anchor_index) = tracks
+        .iter()
+        .position(|track| are_playlist_playback_tracks_equal(track, anchor))
+    else {
+        return vec![];
+    };
 
-    if source.resolution.tracks.is_empty() {
-        player_service::update_current_session_tracks(vec![])?;
-        playlist_repo::delete_playlist_by_name(&track.playlist_name).await?;
-        playable_index::notify_playlist_deleted(&track.playlist_name);
-        return Ok(ExcludeCurrentMusicAndSkipOutcome::DeletedPlaylist {
-            playlist_name: track.playlist_name.clone(),
-        });
+    let tail = &tracks[anchor_index + 1..];
+    let Some(next_index) = tail
+        .iter()
+        .position(|track| !are_playlist_playback_tracks_equal(track, anchor))
+    else {
+        return vec![];
+    };
+
+    let mut cargo = Vec::with_capacity(tail.len() - next_index + 1);
+    cargo.push(anchor.clone());
+    cargo.extend(tail[next_index..].iter().cloned());
+    cargo
+}
+
+pub(crate) fn create_exclude_current_cargo_queue(
+    current: PlaybackTrack,
+    cargo: PlaybackTrack,
+) -> Vec<PlaybackTrack> {
+    if are_playlist_playback_tracks_equal(&current, &cargo) {
+        return vec![];
     }
 
-    let tracks = propose_playlist_playback_queue_after_exclude_with_logging(
-        PlaylistPlaybackRecommendationRequest {
-            playlist_name: source.playlist_name,
-            current_track: track.clone(),
-            candidates: source.resolution.tracks,
-            recently_played_tracks: vec![track.clone()],
-        },
-    );
-    player_service::update_current_session_tracks(tracks)?;
-    Ok(ExcludeCurrentMusicAndSkipOutcome::Skipped)
+    vec![current, cargo]
+}
+
+pub(crate) fn prepared_first_track_can_replace_excluded_current(
+    first: &PlaybackTrack,
+    current: &PlaybackTrack,
+) -> bool {
+    !are_playlist_playback_tracks_equal(first, current)
 }
 
 #[cfg(not(test))]
-enum ExcludeCurrentMusicAndSkipOutcome {
-    Skipped,
-    DeletedPlaylist { playlist_name: String },
+async fn wait_for_exclude_current_first_slot_cargo(
+    app: &AppHandle,
+    track: &PlaybackTrack,
+) -> Result<()> {
+    let trace_start = Instant::now();
+    let Some(session) = player_service::current_session_handle()? else {
+        emit_playlist_playback_trace(
+            "playlist-play-backend-exclude-first-wait-ended",
+            PlaylistPlaybackTrace::new(app)
+                .playlist_name(&track.playlist_name)
+                .track(track)
+                .elapsed(trace_start)
+                .status("no_active_session"),
+        );
+        return Ok(());
+    };
+    if session.playlist_name != track.playlist_name {
+        emit_playlist_playback_trace(
+            "playlist-play-backend-exclude-first-wait-ended",
+            PlaylistPlaybackTrace::new(app)
+                .playlist_name(&track.playlist_name)
+                .track(track)
+                .elapsed(trace_start)
+                .status("session_playlist_mismatch"),
+        );
+        return Ok(());
+    }
+
+    let mut index_revision = playable_index::subscribe_index_revision()?;
+    playable_index::request_playlist_slot_refill(&track.playlist_name);
+    loop {
+        if !player_service::is_session_current(&session)? {
+            emit_playlist_playback_trace(
+                "playlist-play-backend-exclude-first-wait-ended",
+                PlaylistPlaybackTrace::new(app)
+                    .playlist_name(&track.playlist_name)
+                    .track(track)
+                    .elapsed(trace_start)
+                    .status("session_changed"),
+            );
+            return Ok(());
+        }
+
+        if let Some(initial) =
+            resolve_prepared_playlist_replacement_track_after_exclude(app, track).await?
+        {
+            let tracks = create_exclude_current_cargo_queue(track.clone(), initial.track.clone());
+            if tracks.is_empty() {
+                continue;
+            }
+            let updated = player_service::update_session_tracks(&session, tracks.clone())?;
+            if updated {
+                consume_playlist_initial_prepared_source(&Some(initial.prepared_source));
+            }
+            emit_playlist_playback_trace(
+                "playlist-play-backend-exclude-first-session-update",
+                PlaylistPlaybackTrace::new(app)
+                    .playlist_name(&track.playlist_name)
+                    .track(&initial.track)
+                    .elapsed(trace_start)
+                    .queue_count(tracks.len())
+                    .status(if updated { "updated" } else { "stale_session" }),
+            );
+            return Ok(());
+        }
+
+        emit_playlist_playback_trace(
+            "playlist-play-backend-exclude-first-wait",
+            PlaylistPlaybackTrace::new(app)
+                .playlist_name(&track.playlist_name)
+                .track(track)
+                .elapsed(trace_start)
+                .status("waiting_revision"),
+        );
+        index_revision
+            .changed()
+            .await
+            .map_err(|_| anyhow!("playlist first-slot revision channel closed"))?;
+    }
 }
 
 #[cfg(not(test))]
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum ExcludeCurrentImmediatePlaybackAction {
-    Skip,
-    Stop,
+enum ExcludeCurrentSessionCargo {
+    NextReady,
+    FirstConsumed,
+    WaitingForCargo,
 }
 
 #[cfg(not(test))]
-impl ExcludeCurrentMusicAndSkipOutcome {
-    fn into_result(
-        self,
-        exclude_result: crate::domain::playlists::model::AddExcludeResult,
-    ) -> ExcludeCurrentMusicAndSkipResult {
-        match self {
-            ExcludeCurrentMusicAndSkipOutcome::Skipped => {
-                ExcludeCurrentMusicAndSkipResult::Skipped {
-                    exclude: exclude_result.exclude,
-                    exclude_availability: exclude_result.exclude_availability,
-                }
-            }
-            ExcludeCurrentMusicAndSkipOutcome::DeletedPlaylist { playlist_name } => {
-                ExcludeCurrentMusicAndSkipResult::DeletedPlaylist {
-                    playlist_name,
-                    exclude: exclude_result.exclude,
-                    exclude_availability: exclude_result.exclude_availability,
-                }
-            }
-        }
+impl ExcludeCurrentSessionCargo {
+    fn is_waiting_for_cargo(self) -> bool {
+        matches!(self, Self::WaitingForCargo)
     }
 }
 
@@ -644,7 +720,6 @@ struct PlaylistPlaybackMaterial {
 #[cfg(not(test))]
 struct PlaylistTrackResolutionSource {
     selection: PlaylistPlaybackSelection,
-    playlist_name: String,
     resolution: PlaylistTrackResolution,
 }
 
@@ -1475,7 +1550,6 @@ async fn load_random_playlist_track_resolution_window(
     let resolution = resolve_playlist_playback_source_resolution(&selection, sources, &save_root);
 
     Ok(PlaylistTrackResolutionSource {
-        playlist_name: selection.playlist_name.clone(),
         selection,
         resolution,
     })
@@ -1501,7 +1575,6 @@ async fn load_playlist_track_resolution_window(
     let resolution = resolve_playlist_playback_source_resolution(&selection, sources, &save_root);
 
     Ok(PlaylistTrackResolutionSource {
-        playlist_name: selection.playlist_name.clone(),
         selection,
         resolution,
     })
@@ -1537,20 +1610,10 @@ pub(crate) fn create_start_anchor_playback_queue(
     vec![initial_track]
 }
 
-#[cfg(not(test))]
-fn propose_playlist_playback_queue_after_exclude_with_logging(
-    request: PlaylistPlaybackRecommendationRequest,
-) -> Vec<PlaybackTrack> {
-    propose_playlist_playback_queue_with_mode(
-        request,
-        PlaylistPlaybackRecommendationMode::ExcludeCurrent,
-        true,
-    )
-}
-
 #[derive(Clone, Copy)]
 pub(crate) enum PlaylistPlaybackRecommendationMode {
     KeepCurrent,
+    #[cfg_attr(not(test), allow(dead_code))]
     ExcludeCurrent,
 }
 
@@ -2112,31 +2175,6 @@ pub(crate) fn resolve_playlist_playback_source_resolution(
         #[cfg(test)]
         failure_description,
     }
-}
-
-fn resolve_playlist_playback_source_track(
-    selection: &PlaylistPlaybackSelection,
-    source: PlaylistPlaybackTrackSource,
-    save_root: &Path,
-) -> Option<PlaybackTrack> {
-    resolve_playlist_playback_source_track_for_playlist(&selection.playlist_name, source, save_root)
-}
-
-fn resolve_playlist_playback_source_track_for_playlist(
-    playlist_name: &str,
-    source: PlaylistPlaybackTrackSource,
-    save_root: &Path,
-) -> Option<PlaybackTrack> {
-    let file_path = resolve_source_music_file_path(save_root, &source)?;
-    if !file_path.is_file() {
-        return None;
-    }
-
-    Some(project_playlist_playback_track_for_playlist(
-        playlist_name,
-        &source,
-        file_path,
-    ))
 }
 
 fn project_playlist_playback_track(

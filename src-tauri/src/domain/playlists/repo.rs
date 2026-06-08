@@ -233,19 +233,7 @@ pub async fn set_music_liked_by_identity(
 
     let canonical_music_id = canonical_music_id_for_source(url, start_ms, end_ms);
     let records = find_music_record_ids_by_canonical_id(&canonical_music_id).await?;
-    let mut first_updated = None;
-
-    for record in records {
-        let mut music = Music::get_record(record.clone()).await?;
-        music.liked = liked;
-        let updated = Repo::<Music>::update_at(record, music).await?;
-
-        if first_updated.is_none() {
-            first_updated = Some(updated);
-        }
-    }
-
-    Ok(first_updated)
+    apply_music_mutation_to_records(&records, MusicMutation::Liked { liked }).await
 }
 
 pub async fn set_music_loudness_profile_by_identity(
@@ -256,24 +244,14 @@ pub async fn set_music_loudness_profile_by_identity(
 ) -> Result<Option<Music>> {
     ensure_collection_graph_schema().await?;
     if !profile.is_valid() {
-        bail!("music loudness profile evidence must be finite and include non-zero integrated LUFS");
+        bail!(
+            "music loudness profile evidence must be finite and include non-zero integrated LUFS"
+        );
     }
 
     let canonical_music_id = canonical_music_id_for_source(url, start_ms, end_ms);
     let records = find_music_record_ids_by_canonical_id(&canonical_music_id).await?;
-    let mut first_updated = None;
-
-    for record in records {
-        let mut music = Music::get_record(record.clone()).await?;
-        music.loudness_profile = Some(profile);
-        let updated = Repo::<Music>::update_at(record, music).await?;
-
-        if first_updated.is_none() {
-            first_updated = Some(updated);
-        }
-    }
-
-    Ok(first_updated)
+    apply_music_mutation_to_records(&records, MusicMutation::LoudnessProfile { profile }).await
 }
 
 pub async fn get_music_loudness_profile_by_identity(
@@ -391,6 +369,14 @@ pub struct PlaylistPlaybackSelection {
     pub groups: Vec<PlaylistPlaybackGroupRef>,
     pub extra: Vec<PlaylistPlaybackExtraRef>,
     pub download_scopes: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MusicEndTrim {
+    pub url: String,
+    pub start_ms: u32,
+    pub end_ms: u32,
+    pub next_end_ms: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -1052,16 +1038,17 @@ pub async fn update_music(
     let mut previous_musics = Vec::with_capacity(records.len());
 
     for record in records {
-        let mut music = Music::get_record(record.clone()).await?;
-        let previous_music = music.clone();
-        music.alias = alias.to_string();
-        music.start_ms = next_start_ms;
-        music.end_ms = next_end_ms;
-        music.canonical_music_id =
-            canonical_music_id_for_source(&music.url, music.start_ms, music.end_ms);
-        assign_music_occurrence_id(&mut music);
-        let updated = Repo::<Music>::update_at(record.clone(), music).await?;
-        changed_records.push(record);
+        let previous_music = Music::get_record(record.clone()).await?;
+        let updated = apply_music_mutation_to_record(
+            &record,
+            MusicMutation::DisplayIdentity {
+                alias: alias.to_string(),
+                start_ms: next_start_ms,
+                end_ms: next_end_ms,
+            },
+        )
+        .await?;
+        changed_records.push(record.clone());
         previous_musics.push(previous_music);
 
         if first_updated.is_none() {
@@ -1072,6 +1059,181 @@ pub async fn update_music(
     spawn_music_identity_exclude_availability_refresh(changed_records, previous_musics);
 
     Ok(first_updated)
+}
+
+#[derive(Clone)]
+enum MusicMutation {
+    Liked {
+        liked: bool,
+    },
+    LoudnessProfile {
+        profile: LoudnessProfile,
+    },
+    DisplayIdentity {
+        alias: String,
+        start_ms: u32,
+        end_ms: u32,
+    },
+    EndTrim {
+        next_end_ms: u32,
+    },
+}
+
+async fn apply_music_mutation_to_records(
+    records: &[RecordId],
+    mutation: MusicMutation,
+) -> Result<Option<Music>> {
+    let mut first_updated = None;
+    for record in records {
+        let updated = apply_music_mutation_to_record(record, mutation.clone()).await?;
+        if first_updated.is_none() {
+            first_updated = Some(updated);
+        }
+    }
+
+    Ok(first_updated)
+}
+
+async fn apply_music_mutation_to_record(
+    record: &RecordId,
+    mutation: MusicMutation,
+) -> Result<Music> {
+    let db = get_db()?;
+
+    match mutation {
+        MusicMutation::Liked { liked } => {
+            db.query("UPDATE ONLY $record SET liked = $liked RETURN NONE;")
+                .bind(("record", record.clone()))
+                .bind(("liked", liked))
+                .await?
+                .check()?;
+            Music::get_record(record.clone()).await
+        }
+        MusicMutation::LoudnessProfile { profile } => {
+            if !profile.is_valid() {
+                bail!(
+                    "music loudness profile evidence must be finite and include non-zero integrated LUFS"
+                );
+            }
+            db.query("UPDATE ONLY $record SET loudness_profile = $profile RETURN NONE;")
+                .bind(("record", record.clone()))
+                .bind(("profile", profile))
+                .await?
+                .check()?;
+            Music::get_record(record.clone()).await
+        }
+        MusicMutation::DisplayIdentity {
+            alias,
+            start_ms,
+            end_ms,
+        } => {
+            if start_ms >= end_ms {
+                bail!("music start_ms must be less than end_ms");
+            }
+            let current = Music::get_record(record.clone()).await?;
+            let canonical_music_id = canonical_music_id_for_source(&current.url, start_ms, end_ms);
+            let occurrence_id =
+                music_occurrence_id(&current.group.url, &current.url, start_ms, end_ms);
+            db.query(
+                "UPDATE ONLY $record
+                     SET alias = $alias,
+                         start_ms = $start_ms,
+                         end_ms = $end_ms,
+                         canonical_music_id = $canonical_music_id,
+                         occurrence_id = $occurrence_id
+                     RETURN NONE;",
+            )
+            .bind(("record", record.clone()))
+            .bind(("alias", alias))
+            .bind(("start_ms", start_ms))
+            .bind(("end_ms", end_ms))
+            .bind(("canonical_music_id", canonical_music_id))
+            .bind(("occurrence_id", occurrence_id))
+            .await?
+            .check()?;
+            Music::get_record(record.clone()).await
+        }
+        MusicMutation::EndTrim { next_end_ms } => {
+            let current = Music::get_record(record.clone()).await?;
+            if current.start_ms >= next_end_ms || next_end_ms >= current.end_ms {
+                bail!("trimmed music end must stay inside the original playable range");
+            }
+            let canonical_music_id =
+                canonical_music_id_for_source(&current.url, current.start_ms, next_end_ms);
+            let occurrence_id =
+                music_occurrence_id(&current.group.url, &current.url, current.start_ms, next_end_ms);
+            db.query(
+                "UPDATE ONLY $record
+                     SET end_ms = $end_ms,
+                         canonical_music_id = $canonical_music_id,
+                         occurrence_id = $occurrence_id,
+                         loudness_profile = NONE
+                     RETURN NONE;",
+            )
+            .bind(("record", record.clone()))
+            .bind(("end_ms", next_end_ms))
+            .bind(("canonical_music_id", canonical_music_id))
+            .bind(("occurrence_id", occurrence_id))
+            .await?
+            .check()?;
+            Music::get_record(record.clone()).await
+        }
+    }
+}
+
+pub async fn trim_collection_music_ends_by_identity(
+    collection_url: &str,
+    trims: &[MusicEndTrim],
+) -> Result<Option<Collection>> {
+    ensure_collection_graph_schema().await?;
+
+    if trims.is_empty() {
+        return get_collection_by_url(collection_url).await;
+    }
+
+    let mut trim_by_identity = HashMap::with_capacity(trims.len());
+    for trim in trims {
+        if trim.start_ms >= trim.end_ms
+            || trim.start_ms >= trim.next_end_ms
+            || trim.next_end_ms >= trim.end_ms
+        {
+            bail!("trimmed music end must stay inside the original playable range");
+        }
+        trim_by_identity.insert(
+            (trim.url.clone(), trim.start_ms, trim.end_ms),
+            trim.next_end_ms,
+        );
+    }
+
+    let Some(collection_record) =
+        find_unique_record_id_by_string_field::<Collection>("url", collection_url).await?
+    else {
+        return Ok(None);
+    };
+
+    let music_records = load_collection_music_ids(&collection_record).await?;
+    let mut changed = false;
+    for record in music_records {
+        let music = Music::get_record(record.clone()).await?;
+        if let Some(next_end_ms) =
+            trim_by_identity.get(&(music.url.clone(), music.start_ms, music.end_ms))
+        {
+            apply_music_mutation_to_record(
+                &record,
+                MusicMutation::EndTrim {
+                    next_end_ms: *next_end_ms,
+                },
+            )
+            .await?;
+            changed = true;
+        }
+    }
+
+    if !changed {
+        return get_collection_by_url(collection_url).await;
+    }
+
+    get_collection_by_url(collection_url).await
 }
 
 pub async fn create_music(source_collection_url: &str, music: &Music) -> Result<Music> {
@@ -1481,12 +1643,8 @@ fn assign_collection_music_occurrence_ids(collection: &Collection) -> Collection
 }
 
 fn assign_music_occurrence_id(music: &mut Music) {
-    music.occurrence_id = music_occurrence_id(
-        &music.group.url,
-        &music.url,
-        music.start_ms,
-        music.end_ms,
-    );
+    music.occurrence_id =
+        music_occurrence_id(&music.group.url, &music.url, music.start_ms, music.end_ms);
 }
 
 fn with_music_occurrence_id(mut music: Music) -> Music {
@@ -3270,7 +3428,12 @@ fn collection_record_id(url: &str) -> RecordId {
     RecordId::new(Collection::table_name(), stable_record_key(url))
 }
 
-pub(crate) fn music_occurrence_id(group_url: &str, url: &str, start_ms: u32, end_ms: u32) -> String {
+pub(crate) fn music_occurrence_id(
+    group_url: &str,
+    url: &str,
+    start_ms: u32,
+    end_ms: u32,
+) -> String {
     stable_record_key(&format!("{group_url}:{url}:{start_ms}:{end_ms}"))
 }
 

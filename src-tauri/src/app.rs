@@ -132,6 +132,7 @@ pub fn run() {
             event::FullScreenEvent,
             utils::hardware_wheel::HardwareHorizontalWheelEvent,
             domain::player::event::NowPlayingTrackChangedEvent,
+            domain::player::event::NowPlayingTrackLikedChangedEvent,
             domain::player::event::PlaybackSurfaceStatusChangedEvent,
             domain::player::event::PlaybackExcludeCommittedEvent,
             domain::player::event::PlaybackDiagnosticTraceEvent,
@@ -200,6 +201,7 @@ pub fn run() {
 
                     utils::window::configure_existing_primary_windows(&handle);
                     domain::loudness_evidence::initialize_runtime(handle.clone());
+                    domain::audio_tail_trim::initialize_runtime(handle.clone());
                     domain::downloads::service::initialize_runtime(handle.clone());
                     domain::playlists::startup_bootstrap::initialize_runtime(handle.clone());
                     domain::playlist_playback::service::initialize_runtime(handle.clone());
@@ -210,6 +212,7 @@ pub fn run() {
                             domain::player::service::has_active_player_binary_tasks,
                             domain::downloads::service::has_active_download_tasks,
                             domain::loudness_evidence::has_active_loudness_binary_tasks,
+                            domain::audio_tail_trim::has_active_audio_tail_trim_binary_tasks,
                         ),
                     );
                     Ok(())

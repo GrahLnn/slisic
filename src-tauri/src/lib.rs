@@ -1,6 +1,5 @@
 mod domain;
 
-#[cfg(not(test))]
 mod utils;
 
 #[cfg(not(test))]

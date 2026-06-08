@@ -30,8 +30,9 @@ use crate::domain::collection_import::{
     CollectionSyncPlan, ExistingPlannedLeafCompletion, PlannedLeaf, apply_collection_plan_to_task,
     create_collection_shell, existing_leaf_identities, existing_planned_leaf_completions,
     filter_new_planned_leaves, load_collection_shell_with_local_duration_probe,
-    materialize_music_entries, normalize_music_titles_within_collection,
-    persist_download_collection_shell_from_task, persist_downloaded_leaf_music,
+    load_download_transaction_collection_shell, materialize_music_entries,
+    normalize_music_titles_within_collection, persist_download_collection_shell_from_task,
+    persist_downloaded_leaf_music,
     persist_enqueued_collection_plan, resolve_existing_leaf_file,
 };
 use crate::domain::downloads::model::{
@@ -3847,6 +3848,113 @@ liked = false
                 0,
                 344_455
             )
+        );
+
+        reset_db();
+        let _ = std::fs::remove_dir_all(save_root);
+    });
+}
+
+#[test]
+fn download_transaction_shell_does_not_restore_manifest_music_evidence() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let save_root = temp_test_dir();
+        let collection_folder = "youtube/TENET Official Soundtrack";
+        let collection_dir = save_root.join(collection_folder);
+        let raw_file_name =
+            "TENET Official Soundtrack - [INVERTED] FULL ALBUM - Ludwig Göransson - WaterTower.m4a";
+        std::fs::create_dir_all(&collection_dir).expect("collection dir should be created");
+        std::fs::write(collection_dir.join(raw_file_name), b"audio")
+            .expect("existing audio should be created");
+        std::fs::write(
+            collection_dir.join(".slisic.collection.toml"),
+            r#"version = 1
+
+groups = []
+
+[collection]
+name = "TENET Official Soundtrack"
+url = "https://www.youtube.com/playlist?list=PLtenet"
+folder = "youtube/TENET Official Soundtrack"
+source_kind = "list"
+enable_updates = false
+last_updated = "2026-06-07T00:00:00+00:00"
+
+[[music]]
+name = "INVERTED] FULL ALBUM - Ludwig Göransson"
+alias = "INVERTED] FULL ALBUM - Ludwig Göransson"
+url = "https://www.youtube.com/watch?v=inverted"
+path = "TENET Official Soundtrack - [INVERTED] FULL ALBUM - Ludwig Göransson - WaterTower.m4a"
+group_url = "https://www.youtube.com/playlist?list=PLtenet"
+start_ms = 0
+end_ms = 236000
+liked = false
+"#,
+        )
+        .expect("polluted manifest should be written");
+
+        upsert_collection(&Collection {
+            name: "TENET Official Soundtrack".to_string(),
+            url: "https://www.youtube.com/playlist?list=PLtenet".to_string(),
+            folder: collection_folder.to_string(),
+            musics: vec![],
+            last_updated: "2026-06-07T00:00:00+00:00".to_string(),
+            enable_updates: Some(false),
+        })
+        .await
+        .expect("collection shell should be saved");
+
+        let plan = CollectionSyncPlan {
+            source_kind: CollectionSourceKind::List,
+            collection_name: "TENET Official Soundtrack".to_string(),
+            collection_url: "https://www.youtube.com/playlist?list=PLtenet".to_string(),
+            collection_folder: collection_folder.to_string(),
+            enable_updates: Some(false),
+            leaves: vec![PlannedLeaf {
+                id: Id::from("leaf-inverted"),
+                url: "https://www.youtube.com/watch?v=inverted".to_string(),
+                sequence: 0,
+                initial_probe: None,
+                music_title: Some("[INVERTED] FULL ALBUM".to_string()),
+                group_hint: None,
+            }],
+        };
+
+        let restored = load_collection_shell_with_local_duration_probe(&plan, &save_root, |_| {
+            Ok(Some(236_000))
+        })
+        .await
+        .expect("ordinary manifest restore should remain available");
+        assert_eq!(restored.musics.len(), 1);
+        assert_eq!(restored.musics[0].name, "INVERTED] FULL ALBUM - Ludwig Göransson");
+        assert_eq!(
+            existing_planned_leaf_completions(&restored, &plan, &save_root).len(),
+            1
+        );
+
+        upsert_collection(&Collection {
+            name: "TENET Official Soundtrack".to_string(),
+            url: "https://www.youtube.com/playlist?list=PLtenet".to_string(),
+            folder: collection_folder.to_string(),
+            musics: vec![],
+            last_updated: "2026-06-07T00:00:00+00:00".to_string(),
+            enable_updates: Some(false),
+        })
+        .await
+        .expect("collection shell should be reset before transaction load");
+
+        let transaction_collection = load_download_transaction_collection_shell(&plan)
+            .await
+            .expect("download transaction shell should load");
+
+        assert!(transaction_collection.musics.is_empty());
+        assert!(
+            existing_planned_leaf_completions(&transaction_collection, &plan, &save_root)
+                .is_empty()
         );
 
         reset_db();

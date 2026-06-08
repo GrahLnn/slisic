@@ -3,21 +3,21 @@ use super::recommendation::{
     filter_recently_played_recommendation_candidates,
 };
 use super::service::{
-    PlaylistPlaybackRecommendationMode, PlaylistPlaybackRecommendationRequest,
-    PlaylistPlaybackRecommender, PlaylistQueueRecommendationReadiness,
-    RandomPlaylistPlaybackRecommender, audio_style_playlist_playback_proposal_is_complete,
-    apply_initial_track_loudness_profile, create_start_anchor_playback_queue,
-    initial_track_release_requires_loudness_gate,
-    place_track_at_queue_start,
-    playlist_playback_proposal_contains_next_track,
+    PlaylistInitialTrackRelease, PlaylistPlaybackRecommendationMode,
+    PlaylistPlaybackRecommendationRequest, PlaylistPlaybackRecommender,
+    PlaylistQueueRecommendationReadiness, RandomPlaylistPlaybackRecommender,
+    apply_initial_track_loudness_profile, audio_style_playlist_playback_proposal_is_complete,
+    create_exclude_current_cargo_queue, create_start_anchor_playback_queue,
+    exclude_current_next_cargo_queue, initial_track_release_requires_loudness_gate,
+    place_track_at_queue_start, playlist_playback_proposal_contains_next_track,
     playlist_playback_queue_contains_next_track_after_anchor,
     playlist_selection_has_relevant_active_downloads, playlist_track_needs_loudness_evidence,
+    prepared_first_track_can_replace_excluded_current,
     propose_audio_style_playlist_playback_queue_from_snapshots,
     propose_playlist_playback_queue_without_audio_style_model, propose_random_queue_after_exclude,
     resolve_playlist_playback_continuation_mode, resolve_playlist_playback_source_resolution,
     should_commit_playlist_queue_refresh, should_refresh_playlist_queue_for_anchor_after_startup,
     should_refresh_playlist_queue_for_same_anchor, shuffle_playback_tracks,
-    PlaylistInitialTrackRelease,
 };
 use crate::domain::downloads::model::{
     DownloadLeaf, DownloadLeafStatus, DownloadTask, DownloadTaskStatus, DownloadTrigger,
@@ -831,6 +831,80 @@ fn playlist_queue_next_check_accepts_distinct_track_after_anchor() {
     assert!(playlist_playback_queue_contains_next_track_after_anchor(
         &[previous, active.clone(), next],
         &active,
+    ));
+}
+
+#[test]
+fn exclude_current_session_next_uses_only_tracks_after_active_anchor() {
+    let previous = playback_track("previous");
+    let active = playback_track("active");
+    let next = playback_track("next");
+
+    let tracks = [previous, active.clone(), next.clone()];
+    let cargo = exclude_current_next_cargo_queue(&tracks, &active);
+
+    assert_eq!(cargo.len(), 2);
+    assert_eq!(cargo[0].music_url, active.music_url);
+    assert_eq!(cargo[1].music_url, next.music_url);
+}
+
+#[test]
+fn exclude_current_session_next_is_empty_when_anchor_is_missing() {
+    let previous = playback_track("previous");
+    let active = playback_track("active");
+    let next = playback_track("next");
+
+    let tracks = [previous, next];
+    let cargo = exclude_current_next_cargo_queue(&tracks, &active);
+
+    assert!(cargo.is_empty());
+}
+
+#[test]
+fn exclude_current_session_next_skips_duplicate_anchor_entries() {
+    let active = playback_track("active");
+    let next = playback_track("next");
+
+    let tracks = [active.clone(), active.clone(), next.clone()];
+    let cargo = exclude_current_next_cargo_queue(&tracks, &active);
+
+    assert_eq!(cargo.len(), 2);
+    assert_eq!(cargo[0].music_url, active.music_url);
+    assert_eq!(cargo[1].music_url, next.music_url);
+}
+
+#[test]
+fn exclude_current_session_next_is_empty_when_only_duplicate_anchor_entries_remain() {
+    let active = playback_track("active");
+
+    let tracks = [active.clone(), active.clone()];
+    let cargo = exclude_current_next_cargo_queue(&tracks, &active);
+
+    assert!(cargo.is_empty());
+}
+
+#[test]
+fn exclude_current_first_cargo_queue_keeps_current_anchor_before_first() {
+    let current = playback_track("current");
+    let first = playback_track("first");
+
+    let cargo = create_exclude_current_cargo_queue(current.clone(), first.clone());
+
+    assert_eq!(cargo.len(), 2);
+    assert_eq!(cargo[0].music_url, current.music_url);
+    assert_eq!(cargo[1].music_url, first.music_url);
+}
+
+#[test]
+fn exclude_current_first_replacement_must_not_be_the_excluded_current_track() {
+    let current = playback_track("current");
+    let first = playback_track("first");
+
+    assert!(!prepared_first_track_can_replace_excluded_current(
+        &current, &current,
+    ));
+    assert!(prepared_first_track_can_replace_excluded_current(
+        &first, &current,
     ));
 }
 

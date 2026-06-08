@@ -1,12 +1,18 @@
+#[cfg(not(test))]
 use super::event::WINDOW_READY;
+#[cfg(not(test))]
 use super::window;
+#[cfg(not(test))]
 use appdb::connection::reset_db;
+#[cfg(not(test))]
 use std::sync::atomic::Ordering;
 use std::{
     fs,
     path::{Path, PathBuf},
-    process::Command,
 };
+#[cfg(not(test))]
+use std::process::Command;
+#[cfg(not(test))]
 use tauri::{AppHandle, Manager, WebviewWindow};
 
 pub const APP_DB_FILE_NAME: &str = "surreal.db";
@@ -16,6 +22,7 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 #[tauri::command]
 #[specta::specta]
+#[cfg(not(test))]
 pub async fn app_ready(window: WebviewWindow) {
     if window::should_activate_window_on_app_ready(window.label()) {
         window::activate_window(&window);
@@ -25,6 +32,7 @@ pub async fn app_ready(window: WebviewWindow) {
 
 #[tauri::command]
 #[specta::specta]
+#[cfg(not(test))]
 pub async fn reset_dev_database_and_restart(app: AppHandle) -> Result<(), String> {
     #[cfg(not(debug_assertions))]
     {
@@ -42,14 +50,28 @@ pub async fn reset_dev_database_and_restart(app: AppHandle) -> Result<(), String
             .app_local_data_dir()
             .map_err(|error| error.to_string())?;
         let db_path = local_data_dir.join(APP_DB_FILE_NAME);
-        let first_slot_cache_path = local_data_dir
-            .join(crate::domain::playlist_playback::playable_index::FIRST_SLOT_CACHE_FILE_NAME);
         remove_db_artifacts(&db_path)?;
-        remove_optional_file(&first_slot_cache_path)?;
+        remove_optional_artifacts(&dev_reset_local_data_artifact_paths(&local_data_dir))?;
+        remove_optional_artifacts(&dev_reset_cache_artifact_paths(&app)?)?;
         schedule_dev_reset_trigger()?;
         app.exit(0);
         Ok(())
     }
+}
+
+pub(super) fn dev_reset_local_data_artifact_paths(local_data_dir: &Path) -> Vec<PathBuf> {
+    vec![
+        local_data_dir
+            .join(crate::domain::playlist_playback::playable_index::FIRST_SLOT_CACHE_FILE_NAME),
+        local_data_dir.join(crate::domain::loudness_evidence::LOUDNESS_PENDING_TASK_FILE_NAME),
+        local_data_dir.join(crate::domain::audio_tail_trim::AUDIO_TAIL_TRIM_PENDING_TASK_FILE_NAME),
+    ]
+}
+
+#[cfg(not(test))]
+fn dev_reset_cache_artifact_paths(app: &AppHandle) -> Result<Vec<PathBuf>, String> {
+    crate::domain::playlist_playback::recommendation::audio_style_model_artifact_paths(app)
+        .map_err(|error| error.to_string())
 }
 
 fn remove_db_artifacts(db_path: &Path) -> Result<(), String> {
@@ -92,17 +114,36 @@ fn remove_optional_file(path: &Path) -> Result<(), String> {
     }
 }
 
+pub(super) fn remove_optional_artifacts(paths: &[PathBuf]) -> Result<(), String> {
+    for path in paths {
+        remove_optional_artifact(path)?;
+    }
+    Ok(())
+}
+
+fn remove_optional_artifact(path: &Path) -> Result<(), String> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_dir() => fs::remove_dir_all(path)
+            .map_err(|error| format!("failed to remove `{}`: {error}", path.display())),
+        Ok(_) => remove_optional_file(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("failed to inspect `{}`: {error}", path.display())),
+    }
+}
+
+#[cfg(not(test))]
 fn schedule_dev_reset_trigger() -> Result<(), String> {
     let trigger_path = dev_reset_trigger_path();
     let payload = format!("{:?}\n", std::time::SystemTime::now());
     spawn_delayed_trigger_writer(&trigger_path, &payload)
 }
 
+#[cfg(not(test))]
 fn dev_reset_trigger_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(DEV_RESET_TRIGGER_FILE_NAME)
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, not(test)))]
 fn spawn_delayed_trigger_writer(path: &Path, payload: &str) -> Result<(), String> {
     use std::os::windows::process::CommandExt;
 
@@ -127,7 +168,7 @@ fn spawn_delayed_trigger_writer(path: &Path, payload: &str) -> Result<(), String
         .map_err(|error| format!("failed to schedule dev reset trigger: {error}"))
 }
 
-#[cfg(not(windows))]
+#[cfg(all(not(windows), not(test)))]
 fn spawn_delayed_trigger_writer(path: &Path, payload: &str) -> Result<(), String> {
     let escaped_path = path.to_string_lossy().replace('\'', "'\"'\"'");
     let escaped_payload = payload.replace('\'', "'\"'\"'");
@@ -140,7 +181,7 @@ fn spawn_delayed_trigger_writer(path: &Path, payload: &str) -> Result<(), String
         .map_err(|error| format!("failed to schedule dev reset trigger: {error}"))
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, not(test)))]
 fn escape_powershell_single_quoted(path: &Path) -> String {
     path.to_string_lossy().replace('\'', "''")
 }

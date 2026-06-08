@@ -138,14 +138,6 @@ impl CliYtDlpClient {
 
         command
     }
-
-    fn common_probe_args(&self) -> Vec<String> {
-        vec![
-            "-J".to_string(),
-            "--no-warnings".to_string(),
-            "--ignore-errors".to_string(),
-        ]
-    }
 }
 
 impl YtDlpClient for CliYtDlpClient {
@@ -170,11 +162,7 @@ impl YtDlpClient for CliYtDlpClient {
     }
 
     fn probe_leaf(&self, url: &str) -> Result<LeafProbe> {
-        let mut args = self.common_probe_args();
-        args.push("--no-playlist".to_string());
-        args.push("--format".to_string());
-        args.push(AUDIO_ONLY_FORMAT_SELECTOR.to_string());
-        args.push(url.to_string());
+        let args = build_leaf_metadata_probe_args(url);
         parse_leaf_probe(self.run_json_command(&args)?)
     }
 
@@ -291,6 +279,19 @@ impl CliYtDlpClient {
             "ffmpeg"
         })
     }
+}
+
+pub(crate) fn build_leaf_metadata_probe_args(url: &str) -> Vec<String> {
+    [
+        "-J",
+        "--no-warnings",
+        "--ignore-errors",
+        "--no-playlist",
+        url,
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
 }
 
 pub(crate) fn build_leaf_audio_download_args(

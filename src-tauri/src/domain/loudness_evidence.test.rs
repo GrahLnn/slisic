@@ -2,11 +2,13 @@ use super::{
     LoudnessEvidenceRequest, LoudnessEvidenceSource,
     deduplicate_pending_loudness_requests_for_test, loudness_identity_key_for_test,
     loudness_queue_insert_index, loudness_request_from_playback_track_for_test,
-    read_loudness_pending_task_file_for_test, remove_loudness_pending_task_from_file_for_test,
+    read_loudness_pending_task_file_for_test, read_published_loudness_profile_for_test,
+    remember_published_loudness_profile_for_test, remove_loudness_pending_task_from_file_for_test,
     should_close_loudness_request_after_error_for_test, upsert_loudness_pending_task_file_for_test,
 };
 use crate::domain::player::model::PlaybackTrack;
 use crate::domain::playlists::model::LoudnessProfile;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -140,6 +142,34 @@ fn playback_track_with_existing_loudness_does_not_create_measurement_request() {
 }
 
 #[test]
+fn published_loudness_profile_survives_active_task_release_by_identity() {
+    let mut profiles = HashMap::new();
+    let first_slot_request = request_with_file("PreparedFirst.m4a", 0, 95_086);
+    let same_identity_request = request_with_file("PreparedFirstMoved.m4a", 0, 95_086);
+    let other_range_request = request_with_file("PreparedFirst.m4a", 95_086, 180_000);
+    let profile =
+        LoudnessProfile::from_integrated_lufs(-13.87).expect("test LUFS should be valid");
+
+    remember_published_loudness_profile_for_test(&mut profiles, &first_slot_request, profile);
+
+    assert_eq!(
+        read_published_loudness_profile_for_test(&profiles, &first_slot_request),
+        Some(profile),
+        "published evidence should remain readable after the measuring task releases its active identity"
+    );
+    assert_eq!(
+        read_published_loudness_profile_for_test(&profiles, &same_identity_request),
+        Some(profile),
+        "file path is transport cargo; loudness evidence identity is canonical source range"
+    );
+    assert_eq!(
+        read_published_loudness_profile_for_test(&profiles, &other_range_request),
+        None,
+        "a different range must not inherit the first-slot loudness profile"
+    );
+}
+
+#[test]
 fn loudness_queue_insert_index_preserves_first_slot_priority_without_reversing_pending_fifo() {
     assert_eq!(
         loudness_queue_insert_index(
@@ -169,6 +199,19 @@ fn loudness_queue_insert_index_preserves_first_slot_priority_without_reversing_p
         loudness_queue_insert_index(
             [
                 LoudnessEvidenceSource::DirectRequest,
+                LoudnessEvidenceSource::DownloadedLeaf,
+                LoudnessEvidenceSource::PendingStore,
+            ],
+            3,
+            LoudnessEvidenceSource::DownloadedLeaf,
+        ),
+        1,
+        "downloaded leaf evidence should stay behind playback requests but ahead of restored pending tasks"
+    );
+    assert_eq!(
+        loudness_queue_insert_index(
+            [
+                LoudnessEvidenceSource::DirectRequest,
                 LoudnessEvidenceSource::PendingStore,
             ],
             2,
@@ -189,6 +232,30 @@ fn loudness_queue_insert_index_preserves_first_slot_priority_without_reversing_p
         ),
         1,
         "ordinary playback requests must not demote an already queued FirstSlot request"
+    );
+}
+
+#[test]
+fn all_explicit_loudness_cargo_sources_are_pending_restorable() {
+    assert!(
+        LoudnessEvidenceSource::DownloadedLeaf.persists_pending(),
+        "downloaded leaf cargo must survive queue pressure because no library scan will recreate it"
+    );
+    assert!(
+        LoudnessEvidenceSource::AudioTailTrim.persists_pending(),
+        "tail-trim cargo must survive queue pressure because the trimmed identity is explicit cargo"
+    );
+    assert!(
+        LoudnessEvidenceSource::DirectRequest.persists_pending(),
+        "direct playback requests can be retried from pending after transient failures"
+    );
+    assert!(
+        LoudnessEvidenceSource::FirstSlot.persists_pending(),
+        "first-slot requests can be retried from pending without scanning the library"
+    );
+    assert!(
+        !LoudnessEvidenceSource::PendingStore.persists_pending(),
+        "restored pending tasks are already durable and must not rewrite themselves on restore"
     );
 }
 

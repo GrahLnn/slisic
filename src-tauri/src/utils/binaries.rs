@@ -67,6 +67,7 @@ pub(crate) struct BinaryMaintenanceActivity {
     has_active_player_binary_tasks: Arc<dyn Fn() -> bool + Send + Sync>,
     has_active_download_tasks: Arc<dyn Fn() -> bool + Send + Sync>,
     has_active_loudness_binary_tasks: Arc<dyn Fn() -> bool + Send + Sync>,
+    has_active_audio_tail_trim_binary_tasks: Arc<dyn Fn() -> bool + Send + Sync>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -97,11 +98,15 @@ impl BinaryMaintenanceActivity {
         has_active_player_binary_tasks: impl Fn() -> bool + Send + Sync + 'static,
         has_active_download_tasks: impl Fn() -> bool + Send + Sync + 'static,
         has_active_loudness_binary_tasks: impl Fn() -> bool + Send + Sync + 'static,
+        has_active_audio_tail_trim_binary_tasks: impl Fn() -> bool + Send + Sync + 'static,
     ) -> Self {
         Self {
             has_active_player_binary_tasks: Arc::new(has_active_player_binary_tasks),
             has_active_download_tasks: Arc::new(has_active_download_tasks),
             has_active_loudness_binary_tasks: Arc::new(has_active_loudness_binary_tasks),
+            has_active_audio_tail_trim_binary_tasks: Arc::new(
+                has_active_audio_tail_trim_binary_tasks,
+            ),
         }
     }
 
@@ -109,6 +114,7 @@ impl BinaryMaintenanceActivity {
         (self.has_active_player_binary_tasks)()
             || (self.has_active_download_tasks)()
             || (self.has_active_loudness_binary_tasks)()
+            || (self.has_active_audio_tail_trim_binary_tasks)()
     }
 }
 

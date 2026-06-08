@@ -4,19 +4,18 @@ use super::model::{
     canonical_music_id_for_source,
 };
 use super::repo::{
-    PlaylistPlaybackCollectionRef, PlaylistPlaybackGroupRef, PlaylistPlaybackSelection,
-    PlaylistPlaybackTrackSource, SpectrumMusicSourceIdentity, add_exclude,
-    claim_generated_playlist_name, create_music, delete_music, delete_playlist_by_name,
-    get_collection_by_url, get_playlist_by_name, get_playlist_config_by_name,
-    get_playlist_playback_selection_by_name, has_collections, list_collections,
-    list_config_library, list_musics_by_file_path, list_playlists,
-    load_audio_style_training_musics, load_liked_playlist_playback_track_sources,
+    MusicEndTrim, PlaylistPlaybackCollectionRef, PlaylistPlaybackGroupRef,
+    PlaylistPlaybackSelection, PlaylistPlaybackTrackSource, SpectrumMusicSourceIdentity,
+    add_exclude, claim_generated_playlist_name, create_music, delete_music,
+    delete_playlist_by_name, get_collection_by_url, get_music_loudness_profile_by_identity,
+    get_playlist_by_name, get_playlist_config_by_name, get_playlist_playback_selection_by_name,
+    has_collections, list_collections, list_config_library, list_musics_by_file_path,
+    list_playlists, load_audio_style_training_musics, load_liked_playlist_playback_track_sources,
     load_playlist_playback_track_sources, load_random_playlist_playback_track_sources,
-    load_spectrum_music_context, music_occurrence_id, playlist_playback_owner_attempt_order, push_extra,
-    get_music_loudness_profile_by_identity, remove_exclude, remove_extra, set_collection_updates,
-    set_music_liked_by_identity, set_music_loudness_profile_by_identity, update_music,
-    upsert_collection, upsert_playlist,
-    upsert_playlist_surface,
+    load_spectrum_music_context, music_occurrence_id, playlist_playback_owner_attempt_order,
+    push_extra, remove_exclude, remove_extra, set_collection_updates, set_music_liked_by_identity,
+    set_music_loudness_profile_by_identity, trim_collection_music_ends_by_identity, update_music,
+    upsert_collection, upsert_playlist, upsert_playlist_surface,
 };
 use crate::domain::playlists::PLAYLIST_DB_TEST_LOCK;
 use appdb::connection::{InitDbOptions, get_db, reinit_db_with_options, reset_db};
@@ -146,7 +145,7 @@ fn grouped_collection(url: &str) -> Collection {
         url: url.to_string(),
         folder: "youtube/grouped-demo".to_string(),
         musics: vec![Music {
-    occurrence_id: String::new(),
+            occurrence_id: String::new(),
             name: "Track".to_string(),
             alias: "Track".to_string(),
             group: Group {
@@ -233,7 +232,7 @@ fn sample_playlist(name: &str) -> PlayList {
             url: collection_url.clone(),
             folder: format!("youtube/{name}"),
             musics: vec![Music {
-    occurrence_id: String::new(),
+                occurrence_id: String::new(),
                 name: "Track".to_string(),
                 alias: "Track".to_string(),
                 group: Group {
@@ -484,12 +483,8 @@ async fn insert_music_row(id: &str, music: &Music) -> RecordId {
     let db = get_db().expect("global playlist repo database handle should exist");
     let mut music = music.clone();
     if music.occurrence_id.is_empty() {
-        music.occurrence_id = music_occurrence_id(
-            &music.group.url,
-            &music.url,
-            music.start_ms,
-            music.end_ms,
-        );
+        music.occurrence_id =
+            music_occurrence_id(&music.group.url, &music.url, music.start_ms, music.end_ms);
     }
     let mut result = db
         .query("CREATE $record CONTENT $data RETURN VALUE id;")
@@ -1119,7 +1114,7 @@ fn upsert_collection_bootstraps_collection_graph_schema_on_clean_db() {
             "youtube/self-bootstrapped-single",
             None,
             vec![Music {
-    occurrence_id: String::new(),
+                occurrence_id: String::new(),
                 name: "Minus Sixty One".to_string(),
                 alias: "Minus Sixty One".to_string(),
                 group: collection_group("Minus Sixty One", url, "youtube/self-bootstrapped-single"),
@@ -1232,6 +1227,106 @@ fn update_music_changes_display_alias_and_range_from_original_identity() {
 }
 
 #[test]
+fn trim_collection_music_end_moves_identity_and_clears_loudness_profile() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+        bootstrap_collection_write_schema().await;
+
+        let mut collection = grouped_collection("https://example.com/music-tail-trim");
+        collection.musics[0].loudness_profile = LoudnessProfile::from_integrated_lufs(-14.5);
+        let saved = upsert_collection(&collection)
+            .await
+            .expect("collection should save before tail trim");
+        let original = saved.musics[0].clone();
+        let trimmed = trim_collection_music_ends_by_identity(
+            &saved.url,
+            &[MusicEndTrim {
+                url: original.url.clone(),
+                start_ms: original.start_ms,
+                end_ms: original.end_ms,
+                next_end_ms: 132_750,
+            }],
+        )
+        .await
+        .expect("tail trim should succeed")
+        .expect("collection should still exist");
+
+        assert_eq!(trimmed.musics[0].start_ms, original.start_ms);
+        assert_eq!(trimmed.musics[0].end_ms, 132_750);
+        assert_eq!(
+            trimmed.musics[0].canonical_music_id,
+            canonical_music_id_for_source(&original.url, original.start_ms, 132_750)
+        );
+        assert_ne!(
+            trimmed.musics[0].occurrence_id, original.occurrence_id,
+            "range identity must move when tail trim changes end_ms"
+        );
+        assert_eq!(trimmed.musics[0].loudness_profile, None);
+
+        reset_db();
+    });
+}
+
+#[test]
+fn tail_trim_mutation_does_not_overwrite_current_alias_or_liked_state() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+        bootstrap_collection_write_schema().await;
+
+        let mut collection = grouped_collection("https://example.com/music-tail-trim-alias");
+        collection.musics[0].loudness_profile = LoudnessProfile::from_integrated_lufs(-14.5);
+        let saved = upsert_collection(&collection)
+            .await
+            .expect("collection should save before field mutations");
+        let original = saved.musics[0].clone();
+        let renamed = update_music(
+            &original.url,
+            original.start_ms,
+            original.end_ms,
+            "Track Renamed In Spectrum",
+            original.start_ms,
+            original.end_ms,
+        )
+        .await
+        .expect("spectrum title update should save")
+        .expect("spectrum title target should exist");
+        let liked =
+            set_music_liked_by_identity(&renamed.url, renamed.start_ms, renamed.end_ms, true)
+                .await
+                .expect("liked mutation should save")
+                .expect("liked mutation target should exist");
+
+        assert_eq!(liked.alias, "Track Renamed In Spectrum");
+        assert!(liked.liked);
+
+        let trimmed = trim_collection_music_ends_by_identity(
+            &saved.url,
+            &[MusicEndTrim {
+                url: renamed.url.clone(),
+                start_ms: renamed.start_ms,
+                end_ms: renamed.end_ms,
+                next_end_ms: 132_750,
+            }],
+        )
+        .await
+        .expect("tail trim should succeed")
+        .expect("collection should still exist");
+
+        assert_eq!(trimmed.musics[0].alias, "Track Renamed In Spectrum");
+        assert!(trimmed.musics[0].liked);
+        assert_eq!(trimmed.musics[0].start_ms, renamed.start_ms);
+        assert_eq!(trimmed.musics[0].end_ms, 132_750);
+        assert_eq!(trimmed.musics[0].loudness_profile, None);
+
+        reset_db();
+    });
+}
+
+#[test]
 fn canonical_music_identity_shares_liked_state_across_future_occurrences() {
     let _guard = acquire_db_test_lock();
 
@@ -1259,7 +1354,7 @@ fn canonical_music_identity_shares_liked_state_across_future_occurrences() {
         let first_music_url = format!("{first_url}#shared-canonical");
         let second_music_url = format!("{second_url}#shared-canonical-copy");
         let first_music = Music {
-    occurrence_id: String::new(),
+            occurrence_id: String::new(),
             name: "Shared Canonical".to_string(),
             alias: "Shared Canonical".to_string(),
             group: first_group,
@@ -1272,7 +1367,7 @@ fn canonical_music_identity_shares_liked_state_across_future_occurrences() {
             loudness_profile: None,
         };
         let second_music = Music {
-    occurrence_id: String::new(),
+            occurrence_id: String::new(),
             name: "Shared Canonical Copy".to_string(),
             alias: "Shared Canonical Copy".to_string(),
             group: second_group,
@@ -1314,6 +1409,50 @@ fn canonical_music_identity_shares_liked_state_across_future_occurrences() {
 }
 
 #[test]
+fn music_liked_mutation_does_not_overwrite_current_alias() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+        bootstrap_collection_write_schema().await;
+
+        let collection = upsert_collection(&grouped_collection("https://example.com/liked-alias"))
+            .await
+            .expect("grouped collection should save before liked update");
+        let music = collection.musics[0].clone();
+        let renamed = update_music(
+            &music.url,
+            music.start_ms,
+            music.end_ms,
+            "Track Renamed In Spectrum",
+            music.start_ms,
+            music.end_ms,
+        )
+        .await
+        .expect("spectrum title update should save")
+        .expect("spectrum title target should exist");
+
+        assert_eq!(renamed.alias, "Track Renamed In Spectrum");
+
+        let liked = set_music_liked_by_identity(&music.url, music.start_ms, music.end_ms, true)
+            .await
+            .expect("liked mutation should save")
+            .expect("liked mutation target should exist");
+        let reloaded = get_collection_by_url(&collection.url)
+            .await
+            .expect("collection should reload after liked mutation")
+            .expect("collection should still exist");
+
+        assert!(liked.liked);
+        assert_eq!(liked.alias, "Track Renamed In Spectrum");
+        assert_eq!(reloaded.musics[0].alias, "Track Renamed In Spectrum");
+        assert!(reloaded.musics[0].liked);
+
+        reset_db();
+    });
+}
+
+#[test]
 fn canonical_music_identity_shares_loudness_state_across_future_occurrences() {
     let _guard = acquire_db_test_lock();
 
@@ -1326,24 +1465,22 @@ fn canonical_music_identity_shares_loudness_state_across_future_occurrences() {
         let canonical_url = "https://example.com/watch/shared-loudness";
         let first_owner = collection_owner("Demo", first_url, "youtube/loudness-shared");
         let second_owner = collection_owner("Demo", second_url, "youtube/loudness-shared-copy");
-        let first_group =
-            Group {
-                name: "Disc 1".to_string(),
-                url: format!("{first_url}#disc-1"),
-                collection: first_owner,
-                folder: "Disc 1".to_string(),
-            };
-        let second_group =
-            Group {
-                name: "Disc 2".to_string(),
-                url: format!("{second_url}#disc-2"),
-                collection: second_owner,
-                folder: "Disc 2".to_string(),
-            };
+        let first_group = Group {
+            name: "Disc 1".to_string(),
+            url: format!("{first_url}#disc-1"),
+            collection: first_owner,
+            folder: "Disc 1".to_string(),
+        };
+        let second_group = Group {
+            name: "Disc 2".to_string(),
+            url: format!("{second_url}#disc-2"),
+            collection: second_owner,
+            folder: "Disc 2".to_string(),
+        };
         let first_music_url = format!("{first_url}#shared-loudness");
         let second_music_url = format!("{second_url}#shared-loudness-copy");
         let first_music = Music {
-    occurrence_id: String::new(),
+            occurrence_id: String::new(),
             name: "Shared Loudness".to_string(),
             alias: "Shared Loudness".to_string(),
             group: first_group,
@@ -1356,7 +1493,7 @@ fn canonical_music_identity_shares_loudness_state_across_future_occurrences() {
             loudness_profile: None,
         };
         let second_music = Music {
-    occurrence_id: String::new(),
+            occurrence_id: String::new(),
             name: "Shared Loudness Copy".to_string(),
             alias: "Shared Loudness Copy".to_string(),
             group: second_group,
@@ -1425,7 +1562,7 @@ fn create_music_appends_to_the_source_collection_once() {
             .expect("grouped collection should save before music create");
         let source_music = collection.musics[0].clone();
         let created_music = Music {
-    occurrence_id: String::new(),
+            occurrence_id: String::new(),
             name: "Created Track".to_string(),
             alias: "Created Track".to_string(),
             group: source_music.group,
@@ -1479,7 +1616,7 @@ fn create_music_rejects_missing_source_collection() {
         let err = create_music(
             "https://example.com/missing",
             &Music {
-    occurrence_id: String::new(),
+                occurrence_id: String::new(),
                 name: "Created Track".to_string(),
                 alias: "Created Track".to_string(),
                 group: collection_group("Disc 1", "https://example.com/missing#disc-1", "Disc 1"),
@@ -1717,7 +1854,7 @@ fn delete_music_removes_only_the_matching_music_identity() {
             Some(false),
             vec![
                 Music {
-    occurrence_id: String::new(),
+                    occurrence_id: String::new(),
                     name: "Track A".to_string(),
                     alias: "Track A".to_string(),
                     group: collection_group(
@@ -1738,7 +1875,7 @@ fn delete_music_removes_only_the_matching_music_identity() {
                     loudness_profile: None,
                 },
                 Music {
-    occurrence_id: String::new(),
+                    occurrence_id: String::new(),
                     name: "Track B".to_string(),
                     alias: "Track B".to_string(),
                     group: collection_group(
@@ -1805,7 +1942,7 @@ fn list_musics_by_file_path_reads_matching_database_music_records() {
             Some(false),
             vec![
                 Music {
-    occurrence_id: String::new(),
+                    occurrence_id: String::new(),
                     name: "Track A".to_string(),
                     alias: "Track A".to_string(),
                     group: collection_group(
@@ -1826,7 +1963,7 @@ fn list_musics_by_file_path_reads_matching_database_music_records() {
                     loudness_profile: None,
                 },
                 Music {
-    occurrence_id: String::new(),
+                    occurrence_id: String::new(),
                     name: "Track B".to_string(),
                     alias: "Track B".to_string(),
                     group: collection_group(
@@ -1847,7 +1984,7 @@ fn list_musics_by_file_path_reads_matching_database_music_records() {
                     loudness_profile: None,
                 },
                 Music {
-    occurrence_id: String::new(),
+                    occurrence_id: String::new(),
                     name: "Other".to_string(),
                     alias: "Other".to_string(),
                     group: collection_group(
@@ -1908,7 +2045,7 @@ fn load_spectrum_music_context_carries_source_owner_evidence_without_playlist_hy
             Some(false),
             vec![
                 Music {
-    occurrence_id: String::new(),
+                    occurrence_id: String::new(),
                     name: "Track A Intro".to_string(),
                     alias: "Track A Intro".to_string(),
                     group: source_group.clone(),
@@ -1925,7 +2062,7 @@ fn load_spectrum_music_context_carries_source_owner_evidence_without_playlist_hy
                     loudness_profile: None,
                 },
                 Music {
-    occurrence_id: String::new(),
+                    occurrence_id: String::new(),
                     name: "Track A Tail".to_string(),
                     alias: "Track A Tail".to_string(),
                     group: source_group.clone(),
@@ -1942,7 +2079,7 @@ fn load_spectrum_music_context_carries_source_owner_evidence_without_playlist_hy
                     loudness_profile: None,
                 },
                 Music {
-    occurrence_id: String::new(),
+                    occurrence_id: String::new(),
                     name: "Track B".to_string(),
                     alias: "Track B".to_string(),
                     group: source_group.clone(),
@@ -2015,7 +2152,7 @@ fn load_spectrum_music_context_filters_collection_candidates_by_path_components(
             "youtube/spectrum-path",
             Some(false),
             vec![Music {
-    occurrence_id: String::new(),
+                occurrence_id: String::new(),
                 name: "Track".to_string(),
                 alias: "Track".to_string(),
                 group: source_group.clone(),
@@ -2037,7 +2174,7 @@ fn load_spectrum_music_context_filters_collection_candidates_by_path_components(
             "youtube/spectrum-path-neighbor",
             Some(false),
             vec![Music {
-    occurrence_id: String::new(),
+                occurrence_id: String::new(),
                 name: "Neighbor Track".to_string(),
                 alias: "Neighbor Track".to_string(),
                 group: collection_group(
@@ -3337,7 +3474,7 @@ fn playlist_playback_selection_reads_refs_without_hydrating_unselected_collectio
         let selected_group =
             collection_group("Disc 1", "https://example.com/selected#disc-1", "Disc 1");
         let selected_music = Music {
-    occurrence_id: String::new(),
+            occurrence_id: String::new(),
             name: "Selected".to_string(),
             alias: "Selected".to_string(),
             group: selected_group.clone(),
@@ -3364,7 +3501,7 @@ fn playlist_playback_selection_reads_refs_without_hydrating_unselected_collectio
             "youtube/unselected",
             Some(false),
             vec![Music {
-    occurrence_id: String::new(),
+                occurrence_id: String::new(),
                 name: "Unselected".to_string(),
                 alias: "Unselected".to_string(),
                 group: collection_group("Other", "https://example.com/unselected#disc-1", "Disc 1"),
@@ -4171,7 +4308,7 @@ fn playlist_playback_selection_adds_parent_download_scope_for_group_only_refs() 
         let selected_group =
             collection_group("Disc 1", "https://example.com/group-only#disc-1", "Disc 1");
         let selected_music = Music {
-    occurrence_id: String::new(),
+            occurrence_id: String::new(),
             name: "Selected".to_string(),
             alias: "Selected".to_string(),
             group: selected_group.clone(),

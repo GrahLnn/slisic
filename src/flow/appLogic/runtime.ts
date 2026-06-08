@@ -33,6 +33,8 @@ export const draftExtraRemoved = payloads["draft.extra.removed"];
 export const collectionUpdatesRequested = payloads["collection.updates.requested"];
 export const excludeAdded = payloads["exclude.added"];
 export const excludeRemoved = payloads["exclude.removed"];
+export const currentMusicLikedChanged = payloads["player.current_music_liked.changed"];
+export const currentMusicLikedCommitted = payloads["player.current_music_liked.committed"];
 export const nowPlayingTrackChanged = payloads["player.now_playing_track.changed"];
 export const playbackSurfaceStatusChanged = payloads["player.playback_surface_status.changed"];
 

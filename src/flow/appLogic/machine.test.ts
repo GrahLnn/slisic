@@ -8,6 +8,7 @@ import type {
   Group,
   Music,
   NowPlayingTrackChangedEvent,
+  NowPlayingTrackLikedChangedEvent,
   PlaybackSurfaceStatusChangedEvent,
   PlayList,
   PlayListListView,
@@ -153,6 +154,21 @@ function createPlaybackSurfaceStatusChangedEvent(
     session_generation: sessionGeneration,
     playlist_name: playlistName,
     status: "preparing",
+    ...overrides,
+  };
+}
+
+function createNowPlayingTrackLikedChangedEvent(
+  music: Music,
+  sessionGeneration = 1,
+  playlistName = "Focus Session",
+  overrides: Partial<NowPlayingTrackLikedChangedEvent> = {},
+): NowPlayingTrackLikedChangedEvent {
+  return {
+    session_generation: sessionGeneration,
+    playlist_name: playlistName,
+    canonical_music_id: music.canonical_music_id,
+    liked: true,
     ...overrides,
   };
 }
@@ -904,6 +920,101 @@ describe("appLogic machine", () => {
     assert.equal(actor.getSnapshot().context.nowPlayingTrackEndMs, music.end_ms);
     assert.equal(actor.getSnapshot().context.pendingPlaylistPlaybackName, null);
     assert.equal(actor.getSnapshot().context.pendingNowPlayingTrackEvidence, null);
+  });
+
+  test("liked intent updates play-page heart without replacing the current title", async () => {
+    const music = createMusic({ alias: "Track A" });
+    const collection = createCollection([music]);
+    const actor = createActor(
+      machine.provide({
+        actors: {
+          loadCollections: fromPromise<BootstrapResult>(async () =>
+            createBootstrapResult([collection]),
+          ),
+        },
+      }),
+    );
+
+    actor.start();
+    actor.send(sig.mainx.run);
+    await waitForState(actor, "ready");
+
+    actor.send(payloads["playlist.play"].load({ playlistName: "Focus Session", requestId: 1 }));
+    actor.send(
+      payloads["playlist.playback.accepted"].load({
+        playlistName: "Focus Session",
+        requestId: 1,
+        session: createStartedPlaybackSession(),
+      }),
+    );
+    actor.send(
+      payloads["player.now_playing_track.changed"].load(createNowPlayingTrackChangedEvent(music)),
+    );
+
+    assert.equal(actor.getSnapshot().context.nowPlayingTrackName, "Track A");
+
+    actor.send(payloads["player.current_music_liked.changed"].load(true));
+
+    assert.equal(actor.getSnapshot().context.nowPlayingTrackName, "Track A");
+    assert.equal(actor.getSnapshot().context.nowPlayingTrackLiked, true);
+  });
+
+  test("liked commit updates only the current heart and keeps the accepted title", async () => {
+    const music = createMusic({ alias: "Track A Accepted" });
+    const otherMusic = createMusic({
+      alias: "Track B",
+      canonical_music_id: "source:https://example.com/quiet-morning#b:0:120000",
+      url: "https://example.com/quiet-morning#b",
+    });
+    const collection = createCollection([music, otherMusic]);
+    const actor = createActor(
+      machine.provide({
+        actors: {
+          loadCollections: fromPromise<BootstrapResult>(async () =>
+            createBootstrapResult([collection]),
+          ),
+        },
+      }),
+    );
+
+    actor.start();
+    actor.send(sig.mainx.run);
+    await waitForState(actor, "ready");
+
+    actor.send(payloads["playlist.play"].load({ playlistName: "Focus Session", requestId: 1 }));
+    actor.send(
+      payloads["playlist.playback.accepted"].load({
+        playlistName: "Focus Session",
+        requestId: 1,
+        session: createStartedPlaybackSession(),
+      }),
+    );
+    actor.send(
+      payloads["player.now_playing_track.changed"].load(
+        createNowPlayingTrackChangedEvent(music, 1, "Focus Session", {
+          liked: false,
+          music_name: "Track A Accepted",
+        }),
+      ),
+    );
+
+    actor.send(
+      payloads["player.current_music_liked.committed"].load(
+        createNowPlayingTrackLikedChangedEvent(otherMusic),
+      ),
+    );
+
+    assert.equal(actor.getSnapshot().context.nowPlayingTrackName, "Track A Accepted");
+    assert.equal(actor.getSnapshot().context.nowPlayingTrackLiked, false);
+
+    actor.send(
+      payloads["player.current_music_liked.committed"].load(
+        createNowPlayingTrackLikedChangedEvent(music),
+      ),
+    );
+
+    assert.equal(actor.getSnapshot().context.nowPlayingTrackName, "Track A Accepted");
+    assert.equal(actor.getSnapshot().context.nowPlayingTrackLiked, true);
   });
 
   test("ignores early now playing evidence for a different pending playlist", async () => {

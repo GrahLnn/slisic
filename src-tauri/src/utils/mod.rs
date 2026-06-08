@@ -10,3 +10,7 @@ pub mod window;
 #[cfg(test)]
 #[path = "binaries.test.rs"]
 mod binaries_test;
+
+#[cfg(test)]
+#[path = "core.test.rs"]
+mod core_test;

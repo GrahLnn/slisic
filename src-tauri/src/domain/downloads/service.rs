@@ -22,6 +22,8 @@ use super::yt_dlp::{
     DownloadProgress, LeafProbe, RootProbe, YtDlpClient, audio_duration_boundary_matches,
     classify_root_preference,
 };
+#[cfg(not(test))]
+use crate::domain::audio_tail_trim::{self, AudioTailTrimRequest};
 use crate::domain::collection_import;
 use crate::domain::collection_import::CollectionShellPlan;
 #[cfg(not(test))]
@@ -1166,13 +1168,8 @@ async fn run_task_with_deps(
     let save_root = deps.save_root;
     let plan =
         resolve_collection_plan_with_root_probe(&task_snapshot, client.clone(), root_probe).await?;
-    let mut collection =
-        collection_import::load_collection_shell(&plan, &save_root, &deps.ffmpeg_path).await?;
+    let mut collection = collection_import::load_download_transaction_collection_shell(&plan).await?;
     collection_import::apply_collection_plan_to_task(&mut task_snapshot, &plan);
-    discard_materialized_planned_leaves(
-        &mut task_snapshot,
-        collection_import::existing_planned_leaf_completions(&collection, &plan, &save_root),
-    );
     task_snapshot = repo::save_task(task_snapshot.clone()).await?;
     let shell = collection_import::persist_download_collection_shell_from_task(&task_snapshot)
         .await?
@@ -1288,6 +1285,7 @@ fn runnable_plan_leaves(task: &DownloadTask, plan: &CollectionSyncPlan) -> Vec<P
         .collect()
 }
 
+#[cfg(test)]
 pub(crate) fn discard_materialized_planned_leaves(
     task: &mut DownloadTask,
     completions: Vec<collection_import::ExistingPlannedLeafCompletion>,
@@ -1983,6 +1981,7 @@ async fn handle_finished_leaf_download(
     *task_snapshot = saved;
 
     request_downloaded_leaf_loudness_evidence(collection, save_root, &file_name);
+    request_downloaded_leaf_audio_tail_trim(collection, source_kind, save_root, &file_name);
     eprintln!("[downloads] leaf {} completed file={}", leaf_id, file_name);
     Ok(())
 }
@@ -2017,7 +2016,13 @@ async fn handle_existing_leaf_completion(
             completion.group,
         )
         .await?;
-        write_collection_manifest_after_download(save_root, collection, source_kind)?;
+        write_collection_manifest_after_download(
+            save_root,
+            collection,
+            source_kind,
+            &music_probe,
+            &relative_path,
+        )?;
         collection_import::notify_downloaded_leaf_collection_committed();
         Ok::<_, anyhow::Error>(())
     }
@@ -2048,6 +2053,7 @@ async fn handle_existing_leaf_completion(
     *task_snapshot = saved;
 
     request_downloaded_leaf_loudness_evidence(collection, save_root, &relative_path);
+    request_downloaded_leaf_audio_tail_trim(collection, source_kind, save_root, &relative_path);
     eprintln!(
         "[downloads] leaf {} completed existing file={} url={}",
         leaf_id, relative_path, leaf_url
@@ -2154,7 +2160,13 @@ async fn persist_completed_leaf_download(
     )
     .await
     .with_context(|| format!("failed to persist downloaded music for {leaf_url}"))?;
-    write_collection_manifest_after_download(save_root, collection, source_kind)
+    write_collection_manifest_after_download(
+        save_root,
+        collection,
+        source_kind,
+        music_probe,
+        &file_name,
+    )
         .with_context(|| format!("failed to write collection manifest for {leaf_url}"))?;
     collection_import::notify_downloaded_leaf_collection_committed();
     eprintln!(
@@ -2187,21 +2199,91 @@ fn request_downloaded_leaf_loudness_evidence(
     save_root: &Path,
     relative_path: &str,
 ) {
-    collection
+    let mut path_matches = 0usize;
+    let mut skipped_has_profile = 0usize;
+    let mut skipped_invalid_range = 0usize;
+    let mut queued = 0usize;
+    let mut skipped_missing_file = 0usize;
+    for music in collection
         .musics
         .iter()
         .filter(|music| music.path.as_deref() == Some(relative_path))
-        .filter(|music| music.loudness_profile.is_none())
-        .filter(|music| music.start_ms < music.end_ms)
-        .for_each(|music| {
-            loudness_evidence::request_track_loudness_evidence(LoudnessEvidenceRequest {
-                canonical_music_id: music.canonical_music_id.clone(),
-                url: music.url.clone(),
-                file_path: save_root.join(&collection.folder).join(relative_path),
-                start_ms: music.start_ms,
-                end_ms: music.end_ms,
-            });
-        })
+    {
+        path_matches += 1;
+        if music.loudness_profile.is_some() {
+            skipped_has_profile += 1;
+            continue;
+        }
+        if music.start_ms >= music.end_ms {
+            skipped_invalid_range += 1;
+            continue;
+        }
+        let file_path = save_root.join(&collection.folder).join(relative_path);
+        if !file_path.is_file() {
+            skipped_missing_file += 1;
+            continue;
+        }
+        loudness_evidence::request_downloaded_leaf_loudness_evidence(LoudnessEvidenceRequest {
+            canonical_music_id: music.canonical_music_id.clone(),
+            url: music.url.clone(),
+            file_path,
+            start_ms: music.start_ms,
+            end_ms: music.end_ms,
+        });
+        queued += 1;
+    }
+
+    log::info!(
+        target: "downloads",
+        "downloaded_leaf_loudness_evidence_scanned collection=\"{}\" relative_path=\"{}\" musics={} path_matches={} queued={} skipped_has_profile={} skipped_invalid_range={} skipped_missing_file={}",
+        collection.url,
+        relative_path,
+        collection.musics.len(),
+        path_matches,
+        queued,
+        skipped_has_profile,
+        skipped_invalid_range,
+        skipped_missing_file
+    );
+}
+
+#[cfg(not(test))]
+fn request_downloaded_leaf_audio_tail_trim(
+    collection: &Collection,
+    source_kind: CollectionSourceKind,
+    save_root: &Path,
+    relative_path: &str,
+) {
+    let matching_musics = collection
+        .musics
+        .iter()
+        .filter(|music| music.path.as_deref() == Some(relative_path))
+        .count();
+    if matching_musics == 0 {
+        log::info!(
+            target: "downloads",
+            "downloaded_leaf_audio_tail_trim_skipped collection=\"{}\" relative_path=\"{}\" reason=no_matching_music musics={}",
+            collection.url,
+            relative_path,
+            collection.musics.len()
+        );
+        return;
+    }
+
+    log::info!(
+        target: "downloads",
+        "downloaded_leaf_audio_tail_trim_requested collection=\"{}\" relative_path=\"{}\" source_kind={} matching_musics={}",
+        collection.url,
+        relative_path,
+        source_kind.as_str(),
+        matching_musics
+    );
+    audio_tail_trim::request_downloaded_leaf_audio_tail_trim(AudioTailTrimRequest {
+        collection_url: collection.url.clone(),
+        source_kind,
+        save_root: save_root.to_path_buf(),
+        focus_music: None,
+    });
 }
 
 #[cfg(not(test))]
@@ -2209,9 +2291,33 @@ fn write_collection_manifest_after_download(
     save_root: &Path,
     collection: &Collection,
     source_kind: CollectionSourceKind,
+    probe: &LeafProbe,
+    relative_path: &str,
 ) -> Result<()> {
     let collection_root = save_root.join(&collection.folder);
-    collection_import::write_collection_manifest(&collection_root, collection, source_kind)
+    let Some(group) = collection
+        .musics
+        .iter()
+        .find(|music| {
+            music.url == probe.webpage_url
+                && music.path.as_deref() == Some(relative_path)
+        })
+        .map(|music| music.group.clone())
+    else {
+        bail!(
+            "downloaded raw manifest evidence target not found for {} at {}",
+            probe.webpage_url,
+            relative_path
+        );
+    };
+    collection_import::write_raw_leaf_manifest_evidence(
+        &collection_root,
+        collection,
+        source_kind,
+        probe,
+        relative_path,
+        &group,
+    )
 }
 
 #[cfg(test)]
@@ -2219,6 +2325,8 @@ fn write_collection_manifest_after_download(
     _save_root: &Path,
     _collection: &Collection,
     _source_kind: CollectionSourceKind,
+    _probe: &LeafProbe,
+    _relative_path: &str,
 ) -> Result<()> {
     Ok(())
 }

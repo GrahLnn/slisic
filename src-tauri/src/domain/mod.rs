@@ -1,3 +1,4 @@
+pub mod audio_tail_trim;
 pub mod collection_import;
 pub mod downloads;
 pub mod loudness_evidence;

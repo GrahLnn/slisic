@@ -24,6 +24,14 @@ pub struct NowPlayingTrackChangedEvent {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type, Event)]
+pub struct NowPlayingTrackLikedChangedEvent {
+    pub session_generation: u64,
+    pub playlist_name: String,
+    pub canonical_music_id: String,
+    pub liked: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type, Event)]
 pub struct PlaybackSurfaceStatusChangedEvent {
     pub session_generation: u64,
     pub playlist_name: String,
@@ -69,6 +77,17 @@ impl NowPlayingTrackChangedEvent {
             file_path: value.file_path,
             start_ms: value.start_ms,
             end_ms: value.end_ms,
+            liked: value.liked,
+        }
+    }
+}
+
+impl NowPlayingTrackLikedChangedEvent {
+    pub(crate) fn from_session_track(session_generation: u64, value: &PlaybackTrackPayload) -> Self {
+        Self {
+            session_generation,
+            playlist_name: value.playlist_name.clone(),
+            canonical_music_id: value.canonical_music_id.clone(),
             liked: value.liked,
         }
     }

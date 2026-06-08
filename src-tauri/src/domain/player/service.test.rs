@@ -6,15 +6,18 @@ use super::service::{
     SpectrumPlaybackScope, are_playback_tracks_equal, backend_playback_normalization,
     playback_normalization_for_track_loudness_profile, playback_tracks_match,
     resolve_playback_absolute_position_ms, resolve_playback_range_completion,
+    resolve_active_request_track_liked_update,
     resolve_playback_request_position, resolve_playback_seek_pause_after_request,
     resolve_playback_seek_range, resolve_playback_status_track_identity,
     resolve_repeated_playback_range_override, resolve_running_identity_update_playback_range,
+    resolve_session_track_liked_update,
     resolve_spectrum_loop_playback_range, resolve_spectrum_loop_signal_active_range,
     resolve_spectrum_loop_signal_seek_position, resolve_spectrum_music_playback_range,
     resolve_spectrum_playback_loop_signal, should_accept_spectrum_playback_signal,
     should_commit_spectrum_playback_scope_exit, should_resume_playback_seek_cancel,
+    PlaybackTrackLikedUpdate,
 };
-use crate::domain::playlists::model::LoudnessProfile;
+use crate::domain::playlists::model::{CollectionGroupOwner, Group, LoudnessProfile, Music};
 use super::track_identity_substitution::{
     PlaybackTrackIdentityUpdate, resolve_active_request_track_identity_update,
     resolve_identity_update_playback_restart_position, resolve_session_track_identity_update,
@@ -233,6 +236,81 @@ fn resolve_active_request_track_identity_update_ignores_unrelated_updates() {
             end_ms: 1_355_000,
             next_start_ms: 1_254_046,
             next_end_ms: 1_355_000,
+        },
+    );
+
+    assert!(updated.is_none());
+}
+
+#[test]
+fn resolve_session_track_liked_update_changes_only_liked_field() {
+    let mut current = track("a");
+    current.music_name = "Spectrum Accepted Title".to_string();
+    current.start_ms = 9_250;
+    current.end_ms = 110_750;
+    current.source_music = Some(Box::new(Music {
+        occurrence_id: "occurrence-a".to_string(),
+        name: "Original Title".to_string(),
+        alias: "Spectrum Accepted Title".to_string(),
+        group: Group {
+            name: "Disc 1".to_string(),
+            url: "https://example.com/a#disc-1".to_string(),
+            collection: CollectionGroupOwner {
+                name: "Example".to_string(),
+                url: "https://example.com/a".to_string(),
+                folder: "youtube/example".to_string(),
+                last_updated: "2026-06-08T00:00:00+00:00".to_string(),
+                enable_updates: Some(false),
+            },
+            folder: "Disc 1".to_string(),
+        },
+        url: current.music_url.clone(),
+        path: Some(current.file_path.to_string_lossy().to_string()),
+        start_ms: current.start_ms,
+        end_ms: current.end_ms,
+        canonical_music_id: current.canonical_music_id.clone(),
+        liked: false,
+        loudness_profile: None,
+    }));
+    let other = track("b");
+
+    let updated = resolve_session_track_liked_update(
+        &[current.clone(), other.clone()],
+        &PlaybackTrackLikedUpdate {
+            canonical_music_id: current.canonical_music_id.clone(),
+            liked: true,
+        },
+    )
+    .expect("matching track liked field should update");
+
+    assert_eq!(updated[0].music_name, "Spectrum Accepted Title");
+    assert_eq!(updated[0].music_url, current.music_url);
+    assert_eq!(updated[0].start_ms, 9_250);
+    assert_eq!(updated[0].end_ms, 110_750);
+    assert!(updated[0].liked);
+    assert_eq!(
+        updated[0].source_music.as_ref().map(|music| music.alias.as_str()),
+        Some("Spectrum Accepted Title"),
+    );
+    assert_eq!(
+        updated[0].source_music.as_ref().map(|music| music.name.as_str()),
+        Some("Original Title"),
+    );
+    assert!(updated[0].source_music.as_ref().is_some_and(|music| music.liked));
+    assert_eq!(updated[1].canonical_music_id, other.canonical_music_id);
+    assert_eq!(updated[1].music_name, other.music_name);
+    assert_eq!(updated[1].liked, other.liked);
+}
+
+#[test]
+fn resolve_active_request_track_liked_update_ignores_unrelated_identity() {
+    let current = track("a");
+
+    let updated = resolve_active_request_track_liked_update(
+        Some(&current),
+        &PlaybackTrackLikedUpdate {
+            canonical_music_id: "source:https://example.com/b:0:60000".to_string(),
+            liked: true,
         },
     );
 

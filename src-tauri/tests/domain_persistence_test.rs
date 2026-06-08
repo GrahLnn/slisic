@@ -135,12 +135,26 @@ mod domain {
             ));
         }
 
+        pub mod service {
+            include!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/domain/meta/service.rs"
+            ));
+        }
+
         mod repo_test {
             include!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/src/domain/meta/repo.test.rs"
             ));
         }
+    }
+
+    pub mod loudness_evidence {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/domain/loudness_evidence.rs"
+        ));
     }
 
     pub mod downloads {
