@@ -12,9 +12,9 @@ use crate::domain::playlist_playback::recommendation::{
 };
 #[cfg(not(test))]
 use crate::domain::playlist_playback::service as playlist_playback_service;
+use crate::domain::playlists::model::LoudnessProfile;
 #[cfg(not(test))]
 use crate::domain::playlists::repo as playlist_repo;
-use crate::domain::playlists::model::LoudnessProfile;
 use crate::domain::playlists::repo::{PlaylistPlaybackSelection, PlaylistPlaybackTrackSource};
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};

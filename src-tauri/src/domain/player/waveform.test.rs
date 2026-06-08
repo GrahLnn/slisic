@@ -71,4 +71,3 @@ fn waveform_peak_quantization_keeps_signed_unit_range() {
     assert_eq!(quantize_waveform_peak(0.0), 0);
     assert_eq!(quantize_waveform_peak(1.2), 127);
 }
-

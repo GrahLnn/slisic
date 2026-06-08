@@ -12,9 +12,9 @@ use crate::utils::binaries::{ManagedBinary, ensure_managed_binary};
 use anyhow::bail;
 use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
 #[cfg(not(test))]
 use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 #[cfg(not(test))]
@@ -608,12 +608,21 @@ async fn run_loudness_worker(runtime: Arc<LoudnessEvidenceRuntime>) {
                 if should_close_loudness_request_after_error(&error) {
                     remove_pending_loudness_request(&runtime, &queued.request);
                 }
-                log::error!(
-                    target: LOUDNESS_EVIDENCE_LOG_TARGET,
-                    "loudness_evidence_measurement_failed source={} error=\"{}\"",
-                    queued.source.as_str(),
-                    error
-                );
+                if is_stale_loudness_target_error(&error) {
+                    log::info!(
+                        target: LOUDNESS_EVIDENCE_LOG_TARGET,
+                        "loudness_evidence_request_obsolete source={} reason=target_identity_moved error=\"{}\"",
+                        queued.source.as_str(),
+                        error
+                    );
+                } else {
+                    log::error!(
+                        target: LOUDNESS_EVIDENCE_LOG_TARGET,
+                        "loudness_evidence_measurement_failed source={} error=\"{}\"",
+                        queued.source.as_str(),
+                        error
+                    );
+                }
             }
         }
 
@@ -937,8 +946,14 @@ fn should_close_loudness_request_after_error(error: &anyhow::Error) -> bool {
     message.contains("invalid loudness evidence range")
         || message.contains("missing loudness evidence audio file")
         || message.contains("music loudness evidence must be a finite non-zero LUFS value")
-        || message.contains("music loudness evidence target not found")
+        || is_stale_loudness_target_error(error)
         || message.contains("player session loudness evidence must be finite and non-zero")
+}
+
+fn is_stale_loudness_target_error(error: &anyhow::Error) -> bool {
+    error
+        .to_string()
+        .contains("music loudness evidence target not found")
 }
 
 #[cfg(test)]

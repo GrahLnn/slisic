@@ -1327,6 +1327,60 @@ fn tail_trim_mutation_does_not_overwrite_current_alias_or_liked_state() {
 }
 
 #[test]
+fn stale_tail_trim_plan_is_absorbed_by_current_shorter_end() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+        bootstrap_collection_write_schema().await;
+
+        let mut collection = grouped_collection("https://example.com/music-tail-trim-stale");
+        collection.musics[0].loudness_profile = LoudnessProfile::from_integrated_lufs(-14.5);
+        let saved = upsert_collection(&collection)
+            .await
+            .expect("collection should save before tail trim");
+        let original = saved.musics[0].clone();
+        let first_trim_end = 132_750;
+        let stale_later_trim_end = 140_000;
+
+        trim_collection_music_ends_by_identity(
+            &saved.url,
+            &[MusicEndTrim {
+                url: original.url.clone(),
+                start_ms: original.start_ms,
+                end_ms: original.end_ms,
+                next_end_ms: first_trim_end,
+            }],
+        )
+        .await
+        .expect("first trim should save")
+        .expect("collection should still exist");
+
+        let after_stale_plan = trim_collection_music_ends_by_identity(
+            &saved.url,
+            &[MusicEndTrim {
+                url: original.url.clone(),
+                start_ms: original.start_ms,
+                end_ms: original.end_ms,
+                next_end_ms: stale_later_trim_end,
+            }],
+        )
+        .await
+        .expect("stale trim plan should be absorbed")
+        .expect("collection should still exist");
+
+        assert_eq!(after_stale_plan.musics[0].end_ms, first_trim_end);
+        assert_eq!(
+            after_stale_plan.musics[0].canonical_music_id,
+            canonical_music_id_for_source(&original.url, original.start_ms, first_trim_end)
+        );
+        assert_eq!(after_stale_plan.musics[0].loudness_profile, None);
+
+        reset_db();
+    });
+}
+
+#[test]
 fn canonical_music_identity_shares_liked_state_across_future_occurrences() {
     let _guard = acquire_db_test_lock();
 

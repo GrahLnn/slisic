@@ -311,7 +311,9 @@ impl LoudnessProfile {
             && self.short_lufs_p95.is_none_or(is_finite_optional_evidence)
             && self.short_lufs_max.is_none_or(is_finite_optional_evidence)
             && self.presence_db.is_none_or(is_finite_optional_evidence)
-            && self.model_adjustment_db.is_none_or(is_finite_optional_evidence)
+            && self
+                .model_adjustment_db
+                .is_none_or(is_finite_optional_evidence)
     }
 }
 

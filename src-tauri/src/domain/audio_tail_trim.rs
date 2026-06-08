@@ -188,10 +188,7 @@ impl AudioTailTrimSource {
 
     #[cfg(not(test))]
     fn persists_pending(self) -> bool {
-        matches!(
-            self,
-            Self::DownloadedLeaf | Self::PlaybackCurrent
-        )
+        matches!(self, Self::DownloadedLeaf | Self::PlaybackCurrent)
     }
 
     fn requires_active_rerun(self) -> bool {
@@ -573,10 +570,10 @@ fn refined_tail_cut_ms(
         .checked_sub(tail_duration_ms)
         .or_else(|| candidate.end_ms.checked_sub(tail_duration_ms))?
         .clamp(candidate.start_ms, candidate.end_ms);
-    Some(refine_tail_cut_to_quiet_boundary(signature, coarse_cut_ms).clamp(
-        candidate.start_ms,
-        candidate.end_ms,
-    ))
+    Some(
+        refine_tail_cut_to_quiet_boundary(signature, coarse_cut_ms)
+            .clamp(candidate.start_ms, candidate.end_ms),
+    )
 }
 
 fn refine_tail_cut_to_quiet_boundary(signature: &TailEvidenceSignature, coarse_cut_ms: u32) -> u32 {
@@ -669,8 +666,7 @@ fn build_pair_tail_matches(
     let mut matches = Vec::new();
     for left_index in 0..signatures.len() {
         for right_index in left_index + 1..signatures.len() {
-            let pair =
-                suffix_match(signatures, left_index, right_index, threshold);
+            let pair = suffix_match(signatures, left_index, right_index, threshold);
             if pair.duration_ms >= MIN_COMMON_TAIL_MS {
                 matches.push(pair);
             }
@@ -693,13 +689,12 @@ fn suffix_match(
     };
     let left_to_right = suffix_match_frames(&left.frames, &right.frames, threshold);
     let right_to_left = suffix_match_frames(&right.frames, &left.frames, threshold);
-    let best = if tail_match_stats_sort_key(right_to_left)
-        > tail_match_stats_sort_key(left_to_right)
-    {
-        right_to_left
-    } else {
-        left_to_right
-    };
+    let best =
+        if tail_match_stats_sort_key(right_to_left) > tail_match_stats_sort_key(left_to_right) {
+            right_to_left
+        } else {
+            left_to_right
+        };
 
     PairTailMatch {
         left_index,
@@ -739,10 +734,7 @@ fn suffix_match_frames(
             if shifted >= right.len() {
                 continue;
             }
-            let similarity = cosine_like_dot(
-                &left[left_frame].bands,
-                &right[shifted].bands,
-            );
+            let similarity = cosine_like_dot(&left[left_frame].bands, &right[shifted].bands);
             if similarity > best {
                 best = similarity;
                 best_right = shifted;
@@ -832,12 +824,9 @@ fn select_dominant_tail_cluster(
         .map(|cluster| cluster.members.len())
         .max()?;
     let retained_size = ((max_cluster_size as f32) * TAIL_DOMINANT_RETENTION).floor() as usize;
-    best_by_duration
-        .into_iter()
-        .find(|cluster| {
-            cluster.members.len() >= retained_size
-                && cluster.density >= TAIL_CLUSTER_MIN_DENSITY
-        })
+    best_by_duration.into_iter().find(|cluster| {
+        cluster.members.len() >= retained_size && cluster.density >= TAIL_CLUSTER_MIN_DENSITY
+    })
 }
 
 fn best_cluster_at_duration(
@@ -897,8 +886,7 @@ fn build_tail_attachments(
         if link_durations.is_empty() {
             continue;
         }
-        let attached_duration =
-            quantile_u32(&link_durations, TAIL_ATTACHED_DURATION_QUANTILE);
+        let attached_duration = quantile_u32(&link_durations, TAIL_ATTACHED_DURATION_QUANTILE);
         let links_at_duration = link_durations
             .iter()
             .filter(|duration| **duration >= attached_duration)
@@ -914,7 +902,10 @@ fn build_tail_attachments(
     attachments
 }
 
-fn edge_set_at_duration(pair_matches: &[PairTailMatch], duration_ms: u32) -> HashSet<(usize, usize)> {
+fn edge_set_at_duration(
+    pair_matches: &[PairTailMatch],
+    duration_ms: u32,
+) -> HashSet<(usize, usize)> {
     pair_matches
         .iter()
         .filter(|pair| pair.duration_ms >= duration_ms)
@@ -1437,7 +1428,7 @@ async fn run_audio_tail_trim_worker(runtime: Arc<AudioTailTrimRuntime>) {
             &queued.request,
             queued.source,
         )
-            .await
+        .await
         {
             Ok(()) => true,
             Err(error) => {
@@ -1662,8 +1653,7 @@ async fn process_audio_tail_trim_request(
     let mut applied_trim_keys = HashSet::new();
     let mut absorbed_focus = None::<AudioTailTrimFocusMusic>;
     while !candidates.is_empty() {
-        let coalesced_focus =
-            coalesced_audio_tail_trim_focus_snapshot(&runtime, &collection.url);
+        let coalesced_focus = coalesced_audio_tail_trim_focus_snapshot(&runtime, &collection.url);
         let active_focus_snapshot = coalesced_focus
             .clone()
             .or_else(|| absorbed_focus.clone())
@@ -1678,11 +1668,7 @@ async fn process_audio_tail_trim_request(
         {
             absorbed_focus = Some(focus.clone());
         }
-        consume_coalesced_audio_tail_trim_focus_if_matched(
-            &runtime,
-            &collection.url,
-            &candidate,
-        );
+        consume_coalesced_audio_tail_trim_focus_if_matched(&runtime, &collection.url, &candidate);
         let signature = match analyze_candidate_tail_signature(
             Arc::clone(&runtime),
             ffmpeg_path.clone(),
@@ -1710,17 +1696,14 @@ async fn process_audio_tail_trim_request(
             continue;
         }
 
-        let Some((resolved, focus_plan)) =
-            build_audio_tail_trim_focus_plan(
-                &all_candidates,
-                &all_signatures,
-                active_focus_snapshot.as_ref(),
-            )
-        else {
+        let Some((resolved, focus_plan)) = build_audio_tail_trim_focus_plan(
+            &all_candidates,
+            &all_signatures,
+            active_focus_snapshot.as_ref(),
+        ) else {
             continue;
         };
-        let focus_plan =
-            filter_unapplied_audio_tail_trim_plan(focus_plan, &applied_trim_keys);
+        let focus_plan = filter_unapplied_audio_tail_trim_plan(focus_plan, &applied_trim_keys);
         if !focus_plan.is_empty() {
             log::info!(
                 target: AUDIO_TAIL_TRIM_LOG_TARGET,
@@ -1801,8 +1784,12 @@ async fn apply_audio_tail_trim_plan(
     evidence: &CommonTailEvidence,
     stage: &str,
 ) -> Result<()> {
-    let Some(updated) =
-        playlists_repo::trim_collection_music_ends_by_identity(collection_url, plan).await?
+    let Some((updated, applied_plan)) =
+        playlists_repo::trim_collection_music_ends_by_identity_with_applied_trims(
+            collection_url,
+            plan,
+        )
+        .await?
     else {
         log::info!(
             target: AUDIO_TAIL_TRIM_LOG_TARGET,
@@ -1813,10 +1800,21 @@ async fn apply_audio_tail_trim_plan(
         );
         return Ok(());
     };
+    if applied_plan.is_empty() {
+        log::info!(
+            target: AUDIO_TAIL_TRIM_LOG_TARGET,
+            "audio_tail_trim_skipped source={} stage={} reason=already_applied collection=\"{}\" planned_trims={}",
+            source.as_str(),
+            stage,
+            collection_url,
+            plan.len()
+        );
+        return Ok(());
+    }
     collection_import::notify_downloaded_leaf_collection_committed();
-    request_current_session_identity_updates_for_trimmed_music(&updated, &plan);
-    request_loudness_for_trimmed_music(&updated, &request.save_root, &plan);
-    log_applied_audio_tail_trim_tracks(&updated, plan);
+    request_current_session_identity_updates_for_trimmed_music(&updated, &applied_plan);
+    request_loudness_for_trimmed_music(&updated, &request.save_root, &applied_plan);
+    log_applied_audio_tail_trim_tracks(&updated, &applied_plan);
 
     log::info!(
         target: AUDIO_TAIL_TRIM_LOG_TARGET,
@@ -1824,7 +1822,7 @@ async fn apply_audio_tail_trim_plan(
         source.as_str(),
         stage,
         updated.url,
-        plan.len(),
+        applied_plan.len(),
         evidence.duration_ms,
         evidence.support,
         evidence.density
@@ -1873,14 +1871,16 @@ fn request_current_session_identity_updates_for_trimmed_music(
             })
             .map(|music| music.alias.clone())
             .unwrap_or_default();
-        player_service::request_current_session_track_identity_update(PlaybackTrackIdentityUpdate {
-            music_name,
-            music_url: trim.url.clone(),
-            start_ms: trim.start_ms,
-            end_ms: trim.end_ms,
-            next_start_ms: trim.start_ms,
-            next_end_ms: trim.next_end_ms,
-        });
+        player_service::request_current_session_track_identity_update(
+            PlaybackTrackIdentityUpdate {
+                music_name,
+                music_url: trim.url.clone(),
+                start_ms: trim.start_ms,
+                end_ms: trim.end_ms,
+                next_start_ms: trim.start_ms,
+                next_end_ms: trim.next_end_ms,
+            },
+        );
     }
 }
 

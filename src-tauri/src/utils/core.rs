@@ -5,13 +5,13 @@ use super::window;
 #[cfg(not(test))]
 use appdb::connection::reset_db;
 #[cfg(not(test))]
+use std::process::Command;
+#[cfg(not(test))]
 use std::sync::atomic::Ordering;
 use std::{
     fs,
     path::{Path, PathBuf},
 };
-#[cfg(not(test))]
-use std::process::Command;
 #[cfg(not(test))]
 use tauri::{AppHandle, Manager, WebviewWindow};
 

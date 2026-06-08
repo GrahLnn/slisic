@@ -147,8 +147,7 @@ fn published_loudness_profile_survives_active_task_release_by_identity() {
     let first_slot_request = request_with_file("PreparedFirst.m4a", 0, 95_086);
     let same_identity_request = request_with_file("PreparedFirstMoved.m4a", 0, 95_086);
     let other_range_request = request_with_file("PreparedFirst.m4a", 95_086, 180_000);
-    let profile =
-        LoudnessProfile::from_integrated_lufs(-13.87).expect("test LUFS should be valid");
+    let profile = LoudnessProfile::from_integrated_lufs(-13.87).expect("test LUFS should be valid");
 
     remember_published_loudness_profile_for_test(&mut profiles, &first_slot_request, profile);
 

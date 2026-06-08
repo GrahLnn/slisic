@@ -152,12 +152,7 @@ fn raw_leaf_manifest_records_probe_text_and_measured_file_boundary_not_db_projec
         name: "Death Stranding".to_string(),
         url: "https://example.com/playlist".to_string(),
         folder: "youtube/Death Stranding (Original Soundtrack)".to_string(),
-        musics: vec![music_with_group(
-            normalized_title,
-            url,
-            path,
-            group.clone(),
-        )],
+        musics: vec![music_with_group(normalized_title, url, path, group.clone())],
         last_updated: "2026-06-07T00:00:00+00:00".to_string(),
         enable_updates: Some(false),
     };

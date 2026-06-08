@@ -1,15 +1,12 @@
 use super::{
     AudioTailTrimCandidate, AudioTailTrimFocusMusic, AudioTailTrimRequest, TailEvidenceFrame,
     TailEvidenceSignature, audio_tail_trim_queue_insert_index_for_test,
-    audio_tail_trim_queue_overflow_action_for_test, build_audio_tail_trim_plan,
+    audio_tail_trim_queue_overflow_action_for_test,
     audio_tail_trim_source_requires_active_rerun_for_test, build_audio_tail_trim_focus_plan,
-    detect_common_tail_evidence,
-    merge_audio_tail_trim_request,
-    prioritize_audio_tail_trim_focus_candidate,
-    read_audio_tail_trim_pending_task_file_for_test, resolve_audio_tail_trim_evidence,
-    remove_audio_tail_trim_pending_task_from_file_for_test,
-    take_next_audio_tail_trim_candidate,
-    upsert_audio_tail_trim_pending_task_file_for_test,
+    build_audio_tail_trim_plan, detect_common_tail_evidence, merge_audio_tail_trim_request,
+    prioritize_audio_tail_trim_focus_candidate, read_audio_tail_trim_pending_task_file_for_test,
+    remove_audio_tail_trim_pending_task_from_file_for_test, resolve_audio_tail_trim_evidence,
+    take_next_audio_tail_trim_candidate, upsert_audio_tail_trim_pending_task_file_for_test,
 };
 use crate::domain::downloads::model::CollectionSourceKind;
 use std::path::PathBuf;
@@ -262,12 +259,9 @@ fn focus_plan_trims_only_focused_music_after_common_tail_evidence_exists() {
         end_ms: 90_000,
     };
 
-    let (_evidence, plan) = build_audio_tail_trim_focus_plan(
-        &candidates,
-        &signatures,
-        Some(&focus),
-    )
-    .expect("focused track should be covered by shared tail evidence");
+    let (_evidence, plan) =
+        build_audio_tail_trim_focus_plan(&candidates, &signatures, Some(&focus))
+            .expect("focused track should be covered by shared tail evidence");
 
     assert_eq!(plan.len(), 1);
     assert_eq!(plan[0].url, "https://example.com/current");
@@ -298,7 +292,7 @@ fn merging_collection_cargo_keeps_existing_focus_when_incoming_has_none() {
 fn playback_current_tail_trim_requests_preempt_downloaded_leaf_work() {
     assert_eq!(
         audio_tail_trim_queue_insert_index_for_test(
-            &["downloaded_leaf", "restored_manifest", "pending_store"],
+            &["downloaded_leaf", "pending_store", "pending_store"],
             "playback_current",
         ),
         0
@@ -336,8 +330,8 @@ fn playback_focus_cargo_does_not_force_active_collection_rerun() {
     assert!(audio_tail_trim_source_requires_active_rerun_for_test(
         "downloaded_leaf"
     ));
-    assert!(audio_tail_trim_source_requires_active_rerun_for_test(
-        "restored_manifest"
+    assert!(!audio_tail_trim_source_requires_active_rerun_for_test(
+        "pending_store"
     ));
 }
 

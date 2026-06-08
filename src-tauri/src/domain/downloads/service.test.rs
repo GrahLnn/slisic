@@ -32,8 +32,7 @@ use crate::domain::collection_import::{
     filter_new_planned_leaves, load_collection_shell_with_local_duration_probe,
     load_download_transaction_collection_shell, materialize_music_entries,
     normalize_music_titles_within_collection, persist_download_collection_shell_from_task,
-    persist_downloaded_leaf_music,
-    persist_enqueued_collection_plan, resolve_existing_leaf_file,
+    persist_downloaded_leaf_music, persist_enqueued_collection_plan, resolve_existing_leaf_file,
 };
 use crate::domain::downloads::model::{
     DownloadLeaf, DownloadLeafStatus, DownloadTask, DownloadTaskStatus, DownloadTrigger,
@@ -41,9 +40,11 @@ use crate::domain::downloads::model::{
 };
 use crate::domain::playlists::PLAYLIST_DB_TEST_LOCK;
 use crate::domain::playlists::model::{
-    Collection, CollectionGroupOwner, Group, Music, canonical_music_id_for_source,
+    Collection, CollectionGroupOwner, Group, LoudnessProfile, Music, canonical_music_id_for_source,
 };
-use crate::domain::playlists::repo::upsert_collection;
+use crate::domain::playlists::repo::{
+    MusicEndTrim, trim_collection_music_ends_by_identity, upsert_collection,
+};
 use anyhow::{Result, anyhow};
 use appdb::Id;
 use appdb::connection::{InitDbOptions, reinit_db_with_options, reset_db};
@@ -653,7 +654,7 @@ fn persist_downloaded_leaf_music_replaces_only_the_matching_group_copy() {
             folder: "youtube/demo".to_string(),
             musics: vec![
                 Music {
-    occurrence_id: String::new(),
+                    occurrence_id: String::new(),
                     name: "Original First".to_string(),
                     alias: "Pinned First".to_string(),
                     group: first_group.clone(),
@@ -670,7 +671,7 @@ fn persist_downloaded_leaf_music_replaces_only_the_matching_group_copy() {
                     loudness_profile: None,
                 },
                 Music {
-    occurrence_id: String::new(),
+                    occurrence_id: String::new(),
                     name: "Original Second".to_string(),
                     alias: "Pinned Second".to_string(),
                     group: second_group.clone(),
@@ -734,6 +735,99 @@ fn persist_downloaded_leaf_music_replaces_only_the_matching_group_copy() {
             Some("Disc 2/original.m4a"),
             "Pinned Second"
         )));
+
+        reset_db();
+    });
+}
+
+#[test]
+fn persist_downloaded_leaf_music_preserves_current_leaf_lifecycle_facts() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let group = collection_group("Disc 1", "https://example.com/disc-1", "Disc 1");
+        let music_url = "https://example.com/watch?v=tail";
+        let raw_end_ms = 264_104;
+        let trimmed_end_ms = 233_403;
+        let profile =
+            LoudnessProfile::from_integrated_lufs(-14.25).expect("test LUFS should be valid");
+        let collection = Collection {
+            name: "Demo".to_string(),
+            url: "https://example.com/root-tail-race".to_string(),
+            folder: "youtube/demo-tail-race".to_string(),
+            musics: vec![Music {
+                occurrence_id: String::new(),
+                name: "Original".to_string(),
+                alias: "User Alias".to_string(),
+                group: group.clone(),
+                url: music_url.to_string(),
+                canonical_music_id: canonical_music_id_for_source(music_url, 0, raw_end_ms),
+                path: Some("Disc 1/original.m4a".to_string()),
+                start_ms: 0,
+                end_ms: raw_end_ms,
+                liked: true,
+                loudness_profile: Some(profile),
+            }],
+            last_updated: "2026-04-12T00:00:00+00:00".to_string(),
+            enable_updates: Some(false),
+        };
+
+        let saved = upsert_collection(&collection)
+            .await
+            .expect("collection should save before tail trim");
+        let mut stale_download_snapshot = saved.clone();
+        let trimmed = trim_collection_music_ends_by_identity(
+            &saved.url,
+            &[MusicEndTrim {
+                url: music_url.to_string(),
+                start_ms: 0,
+                end_ms: raw_end_ms,
+                next_end_ms: trimmed_end_ms,
+            }],
+        )
+        .await
+        .expect("tail trim should save")
+        .expect("collection should still exist");
+
+        assert_eq!(trimmed.musics[0].end_ms, trimmed_end_ms);
+        assert_eq!(trimmed.musics[0].loudness_profile, None);
+
+        let probe = LeafProbe {
+            title: "Replacement Raw Probe".to_string(),
+            webpage_url: music_url.to_string(),
+            extractor_key: Some("Youtube".to_string()),
+            album: None,
+            duration_ms: Some(raw_end_ms),
+            duration_seconds: Some(raw_end_ms / 1_000),
+            chapters: vec![],
+        };
+
+        persist_downloaded_leaf_music(
+            &mut stale_download_snapshot,
+            CollectionSourceKind::List,
+            &probe,
+            "Disc 1/replacement.m4a",
+            group,
+        )
+        .await
+        .expect("leaf persistence should compose with current collection facts");
+
+        let updated = stale_download_snapshot
+            .musics
+            .iter()
+            .find(|music| music.url == music_url)
+            .expect("music should remain in collection");
+        assert_eq!(updated.end_ms, trimmed_end_ms);
+        assert_eq!(updated.alias, "User Alias");
+        assert!(updated.liked);
+        assert_eq!(updated.loudness_profile, None);
+        assert_eq!(
+            updated.canonical_music_id,
+            canonical_music_id_for_source(music_url, 0, trimmed_end_ms)
+        );
+        assert_eq!(updated.path.as_deref(), Some("Disc 1/replacement.m4a"));
 
         reset_db();
     });
@@ -950,7 +1044,7 @@ fn normalize_music_titles_does_not_compare_across_download_groups() {
         folder: "example/root".to_string(),
         musics: vec![
             Music {
-    occurrence_id: String::new(),
+                occurrence_id: String::new(),
                 name: "Album - Alpha".to_string(),
                 alias: "Album - Alpha".to_string(),
                 group: first_group,
@@ -967,7 +1061,7 @@ fn normalize_music_titles_does_not_compare_across_download_groups() {
                 loudness_profile: None,
             },
             Music {
-    occurrence_id: String::new(),
+                occurrence_id: String::new(),
                 name: "Album - Beta".to_string(),
                 alias: "Album - Beta".to_string(),
                 group: second_group,
@@ -1007,7 +1101,7 @@ fn normalize_music_titles_uses_file_name_evidence_without_renaming_paths() {
         folder: "youtube/zwei2".to_string(),
         musics: vec![
             Music {
-    occurrence_id: String::new(),
+                occurrence_id: String::new(),
                 name: "Help Alwen".to_string(),
                 alias: "Help Alwen".to_string(),
                 group: group.clone(),
@@ -1024,7 +1118,7 @@ fn normalize_music_titles_uses_file_name_evidence_without_renaming_paths() {
                 loudness_profile: None,
             },
             Music {
-    occurrence_id: String::new(),
+                occurrence_id: String::new(),
                 name: "ZWEI2 - Help Alwen −Rushing in Version−".to_string(),
                 alias: "ZWEI2 - Help Alwen −Rushing in Version−".to_string(),
                 group,
@@ -1508,7 +1602,7 @@ fn existing_leaf_identities_only_count_entries_with_present_files() {
         folder: folder.to_string(),
         musics: vec![
             Music {
-    occurrence_id: String::new(),
+                occurrence_id: String::new(),
                 name: "Present".to_string(),
                 alias: "Present".to_string(),
                 group: collection_group("Demo", "https://example.com/playlist", folder),
@@ -1525,7 +1619,7 @@ fn existing_leaf_identities_only_count_entries_with_present_files() {
                 loudness_profile: None,
             },
             Music {
-    occurrence_id: String::new(),
+                occurrence_id: String::new(),
                 name: "Missing".to_string(),
                 alias: "Missing".to_string(),
                 group: collection_group("Demo", "https://example.com/playlist", folder),
@@ -1597,7 +1691,7 @@ fn existing_leaf_identities_keep_same_video_distinct_across_playlist_groups() {
         url: "https://example.com/playlist".to_string(),
         folder: folder.to_string(),
         musics: vec![Music {
-    occurrence_id: String::new(),
+            occurrence_id: String::new(),
             name: "Track".to_string(),
             alias: "Track".to_string(),
             group: collection_group("Disc 1", "https://example.com/disc-1", "Disc 1"),
@@ -1709,7 +1803,7 @@ fn existing_planned_leaf_completions_match_manifest_identity_with_group_context(
         url: "https://example.com/root".to_string(),
         folder: folder.to_string(),
         musics: vec![Music {
-    occurrence_id: String::new(),
+            occurrence_id: String::new(),
             name: "Shared Track".to_string(),
             alias: "Shared Track".to_string(),
             group: second_group.clone(),
@@ -3523,7 +3617,7 @@ fn create_collection_shell_reuses_existing_music_and_updates_collection_metadata
         url: "https://example.com/list".to_string(),
         folder: "youtube/original-list".to_string(),
         musics: vec![Music {
-    occurrence_id: String::new(),
+            occurrence_id: String::new(),
             name: "Track 1".to_string(),
             alias: "Track 1".to_string(),
             group: collection_group("Disc 1", "https://example.com/list#disc-1", "Disc 1"),
@@ -3791,7 +3885,7 @@ liked = false
             url: "https://example.com/root".to_string(),
             folder: collection_folder.to_string(),
             musics: vec![Music {
-    occurrence_id: String::new(),
+                occurrence_id: String::new(),
                 name: "What Now".to_string(),
                 alias: "What Now".to_string(),
                 group: collection_group(
@@ -3930,7 +4024,10 @@ liked = false
         .await
         .expect("ordinary manifest restore should remain available");
         assert_eq!(restored.musics.len(), 1);
-        assert_eq!(restored.musics[0].name, "INVERTED] FULL ALBUM - Ludwig Göransson");
+        assert_eq!(
+            restored.musics[0].name,
+            "INVERTED] FULL ALBUM - Ludwig Göransson"
+        );
         assert_eq!(
             existing_planned_leaf_completions(&restored, &plan, &save_root).len(),
             1

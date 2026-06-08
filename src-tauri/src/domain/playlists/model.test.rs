@@ -347,7 +347,7 @@ fn sample_collection(
         folder: folder.to_string(),
         musics: vec![
             Music {
-    occurrence_id: String::new(),
+                occurrence_id: String::new(),
                 name: format!("{name} intro"),
                 alias: format!("{name} intro"),
                 group: group.clone(),
@@ -364,7 +364,7 @@ fn sample_collection(
                 loudness_profile: None,
             },
             Music {
-    occurrence_id: String::new(),
+                occurrence_id: String::new(),
                 name: format!("{name} outro"),
                 alias: format!("{name} outro"),
                 group,

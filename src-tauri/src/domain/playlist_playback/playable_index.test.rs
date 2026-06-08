@@ -256,7 +256,7 @@ async fn playable_index_loudness_evidence_updates_only_matching_first_slot_ident
         &wrong_range,
         LoudnessProfile::from_integrated_lufs(-8.0).expect("test LUFS should be valid"),
     )
-        .expect("nonmatching evidence should be ignored");
+    .expect("nonmatching evidence should be ignored");
     let unchanged_second = read_playlist_source("Focus")
         .expect("index read should succeed")
         .expect("second source should still exist");

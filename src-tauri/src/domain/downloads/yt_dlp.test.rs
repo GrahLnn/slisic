@@ -1,10 +1,9 @@
 use super::model::CollectionSourceKind;
 use super::yt_dlp::{
     RootProbe, build_leaf_audio_download_args, build_leaf_metadata_probe_args,
-    build_root_playlist_probe_args,
-    build_root_playlist_shell_probe_args, classify_root_preference, looks_like_direct_leaf_url,
-    parse_leaf_probe, parse_progress_line, parse_root_probe, parse_root_shell_probe,
-    resolve_downloaded_file,
+    build_root_playlist_probe_args, build_root_playlist_shell_probe_args, classify_root_preference,
+    looks_like_direct_leaf_url, parse_leaf_probe, parse_progress_line, parse_root_probe,
+    parse_root_shell_probe, resolve_downloaded_file,
 };
 use serde_json::json;
 
@@ -208,8 +207,7 @@ fn leaf_metadata_probe_args_do_not_select_download_format() {
         "metadata probing must not fail because an audio download format is unavailable"
     );
     assert!(
-        !args.iter()
-            .any(|arg| arg == "bestaudio[ext=m4a]/bestaudio"),
+        !args.iter().any(|arg| arg == "bestaudio[ext=m4a]/bestaudio"),
         "audio format selection belongs to the download lifecycle"
     );
 }

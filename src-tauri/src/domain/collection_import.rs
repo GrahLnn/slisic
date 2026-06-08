@@ -367,22 +367,26 @@ pub(crate) async fn persist_downloaded_leaf_music(
 ) -> Result<()> {
     ensure_committable_download_file_name(file_name)?;
     let mut materialized = materialize_music_entries(probe, file_name, group);
-    inherit_existing_music_aliases(&mut materialized, &collection.musics);
+    let _collection_write = collection_repo::acquire_collection_write_composition_lock().await;
+    let mut current = collection_repo::get_collection_by_url(&collection.url)
+        .await?
+        .unwrap_or_else(|| collection.clone());
+    inherit_existing_music_lifecycle(&mut materialized, &current.musics);
     if source_kind == CollectionSourceKind::Single {
-        collection.musics = materialized;
+        current.musics = materialized;
     } else {
         let replacement_group_url = materialized
             .first()
             .map(|music| music.group.url.clone())
             .unwrap_or_default();
-        collection.musics.retain(|music| {
+        current.musics.retain(|music| {
             music.url != probe.webpage_url || music.group.url != replacement_group_url
         });
-        collection.musics.append(&mut materialized);
+        current.musics.append(&mut materialized);
     }
-    normalize_music_titles_within_collection(collection);
-    collection.last_updated = now_timestamp();
-    let saved = collection_repo::upsert_collection(collection).await?;
+    normalize_music_titles_within_collection(&mut current);
+    current.last_updated = now_timestamp();
+    let saved = collection_repo::upsert_collection(&current).await?;
     *collection = saved;
     Ok(())
 }
@@ -620,13 +624,8 @@ pub(crate) fn write_raw_leaf_manifest_evidence(
     relative_path: &str,
     group: &Group,
 ) -> Result<()> {
-    let manifest = manifest_from_raw_leaf_evidence(
-        collection,
-        source_kind,
-        probe,
-        relative_path,
-        group,
-    );
+    let manifest =
+        manifest_from_raw_leaf_evidence(collection, source_kind, probe, relative_path, group);
     write_raw_leaf_manifest_file(collection_root, &manifest)
 }
 
@@ -2123,31 +2122,38 @@ fn is_title_affix_separator(character: char) -> bool {
     !character.is_alphanumeric() && !character.is_whitespace()
 }
 
-fn inherit_existing_music_aliases(musics: &mut [Music], existing_musics: &[Music]) {
-    let aliases = existing_musics
+fn inherit_existing_music_lifecycle(musics: &mut [Music], existing_musics: &[Music]) {
+    let lifecycle = existing_musics
         .iter()
         .map(|music| {
             (
-                (
-                    music.url.as_str(),
-                    music.group.url.as_str(),
-                    music.start_ms,
-                    music.end_ms,
-                ),
-                music.alias.as_str(),
+                (music.url.as_str(), music.group.url.as_str(), music.start_ms),
+                music,
             )
         })
         .collect::<HashMap<_, _>>();
 
     for music in musics {
-        if let Some(alias) = aliases.get(&(
-            music.url.as_str(),
-            music.group.url.as_str(),
-            music.start_ms,
-            music.end_ms,
-        )) {
-            music.alias = (*alias).to_string();
+        if let Some(existing) =
+            lifecycle.get(&(music.url.as_str(), music.group.url.as_str(), music.start_ms))
+        {
+            inherit_existing_music_lifecycle_fields(music, existing);
         }
+    }
+}
+
+fn inherit_existing_music_lifecycle_fields(music: &mut Music, existing: &Music) {
+    music.alias = existing.alias.clone();
+    music.liked = existing.liked;
+
+    if existing.end_ms < music.end_ms && existing.start_ms < existing.end_ms {
+        music.end_ms = existing.end_ms;
+        music.canonical_music_id =
+            canonical_music_id_for_source(&music.url, music.start_ms, music.end_ms);
+    }
+
+    if existing.canonical_music_id == music.canonical_music_id {
+        music.loudness_profile = existing.loudness_profile;
     }
 }
 

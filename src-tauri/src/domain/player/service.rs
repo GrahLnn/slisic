@@ -2564,7 +2564,9 @@ pub(crate) fn publish_loudness_evidence_to_current_session(
     profile: LoudnessProfile,
 ) -> Result<()> {
     if !profile.is_valid() {
-        bail!("player session loudness profile evidence must be finite and include non-zero integrated LUFS");
+        bail!(
+            "player session loudness profile evidence must be finite and include non-zero integrated LUFS"
+        );
     }
     let runtime = runtime()?;
     let Some(active) = runtime.active_session_snapshot()? else {

@@ -343,8 +343,9 @@ Stable music row -> Audio tail trim:
 - Owner: `audio_tail_trim`.
 - Reads: explicit collection cargo only, then the current collection rows.
 - Pending store: `audio-tail-trim-pending.json`, keyed by collection URL.
-  downloaded/restored/playback cargo is retained while unfinished and removed
-  after the owner reaches a logged no-op or applied outcome.
+  downloaded and playback cargo is retained while unfinished, then restored as
+  `pending_store` cargo and removed after the owner reaches a logged no-op or
+  applied outcome.
 - Writes: `end_ms`, `canonical_music_id`, `occurrence_id`, and cleared
   `loudness_profile` only for rows with strong common-tail evidence.
 - Cut point: common-tail evidence identifies which suffix is shared; it is not
@@ -383,9 +384,10 @@ Playback current track -> Audio tail trim priority cargo:
   authority to infer or write tail trims.
 - Linear consumption: pure `playback_current` cargo coalesced during an active
   scan is absorbed by that scan and removed from the pending store when the scan
-  reaches an applied or no-op outcome. `downloaded_leaf` and `restored_manifest`
-  cargo remain rerun-required because they may describe a changed collection
-  snapshot that the active scan did not observe.
+  reaches an applied or no-op outcome. `downloaded_leaf` cargo remains
+  rerun-required because it may describe a changed collection snapshot that the
+  active scan did not observe. Restored pending cargo is replayed as
+  `pending_store`, not as a second semantic source.
 - Rejection: missing source music or collection owner is logged and does not
   alter playback.
 

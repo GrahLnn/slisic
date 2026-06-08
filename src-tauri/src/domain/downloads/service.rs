@@ -1168,7 +1168,8 @@ async fn run_task_with_deps(
     let save_root = deps.save_root;
     let plan =
         resolve_collection_plan_with_root_probe(&task_snapshot, client.clone(), root_probe).await?;
-    let mut collection = collection_import::load_download_transaction_collection_shell(&plan).await?;
+    let mut collection =
+        collection_import::load_download_transaction_collection_shell(&plan).await?;
     collection_import::apply_collection_plan_to_task(&mut task_snapshot, &plan);
     task_snapshot = repo::save_task(task_snapshot.clone()).await?;
     let shell = collection_import::persist_download_collection_shell_from_task(&task_snapshot)
@@ -2167,7 +2168,7 @@ async fn persist_completed_leaf_download(
         music_probe,
         &file_name,
     )
-        .with_context(|| format!("failed to write collection manifest for {leaf_url}"))?;
+    .with_context(|| format!("failed to write collection manifest for {leaf_url}"))?;
     collection_import::notify_downloaded_leaf_collection_committed();
     eprintln!(
         "[downloads] manifest updated collection_folder={} relative_path={}",
@@ -2299,8 +2300,7 @@ fn write_collection_manifest_after_download(
         .musics
         .iter()
         .find(|music| {
-            music.url == probe.webpage_url
-                && music.path.as_deref() == Some(relative_path)
+            music.url == probe.webpage_url && music.path.as_deref() == Some(relative_path)
         })
         .map(|music| music.group.clone())
     else {

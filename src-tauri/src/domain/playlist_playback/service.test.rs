@@ -1047,11 +1047,9 @@ fn preparing_initial_track_requires_loudness_before_playback_gate_opens() {
         "zero LUFS is missing evidence, not a playable normalization value"
     );
 
-    let ready = apply_initial_track_loudness_profile(
-        track,
-        LoudnessProfile::from_integrated_lufs(-13.0),
-    )
-    .expect("finite non-zero LUFS should release the preparing gate");
+    let ready =
+        apply_initial_track_loudness_profile(track, LoudnessProfile::from_integrated_lufs(-13.0))
+            .expect("finite non-zero LUFS should release the preparing gate");
     assert_eq!(
         ready
             .loudness_profile
@@ -1079,11 +1077,9 @@ fn preparing_initial_track_loudness_updates_source_music_cargo() {
     track.file_path = file_path;
     track.source_music = Some(Box::new(source_music));
 
-    let ready = apply_initial_track_loudness_profile(
-        track,
-        LoudnessProfile::from_integrated_lufs(-17.5),
-    )
-    .expect("finite non-zero LUFS should update source cargo");
+    let ready =
+        apply_initial_track_loudness_profile(track, LoudnessProfile::from_integrated_lufs(-17.5))
+            .expect("finite non-zero LUFS should update source cargo");
 
     assert_eq!(
         ready

@@ -24,6 +24,7 @@ use sha2::{Digest, Sha256};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 use std::time::Instant;
 use surrealdb::types::{RecordId, Table};
 use surrealdb_types::{SurrealValue, ToSql};
@@ -31,6 +32,9 @@ use surrealdb_types::{SurrealValue, ToSql};
 tokio::task_local! {
     static COLLECTION_WRITE_OWNER_SCOPE: RefCell<Vec<CollectionWriteOwnerScope>>;
 }
+
+static COLLECTION_WRITE_COMPOSITION_LOCK: LazyLock<tokio::sync::Mutex<()>> =
+    LazyLock::new(|| tokio::sync::Mutex::new(()));
 
 const PLAYLIST_PLAYBACK_RANDOM_SINGLE_OWNER_ATTEMPT_LIMIT: usize = 16;
 const PLAYLIST_PLAYBACK_RANDOM_WINDOW_OWNER_ATTEMPT_LIMIT: usize = 96;
@@ -1160,8 +1164,12 @@ async fn apply_music_mutation_to_record(
             }
             let canonical_music_id =
                 canonical_music_id_for_source(&current.url, current.start_ms, next_end_ms);
-            let occurrence_id =
-                music_occurrence_id(&current.group.url, &current.url, current.start_ms, next_end_ms);
+            let occurrence_id = music_occurrence_id(
+                &current.group.url,
+                &current.url,
+                current.start_ms,
+                next_end_ms,
+            );
             db.query(
                 "UPDATE ONLY $record
                      SET end_ms = $end_ms,
@@ -1185,13 +1193,28 @@ pub async fn trim_collection_music_ends_by_identity(
     collection_url: &str,
     trims: &[MusicEndTrim],
 ) -> Result<Option<Collection>> {
+    Ok(
+        trim_collection_music_ends_by_identity_with_applied_trims(collection_url, trims)
+            .await?
+            .map(|(collection, _)| collection),
+    )
+}
+
+pub(crate) async fn trim_collection_music_ends_by_identity_with_applied_trims(
+    collection_url: &str,
+    trims: &[MusicEndTrim],
+) -> Result<Option<(Collection, Vec<MusicEndTrim>)>> {
     ensure_collection_graph_schema().await?;
+    let _collection_write = acquire_collection_write_composition_lock().await;
 
     if trims.is_empty() {
-        return get_collection_by_url(collection_url).await;
+        return Ok(get_collection_by_url(collection_url)
+            .await?
+            .map(|collection| (collection, Vec::new())));
     }
 
-    let mut trim_by_identity = HashMap::with_capacity(trims.len());
+    let mut trims_by_identity: HashMap<(String, u32), Vec<MusicEndTrim>> =
+        HashMap::with_capacity(trims.len());
     for trim in trims {
         if trim.start_ms >= trim.end_ms
             || trim.start_ms >= trim.next_end_ms
@@ -1199,10 +1222,10 @@ pub async fn trim_collection_music_ends_by_identity(
         {
             bail!("trimmed music end must stay inside the original playable range");
         }
-        trim_by_identity.insert(
-            (trim.url.clone(), trim.start_ms, trim.end_ms),
-            trim.next_end_ms,
-        );
+        trims_by_identity
+            .entry((trim.url.clone(), trim.start_ms))
+            .or_default()
+            .push(trim.clone());
     }
 
     let Some(collection_record) =
@@ -1213,27 +1236,47 @@ pub async fn trim_collection_music_ends_by_identity(
 
     let music_records = load_collection_music_ids(&collection_record).await?;
     let mut changed = false;
+    let mut applied = Vec::new();
     for record in music_records {
         let music = Music::get_record(record.clone()).await?;
-        if let Some(next_end_ms) =
-            trim_by_identity.get(&(music.url.clone(), music.start_ms, music.end_ms))
-        {
-            apply_music_mutation_to_record(
-                &record,
-                MusicMutation::EndTrim {
-                    next_end_ms: *next_end_ms,
-                },
-            )
-            .await?;
-            changed = true;
+        let Some(proposals) = trims_by_identity.get(&(music.url.clone(), music.start_ms)) else {
+            continue;
+        };
+        let Some(next_end_ms) = proposals
+            .iter()
+            .filter(|trim| music.end_ms <= trim.end_ms)
+            .map(|trim| trim.next_end_ms)
+            .min()
+        else {
+            continue;
+        };
+        if next_end_ms >= music.end_ms {
+            continue;
         }
+        applied.push(MusicEndTrim {
+            url: music.url.clone(),
+            start_ms: music.start_ms,
+            end_ms: music.end_ms,
+            next_end_ms,
+        });
+        apply_music_mutation_to_record(&record, MusicMutation::EndTrim { next_end_ms }).await?;
+        changed = true;
     }
 
     if !changed {
-        return get_collection_by_url(collection_url).await;
+        return Ok(get_collection_by_url(collection_url)
+            .await?
+            .map(|collection| (collection, Vec::new())));
     }
 
-    get_collection_by_url(collection_url).await
+    Ok(get_collection_by_url(collection_url)
+        .await?
+        .map(|collection| (collection, applied)))
+}
+
+pub(crate) async fn acquire_collection_write_composition_lock()
+-> tokio::sync::MutexGuard<'static, ()> {
+    COLLECTION_WRITE_COMPOSITION_LOCK.lock().await
 }
 
 pub async fn create_music(source_collection_url: &str, music: &Music) -> Result<Music> {

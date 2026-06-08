@@ -60,7 +60,7 @@ fn source_from_track(
     PlaylistPlaybackTrackSource {
         collection_folder: collection_folder.to_string(),
         music: Music {
-    occurrence_id: String::new(),
+            occurrence_id: String::new(),
             name: track.music_name.clone(),
             alias: track.music_name.clone(),
             group: Group {

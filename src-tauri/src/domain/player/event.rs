@@ -83,7 +83,10 @@ impl NowPlayingTrackChangedEvent {
 }
 
 impl NowPlayingTrackLikedChangedEvent {
-    pub(crate) fn from_session_track(session_generation: u64, value: &PlaybackTrackPayload) -> Self {
+    pub(crate) fn from_session_track(
+        session_generation: u64,
+        value: &PlaybackTrackPayload,
+    ) -> Self {
         Self {
             session_generation,
             playlist_name: value.playlist_name.clone(),
