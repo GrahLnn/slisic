@@ -1,7 +1,11 @@
 # Local
 .DS_Store
 *.local
-*.log*
+*.log
+*.log.*
+stdout.txt
+stderr.txt
+debug.md
 
 # Dist
 node_modules
@@ -22,8 +26,16 @@ src-tauri/binaries/bun-runtime-*
 src-tauri/dev-reset-trigger.txt
 .tmp/bun-runtime/
 
-.gitnexus
-.tmp
+.gitnexus/
+.tmp/
+.pytest_cache/
+.jj/
+
+# Agent tooling and generated agent context
+.agents/
+.claude/
+.factory/
+CLAUDE.md
 
 # FM tooling
 /fm_*/
