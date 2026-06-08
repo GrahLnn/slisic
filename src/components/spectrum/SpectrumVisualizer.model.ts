@@ -53,6 +53,17 @@ export type WaveformSelectionEdge = "end" | "start";
 
 export type WaveformSelectionDragResolution = WaveformSelectionRange;
 
+/**
+ * The active selection drag anchor is the pointer inside the host, not a frozen range.
+ * Re-projecting this input through the current viewport keeps selection edits affine under pan.
+ */
+export type WaveformSelectionDragInput = {
+  edge: WaveformSelectionEdge;
+  hostRect: Pick<DOMRect, "left">;
+  pointerClientX: number;
+  selection: WaveformSelectionRange | null;
+};
+
 export type WaveformPresentationSelectionInput = {
   committedSelection: WaveformSelectionRange | null;
   interactiveSelection: WaveformSelectionRange | null;
@@ -1592,6 +1603,20 @@ export function resolveWaveformSelectionDrag(args: {
         end: clampNumber(pointerSeconds, rangeStart, durationSeconds),
         start: rangeStart,
       };
+}
+
+export function resolveWaveformSelectionDragPreview(args: {
+  input: WaveformSelectionDragInput | null;
+  viewport: WaveformViewportModel;
+}): WaveformSelectionDragResolution | null {
+  if (args.input === null) {
+    return null;
+  }
+
+  return resolveWaveformSelectionDrag({
+    ...args.input,
+    viewport: args.viewport,
+  });
 }
 
 export function resolveWaveformPlayheadDrag(args: {

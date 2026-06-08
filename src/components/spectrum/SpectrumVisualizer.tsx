@@ -35,7 +35,7 @@ import {
   resolveWaveformPointerAnchorViewportX,
   resolveWaveformMaximumRenderPixelsPerSecond,
   resolveWaveformPresentationSelection,
-  resolveWaveformSelectionDrag,
+  resolveWaveformSelectionDragPreview,
   resolveWaveformSelectionGeometry,
   resolveWaveformSelectionMarkerLayout,
   resolveWaveformPlayheadDragPreview,
@@ -57,6 +57,7 @@ import {
   type WaveformDataPlanMode,
   type WaveformPlayheadDragInput,
   type WaveformRenderDataStore,
+  type WaveformSelectionDragInput,
   type WaveformSelectionDragResolution,
   type WaveformSelectionEdge,
   type WaveformSelectionRange,
@@ -104,6 +105,7 @@ export {
   resolveWaveformRenderPixelsPerSecond,
   resolveWaveformResizeViewportState,
   resolveWaveformSelectionDrag,
+  resolveWaveformSelectionDragPreview,
   resolveWaveformSelectionGeometry,
   resolveWaveformSelectionMarkerLayout,
   resolveWaveformSessionFrame,
@@ -1765,7 +1767,12 @@ function WaveformSelectionOverlay(args: {
   viewport: WaveformViewportModel;
   visible: boolean;
 }) {
-  const [preview, setPreview] = useState<WaveformSelectionRange | null>(null);
+  const [dragInput, setDragInput] = useState<WaveformSelectionDragInput | null>(null);
+  const dragInputRef = useRef<WaveformSelectionDragInput | null>(null);
+  const preview = resolveWaveformSelectionDragPreview({
+    input: dragInput,
+    viewport: args.viewport,
+  });
   const activeSelection = resolveWaveformPresentationSelection({
     committedSelection: args.committedSelection,
     interactiveSelection: args.selectionRef.current,
@@ -1786,15 +1793,19 @@ function WaveformSelectionOverlay(args: {
       if (!hostRect) {
         return;
       }
-      const next = resolveWaveformSelectionDrag({
+      const input: WaveformSelectionDragInput = {
         edge,
         hostRect,
         pointerClientX: event.clientX,
         selection: args.selectionRef.current,
+      };
+      const next = resolveWaveformSelectionDragPreview({
+        input,
         viewport: args.viewport,
       });
       args.selectionRef.current = next;
-      setPreview(next);
+      dragInputRef.current = input;
+      setDragInput(input);
     },
     [args],
   );
@@ -1808,15 +1819,20 @@ function WaveformSelectionOverlay(args: {
       if (!hostRect) {
         return;
       }
-      const next = resolveWaveformSelectionDrag({
+      const selection = dragInputRef.current?.selection ?? args.selectionRef.current;
+      const input: WaveformSelectionDragInput = {
         edge,
         hostRect,
         pointerClientX: event.clientX,
-        selection: args.selectionRef.current,
+        selection,
+      };
+      const next = resolveWaveformSelectionDragPreview({
+        input,
         viewport: args.viewport,
       });
       args.selectionRef.current = next;
-      setPreview(next);
+      dragInputRef.current = input;
+      setDragInput(input);
     },
     [args],
   );
@@ -1827,13 +1843,19 @@ function WaveformSelectionOverlay(args: {
         event.currentTarget.releasePointerCapture(event.pointerId);
       }
       args.isDraggingRef.current = false;
-      const committed = args.selectionRef.current;
-      setPreview(null);
+      const committed =
+        resolveWaveformSelectionDragPreview({
+          input: dragInputRef.current,
+          viewport: args.viewport,
+        }) ?? args.selectionRef.current;
+      args.selectionRef.current = committed;
+      dragInputRef.current = null;
+      setDragInput(null);
       if (committed) {
         args.onCommit(committed);
       }
     },
-    [args],
+    [args, dragInput],
   );
 
   const cancelDrag = useCallback(
@@ -1842,7 +1864,8 @@ function WaveformSelectionOverlay(args: {
         event.currentTarget.releasePointerCapture(event.pointerId);
       }
       args.isDraggingRef.current = false;
-      setPreview(null);
+      dragInputRef.current = null;
+      setDragInput(null);
     },
     [args],
   );

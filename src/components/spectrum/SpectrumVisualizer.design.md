@@ -57,6 +57,9 @@
 - selection edits preserve the current viewport coordinates; dragging `start`
   keeps `end` fixed, dragging `end` keeps `start` fixed, and neither edge
   re-runs initial viewport placement.
+- active selection drags store pointer input and re-project through the current
+  viewport, so horizontal pan composes with the drag instead of freezing an old
+  range projection.
 
 `PlaybackPresenter` owns:
 

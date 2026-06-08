@@ -40,6 +40,7 @@ import {
   resolveWaveformRenderPixelsPerSecond,
   resolveWaveformResizeViewportState,
   resolveWaveformSelectionDrag,
+  resolveWaveformSelectionDragPreview,
   resolveWaveformSelectionGeometry,
   resolveWaveformSelectionMarkerLayout,
   resolveWaveformSessionFrame,
@@ -900,6 +901,85 @@ describe("SpectrumVisualizer selection and playback", () => {
         viewport,
       }).start,
       selection.start,
+    );
+  });
+
+  test("reprojects selection drag previews through the current viewport", () => {
+    const baseViewport = resolveWaveformViewportModel({
+      durationMs: 120_000,
+      focusSeconds: null,
+      maximumPixelsPerSecond: 800,
+      pixelsPerSecond: 100,
+      scrollLeft: 1_800,
+      viewportWidth: 1_000,
+    });
+    const pannedViewport = resolveWaveformViewportModel({
+      durationMs: 120_000,
+      focusSeconds: null,
+      maximumPixelsPerSecond: 800,
+      pixelsPerSecond: 100,
+      scrollLeft: 2_600,
+      viewportWidth: 1_000,
+    });
+    const hostRect = {
+      left: 10,
+    };
+
+    const endInput = {
+      edge: "end" as const,
+      hostRect,
+      pointerClientX: 610,
+      selection: {
+        end: 40,
+        start: 10,
+      },
+    };
+    const pannedEndPreview = resolveWaveformSelectionDragPreview({
+      input: endInput,
+      viewport: pannedViewport,
+    });
+
+    assert.deepEqual(
+      resolveWaveformSelectionDragPreview({
+        input: endInput,
+        viewport: baseViewport,
+      }),
+      {
+        end: 22,
+        start: 10,
+      },
+    );
+    assert.deepEqual(pannedEndPreview, {
+      end: 30,
+      start: 10,
+    });
+    assert.equal(
+      resolveWaveformSelectionGeometry({
+        selection: pannedEndPreview,
+        viewport: pannedViewport,
+      }).endX,
+      600,
+    );
+
+    const startInput = {
+      ...endInput,
+      edge: "start" as const,
+    };
+    const pannedStartPreview = resolveWaveformSelectionDragPreview({
+      input: startInput,
+      viewport: pannedViewport,
+    });
+
+    assert.deepEqual(pannedStartPreview, {
+      end: 40,
+      start: 30,
+    });
+    assert.equal(
+      resolveWaveformSelectionGeometry({
+        selection: pannedStartPreview,
+        viewport: pannedViewport,
+      }).startX,
+      600,
     );
   });
 
