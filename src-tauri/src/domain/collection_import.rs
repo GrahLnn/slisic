@@ -1181,7 +1181,9 @@ fn delete_source_note_suffix(title: &str) -> String {
         if !source_note_tail_is_candidate(tail) {
             continue;
         }
-        let normalized = delete_title_span(title, start, title.len());
+        let span =
+            TitleTextSpan::to_end(title, start).expect("source note span must be UTF-8 aligned");
+        let normalized = delete_title_span(title, span);
         if title_noise_text_has_language_character(&normalized)
             && !title_is_number_like_only(&normalized)
             && title_bracket_damage_score(&normalized) <= title_bracket_damage_score(title)
@@ -1314,30 +1316,26 @@ fn delete_genshin_suffix(title: &str) -> Option<String> {
                 .to_ascii_lowercase()
                 .contains("genshin impact")
         })?;
-    let normalized = delete_title_span(title, split, title.len());
+    let normalized = delete_title_span(title, TitleTextSpan::to_end(title, split)?);
     title_stable_residue_is_valid(&normalized).then_some(normalized)
 }
 
 fn delete_year_soundtrack_suffix(title: &str) -> Option<String> {
-    let lower = title.to_ascii_lowercase();
-    let suffix_start = lower.rfind(" soundtrack (")?;
-    if !title[..suffix_start]
-        .chars()
-        .next_back()
-        .is_some_and(|character| matches!(character, '-' | '–' | '—'))
-    {
+    let suffix_marker = rfind_ascii_case_insensitive_span(title, " soundtrack (")?;
+    let (separator_start, separator) = title[..suffix_marker.start].char_indices().next_back()?;
+    if !matches!(separator, '-' | '–' | '—') {
         return None;
     }
-    let year_start = suffix_start + " soundtrack (".len();
+    let year_start = suffix_marker.end;
     let year_end = year_start + 4;
-    let year = lower.get(year_start..year_end)?;
+    let year = title.get(year_start..year_end)?;
     if !year.chars().all(|character| character.is_ascii_digit()) {
         return None;
     }
-    if lower.get(year_end..year_end + 1) != Some(")") || year_end + 1 != lower.len() {
+    if title.get(year_end..year_end + 1) != Some(")") || year_end + 1 != title.len() {
         return None;
     }
-    let normalized = delete_title_span(title, suffix_start - 1, title.len());
+    let normalized = delete_title_span(title, TitleTextSpan::to_end(title, separator_start)?);
     title_stable_residue_is_valid(&normalized).then_some(normalized)
 }
 
@@ -1410,22 +1408,64 @@ fn delete_title_prefix(title: &str, prefix: &str) -> Option<String> {
 }
 
 fn delete_title_suffix(title: &str, suffix: &str) -> Option<String> {
-    if !title
-        .to_ascii_lowercase()
-        .ends_with(&suffix.to_ascii_lowercase())
-    {
-        return None;
-    }
-    let start = title.len() - suffix.len();
-    let normalized = delete_title_span(title, start, title.len());
+    let span = title_suffix_span_ascii_case_insensitive(title, suffix)?;
+    let normalized = delete_title_span(title, span);
     title_stable_residue_is_valid(&normalized).then_some(normalized)
 }
 
-fn delete_title_span(title: &str, start: usize, end: usize) -> String {
-    let mut normalized = String::new();
-    normalized.push_str(&title[..start]);
-    normalized.push_str(&title[end..]);
-    cleanup_title_after_noise_deletion(&normalized)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TitleTextSpan {
+    start: usize,
+    end: usize,
+}
+
+impl TitleTextSpan {
+    fn new(text: &str, start: usize, end: usize) -> Option<Self> {
+        (start <= end
+            && end <= text.len()
+            && text.is_char_boundary(start)
+            && text.is_char_boundary(end))
+        .then_some(Self { start, end })
+    }
+
+    fn to_end(text: &str, start: usize) -> Option<Self> {
+        Self::new(text, start, text.len())
+    }
+
+    fn is_whole(self, text: &str) -> bool {
+        self.start == 0 && self.end == text.len()
+    }
+
+    fn delete_from(self, title: &str) -> String {
+        let mut normalized = String::new();
+        normalized.push_str(&title[..self.start]);
+        normalized.push_str(&title[self.end..]);
+        cleanup_title_after_noise_deletion(&normalized)
+    }
+}
+
+fn delete_title_span(title: &str, span: TitleTextSpan) -> String {
+    span.delete_from(title)
+}
+
+fn title_suffix_span_ascii_case_insensitive(title: &str, suffix: &str) -> Option<TitleTextSpan> {
+    let start = title.len().checked_sub(suffix.len())?;
+    let span = TitleTextSpan::new(title, start, title.len())?;
+    title.as_bytes()[span.start..span.end]
+        .eq_ignore_ascii_case(suffix.as_bytes())
+        .then_some(span)
+}
+
+fn rfind_ascii_case_insensitive_span(text: &str, needle: &str) -> Option<TitleTextSpan> {
+    let needle = needle.as_bytes();
+    if needle.is_empty() {
+        return TitleTextSpan::new(text, text.len(), text.len());
+    }
+
+    text.as_bytes()
+        .windows(needle.len())
+        .rposition(|candidate| candidate.eq_ignore_ascii_case(needle))
+        .and_then(|start| TitleTextSpan::new(text, start, start + needle.len()))
 }
 
 fn title_stable_residue_is_valid(title: &str) -> bool {
@@ -1549,10 +1589,10 @@ fn boundary_title_noise_occurrence_has_external_anchor(
     title: &str,
     text: &str,
 ) -> bool {
-    title_noise_affix_deletion_span(kind, title, text).is_some_and(|(start, end)| {
-        start < end
-            && (start > 0 || end < title.len())
-            && title_noise_affix_residue_is_valid(title, start, end)
+    title_noise_affix_deletion_span(kind, title, text).is_some_and(|span| {
+        span.start < span.end
+            && !span.is_whole(title)
+            && title_noise_affix_residue_is_valid(title, span)
     })
 }
 
@@ -1874,17 +1914,14 @@ fn delete_title_noise_affix_occurrence(
     title: &str,
     noise: &str,
 ) -> String {
-    let Some((start, end)) = title_noise_affix_deletion_span(kind, title, noise) else {
+    let Some(span) = title_noise_affix_deletion_span(kind, title, noise) else {
         return title.to_string();
     };
-    if start == 0 && end == title.len() {
+    if span.is_whole(title) {
         return title.to_string();
     }
 
-    let mut normalized = String::new();
-    normalized.push_str(&title[..start]);
-    normalized.push_str(&title[end..]);
-    let normalized = cleanup_title_after_noise_deletion(&normalized);
+    let normalized = delete_title_span(title, span);
     if !title_stable_residue_is_valid(&normalized) {
         return title.to_string();
     }
@@ -1898,14 +1935,13 @@ fn delete_title_noise_affix_occurrence(
 fn remove_title_noise_fragment_occurrences(title: &str, fragment: &str) -> String {
     let mut normalized = title.to_string();
     while let Some(start) = normalized.find(fragment) {
-        let end = start + fragment.len();
-        if start == 0 && end == normalized.len() {
+        let Some(span) = TitleTextSpan::new(&normalized, start, start + fragment.len()) else {
+            break;
+        };
+        if span.is_whole(&normalized) {
             break;
         }
-        let mut next = String::new();
-        next.push_str(&normalized[..start]);
-        next.push_str(&normalized[end..]);
-        let next = cleanup_title_after_noise_deletion(&next);
+        let next = delete_title_span(&normalized, span);
         if !title_noise_text_has_language_character(&next) {
             break;
         }
@@ -1927,11 +1963,8 @@ fn cleanup_title_after_noise_deletion(title: &str) -> String {
         .to_string()
 }
 
-fn title_noise_affix_residue_is_valid(title: &str, start: usize, end: usize) -> bool {
-    let mut residue = String::new();
-    residue.push_str(&title[..start]);
-    residue.push_str(&title[end..]);
-    let residue = cleanup_title_after_noise_deletion(&residue);
+fn title_noise_affix_residue_is_valid(title: &str, span: TitleTextSpan) -> bool {
+    let residue = delete_title_span(title, span);
     title_stable_residue_is_valid(&residue)
         && title_bracket_damage_score(&residue) <= title_bracket_damage_score(title)
 }
@@ -1991,7 +2024,7 @@ fn title_noise_affix_deletion_span(
     kind: TitleNoisePatternKind,
     title: &str,
     noise: &str,
-) -> Option<(usize, usize)> {
+) -> Option<TitleTextSpan> {
     match kind {
         TitleNoisePatternKind::Prefix => {
             if !title.starts_with(noise) {
@@ -2002,7 +2035,7 @@ fn title_noise_affix_deletion_span(
             if !openings.is_empty() {
                 end = openings.first().map(|opening| opening.index).unwrap_or(end);
             }
-            Some((0, end))
+            TitleTextSpan::new(title, 0, end)
         }
         TitleNoisePatternKind::Suffix => {
             if !title.ends_with(noise) {
@@ -2016,7 +2049,7 @@ fn title_noise_affix_deletion_span(
                     .map(|closing| closing.index + closing.character.len_utf8())
                     .unwrap_or(0);
             }
-            Some((start, title.len()))
+            TitleTextSpan::to_end(title, start)
         }
         TitleNoisePatternKind::Bracketed => None,
     }

@@ -1664,20 +1664,6 @@ fn audio_style_training_worker_count_scales_with_hardware_profile_and_task_count
 }
 
 #[test]
-fn audio_style_tensor_row_chunks_cover_rows_once_across_devices() {
-    assert!(super::recommendation::audio_style_tensor_row_chunks_for_test(0, 2).is_empty());
-    assert!(super::recommendation::audio_style_tensor_row_chunks_for_test(4, 0).is_empty());
-    assert_eq!(
-        super::recommendation::audio_style_tensor_row_chunks_for_test(5, 2),
-        vec![(0, 3), (3, 5)]
-    );
-    assert_eq!(
-        super::recommendation::audio_style_tensor_row_chunks_for_test(2, 4),
-        vec![(0, 1), (1, 2)]
-    );
-}
-
-#[test]
 fn audio_style_tensor_runtime_profile_owns_actual_tensor_devices() {
     let (backend, device_count, source) =
         super::recommendation::audio_style_tensor_runtime_profile_for_test(2);
@@ -1691,6 +1677,57 @@ fn audio_style_tensor_runtime_profile_owns_actual_tensor_devices() {
     assert_eq!(backend, "cpu");
     assert_eq!(device_count, 0);
     assert_eq!(source, "test_cpu");
+}
+
+#[test]
+fn audio_style_tensor_runtime_defaults_to_hardware() {
+    assert_eq!(
+        super::recommendation::audio_style_tensor_runtime_preference_for_test(None, None),
+        ("hardware", "hardware_default")
+    );
+    assert_eq!(
+        super::recommendation::audio_style_tensor_runtime_profile_from_preference_for_test(
+            None, None
+        ),
+        ("hardware", 1, "hardware_default")
+    );
+}
+
+#[test]
+fn audio_style_tensor_runtime_hardware_env_keeps_hardware_source() {
+    assert_eq!(
+        super::recommendation::audio_style_tensor_runtime_preference_for_test(Some("wgpu"), None),
+        ("hardware", "tensor_backend_env_hardware")
+    );
+    assert_eq!(
+        super::recommendation::audio_style_tensor_runtime_profile_from_preference_for_test(
+            Some("hardware"),
+            None
+        ),
+        ("hardware", 1, "tensor_backend_env_hardware")
+    );
+    assert_eq!(
+        super::recommendation::audio_style_tensor_runtime_preference_for_test(
+            None,
+            Some("DiscreteGpu(0)")
+        ),
+        ("hardware", "wgpu_env_hardware")
+    );
+}
+
+#[test]
+fn audio_style_tensor_runtime_cpu_override_wins_over_wgpu_device_env() {
+    assert_eq!(
+        super::recommendation::audio_style_tensor_runtime_preference_for_test(
+            Some("cpu"),
+            Some("DiscreteGpu(0)")
+        ),
+        ("cpu", "tensor_backend_env_cpu")
+    );
+    assert_eq!(
+        super::recommendation::audio_style_tensor_runtime_preference_for_test(None, Some("Cpu")),
+        ("cpu", "wgpu_env_cpu")
+    );
 }
 
 #[test]
@@ -1712,7 +1749,41 @@ fn audio_style_wgpu_device_override_parser_accepts_portable_device_kinds() {
         super::recommendation::parse_audio_style_wgpu_device_for_test("Cpu").as_deref(),
         Some("Cpu")
     );
+    assert_eq!(
+        super::recommendation::parse_audio_style_wgpu_device_for_test("DefaultDevice").as_deref(),
+        Some("DefaultDevice")
+    );
     assert!(super::recommendation::parse_audio_style_wgpu_device_for_test("RTX4090").is_none());
+}
+
+#[test]
+fn audio_style_wgpu_hardware_candidates_prefer_accelerators_before_cpu() {
+    assert_eq!(
+        super::recommendation::sort_audio_style_wgpu_devices_for_test(&[
+            "Cpu",
+            "IntegratedGpu(0)",
+            "DiscreteGpu(1)",
+            "VirtualGpu(0)",
+            "DiscreteGpu(0)",
+            "DefaultDevice",
+        ]),
+        vec![
+            "DiscreteGpu(0)",
+            "DiscreteGpu(1)",
+            "IntegratedGpu(0)",
+            "VirtualGpu(0)",
+            "DefaultDevice",
+            "Cpu",
+        ]
+    );
+}
+
+#[test]
+fn audio_style_wgpu_hardware_enumeration_roots_exclude_default_device() {
+    assert_eq!(
+        super::recommendation::audio_style_wgpu_hardware_device_enumeration_roots_for_test(),
+        vec!["DiscreteGpu(0)", "IntegratedGpu(0)", "VirtualGpu(0)"]
+    );
 }
 
 #[test]

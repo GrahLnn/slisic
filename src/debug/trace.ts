@@ -96,6 +96,7 @@ export const traceRegistry = [
   { eventPrefix: "download-task-change-", probe: "playlist-playback" },
   { eventPrefix: "playback-exclude-skip-", probe: "playlist-playback" },
   { eventPrefix: "playlist-playback-next-slot-", probe: "playlist-playback" },
+  { eventPrefix: "player-", probe: "playback-diagnostics" },
   { eventPrefix: "playlist-playable-index-", probe: "playback-diagnostics" },
   { eventPrefix: "spectrum-", probe: "spectrum-flow" },
   { event: "trace-installed", probe: "playlist-item-play-flow" },
@@ -119,6 +120,7 @@ export const traceRegistry = [
   { eventPrefix: "download-task-change-", probe: "playlist-item-play-flow" },
   { eventPrefix: "playback-exclude-skip-", probe: "playlist-item-play-flow" },
   { eventPrefix: "playlist-playback-next-slot-", probe: "playlist-item-play-flow" },
+  { eventPrefix: "player-", probe: "playlist-item-play-flow" },
   { eventPrefix: "playlist-playable-index-", probe: "playlist-item-play-flow" },
 ] satisfies TraceRegistration[];
 

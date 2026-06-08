@@ -85,17 +85,6 @@ pub(crate) fn resolve_active_request_track_identity_update(
     Some(next)
 }
 
-pub(crate) fn resolve_identity_update_playback_restart_position(
-    current_position_ms: u32,
-    next_track: &PlaybackTrack,
-) -> Option<u32> {
-    if next_track.start_ms >= next_track.end_ms {
-        return None;
-    }
-
-    Some(current_position_ms.clamp(next_track.start_ms, next_track.end_ms.saturating_sub(1)))
-}
-
 fn playback_tracks_match_one(left: &PlaybackTrack, right: &PlaybackTrack) -> bool {
     left.playlist_name == right.playlist_name
         && left.music_name == right.music_name

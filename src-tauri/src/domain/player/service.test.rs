@@ -5,20 +5,20 @@ use super::service::{
     BACKEND_PLAYBACK_TARGET_LUFS, PlaybackRangeCompletion, PlaybackStartRequestRegistry,
     PlaybackTrackLikedUpdate, SpectrumPlaybackScope, are_playback_tracks_equal,
     backend_playback_normalization, playback_normalization_for_track_loudness_profile,
-    playback_tracks_match, resolve_active_request_track_liked_update,
+    playback_request_for_track_range, playback_tracks_match,
+    resolve_active_request_track_liked_update,
     resolve_playback_absolute_position_ms, resolve_playback_range_completion,
     resolve_playback_request_position, resolve_playback_seek_pause_after_request,
     resolve_playback_seek_range, resolve_playback_status_track_identity,
-    resolve_repeated_playback_range_override, resolve_running_identity_update_playback_range,
-    resolve_session_track_liked_update, resolve_spectrum_loop_playback_range,
-    resolve_spectrum_loop_signal_active_range, resolve_spectrum_loop_signal_seek_position,
-    resolve_spectrum_music_playback_range, resolve_spectrum_playback_loop_signal,
-    should_accept_spectrum_playback_signal, should_commit_spectrum_playback_scope_exit,
-    should_resume_playback_seek_cancel,
+    resolve_repeated_playback_range_override, resolve_session_track_liked_update,
+    resolve_spectrum_loop_playback_range, resolve_spectrum_loop_signal_active_range,
+    resolve_spectrum_loop_signal_seek_position, resolve_spectrum_music_playback_range,
+    resolve_spectrum_playback_loop_signal, should_accept_spectrum_playback_signal,
+    should_commit_spectrum_playback_scope_exit, should_resume_playback_seek_cancel,
 };
 use super::track_identity_substitution::{
     PlaybackTrackIdentityUpdate, resolve_active_request_track_identity_update,
-    resolve_identity_update_playback_restart_position, resolve_session_track_identity_update,
+    resolve_session_track_identity_update,
 };
 use crate::domain::playlists::model::{CollectionGroupOwner, Group, LoudnessProfile, Music};
 use std::path::PathBuf;
@@ -622,28 +622,7 @@ fn playback_request_position_ignores_range_end_signal() {
 }
 
 #[test]
-fn running_identity_update_preserves_playback_origin_and_updates_only_end_gate() {
-    let mut current = track("a");
-    current.start_ms = 45_000;
-    current.end_ms = 90_000;
-
-    assert_eq!(
-        resolve_running_identity_update_playback_range(
-            Some(ActivePlaybackRange {
-                start_ms: 25_000,
-                end_ms: 112_000,
-            }),
-            &current,
-        ),
-        Some(ActivePlaybackRange {
-            start_ms: 25_000,
-            end_ms: 90_000,
-        }),
-    );
-}
-
-#[test]
-fn playback_track_identity_requires_boundaries_for_range_sync() {
+fn playback_track_identity_change_is_not_a_running_range_sync_signal() {
     let mut old = track("a");
     old.start_ms = 20_000;
     old.end_ms = 80_000;
@@ -652,38 +631,6 @@ fn playback_track_identity_requires_boundaries_for_range_sync() {
     draft.end_ms = 45_000;
 
     assert!(!are_playback_tracks_equal(&old, &draft));
-}
-
-#[test]
-fn identity_update_playback_restart_projects_paused_position_into_committed_range() {
-    let mut current = track("a");
-    current.start_ms = 45_000;
-    current.end_ms = 90_000;
-
-    assert_eq!(
-        resolve_identity_update_playback_restart_position(20_000, &current),
-        Some(45_000),
-    );
-    assert_eq!(
-        resolve_identity_update_playback_restart_position(100_000, &current),
-        Some(89_999),
-    );
-}
-
-#[test]
-fn identity_update_playback_restart_preserves_live_position_inside_new_region() {
-    let mut current = track("a");
-    current.start_ms = 45_000;
-    current.end_ms = 90_000;
-
-    assert_eq!(
-        resolve_identity_update_playback_restart_position(60_000, &current),
-        Some(60_000),
-    );
-    assert_eq!(
-        resolve_identity_update_playback_restart_position(100_000, &current),
-        Some(89_999),
-    );
 }
 
 #[test]
@@ -784,4 +731,28 @@ fn spectrum_music_playback_range_rejects_invalid_track_bounds() {
     current.end_ms = 80_000;
 
     assert_eq!(resolve_spectrum_music_playback_range(&current, None), None);
+}
+
+#[test]
+fn playback_request_for_track_range_keeps_end_out_of_engine_time_range() {
+    let mut current = track("a");
+    current.start_ms = 1_863_000;
+    current.end_ms = 1_898_000;
+
+    let request = playback_request_for_track_range(
+        &current,
+        ActivePlaybackRange {
+            start_ms: current.start_ms,
+            end_ms: current.end_ms,
+        },
+    );
+
+    assert_eq!(request.path, current.file_path);
+    assert_eq!(
+        request.time_range,
+        Some(ffplayr::PlaybackTimeRange {
+            start_ms: 1_863_000,
+            duration_ms: None,
+        }),
+    );
 }

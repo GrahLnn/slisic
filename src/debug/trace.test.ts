@@ -31,6 +31,10 @@ describe("trace registry", () => {
       "playback-diagnostics",
     );
     assert.equal(
+      resolveTraceProbe("player-range-completion"),
+      "playback-diagnostics",
+    );
+    assert.equal(
       resolveTraceProbe("list-config-check-clicked"),
       "list-config-check",
     );
@@ -103,6 +107,13 @@ describe("trace registry", () => {
       shouldRecordTraceEvent({
         enabled: new Set<TraceProbe>(["playlist-item-play-flow"]),
         event: "playlist-playable-index-read-hit",
+      }),
+      true,
+    );
+    assert.equal(
+      shouldRecordTraceEvent({
+        enabled: new Set<TraceProbe>(["playlist-item-play-flow"]),
+        event: "player-range-watch-ended",
       }),
       true,
     );

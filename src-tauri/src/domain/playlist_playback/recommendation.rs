@@ -85,6 +85,10 @@ const AUDIO_STYLE_TRAINING_PROGRESS_BATCH: usize = 16;
 const AUDIO_STYLE_TRAINING_PROGRESS_BATCH: usize = 1;
 const AUDIO_STYLE_TRAINING_HEARTBEAT_MS: u64 = 750;
 const AUDIO_STYLE_LOG_TARGET: &str = "playlist_audio_style";
+const AUDIO_STYLE_TENSOR_BACKEND_ENV: &str = "SLISIC_AUDIO_STYLE_TENSOR_BACKEND";
+const CUBECL_WGPU_DEFAULT_DEVICE_ENV: &str = "CUBECL_WGPU_DEFAULT_DEVICE";
+const AUDIO_STYLE_TENSOR_HARDWARE_PROBE_ATTEMPTS: usize = 30;
+const AUDIO_STYLE_TENSOR_HARDWARE_PROBE_RETRY_MS: u64 = 500;
 
 #[allow(dead_code)]
 struct AudioStyleEmbeddingVectorIndex;
@@ -295,7 +299,7 @@ enum AudioStyleTensorRuntime {
 
 #[derive(Clone)]
 struct AudioStyleTensorDevicePool {
-    devices: Arc<Vec<WgpuDevice>>,
+    devices: Arc<Mutex<Vec<WgpuDevice>>>,
     device_source: &'static str,
 }
 
@@ -310,6 +314,12 @@ struct AudioStyleTensorBackendProfile {
     backend: AudioStyleTrainingTensorBackend,
     tensor_device_count: usize,
     device_source: &'static str,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AudioStyleTensorRuntimePreference {
+    Hardware { device_source: &'static str },
+    Cpu { device_source: &'static str },
 }
 
 #[derive(Clone)]
@@ -1073,29 +1083,73 @@ impl AudioStyleEmbedding {
 impl AudioStyleTensorRuntime {
     fn new() -> Self {
         static RUNTIME: OnceLock<AudioStyleTensorRuntime> = OnceLock::new();
-        RUNTIME
-            .get_or_init(|| {
-                if audio_style_wgpu_default_device_override_requests_cpu() {
-                    return Self::Cpu(AudioStyleCpuTensorRuntime {
-                        device: NdArrayDevice::Cpu,
-                        device_source: "wgpu_env_cpu",
-                    });
-                }
-                let hardware = AudioStyleTensorDevicePool::detect();
-                if !hardware.devices.is_empty() {
-                    Self::Hardware(hardware)
+        if let Some(runtime) = RUNTIME.get() {
+            return runtime.clone();
+        }
+
+        let (runtime, cacheable) = match audio_style_tensor_runtime_preference() {
+            AudioStyleTensorRuntimePreference::Hardware { device_source } => {
+                let hardware = AudioStyleTensorDevicePool::detect(device_source);
+                if hardware.device_count() > 0 {
+                    (Self::Hardware(hardware), true)
                 } else {
-                    Self::Cpu(AudioStyleCpuTensorRuntime {
-                        device: NdArrayDevice::Cpu,
-                        device_source: "cpu_fallback",
-                    })
+                    (
+                        Self::Cpu(AudioStyleCpuTensorRuntime {
+                            device: NdArrayDevice::Cpu,
+                            device_source: "wgpu_temporarily_unavailable_cpu_fallback",
+                        }),
+                        false,
+                    )
                 }
-            })
-            .clone()
+            }
+            AudioStyleTensorRuntimePreference::Cpu { device_source } => (
+                Self::Cpu(AudioStyleCpuTensorRuntime {
+                    device: NdArrayDevice::Cpu,
+                    device_source,
+                }),
+                true,
+            ),
+        };
+        let profile = runtime.backend_profile();
+        log::info!(
+            target: AUDIO_STYLE_LOG_TARGET,
+            "audio_style_tensor_runtime_selected tensor_backend={} tensor_device_count={} tensor_device_source={} cacheable={cacheable}",
+            profile.backend.as_str(),
+            profile.tensor_device_count,
+            profile.device_source
+        );
+        if cacheable {
+            let _ = RUNTIME.set(runtime.clone());
+            return RUNTIME.get().cloned().unwrap_or(runtime);
+        }
+        runtime
+    }
+
+    #[cfg(test)]
+    fn from_preference_for_test(preference: AudioStyleTensorRuntimePreference) -> Self {
+        match preference {
+            AudioStyleTensorRuntimePreference::Hardware { device_source } => {
+                Self::for_test_hardware_device_count_with_source(1, device_source)
+            }
+            AudioStyleTensorRuntimePreference::Cpu { device_source } => {
+                Self::Cpu(AudioStyleCpuTensorRuntime {
+                    device: NdArrayDevice::Cpu,
+                    device_source,
+                })
+            }
+        }
     }
 
     #[cfg(test)]
     fn for_test_hardware_device_count(device_count: usize) -> Self {
+        Self::for_test_hardware_device_count_with_source(device_count, "test_discrete_gpu")
+    }
+
+    #[cfg(test)]
+    fn for_test_hardware_device_count_with_source(
+        device_count: usize,
+        device_source: &'static str,
+    ) -> Self {
         if device_count == 0 {
             return Self::Cpu(AudioStyleCpuTensorRuntime {
                 device: NdArrayDevice::Cpu,
@@ -1103,8 +1157,10 @@ impl AudioStyleTensorRuntime {
             });
         }
         Self::Hardware(AudioStyleTensorDevicePool {
-            devices: Arc::new((0..device_count).map(WgpuDevice::DiscreteGpu).collect()),
-            device_source: "test_discrete_gpu",
+            devices: Arc::new(Mutex::new(
+                (0..device_count).map(WgpuDevice::DiscreteGpu).collect(),
+            )),
+            device_source,
         })
     }
 
@@ -1112,7 +1168,7 @@ impl AudioStyleTensorRuntime {
         match self {
             Self::Hardware(pool) => AudioStyleTensorBackendProfile {
                 backend: AudioStyleTrainingTensorBackend::Hardware,
-                tensor_device_count: pool.devices.len(),
+                tensor_device_count: pool.device_count(),
                 device_source: pool.device_source,
             },
             Self::Cpu(runtime) => AudioStyleTensorBackendProfile {
@@ -1158,22 +1214,9 @@ impl AudioStyleTensorRuntime {
             return vec![0.0; AUDIO_STYLE_EMBEDDING_WIDTH];
         }
         match self {
-            Self::Hardware(pool) => {
-                let Some(device) = pool.primary_device() else {
-                    return Self::mean_from_matrix_on::<AudioStyleCpuTensorBackend>(
-                        matrix,
-                        &NdArrayDevice::Cpu,
-                    )
-                    .unwrap_or_else(|| vec![0.0; AUDIO_STYLE_EMBEDDING_WIDTH]);
-                };
-                Self::mean_from_matrix_on::<AudioStyleHardwareTensorBackend>(matrix, device)
-                    .or_else(|| {
-                        Self::mean_from_matrix_on::<AudioStyleCpuTensorBackend>(
-                            matrix,
-                            &NdArrayDevice::Cpu,
-                        )
-                    })
-            }
+            Self::Hardware(pool) => pool.mean_from_matrix(matrix).or_else(|| {
+                Self::mean_from_matrix_on::<AudioStyleCpuTensorBackend>(matrix, &NdArrayDevice::Cpu)
+            }),
             Self::Cpu(runtime) => {
                 Self::mean_from_matrix_on::<AudioStyleCpuTensorBackend>(matrix, &runtime.device)
             }
@@ -1225,13 +1268,8 @@ impl AudioStyleTensorRuntime {
 
         let values =
             match self {
-                Self::Hardware(pool) => {
-                    let Some(device) = pool.primary_device() else {
-                        return vec![None; candidates.len()];
-                    };
-                    Self::centered_similarity_to_many_on::<AudioStyleHardwareTensorBackend>(
-                        anchor, candidates, mean, device,
-                    )
+                Self::Hardware(pool) => pool
+                    .centered_similarity_to_many(anchor, candidates, mean)
                     .or_else(|| {
                         Self::centered_similarity_to_many_on::<AudioStyleCpuTensorBackend>(
                             anchor,
@@ -1239,8 +1277,7 @@ impl AudioStyleTensorRuntime {
                             mean,
                             &NdArrayDevice::Cpu,
                         )
-                    })
-                }
+                    }),
                 Self::Cpu(runtime) => Self::centered_similarity_to_many_on::<
                     AudioStyleCpuTensorBackend,
                 >(anchor, candidates, mean, &runtime.device),
@@ -1286,16 +1323,12 @@ impl AudioStyleTensorRuntime {
 
         let len = similarities.len();
         match self {
-            Self::Hardware(pool) => {
-                let Some(device) = pool.primary_device() else {
-                    return vec![0.0; len];
-                };
-                Self::softmin_weights_on::<AudioStyleHardwareTensorBackend>(
+            Self::Hardware(pool) => pool
+                .softmin_weights(
                     similarity_values.clone(),
                     liked_values.clone(),
                     penalty_values.clone(),
                     valid_values.clone(),
-                    device,
                 )
                 .or_else(|| {
                     Self::softmin_weights_on::<AudioStyleCpuTensorBackend>(
@@ -1305,8 +1338,7 @@ impl AudioStyleTensorRuntime {
                         valid_values,
                         &NdArrayDevice::Cpu,
                     )
-                })
-            }
+                }),
             Self::Cpu(runtime) => Self::softmin_weights_on::<AudioStyleCpuTensorBackend>(
                 similarity_values,
                 liked_values,
@@ -1606,31 +1638,101 @@ impl AudioStyleTensorRuntime {
 }
 
 impl AudioStyleTensorDevicePool {
-    fn detect() -> Self {
-        let mut devices = Vec::new();
-        let mut device_source = "none";
-        if let Some(device) = audio_style_wgpu_default_device_override() {
-            if audio_style_wgpu_device_is_hardware(&device)
-                && AudioStyleTensorRuntime::hardware_device_is_available(&device)
-            {
-                devices.push(device);
-                device_source = "wgpu_env_default";
-            }
+    fn detect(requested_source: &'static str) -> Self {
+        let mut device_source = requested_source;
+        let candidates = audio_style_wgpu_hardware_device_candidates();
+        if candidates.is_empty() {
+            log::warn!(
+                target: AUDIO_STYLE_LOG_TARGET,
+                "audio_style_tensor_hardware_candidates_empty source={requested_source}"
+            );
         }
-        if devices.is_empty() {
-            devices = available_audio_style_wgpu_hardware_devices();
+        let mut devices = available_audio_style_wgpu_hardware_devices_from_candidates(&candidates);
+        if devices.is_empty() && !candidates.is_empty() {
+            devices = wait_for_available_audio_style_wgpu_hardware_devices(&candidates);
             if !devices.is_empty() {
-                device_source = "wgpu_runtime_enumeration";
+                device_source = "wgpu_runtime_recovered";
             }
         }
         Self {
-            devices: Arc::new(devices),
+            devices: Arc::new(Mutex::new(devices)),
             device_source,
         }
     }
 
-    fn primary_device(&self) -> Option<&WgpuDevice> {
-        self.devices.first()
+    fn device_count(&self) -> usize {
+        self.devices
+            .lock()
+            .map(|devices| devices.len())
+            .unwrap_or(0)
+    }
+
+    fn devices(&self) -> Vec<WgpuDevice> {
+        self.devices
+            .lock()
+            .map(|devices| devices.clone())
+            .unwrap_or_default()
+    }
+
+    fn replace_devices(&self, devices: Vec<WgpuDevice>) {
+        if let Ok(mut current) = self.devices.lock() {
+            *current = devices;
+        }
+    }
+
+    fn try_hardware_then_refresh<T>(
+        &self,
+        operation: &'static str,
+        mut run: impl FnMut(&WgpuDevice) -> Option<T>,
+    ) -> Option<T> {
+        for device in self.devices() {
+            if let Some(values) = run(&device) {
+                return Some(values);
+            }
+        }
+
+        log::warn!(
+            target: AUDIO_STYLE_LOG_TARGET,
+            "audio_style_tensor_hardware_op_failed operation={operation} action=refresh_accelerators"
+        );
+        let candidates = audio_style_wgpu_hardware_device_candidates();
+        let refreshed = if candidates.is_empty() {
+            Vec::new()
+        } else {
+            wait_for_available_audio_style_wgpu_hardware_devices(&candidates)
+        };
+        if refreshed.is_empty() {
+            log::warn!(
+                target: AUDIO_STYLE_LOG_TARGET,
+                "audio_style_tensor_hardware_op_unavailable operation={operation} action=cpu_fallback"
+            );
+            return None;
+        }
+
+        self.replace_devices(refreshed.clone());
+        log::info!(
+            target: AUDIO_STYLE_LOG_TARGET,
+            "audio_style_tensor_hardware_op_recovered operation={operation} devices={}",
+            refreshed.len()
+        );
+        for device in refreshed {
+            if let Some(values) = run(&device) {
+                return Some(values);
+            }
+        }
+        log::warn!(
+            target: AUDIO_STYLE_LOG_TARGET,
+            "audio_style_tensor_hardware_op_retry_failed operation={operation} action=cpu_fallback"
+        );
+        None
+    }
+
+    fn mean_from_matrix(&self, matrix: &AudioStyleTensorMatrix) -> Option<Vec<f32>> {
+        self.try_hardware_then_refresh("mean_from_matrix", |device| {
+            AudioStyleTensorRuntime::mean_from_matrix_on::<AudioStyleHardwareTensorBackend>(
+                matrix, device,
+            )
+        })
     }
 
     fn centered_similarity_matrix(
@@ -1638,56 +1740,42 @@ impl AudioStyleTensorDevicePool {
         matrix: &AudioStyleTensorMatrix,
         mean: &[f32],
     ) -> Option<Vec<f32>> {
-        if self.devices.len() <= 1 || matrix.keys.len() < 2 {
-            let device = self.primary_device()?;
-            return AudioStyleTensorRuntime::centered_similarity_matrix_on::<
-                AudioStyleHardwareTensorBackend,
-            >(matrix, mean, device);
-        }
+        self.try_hardware_then_refresh("centered_similarity_matrix", |device| {
+            AudioStyleTensorRuntime::centered_similarity_matrix_on::<AudioStyleHardwareTensorBackend>(
+                matrix, mean, device,
+            )
+        })
+    }
 
-        let row_count = matrix.keys.len();
-        let chunks = audio_style_tensor_row_chunks(row_count, self.devices.len());
-        if chunks.len() <= 1 {
-            let device = self.primary_device()?;
-            return AudioStyleTensorRuntime::centered_similarity_matrix_on::<
-                AudioStyleHardwareTensorBackend,
-            >(matrix, mean, device);
-        }
+    fn centered_similarity_to_many(
+        &self,
+        anchor: &AudioStyleEmbedding,
+        candidates: &[&AudioStyleEmbedding],
+        mean: &[f32],
+    ) -> Option<Vec<f32>> {
+        self.try_hardware_then_refresh("centered_similarity_to_many", |device| {
+            AudioStyleTensorRuntime::centered_similarity_to_many_on::<AudioStyleHardwareTensorBackend>(
+                anchor, candidates, mean, device,
+            )
+        })
+    }
 
-        let mut handles = Vec::with_capacity(chunks.len());
-        let flat_values = Arc::new(matrix.flat_values.clone());
-        let mean = Arc::new(mean.to_vec());
-        for (device, (start, end)) in self.devices.iter().cloned().zip(chunks.into_iter()) {
-            let flat_values = Arc::clone(&flat_values);
-            let mean = Arc::clone(&mean);
-            handles.push(thread::spawn(move || {
-                AudioStyleTensorDevicePool::centered_similarity_rows_on_device(
-                    device,
-                    flat_values,
-                    mean,
-                    row_count,
-                    start,
-                    end,
-                )
-                .map(|values| (start, end, values))
-            }));
-        }
-
-        let mut similarities = vec![0.0; row_count * row_count];
-        for handle in handles {
-            let (start, end, values) = handle.join().ok()??;
-            if values.len() != (end - start) * row_count {
-                return None;
-            }
-            for local_row in 0..(end - start) {
-                let target_start = (start + local_row) * row_count;
-                let source_start = local_row * row_count;
-                similarities[target_start..target_start + row_count]
-                    .copy_from_slice(&values[source_start..source_start + row_count]);
-            }
-        }
-
-        Some(similarities)
+    fn softmin_weights(
+        &self,
+        similarity_values: Vec<f32>,
+        liked_values: Vec<f32>,
+        penalty_values: Vec<f32>,
+        valid_values: Vec<f32>,
+    ) -> Option<Vec<f32>> {
+        self.try_hardware_then_refresh("softmin_weights", |device| {
+            AudioStyleTensorRuntime::softmin_weights_on::<AudioStyleHardwareTensorBackend>(
+                similarity_values.clone(),
+                liked_values.clone(),
+                penalty_values.clone(),
+                valid_values.clone(),
+                device,
+            )
+        })
     }
 
     fn centered_similarity_grid(
@@ -1696,270 +1784,193 @@ impl AudioStyleTensorDevicePool {
         candidates: &[&AudioStyleEmbedding],
         mean: &[f32],
     ) -> Option<Vec<f32>> {
-        if self.devices.len() <= 1 || anchors.len() < 2 {
-            let device = self.primary_device()?;
-            return AudioStyleTensorRuntime::centered_similarity_grid_on::<
-                AudioStyleHardwareTensorBackend,
-            >(anchors, candidates, mean, device);
-        }
-
-        let anchor_count = anchors.len();
-        let chunks = audio_style_tensor_row_chunks(anchor_count, self.devices.len());
-        if chunks.len() <= 1 {
-            let device = self.primary_device()?;
-            return AudioStyleTensorRuntime::centered_similarity_grid_on::<
-                AudioStyleHardwareTensorBackend,
-            >(anchors, candidates, mean, device);
-        }
-
-        let anchor_values = Arc::new(audio_style_flat_values_from_embedding_refs(anchors));
-        let candidate_values = Arc::new(audio_style_flat_values_from_embedding_refs(candidates));
-        let candidate_count = candidates.len();
-        let mean = Arc::new(mean.to_vec());
-        let mut handles = Vec::with_capacity(chunks.len());
-        for (device, (start, end)) in self.devices.iter().cloned().zip(chunks.into_iter()) {
-            let anchor_values = Arc::clone(&anchor_values);
-            let candidate_values = Arc::clone(&candidate_values);
-            let mean = Arc::clone(&mean);
-            handles.push(thread::spawn(move || {
-                AudioStyleTensorDevicePool::centered_similarity_grid_rows_on_device(
-                    device,
-                    anchor_values,
-                    candidate_values,
-                    mean,
-                    anchor_count,
-                    candidate_count,
-                    start,
-                    end,
-                )
-                .map(|values| (start, end, values))
-            }));
-        }
-
-        let mut similarities = vec![0.0; anchor_count * candidate_count];
-        for handle in handles {
-            let (start, end, values) = handle.join().ok()??;
-            if values.len() != (end - start) * candidate_count {
-                return None;
-            }
-            for local_row in 0..(end - start) {
-                let target_start = (start + local_row) * candidate_count;
-                let source_start = local_row * candidate_count;
-                similarities[target_start..target_start + candidate_count]
-                    .copy_from_slice(&values[source_start..source_start + candidate_count]);
-            }
-        }
-
-        Some(similarities)
-    }
-
-    fn centered_similarity_rows_on_device(
-        device: WgpuDevice,
-        flat_values: Arc<Vec<f32>>,
-        mean: Arc<Vec<f32>>,
-        row_count: usize,
-        start: usize,
-        end: usize,
-    ) -> Option<Vec<f32>> {
-        if start >= end || end > row_count || mean.len() != AUDIO_STYLE_EMBEDDING_WIDTH {
-            return None;
-        }
-
-        run_audio_style_tensor_op(|| {
-            let row_len = (end - start) * AUDIO_STYLE_EMBEDDING_WIDTH;
-            let row_offset = start * AUDIO_STYLE_EMBEDDING_WIDTH;
-            let rows = Tensor::<AudioStyleHardwareTensorBackend, 2>::from_data(
-                TensorData::new(
-                    flat_values[row_offset..row_offset + row_len].to_vec(),
-                    [end - start, AUDIO_STYLE_EMBEDDING_WIDTH],
-                ),
-                &device,
-            );
-            let all = Tensor::<AudioStyleHardwareTensorBackend, 2>::from_data(
-                TensorData::new(
-                    flat_values.as_ref().clone(),
-                    [row_count, AUDIO_STYLE_EMBEDDING_WIDTH],
-                ),
-                &device,
-            );
-            let mean_row = Tensor::<AudioStyleHardwareTensorBackend, 1>::from_data(
-                TensorData::new(mean.as_ref().clone(), [AUDIO_STYLE_EMBEDDING_WIDTH]),
-                &device,
+        self.try_hardware_then_refresh("centered_similarity_grid", |device| {
+            AudioStyleTensorRuntime::centered_similarity_grid_on::<AudioStyleHardwareTensorBackend>(
+                anchors, candidates, mean, device,
             )
-            .unsqueeze_dim::<2>(0);
-            let centered_rows = rows
-                - mean_row
-                    .clone()
-                    .expand([end - start, AUDIO_STYLE_EMBEDDING_WIDTH]);
-            let centered_all = all - mean_row.expand([row_count, AUDIO_STYLE_EMBEDDING_WIDTH]);
-            let row_norms = centered_rows
-                .clone()
-                .square()
-                .sum_dim(1)
-                .sqrt()
-                .clamp_min(1.0e-6);
-            let all_norms = centered_all
-                .clone()
-                .square()
-                .sum_dim(1)
-                .sqrt()
-                .clamp_min(1.0e-6);
-            let denom = row_norms.matmul(all_norms.transpose()).clamp_min(1.0e-6);
-            let similarities = (centered_rows.matmul(centered_all.transpose()) / denom)
-                .clamp(-1.0, 1.0)
-                .into_data()
-                .into_vec::<f32>()
-                .ok()?;
-            if similarities.len() == (end - start) * row_count {
-                Some(similarities)
-            } else {
-                None
-            }
         })
-        .flatten()
-    }
-
-    fn centered_similarity_grid_rows_on_device(
-        device: WgpuDevice,
-        anchor_values: Arc<Vec<f32>>,
-        candidate_values: Arc<Vec<f32>>,
-        mean: Arc<Vec<f32>>,
-        anchor_count: usize,
-        candidate_count: usize,
-        start: usize,
-        end: usize,
-    ) -> Option<Vec<f32>> {
-        if start >= end || end > anchor_count || mean.len() != AUDIO_STYLE_EMBEDDING_WIDTH {
-            return None;
-        }
-
-        run_audio_style_tensor_op(|| {
-            let row_len = (end - start) * AUDIO_STYLE_EMBEDDING_WIDTH;
-            let row_offset = start * AUDIO_STYLE_EMBEDDING_WIDTH;
-            let anchor_rows = Tensor::<AudioStyleHardwareTensorBackend, 2>::from_data(
-                TensorData::new(
-                    anchor_values[row_offset..row_offset + row_len].to_vec(),
-                    [end - start, AUDIO_STYLE_EMBEDDING_WIDTH],
-                ),
-                &device,
-            );
-            let candidates = Tensor::<AudioStyleHardwareTensorBackend, 2>::from_data(
-                TensorData::new(
-                    candidate_values.as_ref().clone(),
-                    [candidate_count, AUDIO_STYLE_EMBEDDING_WIDTH],
-                ),
-                &device,
-            );
-            let mean_row = Tensor::<AudioStyleHardwareTensorBackend, 1>::from_data(
-                TensorData::new(mean.as_ref().clone(), [AUDIO_STYLE_EMBEDDING_WIDTH]),
-                &device,
-            )
-            .unsqueeze_dim::<2>(0);
-            let centered_anchors = anchor_rows
-                - mean_row
-                    .clone()
-                    .expand([end - start, AUDIO_STYLE_EMBEDDING_WIDTH]);
-            let centered_candidates =
-                candidates - mean_row.expand([candidate_count, AUDIO_STYLE_EMBEDDING_WIDTH]);
-            let anchor_norms = centered_anchors
-                .clone()
-                .square()
-                .sum_dim(1)
-                .sqrt()
-                .clamp_min(1.0e-6);
-            let candidate_norms = centered_candidates
-                .clone()
-                .square()
-                .sum_dim(1)
-                .sqrt()
-                .clamp_min(1.0e-6);
-            let denom = anchor_norms
-                .matmul(candidate_norms.transpose())
-                .clamp_min(1.0e-6);
-            let values = (centered_anchors.matmul(centered_candidates.transpose()) / denom)
-                .clamp(-1.0, 1.0)
-                .into_data()
-                .into_vec::<f32>()
-                .ok()?;
-            if values.len() == (end - start) * candidate_count {
-                Some(values)
-            } else {
-                None
-            }
-        })
-        .flatten()
     }
 }
 
-fn audio_style_tensor_row_chunks(row_count: usize, device_count: usize) -> Vec<(usize, usize)> {
-    if row_count == 0 || device_count == 0 {
-        return Vec::new();
+fn audio_style_wgpu_hardware_device_candidates() -> Vec<WgpuDevice> {
+    if let Some(device) = audio_style_wgpu_default_device_override()
+        && audio_style_wgpu_device_is_hardware(&device)
+    {
+        log::info!(
+            target: AUDIO_STYLE_LOG_TARGET,
+            "audio_style_tensor_hardware_candidates_selected source=wgpu_env devices=\"{}\"",
+            audio_style_wgpu_device_list_label(&[device.clone()])
+        );
+        return vec![device];
     }
 
-    let chunk_count = row_count.min(device_count);
-    let base = row_count / chunk_count;
-    let remainder = row_count % chunk_count;
-    let mut chunks = Vec::with_capacity(chunk_count);
-    let mut start = 0usize;
-    for index in 0..chunk_count {
-        let len = base + usize::from(index < remainder);
-        let end = start + len;
-        chunks.push((start, end));
-        start = end;
-    }
-    chunks
-}
-
-fn audio_style_flat_values_from_embedding_refs(embeddings: &[&AudioStyleEmbedding]) -> Vec<f32> {
-    let mut flat_values = Vec::with_capacity(embeddings.len() * AUDIO_STYLE_EMBEDDING_WIDTH);
-    for embedding in embeddings {
-        flat_values.extend_from_slice(&embedding.values);
-    }
-    flat_values
-}
-
-fn available_audio_style_wgpu_hardware_devices() -> Vec<WgpuDevice> {
     let backend = AutoGraphicsApi::backend();
-    let mut devices = [
+    let mut devices = audio_style_wgpu_hardware_device_enumeration_roots()
+        .into_iter()
+        .flat_map(|device| {
+            <WgpuRuntime as CubeRuntime>::enumerate_devices(device.to_id().type_id, &backend)
+        })
+        .map(<WgpuDevice as CubeDevice>::from_id)
+        .filter(audio_style_wgpu_device_is_hardware)
+        .collect::<Vec<_>>();
+    devices.push(WgpuDevice::DefaultDevice);
+    devices.sort_by_key(audio_style_wgpu_device_priority_key);
+    devices.dedup_by_key(|device| device.to_id());
+    log::info!(
+        target: AUDIO_STYLE_LOG_TARGET,
+        "audio_style_tensor_hardware_candidates_selected source=enumeration devices=\"{}\"",
+        audio_style_wgpu_device_list_label(&devices)
+    );
+    devices
+}
+
+fn audio_style_wgpu_hardware_device_enumeration_roots() -> [WgpuDevice; 3] {
+    [
         WgpuDevice::DiscreteGpu(0),
         WgpuDevice::IntegratedGpu(0),
         WgpuDevice::VirtualGpu(0),
     ]
-    .into_iter()
-    .flat_map(|device| {
-        <WgpuRuntime as CubeRuntime>::enumerate_devices(device.to_id().type_id, &backend)
-    })
-    .map(<WgpuDevice as CubeDevice>::from_id)
-    .filter(audio_style_wgpu_device_is_hardware)
-    .filter(AudioStyleTensorRuntime::hardware_device_is_available)
-    .collect::<Vec<_>>();
-    devices.sort_by_key(CubeDevice::to_id);
-    devices.dedup_by_key(|device| device.to_id());
-    devices
+}
+
+fn available_audio_style_wgpu_hardware_devices_from_candidates(
+    candidates: &[WgpuDevice],
+) -> Vec<WgpuDevice> {
+    candidates
+        .iter()
+        .filter(|device| AudioStyleTensorRuntime::hardware_device_is_available(device))
+        .cloned()
+        .collect()
+}
+
+fn wait_for_available_audio_style_wgpu_hardware_devices(
+    candidates: &[WgpuDevice],
+) -> Vec<WgpuDevice> {
+    for attempt in 1..=AUDIO_STYLE_TENSOR_HARDWARE_PROBE_ATTEMPTS {
+        log::warn!(
+            target: AUDIO_STYLE_LOG_TARGET,
+            "audio_style_tensor_hardware_probe_waiting attempt={attempt} attempts={} retry_ms={} candidates={}",
+            AUDIO_STYLE_TENSOR_HARDWARE_PROBE_ATTEMPTS,
+            AUDIO_STYLE_TENSOR_HARDWARE_PROBE_RETRY_MS,
+            candidates.len()
+        );
+        thread::sleep(Duration::from_millis(
+            AUDIO_STYLE_TENSOR_HARDWARE_PROBE_RETRY_MS,
+        ));
+        let devices = available_audio_style_wgpu_hardware_devices_from_candidates(candidates);
+        if !devices.is_empty() {
+            log::info!(
+                target: AUDIO_STYLE_LOG_TARGET,
+                "audio_style_tensor_hardware_probe_recovered attempt={attempt} devices={}",
+                devices.len()
+            );
+            return devices;
+        }
+    }
+    log::warn!(
+        target: AUDIO_STYLE_LOG_TARGET,
+        "audio_style_tensor_hardware_probe_exhausted attempts={} retry_ms={} candidates={}",
+        AUDIO_STYLE_TENSOR_HARDWARE_PROBE_ATTEMPTS,
+        AUDIO_STYLE_TENSOR_HARDWARE_PROBE_RETRY_MS,
+        candidates.len()
+    );
+    Vec::new()
+}
+
+fn audio_style_wgpu_device_priority_key(device: &WgpuDevice) -> (u8, usize) {
+    match device {
+        WgpuDevice::DiscreteGpu(index) => (0, *index),
+        WgpuDevice::IntegratedGpu(index) => (1, *index),
+        WgpuDevice::VirtualGpu(index) => (2, *index),
+        WgpuDevice::DefaultDevice => (3, 0),
+        #[allow(deprecated)]
+        WgpuDevice::BestAvailable => (3, 0),
+        WgpuDevice::Existing(index) => (4, *index as usize),
+        WgpuDevice::Cpu => (5, 0),
+    }
 }
 
 fn audio_style_wgpu_device_is_hardware(device: &WgpuDevice) -> bool {
     matches!(
         device,
-        WgpuDevice::DiscreteGpu(_) | WgpuDevice::IntegratedGpu(_) | WgpuDevice::VirtualGpu(_)
+        WgpuDevice::DiscreteGpu(_)
+            | WgpuDevice::IntegratedGpu(_)
+            | WgpuDevice::VirtualGpu(_)
+            | WgpuDevice::DefaultDevice
     )
+}
+
+fn audio_style_wgpu_device_list_label(devices: &[WgpuDevice]) -> String {
+    devices
+        .iter()
+        .map(|device| format!("{device:?}"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn audio_style_tensor_runtime_preference() -> AudioStyleTensorRuntimePreference {
+    audio_style_tensor_runtime_preference_from_env(
+        std::env::var(AUDIO_STYLE_TENSOR_BACKEND_ENV)
+            .ok()
+            .as_deref(),
+        std::env::var(CUBECL_WGPU_DEFAULT_DEVICE_ENV)
+            .ok()
+            .as_deref(),
+    )
+}
+
+fn audio_style_tensor_runtime_preference_from_env(
+    tensor_backend: Option<&str>,
+    wgpu_default_device: Option<&str>,
+) -> AudioStyleTensorRuntimePreference {
+    let backend = tensor_backend.map(|value| value.trim().to_ascii_lowercase());
+    match backend.as_deref() {
+        Some("wgpu" | "gpu" | "hardware") => {
+            return AudioStyleTensorRuntimePreference::Hardware {
+                device_source: "tensor_backend_env_hardware",
+            };
+        }
+        Some("cpu" | "ndarray") => {
+            return AudioStyleTensorRuntimePreference::Cpu {
+                device_source: "tensor_backend_env_cpu",
+            };
+        }
+        Some("") | None => {}
+        Some(other) => {
+            log::warn!(
+                target: AUDIO_STYLE_LOG_TARGET,
+                "audio_style_tensor_backend_env_ignored env={} value=\"{}\" reason=unknown_backend",
+                AUDIO_STYLE_TENSOR_BACKEND_ENV,
+                escape_log_value(other)
+            );
+        }
+    }
+
+    match wgpu_default_device.and_then(parse_audio_style_wgpu_device) {
+        Some(device) if audio_style_wgpu_device_is_hardware(&device) => {
+            AudioStyleTensorRuntimePreference::Hardware {
+                device_source: "wgpu_env_hardware",
+            }
+        }
+        Some(WgpuDevice::Cpu) => AudioStyleTensorRuntimePreference::Cpu {
+            device_source: "wgpu_env_cpu",
+        },
+        _ => AudioStyleTensorRuntimePreference::Hardware {
+            device_source: "hardware_default",
+        },
+    }
 }
 
 fn audio_style_wgpu_default_device_override() -> Option<WgpuDevice> {
-    let value = std::env::var("CUBECL_WGPU_DEFAULT_DEVICE").ok()?;
+    let value = std::env::var(CUBECL_WGPU_DEFAULT_DEVICE_ENV).ok()?;
     parse_audio_style_wgpu_device(&value)
-}
-
-fn audio_style_wgpu_default_device_override_requests_cpu() -> bool {
-    matches!(
-        audio_style_wgpu_default_device_override(),
-        Some(WgpuDevice::Cpu)
-    )
 }
 
 fn parse_audio_style_wgpu_device(value: &str) -> Option<WgpuDevice> {
     if value == "Cpu" {
         return Some(WgpuDevice::Cpu);
+    }
+    if value == "DefaultDevice" {
+        return Some(WgpuDevice::DefaultDevice);
     }
     parse_audio_style_wgpu_indexed_device(value, "DiscreteGpu", WgpuDevice::DiscreteGpu)
         .or_else(|| {
@@ -1983,14 +1994,6 @@ fn parse_audio_style_wgpu_indexed_device(
 }
 
 #[cfg(test)]
-pub(crate) fn audio_style_tensor_row_chunks_for_test(
-    row_count: usize,
-    device_count: usize,
-) -> Vec<(usize, usize)> {
-    audio_style_tensor_row_chunks(row_count, device_count)
-}
-
-#[cfg(test)]
 pub(crate) fn audio_style_tensor_runtime_profile_for_test(
     device_count: usize,
 ) -> (&'static str, usize, &'static str) {
@@ -2004,8 +2007,57 @@ pub(crate) fn audio_style_tensor_runtime_profile_for_test(
 }
 
 #[cfg(test)]
+pub(crate) fn audio_style_tensor_runtime_preference_for_test(
+    tensor_backend: Option<&str>,
+    wgpu_default_device: Option<&str>,
+) -> (&'static str, &'static str) {
+    match audio_style_tensor_runtime_preference_from_env(tensor_backend, wgpu_default_device) {
+        AudioStyleTensorRuntimePreference::Hardware { device_source } => {
+            ("hardware", device_source)
+        }
+        AudioStyleTensorRuntimePreference::Cpu { device_source } => ("cpu", device_source),
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn audio_style_tensor_runtime_profile_from_preference_for_test(
+    tensor_backend: Option<&str>,
+    wgpu_default_device: Option<&str>,
+) -> (&'static str, usize, &'static str) {
+    let preference =
+        audio_style_tensor_runtime_preference_from_env(tensor_backend, wgpu_default_device);
+    let profile = AudioStyleTensorRuntime::from_preference_for_test(preference).backend_profile();
+    (
+        profile.backend.as_str(),
+        profile.tensor_device_count,
+        profile.device_source,
+    )
+}
+
+#[cfg(test)]
 pub(crate) fn parse_audio_style_wgpu_device_for_test(value: &str) -> Option<String> {
     parse_audio_style_wgpu_device(value).map(|device| format!("{device:?}"))
+}
+
+#[cfg(test)]
+pub(crate) fn sort_audio_style_wgpu_devices_for_test(values: &[&str]) -> Vec<String> {
+    let mut devices = values
+        .iter()
+        .filter_map(|value| parse_audio_style_wgpu_device(value))
+        .collect::<Vec<_>>();
+    devices.sort_by_key(audio_style_wgpu_device_priority_key);
+    devices
+        .into_iter()
+        .map(|device| format!("{device:?}"))
+        .collect()
+}
+
+#[cfg(test)]
+pub(crate) fn audio_style_wgpu_hardware_device_enumeration_roots_for_test() -> Vec<String> {
+    audio_style_wgpu_hardware_device_enumeration_roots()
+        .into_iter()
+        .map(|device| format!("{device:?}"))
+        .collect()
 }
 
 fn run_audio_style_tensor_op<T>(op: impl FnOnce() -> T) -> Option<T> {

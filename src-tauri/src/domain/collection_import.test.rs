@@ -3,7 +3,8 @@ use super::{
     CollectionManifestMusic, LocalAudioFile, collection_folder_from_local_path,
     collection_from_manifest, finalize_downloaded_leaf, manifest_from_raw_leaf_evidence,
     merge_raw_leaf_manifest_evidence, normalize_manifest_relative_path,
-    normalize_music_titles_within_collection, project_local_collection_shell,
+    normalize_music_title_batch, normalize_music_titles_within_collection,
+    project_local_collection_shell,
 };
 use crate::domain::downloads::model::CollectionSourceKind;
 use crate::domain::downloads::model::{DownloadTaskStatus, DownloadTrigger};
@@ -921,6 +922,17 @@ fn normalize_music_titles_rejects_noise_deletions_that_leave_only_numbers() {
     assert_eq!(collection.musics[1].name, "Album - 2");
     assert_eq!(collection.musics[2].name, "Album - Pt.3");
     assert_eq!(collection.musics[3].name, "Album - Pt.4");
+}
+
+#[test]
+fn normalize_music_titles_removes_year_soundtrack_suffix_after_unicode_dash() {
+    let normalized = normalize_music_title_batch(&[
+        "The Egg - Soundtrack (2019)".to_string(),
+        "The Egg – Soundtrack (2019)".to_string(),
+        "The Egg — Soundtrack (2019)".to_string(),
+    ]);
+
+    assert_eq!(normalized, vec!["The Egg", "The Egg", "The Egg"]);
 }
 
 #[test]

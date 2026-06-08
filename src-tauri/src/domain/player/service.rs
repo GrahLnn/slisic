@@ -17,7 +17,6 @@ use super::track_identity_substitution::PlaybackTrackIdentityUpdate;
 #[cfg(not(test))]
 use super::track_identity_substitution::{
     plan_track_identity_substitution, resolve_active_request_track_identity_update,
-    resolve_identity_update_playback_restart_position,
 };
 #[cfg(not(test))]
 use super::waveform::{self, TrackWaveform, TrackWaveformSummary, TrackWaveformTile};
@@ -30,10 +29,9 @@ use crate::domain::playlists::model::LoudnessProfile;
 use crate::utils::binaries::{ManagedBinary, ensure_managed_binary};
 #[cfg(not(test))]
 use anyhow::{Context, Result, anyhow, bail};
-use ffplayr::PlaybackNormalization;
 #[cfg(not(test))]
-use ffplayr::{Playback, PlaybackRequest, PlaybackTimeRange};
-#[cfg(not(test))]
+use ffplayr::Playback;
+use ffplayr::{PlaybackNormalization, PlaybackRequest, PlaybackTimeRange};
 use std::path::Path;
 #[cfg(not(test))]
 use std::sync::atomic::AtomicUsize;
@@ -1937,49 +1935,14 @@ impl PlayerRuntime {
                     ),
                 ]),
         );
-        if status.playing && !status.paused {
-            let next_range =
-                resolve_running_identity_update_playback_range(active_range, &next_track);
-            self.set_active_playback_range(next_range)?;
-            emit_player_trace(
-                "player-track-identity-playback-effect-applied",
-                PlayerTrace::new(&self.app)
-                    .track(Some(&next_track))
-                    .status("running_end_gate_synchronized")
-                    .details(vec![
-                        trace_detail("currentPositionMs", current_position_ms),
-                        trace_detail("activeRange", trace_range(next_range)),
-                    ]),
-            );
-            return Ok(());
-        }
-
-        let target_start_ms =
-            resolve_identity_update_playback_restart_position(current_position_ms, &next_track);
-        let Some(target_start_ms) = target_start_ms else {
-            emit_player_trace(
-                "player-track-identity-playback-effect-skipped",
-                PlayerTrace::new(&self.app)
-                    .track(Some(&next_track))
-                    .status("target_position_unavailable")
-                    .details(vec![trace_detail("currentPositionMs", current_position_ms)]),
-            );
-            return Ok(());
-        };
-
-        let next_range = ActivePlaybackRange {
-            start_ms: target_start_ms,
-            end_ms: next_track.end_ms,
-        };
-        self.set_active_playback_range(Some(next_range))?;
         emit_player_trace(
-            "player-track-identity-playback-effect-applied",
+            "player-track-identity-playback-effect-skipped",
             PlayerTrace::new(&self.app)
                 .track(Some(&next_track))
-                .status("paused_range_synchronized")
+                .status("identity_projection_only")
                 .details(vec![
-                    trace_detail("requestPositionMs", next_range.start_ms),
-                    trace_detail("activeRange", trace_range(Some(next_range))),
+                    trace_detail("currentPositionMs", current_position_ms),
+                    trace_detail("activeRange", trace_range(active_range)),
                 ]),
         );
 
@@ -2261,60 +2224,14 @@ async fn run_playback_session(
                 end_ms: track.end_ms,
             });
         let request = playback_request_for_track_range(&track, active_range);
+        let request_has_normalization = request.normalization.is_some();
+        let range_duration_ms = active_range.end_ms.saturating_sub(active_range.start_ms);
         let loudness_plan = track
             .loudness_profile
             .as_ref()
             .and_then(playback_loudness_plan_for_profile);
         loudness_evidence::request_playback_track_loudness_evidence(&track);
         audio_tail_trim::request_playback_current_audio_tail_trim(&track);
-        log::info!(
-            target: "player",
-            "[now play] playlist=\"{}\" title=\"{}\" integrated={} base_gain={} final_gain={} target_lufs={} true_peak={} lra={} short_p50={} short_p80={} short_p95={} short_max={} presence={} correction={} reason={} normalization={} range={}..{}",
-            track.playlist_name,
-            track.music_name,
-            loudness_plan
-                .map(|plan| format!("{:.3}", plan.integrated_lufs))
-                .unwrap_or_else(|| "none".to_string()),
-            loudness_plan
-                .map(|plan| format!("{:.3}", plan.base_gain_db))
-                .unwrap_or_else(|| "none".to_string()),
-            loudness_plan
-                .map(|plan| format!("{:.3}", plan.final_gain_db))
-                .unwrap_or_else(|| "none".to_string()),
-            loudness_plan
-                .map(|plan| format!("{:.3}", plan.target_lufs))
-                .unwrap_or_else(|| "none".to_string()),
-            loudness_plan
-                .map(|plan| format_optional_loudness(plan.true_peak_dbtp))
-                .unwrap_or_else(|| "none".to_string()),
-            loudness_plan
-                .map(|plan| format_optional_loudness(plan.lra))
-                .unwrap_or_else(|| "none".to_string()),
-            loudness_plan
-                .map(|plan| format_optional_loudness(plan.short_lufs_p50))
-                .unwrap_or_else(|| "none".to_string()),
-            loudness_plan
-                .map(|plan| format_optional_loudness(plan.short_lufs_p80))
-                .unwrap_or_else(|| "none".to_string()),
-            loudness_plan
-                .map(|plan| format_optional_loudness(plan.short_lufs_p95))
-                .unwrap_or_else(|| "none".to_string()),
-            loudness_plan
-                .map(|plan| format_optional_loudness(plan.short_lufs_max))
-                .unwrap_or_else(|| "none".to_string()),
-            loudness_plan
-                .map(|plan| format_optional_loudness(plan.presence_db))
-                .unwrap_or_else(|| "none".to_string()),
-            loudness_plan
-                .map(|plan| format!("{:.3}", plan.total_correction_db))
-                .unwrap_or_else(|| "none".to_string()),
-            loudness_plan
-                .map(|plan| plan.reason)
-                .unwrap_or("none"),
-            request.normalization.is_some(),
-            active_range.start_ms,
-            active_range.end_ms,
-        );
         emit_player_trace(
             "player-run-play-request-start",
             PlayerTrace::new(&runtime.app)
@@ -2324,6 +2241,55 @@ async fn run_playback_session(
         );
         match playback.play_request(request).await {
             Ok(_) => {
+                log::info!(
+                    target: "player",
+                    "[now play] playlist=\"{}\" title=\"{}\" integrated={} base_gain={} final_gain={} target_lufs={} true_peak={} lra={} short_p50={} short_p80={} short_p95={} short_max={} presence={} correction={} reason={} normalization={} range={}..{} range_duration_ms={}",
+                    track.playlist_name,
+                    track.music_name,
+                    loudness_plan
+                        .map(|plan| format!("{:.3}", plan.integrated_lufs))
+                        .unwrap_or_else(|| "none".to_string()),
+                    loudness_plan
+                        .map(|plan| format!("{:.3}", plan.base_gain_db))
+                        .unwrap_or_else(|| "none".to_string()),
+                    loudness_plan
+                        .map(|plan| format!("{:.3}", plan.final_gain_db))
+                        .unwrap_or_else(|| "none".to_string()),
+                    loudness_plan
+                        .map(|plan| format!("{:.3}", plan.target_lufs))
+                        .unwrap_or_else(|| "none".to_string()),
+                    loudness_plan
+                        .map(|plan| format_optional_loudness(plan.true_peak_dbtp))
+                        .unwrap_or_else(|| "none".to_string()),
+                    loudness_plan
+                        .map(|plan| format_optional_loudness(plan.lra))
+                        .unwrap_or_else(|| "none".to_string()),
+                    loudness_plan
+                        .map(|plan| format_optional_loudness(plan.short_lufs_p50))
+                        .unwrap_or_else(|| "none".to_string()),
+                    loudness_plan
+                        .map(|plan| format_optional_loudness(plan.short_lufs_p80))
+                        .unwrap_or_else(|| "none".to_string()),
+                    loudness_plan
+                        .map(|plan| format_optional_loudness(plan.short_lufs_p95))
+                        .unwrap_or_else(|| "none".to_string()),
+                    loudness_plan
+                        .map(|plan| format_optional_loudness(plan.short_lufs_max))
+                        .unwrap_or_else(|| "none".to_string()),
+                    loudness_plan
+                        .map(|plan| format_optional_loudness(plan.presence_db))
+                        .unwrap_or_else(|| "none".to_string()),
+                    loudness_plan
+                        .map(|plan| format!("{:.3}", plan.total_correction_db))
+                        .unwrap_or_else(|| "none".to_string()),
+                    loudness_plan
+                        .map(|plan| plan.reason)
+                        .unwrap_or("none"),
+                    request_has_normalization,
+                    active_range.start_ms,
+                    active_range.end_ms,
+                    range_duration_ms,
+                );
                 emit_player_trace(
                     "player-run-play-request-ok",
                     PlayerTrace::new(&runtime.app)
@@ -2709,7 +2675,6 @@ fn sync_playback_track_source_music(track: &mut PlaybackTrack) {
     music.loudness_profile = track.loudness_profile;
 }
 
-#[cfg(not(test))]
 fn playback_request_for_path_position(path: &Path, position_ms: u32) -> PlaybackRequest {
     let request = PlaybackRequest::new(path.to_path_buf());
 
@@ -2723,15 +2688,12 @@ fn playback_request_for_path_position(path: &Path, position_ms: u32) -> Playback
     request
 }
 
-#[cfg(not(test))]
-fn playback_request_for_track_range(
+pub(crate) fn playback_request_for_track_range(
     track: &PlaybackTrack,
     range: ActivePlaybackRange,
 ) -> PlaybackRequest {
-    let mut request = playback_request_for_path_position(
-        &track.file_path,
-        resolve_playback_request_position(range),
-    );
+    let mut request =
+        playback_request_for_path_position(&track.file_path, resolve_playback_request_position(range));
     if let Some(normalization) =
         playback_normalization_for_track_loudness_profile(track.loudness_profile.as_ref())
     {
@@ -2885,16 +2847,6 @@ pub(crate) fn resolve_playback_seek_range(
 
 pub(crate) fn resolve_playback_request_position(range: ActivePlaybackRange) -> u32 {
     range.start_ms
-}
-
-pub(crate) fn resolve_running_identity_update_playback_range(
-    active_range: Option<ActivePlaybackRange>,
-    next_track: &PlaybackTrack,
-) -> Option<ActivePlaybackRange> {
-    active_range.map(|range| ActivePlaybackRange {
-        start_ms: range.start_ms,
-        end_ms: next_track.end_ms,
-    })
 }
 
 pub(crate) fn resolve_playback_absolute_position_ms(

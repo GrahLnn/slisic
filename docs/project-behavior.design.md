@@ -1654,8 +1654,12 @@ PlaybackNormalization =
 
 `ActiveTrack` is the identity. `ActiveRange` is the current playback window over
 that identity. Updating `ActiveRange` does not create a new track; it changes the
-playback request for the same active track. Updating loudness does not change
-track identity; it is a natural transformation over the same identity.
+playback start coordinate, status projection, and completion observation for the
+same active track. `ActiveRange.endMs` is not a hard engine cut boundary and must
+not be submitted as `ffplayr::PlaybackTimeRange.duration_ms`; trimmed end
+evidence can move while playback remains continuous, and hard duration cuts can
+create audible noise. Updating loudness does not change track identity; it is a
+natural transformation over the same identity.
 
 ### Transition
 
@@ -1763,6 +1767,7 @@ projection:
 | liked update             | playlist liked change        | active track and queued tracks with same canonical id                 | preserves file/range identity              |
 | loudness update          | finite LUFS measurement      | active track, session queue, persisted music row, now-playing payload | preserves file/range identity              |
 | active range update      | seek or spectrum loop signal | playback request start/end and status payload                         | preserves active track identity            |
+| identity evidence update | committed title/range edit or tail-trim evidence | active track and queued track cargo, now-playing payload | does not change the current playback effect or active range gate |
 | normalization projection | non-zero loudness            | playback request with target `-18.0` LUFS                             | only applies when loudness evidence exists |
 
 The loudness law is:
@@ -1790,10 +1795,16 @@ does not manufacture `Preparing...`.
 - `PlaybackStatusPayload.playback_start_ms` and `playback_end_ms` project
   `ActiveRange` when it exists; otherwise they project the track's original
   `start_ms` and `end_ms`.
+- `ActiveRange.endMs` is interpreted by `PlayerSession` completion observation
+  and surface projection only. It is not owned by the low-level engine request.
 - Track boundary consumes the explicit session queue. It does not scan playlist
   membership.
 - Queue updates are evidence from `NextTrack`; player consumes them but does not
   own recommendation policy.
+- Committed identity evidence such as title edits or tail-trim end updates may
+  update the active track cargo and now-playing projection for the same target.
+  It must not retroactively change the currently running playback effect,
+  resubmit playback, or replace the active range completion gate.
 - Superseded generation closes the session. Late pause, seek, status, loudness,
   or now-playing evidence for an old generation cannot mutate the current
   session.
@@ -1834,6 +1845,9 @@ stateDiagram-v2
 - mutate click overlay or page response state;
 - apply loudness evidence to a different file/range identity;
 - apply seek or pause commands to a stale generation;
+- submit `ActiveRange.endMs` as a low-level playback `duration_ms`;
+- turn committed title/range/tail-trim evidence into a current playback stop,
+  restart, next-track transition, or active range gate replacement;
 - treat missing loudness as a reason to block play.
 
 ## Lifecycle: PlaybackStart

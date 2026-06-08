@@ -1,8 +1,7 @@
 use super::model::PlaybackTrack;
 use super::track_identity_substitution::{
     PlaybackTrackIdentityUpdate, plan_track_identity_substitution,
-    resolve_active_request_track_identity_update,
-    resolve_identity_update_playback_restart_position, resolve_session_track_identity_update,
+    resolve_active_request_track_identity_update, resolve_session_track_identity_update,
 };
 use std::path::PathBuf;
 
@@ -116,24 +115,4 @@ fn substitution_plan_keeps_active_runtime_coordinate_when_updated_track_is_not_a
 
     assert!(plan.next_active_request_track.is_none());
     assert!(!plan.should_clear_spectrum_playback_loop_signal);
-}
-
-#[test]
-fn playback_restart_position_projects_into_the_committed_identity_range() {
-    let mut current = track("a");
-    current.start_ms = 45_000;
-    current.end_ms = 90_000;
-
-    assert_eq!(
-        resolve_identity_update_playback_restart_position(20_000, &current),
-        Some(45_000),
-    );
-    assert_eq!(
-        resolve_identity_update_playback_restart_position(60_000, &current),
-        Some(60_000),
-    );
-    assert_eq!(
-        resolve_identity_update_playback_restart_position(100_000, &current),
-        Some(89_999),
-    );
 }
