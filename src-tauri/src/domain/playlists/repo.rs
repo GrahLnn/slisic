@@ -1305,12 +1305,29 @@ pub(crate) async fn trim_collection_music_ends_by_identity_with_applied_trims(
         if next_end_ms >= music.end_ms {
             continue;
         }
+        let target_occurrence_id =
+            music_occurrence_id(&music.group.url, &music.url, music.start_ms, next_end_ms);
         applied.push(MusicEndTrim {
             url: music.url.clone(),
             start_ms: music.start_ms,
             end_ms: music.end_ms,
             next_end_ms,
         });
+        if let Some(target_record) =
+            find_unique_record_id_by_string_field::<Music>("occurrence_id", &target_occurrence_id)
+                .await?
+            && target_record != record
+        {
+            absorb_music_record_into_existing_occurrence(
+                &record,
+                &music,
+                &target_record,
+                next_end_ms,
+            )
+            .await?;
+            changed = true;
+            continue;
+        }
         apply_music_mutation_to_record(&record, MusicMutation::EndTrim { next_end_ms }).await?;
         changed = true;
     }
@@ -1329,6 +1346,190 @@ pub(crate) async fn trim_collection_music_ends_by_identity_with_applied_trims(
 pub(crate) async fn acquire_collection_write_composition_lock()
 -> tokio::sync::MutexGuard<'static, ()> {
     COLLECTION_WRITE_COMPOSITION_LOCK.lock().await
+}
+
+async fn absorb_music_record_into_existing_occurrence(
+    source_record: &RecordId,
+    source_music: &Music,
+    target_record: &RecordId,
+    next_end_ms: u32,
+) -> Result<()> {
+    let target_music = Music::get_record(target_record.clone()).await?;
+    if target_music.group.url != source_music.group.url
+        || target_music.url != source_music.url
+        || target_music.start_ms != source_music.start_ms
+        || target_music.end_ms != next_end_ms
+    {
+        bail!("tail trim target occurrence does not match the requested music identity");
+    }
+
+    merge_absorbed_music_semantics(source_music, &target_music, target_record).await?;
+    let merged_target_music = Music::get_record(target_record.clone()).await?;
+    move_music_relation_edges(
+        "includes",
+        source_record,
+        target_record,
+        Collection::table_name(),
+    )
+    .await?;
+    move_music_relation_edges("grouped", source_record, target_record, Group::table_name()).await?;
+    replace_playlist_extra_record_refs(source_record, target_record).await?;
+    let excluded_identity_replaced =
+        replace_excluded_music_identity(source_music, &merged_target_music).await?;
+    delete_music_relation_edges("includes", source_record).await?;
+    delete_music_relation_edges("grouped", source_record).await?;
+
+    match Music::delete_record(source_record.clone()).await {
+        Ok(()) => {}
+        Err(error) => match classify_db_error(&error) {
+            DBError::MissingTable(_) | DBError::NotFound => {}
+            other => return Err(other.into()),
+        },
+    }
+    if excluded_identity_replaced {
+        refresh_exclude_availability_for_music_identity(source_music).await?;
+        refresh_exclude_availability_for_music_identity(&merged_target_music).await?;
+    }
+
+    log::info!(
+        target: "playlists",
+        "tail_trim_existing_occurrence_absorbed url={} start_ms={} old_end_ms={} next_end_ms={}",
+        source_music.url,
+        source_music.start_ms,
+        source_music.end_ms,
+        next_end_ms
+    );
+
+    Ok(())
+}
+
+async fn merge_absorbed_music_semantics(
+    source_music: &Music,
+    target_music: &Music,
+    target_record: &RecordId,
+) -> Result<()> {
+    let db = get_db()?;
+    let alias =
+        if target_music.alias == target_music.name && source_music.alias != source_music.name {
+            source_music.alias.clone()
+        } else {
+            target_music.alias.clone()
+        };
+    let liked = target_music.liked || source_music.liked;
+    let path = target_music
+        .path
+        .clone()
+        .or_else(|| source_music.path.clone());
+
+    db.query(
+        "UPDATE ONLY $record
+             SET alias = $alias,
+                 liked = $liked,
+                 path = $path
+             RETURN NONE;",
+    )
+    .bind(("record", target_record.clone()))
+    .bind(("alias", alias))
+    .bind(("liked", liked))
+    .bind(("path", path))
+    .await?
+    .check()?;
+
+    Ok(())
+}
+
+async fn replace_excluded_music_identity(
+    source_music: &Music,
+    target_music: &Music,
+) -> Result<bool> {
+    let source_record = RecordId::new(
+        StoredExclude::table_name(),
+        exclude_record_id(source_music).to_string(),
+    );
+    let exists = match Repo::<StoredExclude>::exists_record(source_record.clone()).await {
+        Ok(exists) => exists,
+        Err(error) => match classify_db_error(&error) {
+            DBError::MissingTable(_) | DBError::NotFound => false,
+            other => return Err(other.into()),
+        },
+    };
+    if !exists {
+        return Ok(false);
+    }
+
+    let target_record = RecordId::new(
+        StoredExclude::table_name(),
+        exclude_record_id(target_music).to_string(),
+    );
+    let target_exists = match Repo::<StoredExclude>::exists_record(target_record.clone()).await {
+        Ok(exists) => exists,
+        Err(error) => match classify_db_error(&error) {
+            DBError::MissingTable(_) | DBError::NotFound => false,
+            other => return Err(other.into()),
+        },
+    };
+    if !target_exists {
+        Repo::<StoredExclude>::upsert_at(
+            target_record,
+            StoredExclude {
+                id: exclude_record_id(target_music),
+                music: target_music.clone(),
+                created_at: AutoFill::pending(),
+            },
+        )
+        .await?;
+    }
+
+    match Repo::<StoredExclude>::delete_record(source_record).await {
+        Ok(()) => {}
+        Err(error) => match classify_db_error(&error) {
+            DBError::MissingTable(_) | DBError::NotFound => {}
+            other => return Err(other.into()),
+        },
+    }
+
+    Ok(true)
+}
+
+async fn move_music_relation_edges(
+    relation: &str,
+    source_record: &RecordId,
+    target_record: &RecordId,
+    owner_table: &str,
+) -> Result<()> {
+    for edge in load_relation_in_edges(relation, source_record, owner_table).await? {
+        replace_relation_edge(relation, &edge.owner, target_record, edge.position).await?;
+    }
+
+    Ok(())
+}
+
+async fn replace_playlist_extra_record_refs(
+    source_record: &RecordId,
+    target_record: &RecordId,
+) -> Result<()> {
+    for playlist_record in load_playlist_ids_containing_extra_record(source_record).await? {
+        let extra = load_playlist_extra_record_ids(&playlist_record).await?;
+        let mut seen = HashSet::new();
+        let mut replaced = false;
+        let next_extra = extra
+            .into_iter()
+            .filter_map(|record| {
+                let next_record = if record == *source_record {
+                    replaced = true;
+                    target_record.clone()
+                } else {
+                    record
+                };
+                seen.insert(next_record.clone()).then_some(next_record)
+            })
+            .collect::<Vec<_>>();
+        if replaced {
+            update_playlist_extra_record_ids(&playlist_record, &next_extra).await?;
+        }
+    }
+
+    Ok(())
 }
 
 pub async fn create_music(source_collection_url: &str, music: &Music) -> Result<Music> {
@@ -1984,6 +2185,32 @@ async fn load_playlist_extra_record_ids(record: &RecordId) -> Result<Vec<RecordI
     };
 
     project_required_record_refs(extra.clone(), "extra")
+}
+
+async fn load_playlist_ids_containing_extra_record(
+    extra_record: &RecordId,
+) -> Result<Vec<RecordId>> {
+    let db = get_db()?;
+    let mut result = match db
+        .query("SELECT VALUE id FROM $table WHERE $extra_record IN extra;")
+        .bind(("table", Table::from(PlayList::table_name())))
+        .bind(("extra_record", extra_record.clone()))
+        .await
+    {
+        Ok(result) => match result.check() {
+            Ok(result) => result,
+            Err(error) => match DBError::from(error) {
+                DBError::MissingTable(_) => return Ok(vec![]),
+                other => return Err(other.into()),
+            },
+        },
+        Err(error) => match classify_db_error(&error.into()) {
+            DBError::MissingTable(_) => return Ok(vec![]),
+            other => return Err(other.into()),
+        },
+    };
+
+    Ok(result.take(0)?)
 }
 
 async fn update_playlist_extra_record_ids(record: &RecordId, extra: &[RecordId]) -> Result<()> {
@@ -2952,6 +3179,93 @@ async fn load_relation_in_ids(
     Ok(result.take(0)?)
 }
 
+async fn load_relation_in_edges(
+    relation: &str,
+    record: &RecordId,
+    in_table: &str,
+) -> Result<Vec<RelationInEdgeRow>> {
+    let db = get_db()?;
+    let mut result = match db
+        .query(
+            "SELECT in AS owner, position FROM $rel WHERE out = $record AND record::tb(in) = $in_table;",
+        )
+        .bind(("rel", Table::from(relation)))
+        .bind(("record", record.clone()))
+        .bind(("in_table", in_table.to_string()))
+        .await
+    {
+        Ok(result) => match result.check() {
+            Ok(result) => result,
+            Err(error) => match DBError::from(error) {
+                DBError::MissingTable(_) => return Ok(vec![]),
+                other => return Err(other.into()),
+            },
+        },
+        Err(error) => match classify_db_error(&error.into()) {
+            DBError::MissingTable(_) => return Ok(vec![]),
+            other => return Err(other.into()),
+        },
+    };
+
+    Ok(result.take(0)?)
+}
+
+async fn replace_relation_edge(
+    relation: &str,
+    owner_record: &RecordId,
+    target_record: &RecordId,
+    position: i64,
+) -> Result<()> {
+    if relation_edge_exists(relation, owner_record, target_record).await? {
+        return Ok(());
+    }
+
+    let db = get_db()?;
+    db.query(
+        "INSERT RELATION INTO $rel { in: $owner, out: $target, position: $position } RETURN NONE;",
+    )
+    .bind(("rel", Table::from(relation)))
+    .bind(("owner", owner_record.clone()))
+    .bind(("target", target_record.clone()))
+    .bind(("position", position))
+    .await?
+    .check()?;
+
+    Ok(())
+}
+
+async fn relation_edge_exists(
+    relation: &str,
+    owner_record: &RecordId,
+    target_record: &RecordId,
+) -> Result<bool> {
+    let db = get_db()?;
+    let mut result = match db
+        .query(
+            "RETURN count((SELECT VALUE id FROM $rel WHERE in = $owner AND out = $target LIMIT 1));",
+        )
+        .bind(("rel", Table::from(relation)))
+        .bind(("owner", owner_record.clone()))
+        .bind(("target", target_record.clone()))
+        .await
+    {
+        Ok(result) => match result.check() {
+            Ok(result) => result,
+            Err(error) => match DBError::from(error) {
+                DBError::MissingTable(_) => return Ok(false),
+                other => return Err(other.into()),
+            },
+        },
+        Err(error) => match classify_db_error(&error.into()) {
+            DBError::MissingTable(_) => return Ok(false),
+            other => return Err(other.into()),
+        },
+    };
+
+    let count: Option<i64> = result.take(0)?;
+    Ok(count.unwrap_or(0) > 0)
+}
+
 async fn find_music_record_ids_by_identity(
     url: &str,
     start_ms: u32,
@@ -3066,11 +3380,15 @@ async fn load_music_playback_identity(
 }
 
 async fn delete_music_parent_edges(record: &RecordId) -> Result<()> {
+    delete_music_relation_edges("includes", record).await
+}
+
+async fn delete_music_relation_edges(relation: &str, record: &RecordId) -> Result<()> {
     let db = get_db()?;
 
     match db
         .query("DELETE $rel WHERE out = $record RETURN NONE;")
-        .bind(("rel", Table::from("includes")))
+        .bind(("rel", Table::from(relation)))
         .bind(("record", record.clone()))
         .await
     {
@@ -3703,6 +4021,13 @@ impl StoredExcludeOwnerAvailabilityRow {
 struct CollectionEdgeRow {
     #[serde(deserialize_with = "appdb::serde_utils::id::deserialize_record_id_or_compat_string")]
     out: RecordId,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, surrealdb_types::SurrealValue)]
+struct RelationInEdgeRow {
+    #[serde(deserialize_with = "appdb::serde_utils::id::deserialize_record_id_or_compat_string")]
+    owner: RecordId,
+    position: i64,
 }
 
 #[derive(Debug, Clone, Deserialize, SurrealValue)]

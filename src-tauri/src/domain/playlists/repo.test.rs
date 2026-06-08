@@ -9,8 +9,9 @@ use super::repo::{
     add_exclude, claim_generated_playlist_name, create_music, delete_music,
     delete_playlist_by_name, get_collection_by_url, get_music_loudness_profile_by_identity,
     get_playlist_by_name, get_playlist_config_by_name, get_playlist_playback_selection_by_name,
-    has_collections, list_collections, list_config_library, list_musics_by_file_path,
-    list_playlists, load_audio_style_training_musics, load_liked_playlist_playback_track_sources,
+    has_collections, is_music_identity_excluded_for_playback, list_collections,
+    list_config_library, list_musics_by_file_path, list_playlists,
+    load_audio_style_training_musics, load_liked_playlist_playback_track_sources,
     load_playlist_playback_track_sources, load_random_playlist_playback_track_sources,
     load_spectrum_music_context, music_occurrence_id, playlist_playback_owner_attempt_order,
     project_music_loudness_identity, push_extra, remove_exclude, remove_extra,
@@ -1376,6 +1377,142 @@ fn stale_tail_trim_plan_is_absorbed_by_current_shorter_end() {
             canonical_music_id_for_source(&original.url, original.start_ms, first_trim_end)
         );
         assert_eq!(after_stale_plan.musics[0].loudness_profile, None);
+
+        reset_db();
+    });
+}
+
+#[test]
+fn tail_trim_absorbs_existing_target_occurrence_without_unique_index_conflict() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+        bootstrap_collection_write_schema().await;
+
+        let mut collection =
+            grouped_collection("https://example.com/music-tail-trim-existing-target");
+        let mut shorter = collection.musics[0].clone();
+        shorter.alias = "Track Renamed In Spectrum".to_string();
+        shorter.end_ms = 132_750;
+        shorter.canonical_music_id =
+            canonical_music_id_for_source(&shorter.url, shorter.start_ms, shorter.end_ms);
+        shorter.occurrence_id = music_occurrence_id(
+            &shorter.group.url,
+            &shorter.url,
+            shorter.start_ms,
+            shorter.end_ms,
+        );
+        shorter.liked = true;
+        shorter.loudness_profile = LoudnessProfile::from_integrated_lufs(-17.5);
+        collection.musics.push(shorter);
+
+        let saved = upsert_collection(&collection)
+            .await
+            .expect("collection should save duplicate range identities before tail trim");
+        let original = saved
+            .musics
+            .iter()
+            .find(|music| music.end_ms == 180_000)
+            .expect("longer music should exist before trim")
+            .clone();
+        let expected_occurrence_id = music_occurrence_id(
+            &original.group.url,
+            &original.url,
+            original.start_ms,
+            132_750,
+        );
+        let playlist = PlayList {
+            name: "Tail Trim Existing Target Extra".to_string(),
+            collections: vec![],
+            groups: vec![],
+            extra: vec![original.clone()],
+            created_at: AutoFill::pending(),
+        };
+        upsert_playlist(&playlist, None)
+            .await
+            .expect("playlist extra should save before tail trim");
+        add_exclude(original.clone())
+            .await
+            .expect("longer music exclude should save before tail trim");
+
+        let trimmed = trim_collection_music_ends_by_identity(
+            &saved.url,
+            &[MusicEndTrim {
+                url: original.url.clone(),
+                start_ms: original.start_ms,
+                end_ms: original.end_ms,
+                next_end_ms: 132_750,
+            }],
+        )
+        .await
+        .expect("tail trim should absorb the existing shorter occurrence")
+        .expect("collection should still exist");
+        let config = get_playlist_config_by_name(&playlist.name)
+            .await
+            .expect("playlist config should reload after absorbed tail trim")
+            .expect("playlist should still exist after absorbed tail trim");
+
+        let matching = trimmed
+            .musics
+            .iter()
+            .filter(|music| {
+                music.url == original.url
+                    && music.start_ms == original.start_ms
+                    && music.end_ms == 132_750
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(matching.len(), 1);
+        assert_eq!(matching[0].occurrence_id, expected_occurrence_id);
+        assert_eq!(matching[0].alias, "Track Renamed In Spectrum");
+        assert!(matching[0].liked);
+        assert_eq!(
+            matching[0].loudness_profile,
+            LoudnessProfile::from_integrated_lufs(-17.5)
+        );
+        assert!(
+            trimmed
+                .musics
+                .iter()
+                .all(|music| music.end_ms != original.end_ms)
+        );
+        assert_eq!(config.extra.len(), 1);
+        assert_eq!(config.extra[0].occurrence_id, expected_occurrence_id);
+        assert_eq!(config.extra[0].end_ms, 132_750);
+        assert_ne!(config.extra[0].occurrence_id, original.occurrence_id);
+
+        let selection = get_playlist_playback_selection_by_name(&playlist.name)
+            .await
+            .expect("playback selection should load after absorbed tail trim")
+            .expect("playback selection should exist");
+        let sources = load_playlist_playback_track_sources(&selection, 1)
+            .await
+            .expect("playback extra source should load after absorbed tail trim");
+        assert!(sources.is_empty());
+        let library = list_config_library()
+            .await
+            .expect("config library should load after absorbed tail trim");
+        assert_eq!(library.excludes.len(), 1);
+        assert_eq!(
+            library.excludes[0].music.occurrence_id,
+            expected_occurrence_id
+        );
+        assert_eq!(library.excludes[0].music.end_ms, 132_750);
+        assert!(
+            is_music_identity_excluded_for_playback(&original.url, original.start_ms, 132_750)
+                .await
+                .expect("trimmed identity exclude should be readable")
+        );
+        assert!(
+            !is_music_identity_excluded_for_playback(
+                &original.url,
+                original.start_ms,
+                original.end_ms
+            )
+            .await
+            .expect("stale identity exclude should not survive absorption")
+        );
 
         reset_db();
     });
