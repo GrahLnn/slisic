@@ -86,6 +86,8 @@ const AUDIO_STYLE_COMPLETED_SNAPSHOT_FALLBACK_LIMIT: usize = 2;
 #[cfg(not(test))]
 const AUDIO_STYLE_INPUT_CHANGE_DEBOUNCE_MS: u64 = 500;
 #[cfg(not(test))]
+const AUDIO_STYLE_COALESCED_RERUN_QUIET_MS: u64 = 30_000;
+#[cfg(not(test))]
 const AUDIO_STYLE_TRAINING_BASE_WORKERS: usize = 6;
 #[cfg(test)]
 const AUDIO_STYLE_TRAINING_BASE_WORKERS: usize = 1;
@@ -294,6 +296,11 @@ struct AudioStyleModelUpdateFailure {
     message: String,
 }
 
+enum AudioStyleModelRefreshOutcome {
+    Unchanged { indexed_tracks: usize },
+    Updated(AudioStyleModelSnapshot),
+}
+
 impl AudioStyleModelUpdateFailure {
     fn into_message(self) -> String {
         self.message
@@ -475,6 +482,8 @@ struct AudioStyleRecommendationRuntime {
 struct AudioStyleTrainingState {
     running: bool,
     rerun_requested: bool,
+    rerun_request_count: u64,
+    rerun_reason: Option<&'static str>,
     debounce_pending: bool,
 }
 
@@ -492,13 +501,19 @@ impl AudioStyleRecommendationRuntime {
             Ok(mut training) => {
                 if training.running {
                     training.rerun_requested = true;
+                    training.rerun_request_count = training.rerun_request_count.saturating_add(1);
+                    training.rerun_reason = Some(reason);
                     log::info!(
                         target: AUDIO_STYLE_LOG_TARGET,
-                        "audio_style_training_request_coalesced reason={reason} running=true rerun_requested=true"
+                        "audio_style_training_request_coalesced reason={reason} running=true rerun_requested=true pending_rerun_requests={}",
+                        training.rerun_request_count
                     );
                     false
                 } else {
                     training.running = true;
+                    training.rerun_requested = false;
+                    training.rerun_request_count = 0;
+                    training.rerun_reason = None;
                     log::info!(
                         target: AUDIO_STYLE_LOG_TARGET,
                         "audio_style_training_request_accepted reason={reason}"
@@ -549,14 +564,18 @@ impl AudioStyleRecommendationRuntime {
                 );
             }
 
-            let should_continue = match self.training.lock() {
+            let rerun = match self.training.lock() {
                 Ok(mut training) => {
                     if training.rerun_requested {
+                        let pending_requests = training.rerun_request_count;
+                        let next_reason = training.rerun_reason.unwrap_or("coalesced_update");
                         training.rerun_requested = false;
-                        true
+                        training.rerun_request_count = 0;
+                        training.rerun_reason = None;
+                        Some((next_reason, pending_requests))
                     } else {
                         training.running = false;
-                        false
+                        None
                     }
                 }
                 Err(_) => {
@@ -564,22 +583,26 @@ impl AudioStyleRecommendationRuntime {
                         target: AUDIO_STYLE_LOG_TARGET,
                         "audio_style_training_state_error run_id={run_id} reason={reason} error=\"lock_poisoned\""
                     );
-                    false
+                    None
                 }
             };
 
-            if !should_continue {
+            let Some((next_reason, pending_requests)) = rerun else {
                 log::info!(
                     target: AUDIO_STYLE_LOG_TARGET,
                     "audio_style_training_idle run_id={run_id} reason={reason}"
                 );
                 return;
-            }
+            };
             log::info!(
                 target: AUDIO_STYLE_LOG_TARGET,
-                "audio_style_training_rerun run_id={run_id} previous_reason={reason} next_reason=coalesced_update"
+                "audio_style_training_rerun_coalescing run_id={run_id} previous_reason={reason} next_reason={next_reason} pending_requests={pending_requests} quiet_ms={AUDIO_STYLE_COALESCED_RERUN_QUIET_MS}"
             );
-            reason = "coalesced_update";
+            tokio::time::sleep(std::time::Duration::from_millis(
+                AUDIO_STYLE_COALESCED_RERUN_QUIET_MS,
+            ))
+            .await;
+            reason = next_reason;
         }
     }
 
@@ -638,7 +661,7 @@ impl AudioStyleRecommendationRuntime {
         let previous_snapshot = self.stable_snapshot();
         let generation_runtime = Arc::clone(self);
         let build_started = Instant::now();
-        let final_snapshot = tauri::async_runtime::spawn_blocking(move || {
+        let refresh_outcome = tauri::async_runtime::spawn_blocking(move || {
             AudioStyleModelSnapshot::refresh_from_indexed_tracks(
                 previous_snapshot.as_deref(),
                 &cache,
@@ -654,6 +677,17 @@ impl AudioStyleRecommendationRuntime {
         .await
         .context("audio style model update task panicked")?
         .map_err(|error| anyhow!(error.into_message()))?;
+        let final_snapshot = match refresh_outcome {
+            AudioStyleModelRefreshOutcome::Unchanged { indexed_tracks } => {
+                log::info!(
+                    target: AUDIO_STYLE_LOG_TARGET,
+                    "audio_style_training_snapshot_skipped reason={reason} indexed_tracks={indexed_tracks} elapsed_ms={} reason_detail=\"inputs_unchanged\"",
+                    build_started.elapsed().as_millis()
+                );
+                return Ok(());
+            }
+            AudioStyleModelRefreshOutcome::Updated(snapshot) => snapshot,
+        };
         log::info!(
             target: AUDIO_STYLE_LOG_TARGET,
             "audio_style_training_snapshot_built reason={reason} generation={} elapsed_ms={}",
@@ -2585,6 +2619,31 @@ fn audio_style_loudness_profiles_for_embeddings(
     profiles
 }
 
+fn audio_style_model_inputs_match_snapshot(
+    previous: &AudioStyleModelState,
+    indexed_tracks: &[AudioStyleIndexedTrack],
+) -> bool {
+    let mut seen = HashSet::with_capacity(indexed_tracks.len());
+    for indexed in indexed_tracks {
+        let key = PlaybackTrackKey::from_track(&indexed.track);
+        if !seen.insert(key.clone()) {
+            continue;
+        }
+        if !previous.embeddings.contains_key(&key) || !previous.indexed_tracks.contains_key(&key) {
+            return false;
+        }
+        let next_profile = indexed
+            .track
+            .loudness_profile
+            .filter(|profile| profile.is_valid());
+        if previous.loudness_profiles.get(&key).copied() != next_profile {
+            return false;
+        }
+    }
+
+    previous.indexed_tracks.len() == seen.len()
+}
+
 impl AudioStyleModelState {
     fn refresh_from_with_progress(
         previous: Option<&Self>,
@@ -4248,7 +4307,7 @@ impl AudioStyleModelSnapshot {
                 track,
             })
             .collect();
-        Self::refresh_from_indexed_tracks(previous, cache, indexed_tracks, || generation)
+        Self::refresh_from_indexed_tracks_updated(previous, cache, indexed_tracks, || generation)
     }
 
     fn refresh_from_indexed_tracks(
@@ -4256,13 +4315,41 @@ impl AudioStyleModelSnapshot {
         cache: &AudioStyleEmbeddingCache,
         indexed_tracks: Vec<AudioStyleIndexedTrack>,
         mut next_generation: impl FnMut() -> u64,
-    ) -> Result<Self, AudioStyleModelUpdateFailure> {
+    ) -> Result<AudioStyleModelRefreshOutcome, AudioStyleModelUpdateFailure> {
+        if let Some(previous) = previous
+            && audio_style_model_inputs_match_snapshot(previous.state.as_ref(), &indexed_tracks)
+        {
+            return Ok(AudioStyleModelRefreshOutcome::Unchanged {
+                indexed_tracks: indexed_tracks.len(),
+            });
+        }
+
         let state = AudioStyleModelState::refresh_from_with_progress(
             previous.map(|snapshot| snapshot.state.as_ref()),
             cache,
             indexed_tracks,
         )?;
-        Ok(Self::from_state(next_generation(), Arc::new(state)))
+        Ok(AudioStyleModelRefreshOutcome::Updated(Self::from_state(
+            next_generation(),
+            Arc::new(state),
+        )))
+    }
+
+    #[cfg(test)]
+    fn refresh_from_indexed_tracks_updated(
+        previous: Option<&Self>,
+        cache: &AudioStyleEmbeddingCache,
+        indexed_tracks: Vec<AudioStyleIndexedTrack>,
+        next_generation: impl FnMut() -> u64,
+    ) -> Result<Self, AudioStyleModelUpdateFailure> {
+        match Self::refresh_from_indexed_tracks(previous, cache, indexed_tracks, next_generation)? {
+            AudioStyleModelRefreshOutcome::Updated(snapshot) => Ok(snapshot),
+            AudioStyleModelRefreshOutcome::Unchanged { .. } => {
+                Ok(previous
+                    .expect("unchanged audio style refresh requires a previous snapshot")
+                    .clone())
+            }
+        }
     }
 
     fn from_state(generation: u64, state: Arc<AudioStyleModelState>) -> Self {
@@ -4371,7 +4458,7 @@ impl AudioStyleModelSnapshot {
                 track,
             })
             .collect();
-        Self::refresh_from_indexed_tracks(previous, cache, indexed_tracks, || generation)
+        Self::refresh_from_indexed_tracks_updated(previous, cache, indexed_tracks, || generation)
             .map_err(|error| error.into_message())
     }
 

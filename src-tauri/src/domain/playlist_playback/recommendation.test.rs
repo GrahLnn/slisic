@@ -1232,6 +1232,74 @@ fn audio_style_model_refresh_reuses_cached_embeddings_without_progressive_traini
 }
 
 #[test]
+fn audio_style_model_refresh_keeps_previous_snapshot_when_inputs_are_unchanged() {
+    let root = temp_cache_root("refresh_unchanged");
+    std::fs::create_dir_all(&root).expect("cache test root should be created");
+    let cache = AudioStyleEmbeddingCache::new(PathBuf::from("missing-ffmpeg"), root.clone())
+        .expect("cache should be created without ffmpeg");
+    let mut current = track("current");
+    let mut other = track("other");
+    current.file_path = root.join("current.m4a");
+    other.file_path = root.join("other.m4a");
+    std::fs::write(&current.file_path, b"current").expect("current test audio should exist");
+    std::fs::write(&other.file_path, b"other").expect("other test audio should exist");
+
+    let previous = AudioStyleModelSnapshot::from_test_indexed_embeddings(
+        7,
+        [
+            (current.clone(), embedding(2), "album".to_string()),
+            (other.clone(), embedding(3), "album".to_string()),
+        ],
+    );
+
+    let refreshed = AudioStyleModelSnapshot::refresh_from_indexed_tracks_for_test(
+        8,
+        Some(&previous),
+        &cache,
+        vec![current.clone(), other.clone()],
+    )
+    .expect("unchanged refresh should keep the previous snapshot");
+
+    assert_eq!(refreshed.generation(), 7);
+    assert!(refreshed.recommender().has_embedding_for(&current));
+    assert!(refreshed.recommender().has_embedding_for(&other));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn audio_style_model_refresh_updates_when_loudness_profile_changes() {
+    let root = temp_cache_root("refresh_loudness_changed");
+    std::fs::create_dir_all(&root).expect("cache test root should be created");
+    let cache = AudioStyleEmbeddingCache::new(PathBuf::from("missing-ffmpeg"), root.clone())
+        .expect("cache should be created without ffmpeg");
+    let mut current = track("current");
+    current.file_path = root.join("current.m4a");
+    current.loudness_profile = LoudnessProfile::from_integrated_lufs(-18.0);
+    std::fs::write(&current.file_path, b"current").expect("current test audio should exist");
+
+    let previous = AudioStyleModelSnapshot::from_test_indexed_embeddings(
+        7,
+        [(current.clone(), embedding(2), "album".to_string())],
+    );
+    let mut changed = current.clone();
+    changed.loudness_profile = LoudnessProfile::from_integrated_lufs(-12.0);
+
+    let refreshed = AudioStyleModelSnapshot::refresh_from_indexed_tracks_for_test(
+        8,
+        Some(&previous),
+        &cache,
+        vec![changed.clone()],
+    )
+    .expect("loudness changes should publish a new snapshot");
+
+    assert_eq!(refreshed.generation(), 8);
+    assert!(refreshed.recommender().has_embedding_for(&changed));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn audio_style_model_refresh_uses_cache_evidence_without_previous_snapshot() {
     let root = temp_cache_root("refresh_cache_no_previous");
     std::fs::create_dir_all(&root).expect("cache test root should be created");
