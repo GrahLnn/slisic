@@ -11,9 +11,10 @@ use super::service::{
     accept_collection_download_for_test, accept_collection_download_with_root_shell_for_test,
     apply_completed_audio_duration_evidence, attach_root_shell_to_task,
     discard_materialized_planned_leaves, handle_finished_leaf_download,
-    is_retryable_leaf_download_error, leaf_download_parallelism, leaf_pipeline_has_work,
-    leaf_pipeline_next_stage, prepare_task_enqueue, probe_download_root_title_with_client,
-    resolve_pasted_download_url, resolve_residual_temp_downloaded_file, resume_download_task,
+    is_non_retryable_leaf_access_error_message, is_retryable_leaf_download_error,
+    leaf_download_parallelism, leaf_pipeline_has_work, leaf_pipeline_next_stage,
+    prepare_task_enqueue, probe_download_root_title_with_client, resolve_pasted_download_url,
+    resolve_residual_temp_downloaded_file, resume_download_task,
     should_interrupt_unresumable_active_task_after_restart,
     should_recover_download_task_after_restart, should_resume_download_task_after_restart,
     try_claim_enqueue_url,
@@ -47,7 +48,7 @@ use crate::domain::playlists::repo::{
 };
 use anyhow::{Result, anyhow};
 use appdb::Id;
-use appdb::connection::{InitDbOptions, reinit_db_with_options, reset_db};
+use appdb::connection::{reinit_db, reset_db};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -186,7 +187,6 @@ fn leaf_download_retry_policy_does_not_retry_structural_failures() {
 fn leaf_download_retry_policy_does_not_retry_private_or_auth_required_videos() {
     let errors = [
         "yt-dlp command failed: ERROR: [youtube] bZBdVE0B4qc: Private video. Sign in if you've been granted access to this video. Use --cookies-from-browser or --cookies for the authentication.",
-        "yt-dlp command failed: ERROR: [youtube] abc: Sign in to confirm your age",
         "yt-dlp download exited with status exit code: 1: members-only content",
         "yt-dlp download exited with status exit code: 1: Video unavailable",
     ];
@@ -198,6 +198,62 @@ fn leaf_download_retry_policy_does_not_retry_private_or_auth_required_videos() {
         assert_eq!(
             LeafDownloadRetryPolicy::default().cooldown_after_failure(1, "leaf-a", &error),
             None
+        );
+    }
+}
+
+#[test]
+fn leaf_download_retry_policy_keeps_temporary_auth_or_bot_challenges_retryable() {
+    let errors = [
+        "yt-dlp command failed: ERROR: [youtube] abc: Sign in to confirm you're not a bot. Use --cookies-from-browser or --cookies for the authentication.",
+        "yt-dlp command failed: ERROR: [youtube] abc: Sign in to confirm your age",
+        "yt-dlp command failed: ERROR: [youtube] abc: Use --cookies-from-browser or --cookies for the authentication.",
+    ];
+
+    for message in errors {
+        let error = anyhow!(message);
+
+        assert!(
+            is_retryable_leaf_download_error(&error),
+            "{message}"
+        );
+        assert!(
+            LeafDownloadRetryPolicy::default()
+                .cooldown_after_failure(1, "leaf-a", &error)
+                .is_some(),
+            "{message}"
+        );
+    }
+}
+
+#[test]
+fn leaf_prepare_access_failures_are_terminal_discards() {
+    let errors = [
+        "yt-dlp command failed: ERROR: [youtube] bZBdVE0B4qc: Private video. Sign in if you've been granted access to this video. Use --cookies-from-browser or --cookies for the authentication.",
+        "yt-dlp command failed: ERROR: [youtube] abc: members-only content",
+        "yt-dlp command failed: ERROR: [youtube] abc: Video unavailable",
+    ];
+
+    for message in errors {
+        assert!(
+            is_non_retryable_leaf_access_error_message(message),
+            "{message}"
+        );
+    }
+}
+
+#[test]
+fn leaf_prepare_auth_or_bot_challenges_are_not_terminal_discards() {
+    let errors = [
+        "yt-dlp command failed: ERROR: [youtube] abc: Sign in to confirm you're not a bot. Use --cookies-from-browser or --cookies for the authentication.",
+        "yt-dlp command failed: ERROR: [youtube] abc: Sign in to confirm your age",
+        "yt-dlp command failed: ERROR: [youtube] abc: Use --cookies-from-browser or --cookies for the authentication.",
+    ];
+
+    for message in errors {
+        assert!(
+            !is_non_retryable_leaf_access_error_message(message),
+            "{message}"
         );
     }
 }
@@ -560,6 +616,109 @@ fn completed_leaf_download_duration_evidence_overrides_probe_metadata() {
 
         assert_eq!(collection.musics.len(), 1);
         assert_eq!(collection.musics[0].end_ms, 257_499);
+
+        reset_db();
+        let _ = std::fs::remove_dir_all(save_root);
+    });
+}
+
+#[test]
+fn single_leaf_download_completion_commits_music_and_manifest() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let save_root = temp_test_dir();
+        let collection_url = "https://www.youtube.com/watch?v=S2q7r4_UaYM";
+        let collection_folder =
+            "youtube/Islands of the Lost and Forgotten - Disc 1- Isles of Serenity and Amnesia";
+        let mut collection = Collection {
+            name: "Islands of the Lost and Forgotten - Disc 1: Isles of Serenity and Amnesia"
+                .to_string(),
+            url: collection_url.to_string(),
+            folder: collection_folder.to_string(),
+            musics: vec![],
+            last_updated: "2026-06-10T00:00:00+00:00".to_string(),
+            enable_updates: None,
+        };
+        upsert_collection(&collection)
+            .await
+            .expect("collection shell should save before leaf completion");
+
+        let mut task = DownloadTask::new("task-single-leaf-completion", collection_url, DownloadTrigger::Manual);
+        task.collection_url = Some(collection.url.clone());
+        task.collection_name = Some(collection.name.clone());
+        task.collection_folder = Some(collection.folder.clone());
+        task.source_kind = Some(CollectionSourceKind::Single);
+        task.status = DownloadTaskStatus::Downloading;
+        let mut leaf = DownloadLeaf::new("leaf-single", collection_url, 0);
+        leaf.status = DownloadLeafStatus::Downloading;
+        task.replace_leaf(leaf.clone());
+        let mut task = save_task(task).await.expect("task should save");
+
+        let target_dir = save_root.join(&collection.folder);
+        std::fs::create_dir_all(&target_dir).expect("target dir should be created");
+        let downloaded_path = target_dir.join(
+            "Islands of the Lost and Forgotten - Disc 1- Isles of Serenity and Amnesia.__slisic_tmp__leaf.m4a",
+        );
+        std::fs::write(&downloaded_path, b"audio").expect("temp file should exist");
+        let probe = LeafProbe {
+            title: "Islands of the Lost and Forgotten - Disc 1: Isles of Serenity and Amnesia"
+                .to_string(),
+            webpage_url: collection_url.to_string(),
+            extractor_key: Some("Youtube".to_string()),
+            album: None,
+            duration_ms: Some(5_733_000),
+            duration_seconds: Some(5_733),
+            chapters: vec![],
+        };
+        let owner = collection_group(&collection.name, collection_url, collection_folder);
+
+        handle_finished_leaf_download(
+            &mut task,
+            &mut collection,
+            CollectionSourceKind::Single,
+            &save_root,
+            Ok(CompletedLeafDownload {
+                leaf,
+                probe: probe.clone(),
+                music_probe: probe,
+                group: Some(owner),
+                downloaded: DownloadedLeaf {
+                    absolute_path: downloaded_path.clone(),
+                    duration_ms: Some(5_733_000),
+                },
+                progress: DownloadProgress::default(),
+                retry_failures: 0,
+            }),
+        )
+        .await
+        .expect("single downloaded leaf should complete");
+
+        let stable_file = target_dir
+            .join("Islands of the Lost and Forgotten - Disc 1- Isles of Serenity and Amnesia.m4a");
+        assert!(!downloaded_path.exists());
+        assert!(stable_file.is_file());
+        assert_eq!(task.completed_leaves, 1);
+        assert!(task.leafs.is_empty());
+        assert_eq!(collection.musics.len(), 1);
+        assert_eq!(collection.musics[0].url, collection_url);
+        assert_eq!(
+            collection.musics[0].path.as_deref(),
+            Some("Islands of the Lost and Forgotten - Disc 1- Isles of Serenity and Amnesia.m4a")
+        );
+
+        let saved = crate::domain::collection_import::get_collection_by_url(collection_url)
+            .await
+            .expect("collection lookup should succeed")
+            .expect("collection should remain addressable after leaf completion");
+        assert_eq!(saved.musics.len(), 1);
+        assert_eq!(saved.musics[0].url, collection_url);
+        assert!(
+            target_dir.join(".slisic.collection.toml").is_file(),
+            "download completion must leave raw manifest evidence beside the audio file"
+        );
 
         reset_db();
         let _ = std::fs::remove_dir_all(save_root);
@@ -1361,14 +1520,9 @@ fn acquire_db_test_lock() -> std::sync::MutexGuard<'static, ()> {
 }
 
 async fn ensure_db() {
-    reinit_db_with_options(
-        temp_test_dir(),
-        InitDbOptions::default()
-            .versioned(false)
-            .changefeed_gc_interval(None),
-    )
-    .await
-    .expect("download service database should initialize");
+    reinit_db(temp_test_dir())
+        .await
+        .expect("download service database should initialize");
 }
 
 #[test]

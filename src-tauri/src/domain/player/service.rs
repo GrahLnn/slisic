@@ -26,15 +26,13 @@ use crate::domain::audio_tail_trim;
 use crate::domain::loudness_evidence::{self, LoudnessEvidenceRequest};
 use crate::domain::playlists::model::LoudnessProfile;
 #[cfg(not(test))]
-use crate::utils::binaries::{ManagedBinary, ensure_managed_binary};
+use crate::utils::binaries::{ManagedBinary, acquire_managed_binary_usage, ensure_managed_binary};
 #[cfg(not(test))]
 use anyhow::{Context, Result, anyhow, bail};
 #[cfg(not(test))]
 use ffplayr::Playback;
 use ffplayr::{PlaybackNormalization, PlaybackRequest, PlaybackTimeRange};
 use std::path::Path;
-#[cfg(not(test))]
-use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(not(test))]
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
@@ -57,11 +55,12 @@ pub(crate) const BACKEND_PLAYBACK_TARGET_LUFS: f32 = -18.0;
 const PLAYBACK_LOUDNESS_SHORT_TERM_REFERENCE_LUFS: f32 = -18.0;
 const PLAYBACK_LOUDNESS_SHORT_TERM_CORRECTION_SLOPE: f32 = -0.5;
 const PLAYBACK_LOUDNESS_SHORT_TERM_CORRECTION_LIMIT_DB: f32 = 2.0;
+const PLAYBACK_LOUDNESS_BODY_P50_WEIGHT: f32 = 0.65;
+const PLAYBACK_LOUDNESS_BODY_P80_WEIGHT: f32 = 0.25;
+const PLAYBACK_LOUDNESS_BODY_P95_WEIGHT: f32 = 0.10;
 const PLAYBACK_LOUDNESS_PRESENCE_CORRECTION_SLOPE: f32 = -0.3;
 const PLAYBACK_LOUDNESS_PRESENCE_CORRECTION_LIMIT_DB: f32 = 1.0;
-const PLAYBACK_LOUDNESS_LRA_REFERENCE: f32 = 7.0;
-const PLAYBACK_LOUDNESS_LRA_CORRECTION_SLOPE: f32 = -0.08;
-const PLAYBACK_LOUDNESS_LRA_CORRECTION_LIMIT_DB: f32 = 1.0;
+const PLAYBACK_LOUDNESS_LRA_CORRECTION_SLOPE: f32 = 0.0;
 const PLAYBACK_LOUDNESS_MODEL_CORRECTION_LIMIT_DB: f32 = 2.0;
 const PLAYBACK_LOUDNESS_TOTAL_CORRECTION_LIMIT_DB: f32 = 3.0;
 
@@ -101,7 +100,6 @@ pub struct PlayerRuntime {
     continuation_mode: RwLock<PlaybackContinuationMode>,
     playback_run_generation: AtomicU64,
     spectrum_playback_scope_generation: AtomicU64,
-    active_binary_tasks: AtomicUsize,
 }
 
 #[cfg(not(test))]
@@ -171,28 +169,6 @@ pub(crate) struct SpectrumPlaybackScope {
 }
 
 #[cfg(not(test))]
-struct ActiveBinaryTaskGuard {
-    runtime: Arc<PlayerRuntime>,
-}
-
-#[cfg(not(test))]
-impl ActiveBinaryTaskGuard {
-    fn new(runtime: Arc<PlayerRuntime>) -> Self {
-        runtime.active_binary_tasks.fetch_add(1, Ordering::SeqCst);
-        Self { runtime }
-    }
-}
-
-#[cfg(not(test))]
-impl Drop for ActiveBinaryTaskGuard {
-    fn drop(&mut self) {
-        self.runtime
-            .active_binary_tasks
-            .fetch_sub(1, Ordering::SeqCst);
-    }
-}
-
-#[cfg(not(test))]
 #[derive(Clone)]
 pub(crate) struct PlaybackSessionHandle {
     pub(crate) playlist_name: String,
@@ -241,7 +217,6 @@ pub fn initialize_runtime(app: AppHandle) {
             continuation_mode: RwLock::new(PlaybackContinuationMode::Random),
             playback_run_generation: AtomicU64::new(0),
             spectrum_playback_scope_generation: AtomicU64::new(0),
-            active_binary_tasks: AtomicUsize::new(0),
         })
     });
 }
@@ -363,15 +338,6 @@ fn trace_range(range: Option<ActivePlaybackRange>) -> String {
 }
 
 #[cfg(not(test))]
-pub(crate) fn has_active_player_binary_tasks() -> bool {
-    let Some(runtime) = PLAYER_RUNTIME.get() else {
-        return false;
-    };
-
-    runtime.active_binary_tasks.load(Ordering::SeqCst) > 0
-}
-
-#[cfg(not(test))]
 pub(crate) async fn play_tracks_from_initial_track_for_request_with_queue_mode(
     request: &PlaybackStartRequestHandle,
     playlist_name: String,
@@ -437,7 +403,7 @@ async fn play_tracks_with_initial_track(
         return Err(PlaybackStartRequestSuperseded.into());
     }
 
-    let active_binary_task = ActiveBinaryTaskGuard::new(Arc::clone(runtime));
+    let active_binary_task = acquire_managed_binary_usage(ManagedBinary::Ffmpeg, "player");
     let playback = runtime.playback()?;
     if !runtime.is_playback_start_request_current(&start_request) {
         emit_player_trace(
@@ -723,7 +689,7 @@ pub async fn play_track_in_current_session(
         position_ms,
         pause_after_start,
     )?;
-    let active_binary_task = ActiveBinaryTaskGuard::new(Arc::clone(runtime));
+    let active_binary_task = acquire_managed_binary_usage(ManagedBinary::Ffmpeg, "player");
     let playback = runtime.playback()?;
     if !runtime.is_spectrum_playback_scope_active(scope)? {
         emit_player_trace(
@@ -1272,8 +1238,7 @@ pub async fn analyze_track_waveform(
     start: Option<u32>,
     end: Option<u32>,
 ) -> Result<TrackWaveform> {
-    let runtime = runtime()?;
-    let active_binary_task = ActiveBinaryTaskGuard::new(Arc::clone(runtime));
+    let active_binary_task = acquire_managed_binary_usage(ManagedBinary::Ffmpeg, "player_waveform");
     let ffmpeg_path =
         ensure_managed_binary(app, ManagedBinary::Ffmpeg).map_err(|error| anyhow!(error))?;
     tauri::async_runtime::spawn_blocking(move || {
@@ -1292,8 +1257,7 @@ pub async fn prepare_track_waveform(
     start: Option<u32>,
     end: Option<u32>,
 ) -> Result<TrackWaveformSummary> {
-    let runtime = runtime()?;
-    let active_binary_task = ActiveBinaryTaskGuard::new(Arc::clone(runtime));
+    let active_binary_task = acquire_managed_binary_usage(ManagedBinary::Ffmpeg, "player_waveform");
     let ffmpeg_path =
         ensure_managed_binary(app, ManagedBinary::Ffmpeg).map_err(|error| anyhow!(error))?;
     let cache_root = waveform_cache_root(app)?;
@@ -1317,8 +1281,7 @@ pub async fn get_track_waveform_tile(
     tile_start_px: u32,
     tile_width: u32,
 ) -> Result<TrackWaveformTile> {
-    let runtime = runtime()?;
-    let active_binary_task = ActiveBinaryTaskGuard::new(Arc::clone(runtime));
+    let active_binary_task = acquire_managed_binary_usage(ManagedBinary::Ffmpeg, "player_waveform");
     let ffmpeg_path =
         ensure_managed_binary(app, ManagedBinary::Ffmpeg).map_err(|error| anyhow!(error))?;
     let cache_root = waveform_cache_root(app)?;
@@ -2692,8 +2655,10 @@ pub(crate) fn playback_request_for_track_range(
     track: &PlaybackTrack,
     range: ActivePlaybackRange,
 ) -> PlaybackRequest {
-    let mut request =
-        playback_request_for_path_position(&track.file_path, resolve_playback_request_position(range));
+    let mut request = playback_request_for_path_position(
+        &track.file_path,
+        resolve_playback_request_position(range),
+    );
     if let Some(normalization) =
         playback_normalization_for_track_loudness_profile(track.loudness_profile.as_ref())
     {
@@ -2728,18 +2693,16 @@ pub(crate) fn playback_loudness_plan_for_profile(
     }
 
     let base_gain_db = BACKEND_PLAYBACK_TARGET_LUFS - profile.integrated_lufs;
-    let short_term_correction_db = profile
-        .short_lufs_p95
-        .map(|short_lufs_p95| {
-            let short_after_base = short_lufs_p95 + base_gain_db;
-            ((short_after_base - PLAYBACK_LOUDNESS_SHORT_TERM_REFERENCE_LUFS)
+    let short_term_correction_db =
+        playback_short_term_body_loudness(profile).map_or(0.0, |body_lufs| {
+            let body_after_base = body_lufs + base_gain_db;
+            ((body_after_base - PLAYBACK_LOUDNESS_SHORT_TERM_REFERENCE_LUFS)
                 * PLAYBACK_LOUDNESS_SHORT_TERM_CORRECTION_SLOPE)
                 .clamp(
                     -PLAYBACK_LOUDNESS_SHORT_TERM_CORRECTION_LIMIT_DB,
                     PLAYBACK_LOUDNESS_SHORT_TERM_CORRECTION_LIMIT_DB,
                 )
-        })
-        .unwrap_or(0.0);
+        });
     let presence_correction_db = profile
         .presence_db
         .map(|presence| {
@@ -2751,13 +2714,7 @@ pub(crate) fn playback_loudness_plan_for_profile(
         .unwrap_or(0.0);
     let lra_correction_db = profile
         .lra
-        .map(|lra| {
-            ((lra - PLAYBACK_LOUDNESS_LRA_REFERENCE) * PLAYBACK_LOUDNESS_LRA_CORRECTION_SLOPE)
-                .clamp(
-                    -PLAYBACK_LOUDNESS_LRA_CORRECTION_LIMIT_DB,
-                    PLAYBACK_LOUDNESS_LRA_CORRECTION_LIMIT_DB,
-                )
-        })
+        .map(|_| PLAYBACK_LOUDNESS_LRA_CORRECTION_SLOPE)
         .unwrap_or(0.0);
     let model_correction_db = profile
         .model_adjustment_db
@@ -2804,6 +2761,22 @@ pub(crate) fn playback_loudness_plan_for_profile(
             model_correction_db,
         ),
     })
+}
+
+fn playback_short_term_body_loudness(profile: &LoudnessProfile) -> Option<f32> {
+    match (
+        profile.short_lufs_p50,
+        profile.short_lufs_p80,
+        profile.short_lufs_p95,
+    ) {
+        (Some(p50), Some(p80), Some(p95)) => Some(
+            p50 * PLAYBACK_LOUDNESS_BODY_P50_WEIGHT
+                + p80 * PLAYBACK_LOUDNESS_BODY_P80_WEIGHT
+                + p95 * PLAYBACK_LOUDNESS_BODY_P95_WEIGHT,
+        ),
+        (_, _, Some(p95)) => Some(p95),
+        _ => None,
+    }
 }
 
 fn playback_loudness_plan_reason(
@@ -2866,6 +2839,18 @@ pub(crate) enum PlaybackRangeCompletion {
     Repeat(ActivePlaybackRange),
 }
 
+pub(crate) fn resolve_plain_playback_status_completion(
+    status: &ffplayr::AudioStatus,
+    active_range: ActivePlaybackRange,
+) -> (PlaybackRangeCompletion, u32) {
+    let current_position_ms =
+        resolve_playback_absolute_position_ms(status, Some(active_range));
+    (
+        resolve_playback_range_completion(current_position_ms, active_range, None),
+        current_position_ms,
+    )
+}
+
 pub(crate) fn resolve_playback_range_completion(
     current_position_ms: u32,
     active_range: ActivePlaybackRange,
@@ -2882,6 +2867,35 @@ pub(crate) fn resolve_playback_range_completion(
     }
 
     PlaybackRangeCompletion::Continue
+}
+
+pub(crate) fn resolve_playback_range_deadline_ms(
+    current_position_ms: u32,
+    active_range: ActivePlaybackRange,
+    spectrum_loop_range: Option<ActivePlaybackRange>,
+    playing: bool,
+    paused: bool,
+) -> Option<u64> {
+    if !playing || paused {
+        return None;
+    }
+
+    let boundary_ms = spectrum_loop_range
+        .map(|range| range.end_ms)
+        .unwrap_or(active_range.end_ms);
+    Some(u64::from(boundary_ms.saturating_sub(current_position_ms)))
+}
+
+pub(crate) fn resolve_playback_clock_position_ms(
+    anchor_position_ms: u32,
+    elapsed_ms: u32,
+    running: bool,
+) -> u32 {
+    if running {
+        anchor_position_ms.saturating_add(elapsed_ms)
+    } else {
+        anchor_position_ms
+    }
 }
 
 pub(crate) fn resolve_spectrum_loop_playback_range(
@@ -3030,6 +3044,11 @@ pub(crate) fn should_resume_playback_seek_cancel(
 }
 
 #[cfg(not(test))]
+fn playback_track_path_matches(track: Option<&PlaybackTrack>, current_path: &Path) -> bool {
+    track.is_some_and(|track| track.file_path == current_path)
+}
+
+#[cfg(not(test))]
 async fn wait_until_track_finishes(
     runtime: &PlayerRuntime,
     playback: &Playback,
@@ -3038,6 +3057,11 @@ async fn wait_until_track_finishes(
 ) -> Result<()> {
     let mut last_completion_trace: Option<(u32, ActivePlaybackRange, Option<ActivePlaybackRange>)> =
         None;
+    let mut elapsed_range: Option<ActivePlaybackRange> = None;
+    let mut range_started_at = Instant::now();
+    let mut clock_anchor_position_ms: Option<u32> = None;
+    let mut clock_anchor_at = Instant::now();
+    let mut clock_running = true;
     loop {
         if runtime.playback_run_generation.load(Ordering::SeqCst) != generation {
             emit_player_trace(
@@ -3049,16 +3073,126 @@ async fn wait_until_track_finishes(
             return Ok(());
         }
 
-        let status = playback
-            .status()
-            .await
-            .map_err(|error| anyhow!("failed to read playback status: {error}"))?;
+        let active_track = runtime.active_request_track_snapshot()?;
+        let active_range = runtime.active_playback_range_snapshot()?;
+        let active_scope = runtime.spectrum_playback_scope_snapshot()?;
+        let loop_signal = runtime.spectrum_playback_loop_signal_snapshot()?;
+        let spectrum_loop_range = active_track.as_ref().and_then(|track| {
+            resolve_spectrum_loop_playback_range(active_scope, track, loop_signal)
+        });
+        if spectrum_loop_range.is_none()
+            && !playback_track_path_matches(active_track.as_ref(), current_path)
+        {
+            emit_player_trace(
+                "player-range-watch-ended",
+                PlayerTrace::new(&runtime.app)
+                    .track(active_track.as_ref())
+                    .status("active_track_changed")
+                    .details(vec![
+                        trace_detail("generation", generation),
+                        trace_detail("expectedPath", current_path.to_string_lossy()),
+                    ]),
+            );
+            return Ok(());
+        }
+        let Some(active_range) = active_range else {
+            emit_player_trace(
+                "player-range-watch-ended",
+                PlayerTrace::new(&runtime.app)
+                    .track(active_track.as_ref())
+                    .status("active_range_cleared")
+                    .details(vec![trace_detail("generation", generation)]),
+            );
+            return Ok(());
+        };
+
+        if elapsed_range != Some(active_range) {
+            elapsed_range = Some(active_range);
+            range_started_at = Instant::now();
+            clock_anchor_position_ms = Some(active_range.start_ms);
+            clock_anchor_at = Instant::now();
+            clock_running = true;
+        }
+        let wall_elapsed_ms = range_started_at
+            .elapsed()
+            .as_millis()
+            .min(u128::from(u32::MAX)) as u32;
+        let clock_elapsed_ms = clock_anchor_at
+            .elapsed()
+            .as_millis()
+            .min(u128::from(u32::MAX)) as u32;
+        let clock_position_ms = resolve_playback_clock_position_ms(
+            clock_anchor_position_ms.unwrap_or(active_range.start_ms),
+            clock_elapsed_ms,
+            clock_running,
+        );
+        let status_read_started = Instant::now();
+        let deadline_ms = resolve_playback_range_deadline_ms(
+            clock_position_ms,
+            active_range,
+            spectrum_loop_range,
+            clock_running,
+            false,
+        );
+        let status_result = match deadline_ms {
+            Some(0) => {
+                emit_player_trace(
+                    "player-range-completion",
+                    PlayerTrace::new(&runtime.app)
+                        .track(active_track.as_ref())
+                        .status("finish_deadline")
+                        .details(vec![
+                            trace_detail("generation", generation),
+                            trace_detail("currentPositionMs", clock_position_ms),
+                            trace_detail("elapsedMs", wall_elapsed_ms),
+                            trace_detail("activeRange", trace_range(Some(active_range))),
+                            trace_detail("spectrumLoopRange", trace_range(spectrum_loop_range)),
+                            trace_detail("activeScopeId", trace_scope_id(active_scope)),
+                        ]),
+                );
+                return Ok(());
+            }
+            Some(deadline_ms) => {
+                tokio::select! {
+                    result = playback.status() => result,
+                    _ = tokio::time::sleep(Duration::from_millis(deadline_ms)) => {
+                        emit_player_trace(
+                            "player-range-completion",
+                            PlayerTrace::new(&runtime.app)
+                                .track(active_track.as_ref())
+                                .status("finish_deadline")
+                                .details(vec![
+                                    trace_detail("generation", generation),
+                                    trace_detail("currentPositionMs", active_range.end_ms),
+                                    trace_detail("elapsedMs", wall_elapsed_ms.saturating_add(deadline_ms.min(u64::from(u32::MAX)) as u32)),
+                                    trace_detail("statusReadMs", status_read_started.elapsed().as_millis().min(u128::from(u32::MAX)) as u32),
+                                    trace_detail("activeRange", trace_range(Some(active_range))),
+                                    trace_detail("spectrumLoopRange", trace_range(spectrum_loop_range)),
+                                    trace_detail("activeScopeId", trace_scope_id(active_scope)),
+                                ]),
+                        );
+                        return Ok(());
+                    }
+                }
+            }
+            None => playback.status().await,
+        };
+        let status =
+            status_result.map_err(|error| anyhow!("failed to read playback status: {error}"))?;
+        let status_read_ms = status_read_started
+            .elapsed()
+            .as_millis()
+            .min(u128::from(u32::MAX)) as u32;
         let Some(active_path) = status.path.as_deref() else {
             emit_player_trace(
                 "player-range-watch-ended",
                 PlayerTrace::new(&runtime.app)
+                    .track(active_track.as_ref())
                     .status("no_status_path")
-                    .details(vec![trace_detail("generation", generation)]),
+                    .details(vec![
+                        trace_detail("generation", generation),
+                        trace_detail("statusReadMs", status_read_ms),
+                    ]),
             );
             return Ok(());
         };
@@ -3067,99 +3201,112 @@ async fn wait_until_track_finishes(
             emit_player_trace(
                 "player-range-watch-ended",
                 PlayerTrace::new(&runtime.app)
+                    .track(active_track.as_ref())
                     .status("path_changed")
                     .details(vec![
                         trace_detail("generation", generation),
                         trace_detail("statusPath", active_path),
                         trace_detail("expectedPath", current_path.to_string_lossy()),
+                        trace_detail("statusReadMs", status_read_ms),
                     ]),
             );
             return Ok(());
         }
-
-        let active_track = runtime.active_request_track_snapshot()?;
-        let active_range = runtime.active_playback_range_snapshot()?;
-        let active_scope = runtime.spectrum_playback_scope_snapshot()?;
-        let loop_signal = runtime.spectrum_playback_loop_signal_snapshot()?;
-        let spectrum_loop_range = active_track.as_ref().and_then(|track| {
-            resolve_spectrum_loop_playback_range(active_scope, track, loop_signal)
-        });
-
-        if let Some(active_range) = active_range {
+        let (completion, current_position_ms) = if spectrum_loop_range.is_some() {
             let current_position_ms =
                 resolve_playback_absolute_position_ms(&status, Some(active_range));
-
-            match resolve_playback_range_completion(
+            (
+                resolve_playback_range_completion(
+                    current_position_ms,
+                    active_range,
+                    spectrum_loop_range,
+                ),
                 current_position_ms,
-                active_range,
-                spectrum_loop_range,
-            ) {
-                PlaybackRangeCompletion::Continue => {
-                    let trace_key = (
-                        current_position_ms / 5_000,
-                        active_range,
-                        spectrum_loop_range,
-                    );
-                    if last_completion_trace != Some(trace_key) {
-                        last_completion_trace = Some(trace_key);
-                        emit_player_trace(
-                            "player-range-completion",
-                            PlayerTrace::new(&runtime.app)
-                                .track(active_track.as_ref())
-                                .status("continue")
-                                .details(vec![
-                                    trace_detail("generation", generation),
-                                    trace_detail("currentPositionMs", current_position_ms),
-                                    trace_detail("activeRange", trace_range(Some(active_range))),
-                                    trace_detail(
-                                        "spectrumLoopRange",
-                                        trace_range(spectrum_loop_range),
-                                    ),
-                                    trace_detail("activeScopeId", trace_scope_id(active_scope)),
-                                ]),
-                        );
-                    }
-                }
-                PlaybackRangeCompletion::Finish => {
+            )
+        } else {
+            resolve_plain_playback_status_completion(&status, active_range)
+        };
+        clock_anchor_position_ms = Some(current_position_ms);
+        clock_anchor_at = Instant::now();
+        clock_running = status.playing && !status.paused;
+
+        match completion {
+            PlaybackRangeCompletion::Continue => {
+                let trace_key = (
+                    current_position_ms / 5_000,
+                    active_range,
+                    spectrum_loop_range,
+                );
+                if last_completion_trace != Some(trace_key) {
+                    last_completion_trace = Some(trace_key);
                     emit_player_trace(
                         "player-range-completion",
                         PlayerTrace::new(&runtime.app)
                             .track(active_track.as_ref())
-                            .status("finish")
+                            .status("continue")
                             .details(vec![
                                 trace_detail("generation", generation),
                                 trace_detail("currentPositionMs", current_position_ms),
+                                trace_detail("elapsedMs", wall_elapsed_ms),
+                                trace_detail("statusReadMs", status_read_ms),
+                                trace_detail("statusPositionMs", status.position_ms),
+                                trace_detail("statusPlaying", status.playing),
+                                trace_detail("statusPaused", status.paused),
                                 trace_detail("activeRange", trace_range(Some(active_range))),
                                 trace_detail("spectrumLoopRange", trace_range(spectrum_loop_range)),
                                 trace_detail("activeScopeId", trace_scope_id(active_scope)),
                             ]),
                     );
-                    return Ok(());
                 }
-                PlaybackRangeCompletion::Repeat(loop_range) => {
-                    emit_player_trace(
-                        "player-range-completion",
-                        PlayerTrace::new(&runtime.app)
-                            .track(active_track.as_ref())
-                            .status("repeat")
-                            .details(vec![
-                                trace_detail("generation", generation),
-                                trace_detail("currentPositionMs", current_position_ms),
-                                trace_detail("activeRange", trace_range(Some(active_range))),
-                                trace_detail("spectrumLoopRange", trace_range(spectrum_loop_range)),
-                                trace_detail("repeatRange", trace_range(Some(loop_range))),
-                                trace_detail("activeScopeId", trace_scope_id(active_scope)),
-                            ]),
-                    );
-                    let request =
-                        playback_request_for_path_position(current_path, loop_range.start_ms);
-                    playback
-                        .play_request(request)
-                        .await
-                        .map_err(|error| anyhow!("failed to repeat spectrum loop: {error}"))?;
-                    runtime.set_active_playback_range(Some(loop_range))?;
-                    continue;
-                }
+            }
+            PlaybackRangeCompletion::Finish => {
+                emit_player_trace(
+                    "player-range-completion",
+                    PlayerTrace::new(&runtime.app)
+                        .track(active_track.as_ref())
+                        .status("finish")
+                        .details(vec![
+                            trace_detail("generation", generation),
+                            trace_detail("currentPositionMs", current_position_ms),
+                            trace_detail("elapsedMs", wall_elapsed_ms),
+                            trace_detail("statusReadMs", status_read_ms),
+                            trace_detail("statusPositionMs", status.position_ms),
+                            trace_detail("statusPlaying", status.playing),
+                            trace_detail("statusPaused", status.paused),
+                            trace_detail("activeRange", trace_range(Some(active_range))),
+                            trace_detail("spectrumLoopRange", trace_range(spectrum_loop_range)),
+                            trace_detail("activeScopeId", trace_scope_id(active_scope)),
+                        ]),
+                );
+                return Ok(());
+            }
+            PlaybackRangeCompletion::Repeat(loop_range) => {
+                emit_player_trace(
+                    "player-range-completion",
+                    PlayerTrace::new(&runtime.app)
+                        .track(active_track.as_ref())
+                        .status("repeat")
+                        .details(vec![
+                            trace_detail("generation", generation),
+                            trace_detail("currentPositionMs", current_position_ms),
+                            trace_detail("elapsedMs", wall_elapsed_ms),
+                            trace_detail("statusReadMs", status_read_ms),
+                            trace_detail("statusPositionMs", status.position_ms),
+                            trace_detail("statusPlaying", status.playing),
+                            trace_detail("statusPaused", status.paused),
+                            trace_detail("activeRange", trace_range(Some(active_range))),
+                            trace_detail("spectrumLoopRange", trace_range(spectrum_loop_range)),
+                            trace_detail("repeatRange", trace_range(Some(loop_range))),
+                            trace_detail("activeScopeId", trace_scope_id(active_scope)),
+                        ]),
+                );
+                let request = playback_request_for_path_position(current_path, loop_range.start_ms);
+                playback
+                    .play_request(request)
+                    .await
+                    .map_err(|error| anyhow!("failed to repeat spectrum loop: {error}"))?;
+                runtime.set_active_playback_range(Some(loop_range))?;
+                continue;
             }
         }
 

@@ -509,6 +509,32 @@ fn keep_current_queue_without_audio_style_model_uses_playlist_scoped_random_next
 }
 
 #[test]
+fn model_unavailable_queue_is_still_commit_ready_with_random_next_track() {
+    let current = playback_track("current");
+    let random_candidate = playback_track("random_candidate");
+    let readiness = PlaylistQueueRecommendationReadiness::model_unavailable();
+
+    let queue = propose_playlist_playback_queue_without_audio_style_model(
+        PlaylistPlaybackRecommendationRequest {
+            playlist_name: "Focus".to_string(),
+            current_track: current,
+            candidates: vec![random_candidate],
+            recently_played_tracks: vec![],
+        },
+        PlaylistPlaybackRecommendationMode::KeepCurrent,
+    );
+
+    assert_eq!(
+        readiness.diagnostic_status(),
+        "playlist_playback_model_unavailable",
+    );
+    assert!(should_commit_playlist_queue_refresh(
+        PlaylistPlaybackRecommendationMode::KeepCurrent,
+        &queue,
+    ));
+}
+
+#[test]
 fn exclude_current_queue_without_audio_style_model_keeps_explicit_random_recovery() {
     let current = playback_track("current");
     let fallback = playback_track("fallback");

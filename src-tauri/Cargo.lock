@@ -270,9 +270,9 @@ checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
 name = "appdb"
-version = "0.2.21"
+version = "0.2.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb0da2c510126cc6a589528cbd60e4bdcb8dd2537dc5df3c9f27862f8c88a2f3"
+checksum = "d03e221c422338246f2a33e6e6614827b73841e3b1b6ccf4a8cf4d7fc93cb063"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -285,17 +285,19 @@ dependencies = [
  "serde_json",
  "specta",
  "surrealdb",
+ "surrealdb-core",
  "surrealdb-types",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-util",
  "windows 0.62.2",
 ]
 
 [[package]]
 name = "appdb-macros"
-version = "0.2.21"
+version = "0.2.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d988b13c65a8e5bb30f0379693a581edfef7f278518d38a1a744cc267646ce5b"
+checksum = "3a8a743be591f2e0b1c85f59e58120e7c8a51dfb0e2388cbe6d097915b77629c"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -8556,6 +8558,7 @@ dependencies = [
  "heck 0.5.0",
  "http",
  "http-range",
+ "image",
  "jni 0.21.1",
  "libc",
  "log",

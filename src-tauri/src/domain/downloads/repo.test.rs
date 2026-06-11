@@ -5,7 +5,7 @@ use crate::domain::downloads::model::{
     DownloadLeaf, DownloadLeafStatus, DownloadTask, DownloadTaskStatus, DownloadTrigger,
 };
 use crate::domain::playlists::PLAYLIST_DB_TEST_LOCK;
-use appdb::connection::{InitDbOptions, reinit_db_with_options, reset_db};
+use appdb::connection::{reinit_db, reset_db};
 use std::path::PathBuf;
 use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -38,14 +38,9 @@ fn acquire_db_test_lock() -> std::sync::MutexGuard<'static, ()> {
 }
 
 async fn ensure_db() {
-    reinit_db_with_options(
-        test_db_path(),
-        InitDbOptions::default()
-            .versioned(false)
-            .changefeed_gc_interval(None),
-    )
-    .await
-    .expect("download repo database should initialize");
+    reinit_db(test_db_path())
+        .await
+        .expect("download repo database should initialize");
 }
 
 fn sample_task(id: &str, url: &str, status: DownloadTaskStatus) -> DownloadTask {

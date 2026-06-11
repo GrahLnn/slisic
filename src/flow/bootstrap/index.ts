@@ -148,19 +148,19 @@ class AppBootstrapStore {
     this.syncWarmTarget(name);
   }
 
-  resetDevDatabaseAndRestart() {
+  resetDevDatabaseAndExit() {
     void crab
       .resetDevDatabaseAndRestart()
       .then((result) => {
         result.match({
           Ok: () => {},
           Err: (error) => {
-            console.error("Failed to reset dev database and restart", error);
+            console.error("Failed to reset dev database and exit", error);
           },
         });
       })
       .catch((error) => {
-        console.error("Failed to reset dev database and restart", error);
+        console.error("Failed to reset dev database and exit", error);
       });
   }
 

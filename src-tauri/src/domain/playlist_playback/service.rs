@@ -920,6 +920,65 @@ fn consume_playlist_initial_prepared_source(
 }
 
 #[cfg(not(test))]
+// Next-track repair may reuse already prepared first-slot cargo, but it must
+// stay outside click/startup paths: first-slot owns immediate start, this
+// function owns only background session cargo liveness.
+fn seed_playlist_session_next_from_prepared_pool(
+    app: &AppHandle,
+    playlist_name: &str,
+    session: &player_service::PlaybackSessionHandle,
+    anchor: &PlaybackTrack,
+) -> Result<bool> {
+    let Some((snapshot, next)) = read_prepared_next_cargo_from_first_slot_pool(playlist_name, anchor)?
+    else {
+        emit_playlist_playback_trace(
+            "playlist-playback-prepared-next-miss",
+            PlaylistPlaybackTrace::new(app)
+                .playlist_name(playlist_name)
+                .track(anchor)
+                .status("pool_empty"),
+        );
+        return Ok(false);
+    };
+
+    let tracks = create_short_playback_queue(anchor.clone(), vec![next.clone()]);
+    let updated = player_service::update_session_tracks_for_anchor(session, anchor, tracks.clone())?;
+    if updated {
+        consume_playlist_initial_prepared_source(&Some(snapshot));
+    }
+    emit_playlist_playback_trace(
+        "playlist-playback-prepared-next-session-update",
+        PlaylistPlaybackTrace::new(app)
+            .playlist_name(playlist_name)
+            .track(&next)
+            .queue_count(tracks.len())
+            .status(if updated { "updated" } else { "stale_session" }),
+    );
+    Ok(updated)
+}
+
+#[cfg(not(test))]
+fn read_prepared_next_cargo_from_first_slot_pool(
+    playlist_name: &str,
+    anchor: &PlaybackTrack,
+) -> Result<Option<(playable_index::PlaylistPlayableIndexSnapshot, PlaybackTrack)>> {
+    for _ in 0..3 {
+        let Some(snapshot) = playable_index::read_playlist_source(playlist_name)? else {
+            return Ok(None);
+        };
+        let Some(track) = snapshot.track.clone() else {
+            consume_playlist_initial_prepared_source(&Some(snapshot));
+            continue;
+        };
+        if !are_playlist_playback_tracks_equal(&track, anchor) && track.file_path.is_file() {
+            return Ok(Some((snapshot, track)));
+        }
+        consume_playlist_initial_prepared_source(&Some(snapshot));
+    }
+    Ok(None)
+}
+
+#[cfg(not(test))]
 fn ensure_playlist_playback_request_current(
     request: &player_service::PlaybackStartRequestHandle,
 ) -> Result<()> {
@@ -1213,8 +1272,33 @@ async fn fill_playlist_track_queue(
             &active_track,
             queue_has_next,
         ) {
+            emit_playlist_playback_trace(
+                "playlist-playback-queue-fill-refresh-start",
+                PlaylistPlaybackTrace::new(&app)
+                    .playlist_name(&playlist_name)
+                    .track(&active_track)
+                    .queue_count(player_service::current_session_tracks_snapshot()?.len())
+                    .status(if queue_has_next {
+                        "anchor_changed"
+                    } else {
+                        "missing_next"
+                    }),
+            );
             let _guard = queue_refresh_gate.lock().await;
             if current_session_queue_contains_next(&session, &active_track)? {
+                current_anchor = Some(active_track);
+                tokio::time::sleep(std::time::Duration::from_millis(
+                    PLAYLIST_PLAYBACK_QUEUE_REFRESH_INTERVAL_MS,
+                ))
+                .await;
+                continue;
+            }
+            if seed_playlist_session_next_from_prepared_pool(
+                &app,
+                &playlist_name,
+                &session,
+                &active_track,
+            )? {
                 current_anchor = Some(active_track);
                 tokio::time::sleep(std::time::Duration::from_millis(
                     PLAYLIST_PLAYBACK_QUEUE_REFRESH_INTERVAL_MS,
@@ -1231,6 +1315,18 @@ async fn fill_playlist_track_queue(
                 true,
             )
             .await?;
+            emit_playlist_playback_trace(
+                "playlist-playback-queue-fill-refresh-finished",
+                PlaylistPlaybackTrace::new(&app)
+                    .playlist_name(&playlist_name)
+                    .track(&active_track)
+                    .queue_count(player_service::current_session_tracks_snapshot()?.len())
+                    .status(if current_session_queue_contains_next(&session, &active_track)? {
+                        "next_ready"
+                    } else {
+                        "next_missing"
+                    }),
+            );
             current_anchor = Some(active_track);
         }
 
@@ -1381,16 +1477,25 @@ async fn refresh_playlist_track_queue_for_anchor(
         return Ok(false);
     }
 
-    let tracks = propose_playlist_playback_queue_with_mode(
-        PlaylistPlaybackRecommendationRequest {
-            playlist_name: playlist_name.to_string(),
-            current_track: current_track.clone(),
-            candidates: source.resolution.tracks,
-            recently_played_tracks: recently_played_tracks.to_vec(),
-        },
-        PlaylistPlaybackRecommendationMode::KeepCurrent,
-        should_log_selection,
-    );
+    let request = PlaylistPlaybackRecommendationRequest {
+        playlist_name: playlist_name.to_string(),
+        current_track: current_track.clone(),
+        candidates: source.resolution.tracks,
+        recently_played_tracks: recently_played_tracks.to_vec(),
+    };
+    let tracks = if readiness.is_ready() {
+        propose_playlist_playback_queue_with_mode(
+            request,
+            PlaylistPlaybackRecommendationMode::KeepCurrent,
+            should_log_selection,
+        )
+    } else {
+        propose_unavailable_audio_style_playlist_playback_queue(
+            request,
+            PlaylistPlaybackRecommendationMode::KeepCurrent,
+            should_log_selection,
+        )
+    };
     if !should_commit_playlist_queue_refresh(
         PlaylistPlaybackRecommendationMode::KeepCurrent,
         &tracks,
@@ -2060,7 +2165,7 @@ fn log_playlist_playback_next_track_selection(
 
     log::info!(
         target: PLAYLIST_PLAYBACK_LOG_TARGET,
-        "next track selected source={source} requested_source={requested_source} mode={} model_generation={model_generation} probability={probability:.6} uniform_probability={uniform_probability:.6} similarity={similarity} best_similarity={best_similarity} local_rank_fraction={local_rank_fraction} draw={draw} candidates={candidate_count} anchor_embedded={anchor_embedded} embedded_candidates={embedded_candidate_count} valid_similarities={valid_similarity_count} selected_basin=\"{selected_basin}\" candidate_basin_top=\"{candidate_basin_top}\" reason={reason} playlist=\"{}\" title=\"{}\" integrated_lufs={}",
+        "next track proposed source={source} requested_source={requested_source} mode={} model_generation={model_generation} probability={probability:.6} uniform_probability={uniform_probability:.6} similarity={similarity} best_similarity={best_similarity} local_rank_fraction={local_rank_fraction} draw={draw} candidates={candidate_count} anchor_embedded={anchor_embedded} embedded_candidates={embedded_candidate_count} valid_similarities={valid_similarity_count} selected_basin=\"{selected_basin}\" candidate_basin_top=\"{candidate_basin_top}\" reason={reason} playlist=\"{}\" title=\"{}\" integrated_lufs={}",
         mode.as_str(),
         escape_log_value(&next_track.playlist_name),
         escape_log_value(&next_track.music_name),

@@ -21,6 +21,8 @@ use crate::domain::playlists::model::{
     Collection, CollectionGroupOwner, Group, Music, canonical_music_id_for_source,
 };
 use crate::domain::playlists::repo as collection_repo;
+#[cfg(not(test))]
+use crate::utils::binaries::{ManagedBinary, acquire_managed_binary_usage};
 use anyhow::{Context, Result, bail};
 use appdb::Id;
 use serde::{Deserialize, Serialize};
@@ -366,7 +368,17 @@ pub(crate) async fn persist_downloaded_leaf_music(
     group: Group,
 ) -> Result<()> {
     ensure_committable_download_file_name(file_name)?;
+    log::info!(
+        target: "downloads",
+        "downloaded_leaf_music_persist_started collection=\"{}\" source_kind={} url=\"{}\" relative_path=\"{}\" group=\"{}\"",
+        collection.url,
+        source_kind.as_str(),
+        probe.webpage_url,
+        file_name,
+        group.url
+    );
     let mut materialized = materialize_music_entries(probe, file_name, group);
+    let materialized_count = materialized.len();
     let _collection_write = collection_repo::acquire_collection_write_composition_lock().await;
     let mut current = collection_repo::get_collection_by_url(&collection.url)
         .await?
@@ -388,6 +400,16 @@ pub(crate) async fn persist_downloaded_leaf_music(
     current.last_updated = now_timestamp();
     let saved = collection_repo::upsert_collection(&current).await?;
     *collection = saved;
+    log::info!(
+        target: "downloads",
+        "downloaded_leaf_music_persist_finished collection=\"{}\" source_kind={} url=\"{}\" relative_path=\"{}\" materialized={} musics={}",
+        collection.url,
+        source_kind.as_str(),
+        probe.webpage_url,
+        file_name,
+        materialized_count,
+        collection.musics.len()
+    );
     Ok(())
 }
 
@@ -401,6 +423,8 @@ pub(crate) async fn import_local_collection_folder(
     save_root: &Path,
     ffmpeg_path: &Path,
 ) -> Result<Collection> {
+    #[cfg(not(test))]
+    let _usage = acquire_managed_binary_usage(ManagedBinary::Ffmpeg, "local_import");
     let collection_path = collection_path
         .canonicalize()
         .with_context(|| format!("failed to resolve {}", collection_path.display()))?;
@@ -2298,15 +2322,11 @@ pub(crate) fn restore_single_source_musics_from_task(
     let mut seen_urls = HashSet::new();
 
     for leaf in &task.leafs {
-        let Some(relative_path) = leaf.relative_path.as_ref() else {
+        let Some(relative_path) = recover_single_source_leaf_relative_path(collection, leaf, save_root)
+        else {
             continue;
         };
-        let relative_path = relative_path.trim();
-        if relative_path.is_empty() {
-            continue;
-        }
-
-        let absolute_path = save_root.join(&collection.folder).join(relative_path);
+        let absolute_path = save_root.join(&collection.folder).join(&relative_path);
         if !absolute_path.is_file() {
             continue;
         }
@@ -2329,7 +2349,7 @@ pub(crate) fn restore_single_source_musics_from_task(
             group: default_group.clone(),
             canonical_music_id: canonical_music_id_for_source(&leaf.url, 0, leaf_duration_ms(leaf)),
             url: leaf.url.clone(),
-            path: Some(relative_path.to_string()),
+            path: Some(relative_path),
             start_ms: 0,
             end_ms: leaf_duration_ms(leaf),
             liked: false,
@@ -2338,6 +2358,30 @@ pub(crate) fn restore_single_source_musics_from_task(
     }
 
     restored
+}
+
+fn recover_single_source_leaf_relative_path(
+    collection: &Collection,
+    leaf: &DownloadLeaf,
+    save_root: &Path,
+) -> Option<String> {
+    if let Some(relative_path) = leaf
+        .relative_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|relative_path| !relative_path.is_empty())
+    {
+        return Some(relative_path.to_string());
+    }
+
+    let title = leaf
+        .title
+        .as_deref()
+        .map(str::trim)
+        .filter(|title| !title.is_empty())?;
+    let file_name = format!("{}.m4a", sanitize_path_component(title));
+    let absolute_path = save_root.join(&collection.folder).join(&file_name);
+    absolute_path.is_file().then_some(file_name)
 }
 
 fn notify_audio_style_inputs_changed(_reason: &'static str) {

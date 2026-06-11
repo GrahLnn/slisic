@@ -53,7 +53,6 @@ import {
 } from "./spectrumEditTransaction";
 import { resolveConfigBackTitleSharePlan, resolveTitleShareToneFromDraft } from "./titleShare";
 import {
-  BootstrapLoadError,
   invoker,
   payloads,
   ss,
@@ -65,10 +64,6 @@ import { recordTrace } from "@/src/debug/trace";
 
 function toErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
-}
-
-function resolveSavePathFromLoadingError(error: unknown, fallback: string) {
-  return error instanceof BootstrapLoadError ? error.savePath : fallback;
 }
 
 function resetLifecycleAction(
@@ -1088,7 +1083,7 @@ export const machine = src.createMachine({
         src: invoker.loadCollections.src,
         onDone: {
           target: ss.mainx.State.ready,
-          actions: assign(({ event }) =>
+          actions: assign(({ context, event }) =>
             resetContextWith(
               {
                 shape: {
@@ -1119,7 +1114,7 @@ export const machine = src.createMachine({
             resetContextWith(
               {
                 shape: {
-                  savePath: resolveSavePathFromLoadingError(event.error, context.savePath),
+                  savePath: context.savePath,
                 },
                 pending: {
                   error: toErrorMessage(event.error),

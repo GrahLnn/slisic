@@ -118,6 +118,16 @@ type StablePlaylistTargetResolution =
       reason: "preview_cleared" | "superseded";
     };
 
+type PlaylistPlaybackStartEffectResult =
+  | {
+      kind: "closed";
+      reason: "preview_cleared" | "superseded";
+    }
+  | {
+      kind: "started";
+      value: Awaited<ReturnType<typeof invoker.playPlaylist.__src__>>;
+    };
+
 function formatStateValue(value: unknown) {
   return typeof value === "string" ? value : JSON.stringify(value);
 }
@@ -471,7 +481,7 @@ function startPlaylistPlaybackAfterStableTarget(args: {
   actionStartedAt: number;
   playlistName: string;
   requestId: number;
-}) {
+}): Promise<PlaylistPlaybackStartEffectResult> {
   const stableTarget = findStablePlaylistTarget(actor.getSnapshot(), args.playlistName);
   const playbackStart =
     stableTarget !== null
@@ -502,7 +512,10 @@ function startPlaylistPlaybackAfterStableTarget(args: {
               );
             }
 
-            return null;
+            return {
+              kind: "closed",
+              reason: target.reason,
+            } satisfies PlaylistPlaybackStartEffectResult;
           }
 
           return startPlaylistPlaybackFromAction({
@@ -512,7 +525,7 @@ function startPlaylistPlaybackAfterStableTarget(args: {
           });
         });
 
-  return playbackStart;
+  return Promise.resolve(playbackStart);
 }
 
 function isCurrentPlaylistPlaybackRequest(playlistName: string, requestId: number) {
@@ -530,7 +543,7 @@ async function startPlaylistPlaybackFromAction(args: {
   playlistName: string;
   requestId: number;
   trigger?: "user";
-}) {
+}): Promise<PlaylistPlaybackStartEffectResult> {
   const { playlistName, requestId } = args;
 
   if (!isCurrentPlaylistPlaybackRequest(playlistName, requestId)) {
@@ -540,7 +553,10 @@ async function startPlaylistPlaybackFromAction(args: {
       trigger: args.trigger ?? "user",
       elapsedMs: currentPerformanceNow() - args.actionStartedAt,
     });
-    return null;
+    return {
+      kind: "closed",
+      reason: "superseded",
+    } satisfies PlaylistPlaybackStartEffectResult;
   }
 
   recordTrace("playlist-play-action-backend-start", {
@@ -573,7 +589,10 @@ async function startPlaylistPlaybackFromAction(args: {
         session: null,
       }),
     );
-    return result;
+    return {
+      kind: "started",
+      value: result,
+    } satisfies PlaylistPlaybackStartEffectResult;
   }
 
   if (result.kind === "Stops") {
@@ -594,11 +613,17 @@ async function startPlaylistPlaybackFromAction(args: {
       status: result.session.status,
       trackCount: result.session.track_count,
     });
-    return result;
+    return {
+      kind: "started",
+      value: result,
+    } satisfies PlaylistPlaybackStartEffectResult;
   }
 
   send(playlistPlaybackAccepted.load({ playlistName, requestId, session: result.session }));
-  return result;
+  return {
+    kind: "started",
+    value: result,
+  } satisfies PlaylistPlaybackStartEffectResult;
 }
 
 async function applyPlaybackModeEffect(effect: PlaybackModeEffect) {
@@ -1033,12 +1058,14 @@ export const action = {
       playlistName,
       requestId,
     })
-      .then((session) => {
-        if (!session) {
-          recordTrace("playlist-play-action-finished-stale", {
+      .then((result) => {
+        if (result.kind !== "started") {
+          recordTrace("playlist-play-action-finished-without-backend-start", {
             playlistName,
             requestId,
             elapsedMs: currentPerformanceNow() - actionStartedAt,
+            effect: result.kind,
+            reason: result.reason,
           });
           return;
         }
@@ -1047,9 +1074,9 @@ export const action = {
           playlistName,
           requestId,
           elapsedMs: currentPerformanceNow() - actionStartedAt,
-          result: session.kind,
-          status: session.session.status,
-          trackCount: session.session.track_count,
+          result: result.value.kind,
+          status: result.value.session.status,
+          trackCount: result.value.session.track_count,
         });
       })
       .catch((error) => {

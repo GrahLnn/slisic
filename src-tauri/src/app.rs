@@ -1,5 +1,8 @@
 use crate::{domain, utils};
-use appdb::prelude::{InitDbOptions, init_db_with_options};
+use appdb::{
+    connection::reset_db,
+    prelude::{InitDbOptions, init_db_with_options},
+};
 use log::{Level, LevelFilter, Record};
 use std::fmt::Arguments;
 use tauri::Manager;
@@ -82,7 +85,6 @@ pub fn run() {
             domain::playlists::list_playlists,
             domain::playlists::claim_generated_playlist_name,
             domain::playlists::list_config_library,
-            domain::playlists::get_startup_bootstrap,
             domain::playlists::get_collection,
             domain::playlists::get_playlist,
             domain::playlists::get_playlist_config,
@@ -175,6 +177,15 @@ pub fn run() {
                 tauri::WindowEvent::CloseRequested { api, .. } => {
                     if utils::window::should_exit_on_window_close(&app, &label) {
                         api.prevent_close();
+                        log::info!(
+                            target: "app_startup",
+                            "data_runtime_shutdown_started reason=last_window_close"
+                        );
+                        reset_db();
+                        log::info!(
+                            target: "app_startup",
+                            "data_runtime_shutdown_finished reason=last_window_close"
+                        );
                         utils::window::begin_graceful_shutdown(&app, &label);
                     }
                 }
@@ -193,27 +204,23 @@ pub fn run() {
                     let local_data_dir = handle.path().app_local_data_dir()?;
                     std::fs::create_dir_all(&local_data_dir)?;
                     let db_path = local_data_dir.join(utils::core::APP_DB_FILE_NAME);
-                    println!("DB initialized on {}", db_path.display());
-                    let db_options = InitDbOptions::default()
-                        .versioned(false)
-                        .changefeed_gc_interval(None);
+                    log::info!(
+                        target: "app_startup",
+                        "database_initialization_started db_path=\"{}\"",
+                        db_path.display()
+                    );
+                    let db_options = InitDbOptions::local_app().changefeed_gc_interval(None);
                     init_db_with_options(db_path, db_options).await?;
 
                     utils::window::configure_existing_primary_windows(&handle);
                     domain::loudness_evidence::initialize_runtime(handle.clone());
                     domain::audio_tail_trim::initialize_runtime(handle.clone());
                     domain::downloads::service::initialize_runtime(handle.clone());
-                    domain::playlists::startup_bootstrap::initialize_runtime(handle.clone());
                     domain::playlist_playback::service::initialize_runtime(handle.clone());
                     domain::player::service::initialize_runtime(handle.clone());
                     utils::binaries::spawn_binary_maintenance(
                         handle.clone(),
-                        utils::binaries::BinaryMaintenanceActivity::new(
-                            domain::player::service::has_active_player_binary_tasks,
-                            domain::downloads::service::has_active_download_tasks,
-                            domain::loudness_evidence::has_active_loudness_binary_tasks,
-                            domain::audio_tail_trim::has_active_audio_tail_trim_binary_tasks,
-                        ),
+                        utils::binaries::BinaryMaintenanceActivity::new(),
                     );
                     Ok(())
                 })

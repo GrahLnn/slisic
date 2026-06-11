@@ -1,4 +1,6 @@
-use super::core::{dev_reset_local_data_artifact_paths, remove_optional_artifacts};
+use super::core::{
+    APP_DB_FILE_NAME, dev_reset_local_data_artifact_paths, remove_optional_artifacts,
+};
 
 #[test]
 fn dev_reset_local_data_artifacts_include_pending_tasks_and_first_slot_cache() {
@@ -39,6 +41,23 @@ fn remove_optional_artifacts_removes_files_and_directories_without_requiring_exi
 
     assert!(!file_path.exists());
     assert!(!dir_path.exists());
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn remove_optional_artifacts_removes_database_directory_itself() {
+    let root = unique_temp_path("dev-reset-db");
+    let db_path = root.join(APP_DB_FILE_NAME);
+    let storage_artifact_dir = db_path.join("storage-artifacts");
+    std::fs::create_dir_all(&storage_artifact_dir)
+        .expect("db storage artifact directory should be created");
+    std::fs::write(storage_artifact_dir.join("entry.bin"), b"storage")
+        .expect("db storage artifact file should be written");
+
+    remove_optional_artifacts(std::slice::from_ref(&db_path))
+        .expect("database reset artifact should be removable");
+
+    assert!(!db_path.exists());
     let _ = std::fs::remove_dir_all(root);
 }
 

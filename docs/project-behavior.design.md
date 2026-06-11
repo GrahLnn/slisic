@@ -1107,7 +1107,7 @@ planning. Ready projection is not a FirstSlot clock.
 
 Runtime initialization only registers the owner and schedules this lifecycle.
 Local cargo restore and startup validation/fill run in the background and must
-not delay window creation or app startup projection. A late cache restore is
+not delay window creation or data runtime readiness. A late cache restore is
 accepted only while the runtime is still a blank startup state; once any real
 refresh, invalidation, credential, or generation exists, cache cargo is skipped
 rather than replayed into an advanced lifecycle.
@@ -3284,7 +3284,7 @@ signals. It is independent from clicks, player boundaries, and UI rendering.
 Runtime initialization only schedules cached-evidence restore. Reading cached
 evidence, deserializing it, publishing a restored stable snapshot, and deciding
 whether to train are background lifecycle work and must not delay window
-creation or app startup projection.
+creation or data runtime readiness.
 
 ### Owned State
 

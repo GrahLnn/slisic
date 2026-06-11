@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
-use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
+use tauri::{AppHandle, Emitter, Manager, Theme, WebviewWindow};
 use tauri::{LogicalSize, PhysicalPosition, PhysicalSize, Position, Size};
 use tauri::{WebviewUrl, WebviewWindowBuilder};
 
@@ -689,7 +689,53 @@ pub struct CreateWindowOptions {
     height: Option<f64>,
 }
 
+const LIGHT_WINDOW_ICON_BYTES: &[u8] = include_bytes!("../../icons/app-icon-light.png");
+const DARK_WINDOW_ICON_BYTES: &[u8] = include_bytes!("../../icons/app-icon-dark.png");
+
+fn window_icon_for_theme(theme: Theme) -> tauri::Result<tauri::image::Image<'static>> {
+    let bytes = match theme {
+        Theme::Dark => DARK_WINDOW_ICON_BYTES,
+        Theme::Light => LIGHT_WINDOW_ICON_BYTES,
+        _ => LIGHT_WINDOW_ICON_BYTES,
+    };
+
+    tauri::image::Image::from_bytes(bytes)
+}
+
+fn apply_themed_window_icon(window: &WebviewWindow, theme: Theme) {
+    let icon = match window_icon_for_theme(theme) {
+        Ok(icon) => icon,
+        Err(error) => {
+            eprintln!(
+                "Failed to load themed window icon for {}: {error}",
+                window.label()
+            );
+            return;
+        }
+    };
+
+    if let Err(error) = window.set_icon(icon) {
+        eprintln!(
+            "Failed to apply themed window icon to {}: {error}",
+            window.label()
+        );
+    }
+}
+
+fn apply_current_window_icon(window: &WebviewWindow) {
+    let theme = window.theme().unwrap_or(Theme::Light);
+    apply_themed_window_icon(window, theme);
+}
+
 pub fn apply_window_setup(window: &WebviewWindow, is_main: bool) {
+    apply_current_window_icon(window);
+    let window_for_theme = window.clone();
+    window.on_window_event(move |event| {
+        if let tauri::WindowEvent::ThemeChanged(theme) = event {
+            apply_themed_window_icon(&window_for_theme, *theme);
+        }
+    });
+
     #[cfg(not(target_os = "macos"))]
     let _ = is_main;
     #[cfg(target_os = "windows")]

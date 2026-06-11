@@ -2,8 +2,9 @@ use super::playable_index::{
     PlayableIndexRefreshReason, PlaylistPlayableIndexSourceKind, cache_file_json_for_test,
     claim_global_refresh_for_test, claim_playlist_refresh_for_test,
     commit_global_snapshot_for_test, commit_playlist_snapshot_for_test, consume_playlist_source,
-    discard_playlist_source, initialize_runtime_for_test, mark_playlist_source_kind_for_test,
-    notify_playlist_renamed, publish_first_slot_loudness_evidence, read_playlist_source,
+    discard_playlist_source, first_slot_loudness_request_order_for_test,
+    initialize_runtime_for_test, mark_playlist_source_kind_for_test, notify_playlist_renamed,
+    publish_first_slot_loudness_evidence, read_playlist_source,
     refresh_playlist_now_for_reason_for_test, refresh_playlist_now_for_test,
     request_global_refresh_while_active_for_test, reset_for_test, restore_cache_file_json_for_test,
     should_skip_global_refresh_for_test, should_skip_playlist_refresh_for_test,
@@ -1106,6 +1107,39 @@ async fn playable_index_slot_vacancy_fill_refills_after_consumption() {
             .music
             .url,
         "https://example.com/watch?v=4"
+    );
+}
+
+#[tokio::test]
+async fn playable_index_first_slot_loudness_requests_follow_consumption_order() {
+    let _guard = setup_playable_index_test();
+    refresh_playlist_now_for_test(selection("Focus"), Some(source(3)))
+        .await
+        .expect("first test snapshot should commit");
+    refresh_playlist_now_for_reason_for_test(
+        selection("Focus"),
+        Some(source(4)),
+        PlayableIndexRefreshReason::SlotVacancy,
+    )
+    .await
+    .expect("second test snapshot should commit");
+    refresh_playlist_now_for_reason_for_test(
+        selection("Focus"),
+        Some(source(5)),
+        PlayableIndexRefreshReason::SlotVacancy,
+    )
+    .await
+    .expect("third test snapshot should commit");
+
+    assert_eq!(
+        first_slot_loudness_request_order_for_test("Focus")
+            .expect("first-slot request order should be readable"),
+        vec![
+            "https://example.com/watch?v=3".to_string(),
+            "https://example.com/watch?v=4".to_string(),
+            "https://example.com/watch?v=5".to_string(),
+        ],
+        "the first credential consumed by ready->play must be the first one queued for loudness"
     );
 }
 

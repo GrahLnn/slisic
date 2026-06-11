@@ -2,7 +2,6 @@ use super::model::{
     AddExcludeResult, Collection, ConfigLibraryView, Music, PlayList, PlayListConfigView,
     PlayListListView, PlayListWriteRequest, RemoveExcludeResult, SpectrumMusicContext,
 };
-use super::startup_bootstrap::PlaylistStartupBootstrapSnapshot;
 use crate::domain::player::service::{
     PlaybackTrackLikedUpdate, active_request_track_snapshot,
     request_current_session_track_identity_update, update_current_session_track_liked,
@@ -50,12 +49,6 @@ pub async fn list_config_library() -> Result<ConfigLibraryView, String> {
     super::repo::list_config_library()
         .await
         .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-#[specta::specta]
-pub async fn get_startup_bootstrap() -> PlaylistStartupBootstrapSnapshot {
-    super::startup_bootstrap::snapshot()
 }
 
 #[tauri::command]

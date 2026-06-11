@@ -1,15 +1,19 @@
 use super::binaries::{
     BinaryInstallState, BinaryMaintenanceActivity, GitHubLatestReleaseAsset,
-    GitHubReleaseAssetMatcher, ManagedBinary, RemoteIdentity, StagedBinary, activate_staged_binary,
-    binary_http_retry_delay, build_github_api_url, build_github_relay_url, needs_install_or_update,
-    parse_sha256, release_asset_matcher_matches, select_release_asset_name,
-    should_retry_binary_http_status, with_binary_kind_lock,
+    GitHubReleaseAssetMatcher, ManagedBinary, RemoteIdentity, StagedBinary,
+    acquire_managed_binary_usage, activate_managed_binary_if_idle, activate_staged_binary,
+    binary_http_retry_delay, build_github_api_url, build_github_relay_url,
+    managed_binary_usage_snapshot, needs_install_or_update, parse_sha256,
+    release_asset_matcher_matches, select_release_asset_name, should_retry_binary_http_status,
+    with_binary_kind_lock,
 };
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, LazyLock, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+static BINARY_USAGE_TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 fn temp_binary_test_dir(prefix: &str) -> PathBuf {
     let nanos = SystemTime::now()
@@ -265,38 +269,64 @@ fn binary_kind_lock_allows_different_binaries_to_progress_independently() {
 }
 
 #[test]
-fn binary_maintenance_activity_reports_busy_from_either_runtime() {
-    let active_player_binary_tasks = Arc::new(AtomicUsize::new(0));
-    let active_tasks = Arc::new(AtomicUsize::new(0));
-    let active_loudness_binary_tasks = Arc::new(AtomicUsize::new(0));
-    let active_audio_tail_trim_binary_tasks = Arc::new(AtomicUsize::new(0));
-    let player_binary_task_probe = Arc::clone(&active_player_binary_tasks);
-    let task_probe = Arc::clone(&active_tasks);
-    let loudness_binary_task_probe = Arc::clone(&active_loudness_binary_tasks);
-    let audio_tail_trim_binary_task_probe = Arc::clone(&active_audio_tail_trim_binary_tasks);
-    let activity = BinaryMaintenanceActivity::new(
-        move || player_binary_task_probe.load(Ordering::SeqCst) > 0,
-        move || task_probe.load(Ordering::SeqCst) > 0,
-        move || loudness_binary_task_probe.load(Ordering::SeqCst) > 0,
-        move || audio_tail_trim_binary_task_probe.load(Ordering::SeqCst) > 0,
+fn binary_maintenance_activity_reports_busy_by_binary_usage_kind() {
+    let _test_lock = BINARY_USAGE_TEST_LOCK.lock().expect("usage test lock");
+    let activity = BinaryMaintenanceActivity::new();
+
+    assert!(!activity.snapshot(ManagedBinary::Ffmpeg).is_busy());
+    assert!(!activity.snapshot(ManagedBinary::YtDlp).is_busy());
+
+    let player = acquire_managed_binary_usage(ManagedBinary::Ffmpeg, "test_player");
+    assert!(activity.snapshot(ManagedBinary::Ffmpeg).is_busy());
+    assert!(!activity.snapshot(ManagedBinary::YtDlp).is_busy());
+    assert_eq!(
+        managed_binary_usage_snapshot(ManagedBinary::Ffmpeg).owners[0].owner,
+        "test_player"
     );
 
-    assert!(!activity.is_busy());
+    let waveform = acquire_managed_binary_usage(ManagedBinary::Ffmpeg, "test_player");
+    assert_eq!(
+        managed_binary_usage_snapshot(ManagedBinary::Ffmpeg).owners[0].count,
+        2
+    );
 
-    active_player_binary_tasks.store(1, Ordering::SeqCst);
-    assert!(activity.is_busy());
+    drop(player);
+    assert_eq!(
+        managed_binary_usage_snapshot(ManagedBinary::Ffmpeg).owners[0].count,
+        1
+    );
 
-    active_player_binary_tasks.store(0, Ordering::SeqCst);
-    active_tasks.store(1, Ordering::SeqCst);
-    assert!(activity.is_busy());
+    let probe = acquire_managed_binary_usage(ManagedBinary::YtDlp, "test_downloads_probe");
+    assert!(activity.snapshot(ManagedBinary::Ffmpeg).is_busy());
+    assert!(activity.snapshot(ManagedBinary::YtDlp).is_busy());
 
-    active_tasks.store(0, Ordering::SeqCst);
-    active_loudness_binary_tasks.store(1, Ordering::SeqCst);
-    assert!(activity.is_busy());
+    drop(waveform);
+    assert!(!activity.snapshot(ManagedBinary::Ffmpeg).is_busy());
+    assert!(activity.snapshot(ManagedBinary::YtDlp).is_busy());
 
-    active_loudness_binary_tasks.store(0, Ordering::SeqCst);
-    active_audio_tail_trim_binary_tasks.store(1, Ordering::SeqCst);
-    assert!(activity.is_busy());
+    drop(probe);
+    assert!(!activity.snapshot(ManagedBinary::Ffmpeg).is_busy());
+    assert!(!activity.snapshot(ManagedBinary::YtDlp).is_busy());
+}
+
+#[test]
+fn activate_managed_binary_if_idle_runs_only_without_active_usage() {
+    let _test_lock = BINARY_USAGE_TEST_LOCK.lock().expect("usage test lock");
+    let _usage = acquire_managed_binary_usage(ManagedBinary::Ffmpeg, "test_activation_blocker");
+
+    let blocked: Option<&'static str> =
+        activate_managed_binary_if_idle(ManagedBinary::Ffmpeg, || {
+            Err("activation should not run while usage is active".to_string())
+        })
+        .expect("busy activation check should not fail");
+
+    assert!(blocked.is_none());
+    drop(_usage);
+
+    let activated = activate_managed_binary_if_idle(ManagedBinary::Ffmpeg, || Ok("activated"))
+        .expect("idle activation check should run work");
+
+    assert_eq!(activated, Some("activated"));
 }
 
 #[test]

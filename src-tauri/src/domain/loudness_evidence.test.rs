@@ -169,30 +169,32 @@ fn published_loudness_profile_survives_active_task_release_by_identity() {
 }
 
 #[test]
-fn loudness_queue_insert_index_preserves_first_slot_priority_without_reversing_pending_fifo() {
+fn loudness_queue_insert_index_prioritizes_playback_cargo_without_reversing_source_fifo() {
     assert_eq!(
         loudness_queue_insert_index(
             [
+                LoudnessEvidenceSource::DirectRequest,
                 LoudnessEvidenceSource::PendingStore,
                 LoudnessEvidenceSource::PendingStore,
             ],
-            2,
+            3,
             LoudnessEvidenceSource::PendingStore,
         ),
-        2,
+        3,
         "restored pending tasks should stay FIFO"
     );
     assert_eq!(
         loudness_queue_insert_index(
             [
+                LoudnessEvidenceSource::DirectRequest,
                 LoudnessEvidenceSource::PendingStore,
                 LoudnessEvidenceSource::PendingStore,
             ],
-            2,
+            3,
             LoudnessEvidenceSource::DirectRequest,
         ),
-        0,
-        "direct playback requests should outrank restored pending tasks"
+        1,
+        "direct playback requests should outrank restored pending tasks without reversing direct FIFO"
     );
     assert_eq!(
         loudness_queue_insert_index(
@@ -204,8 +206,8 @@ fn loudness_queue_insert_index_preserves_first_slot_priority_without_reversing_p
             3,
             LoudnessEvidenceSource::DownloadedLeaf,
         ),
-        1,
-        "downloaded leaf evidence should stay behind playback requests but ahead of restored pending tasks"
+        2,
+        "downloaded leaf evidence should stay behind playback requests without reversing downloaded FIFO"
     );
     assert_eq!(
         loudness_queue_insert_index(
@@ -216,21 +218,34 @@ fn loudness_queue_insert_index_preserves_first_slot_priority_without_reversing_p
             2,
             LoudnessEvidenceSource::FirstSlot,
         ),
-        0,
-        "prepared FirstSlot evidence should be measured before ordinary playback requests"
+        1,
+        "prepared FirstSlot evidence should stay behind current playback cargo"
     );
     assert_eq!(
         loudness_queue_insert_index(
             [
-                LoudnessEvidenceSource::FirstSlot,
                 LoudnessEvidenceSource::DirectRequest,
+                LoudnessEvidenceSource::FirstSlot,
                 LoudnessEvidenceSource::PendingStore,
             ],
             3,
             LoudnessEvidenceSource::DirectRequest,
         ),
         1,
-        "ordinary playback requests must not demote an already queued FirstSlot request"
+        "current playback cargo should keep FIFO within the direct playback lifecycle"
+    );
+    assert_eq!(
+        loudness_queue_insert_index(
+            [
+                LoudnessEvidenceSource::DirectRequest,
+                LoudnessEvidenceSource::FirstSlot,
+                LoudnessEvidenceSource::PendingStore,
+            ],
+            3,
+            LoudnessEvidenceSource::FirstSlot,
+        ),
+        2,
+        "prepared FirstSlot evidence should keep FIFO within the First slot lifecycle"
     );
 }
 

@@ -57,7 +57,7 @@ const CtrlButton = memo(function CtrlButtonComp({
 
 export const LeftControls = memo(function LeftControlsComponent() {
   const handleResetDevDatabase = () => {
-    bootstrapApp.resetDevDatabaseAndRestart();
+    bootstrapApp.resetDevDatabaseAndExit();
   };
 
   return (

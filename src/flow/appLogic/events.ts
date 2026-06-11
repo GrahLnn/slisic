@@ -26,7 +26,6 @@ import {
   type PlaybackContinuationMode,
   type PlaybackStatusPayload,
   type PlayListListView,
-  type PlaylistStartupBootstrap,
   type PlayPlaylistSession,
   type SpectrumMusicContext,
   type SpectrumMusicSourceContext,
@@ -52,7 +51,6 @@ import { createSpectrumMusicDrafts, type MusicDraftDelete } from "./musicTitle";
 const DEFAULT_SAVE_FOLDER_NAME = "slisic";
 
 interface BootstrapBackend {
-  getStartupBootstrap: typeof crab.getStartupBootstrap;
   getMetaInfo: typeof crab.getMetaInfo;
   checkList: typeof crab.checkList;
   listPlaylists: typeof crab.listPlaylists;
@@ -67,22 +65,17 @@ export interface BootstrapResult {
   savePath: string;
 }
 
-function bootstrapResultFromStartupSnapshot(snapshot: PlaylistStartupBootstrap): BootstrapResult {
+function emptyConfigLibrary(): ConfigLibraryView {
   return {
-    hasPlayList: snapshot.has_playlist,
-    playlists: snapshot.playlists,
-    collections: snapshot.collections,
-    configLibrary: snapshot.config_library,
-    savePath: snapshot.save_path,
+    collections: [],
+    groups: [],
+    collection_group_memberships: [],
+    excludes: [],
+    exclude_availability: {
+      fully_excluded_collection_urls: [],
+      fully_excluded_group_urls: [],
+    },
   };
-}
-
-function hasUsableStartupBootstrapSnapshot(snapshot: PlaylistStartupBootstrap) {
-  if (!snapshot.has_playlist) {
-    return false;
-  }
-
-  return snapshot.playlists.length > 0 || snapshot.config_library.collections.length > 0;
 }
 
 export interface PlayPlaylistInput {
@@ -202,6 +195,10 @@ export interface SpectrumMusicDraftBootstrapResult {
   source: SpectrumMusicSourceContext | null;
 }
 
+export async function resolveDefaultSavePath() {
+  return join(await documentDir(), DEFAULT_SAVE_FOLDER_NAME);
+}
+
 export class BootstrapLoadError extends Error {
   constructor(
     message: string,
@@ -221,10 +218,6 @@ async function resolveBootstrapSavePath(backend: Pick<BootstrapBackend, "getMeta
   });
 }
 
-export async function resolveDefaultSavePath() {
-  return join(await documentDir(), DEFAULT_SAVE_FOLDER_NAME);
-}
-
 export async function chooseSavePath(currentSavePath: string): Promise<string | null> {
   const defaultPath = currentSavePath || (await resolveDefaultSavePath());
   const selectedPath = await open({
@@ -239,14 +232,6 @@ export async function chooseSavePath(currentSavePath: string): Promise<string | 
 export async function loadCollectionsFromBackend(
   backend: BootstrapBackend = crab,
 ): Promise<BootstrapResult> {
-  const startupBootstrap = await backend.getStartupBootstrap();
-  if (
-    startupBootstrap.status === "Ready" &&
-    hasUsableStartupBootstrapSnapshot(startupBootstrap.value)
-  ) {
-    return bootstrapResultFromStartupSnapshot(startupBootstrap.value);
-  }
-
   const savePath = await resolveBootstrapSavePath(backend);
   const result = await backend.checkList();
   const hasPlayList = result.match({
@@ -261,16 +246,7 @@ export async function loadCollectionsFromBackend(
       hasPlayList: false,
       playlists: [],
       collections: [],
-      configLibrary: {
-        collections: [],
-        groups: [],
-        collection_group_memberships: [],
-        excludes: [],
-        exclude_availability: {
-          fully_excluded_collection_urls: [],
-          fully_excluded_group_urls: [],
-        },
-      },
+      configLibrary: emptyConfigLibrary(),
       savePath,
     };
   }
@@ -283,11 +259,11 @@ export async function loadCollectionsFromBackend(
   return playlists.match({
     Ok: (playlistValues) =>
       configLibrary.match({
-        Ok: (libraryValue) => ({
+        Ok: (libraryValues) => ({
           hasPlayList: true,
           playlists: playlistValues,
           collections: [],
-          configLibrary: libraryValue,
+          configLibrary: libraryValues,
           savePath,
         }),
         Err: (error) => {

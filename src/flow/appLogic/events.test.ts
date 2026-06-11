@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { Err, Ok } from "@grahlnn/fn";
 import { loadCollectionsFromBackend, resolvePlaylistPlaybackStartResult } from "./events";
-import type { ConfigLibraryView, PlayPlaylistSession, PlaylistStartupBootstrap } from "@/src/cmd";
+import type { ConfigLibraryView, PlayPlaylistSession } from "@/src/cmd";
 
 function emptyConfigLibrary(): ConfigLibraryView {
   return {
@@ -18,53 +18,12 @@ function emptyConfigLibrary(): ConfigLibraryView {
 }
 
 describe("appLogic bootstrap events", () => {
-  test("uses the startup bootstrap snapshot without cold playlist queries", async () => {
-    let coldQueryCount = 0;
-    const startup: PlaylistStartupBootstrap = {
-      has_playlist: true,
-      playlists: [{ name: "PlayList 1", created_at: "2026-05-31T00:00:00+08:00" }],
-      collections: [],
-      config_library: emptyConfigLibrary(),
-      save_path: "C:/Users/admin/Documents/slisic",
-    };
-
+  test("loads an empty bootstrap result when the database has no playlists", async () => {
     const result = await loadCollectionsFromBackend({
-      getStartupBootstrap: async () => ({ status: "Ready", value: startup }),
-      getMetaInfo: async () => {
-        coldQueryCount += 1;
-        return Ok({ save_path: startup.save_path });
-      },
-      checkList: async () => {
-        coldQueryCount += 1;
-        return Ok(true);
-      },
-      listPlaylists: async () => {
-        coldQueryCount += 1;
-        return Ok([]);
-      },
-      listConfigLibrary: async () => {
-        coldQueryCount += 1;
-        return Ok(emptyConfigLibrary());
-      },
-    });
-
-    assert.equal(coldQueryCount, 0);
-    assert.deepEqual(result, {
-      hasPlayList: true,
-      playlists: startup.playlists,
-      collections: [],
-      configLibrary: startup.config_library,
-      savePath: startup.save_path,
-    });
-  });
-
-  test("falls back to cold playlist queries while startup bootstrap is pending", async () => {
-    const result = await loadCollectionsFromBackend({
-      getStartupBootstrap: async () => ({ status: "Pending" }),
-      getMetaInfo: async () => Ok({ save_path: "C:/Music" }),
+      getMetaInfo: async () => Ok({ save_path: "C:/Users/admin/Documents/slisic" }),
       checkList: async () => Ok(false),
-      listPlaylists: async () => Err("should not list playlists without playlist data"),
-      listConfigLibrary: async () => Err("should not load config library without playlist data"),
+      listPlaylists: async () => Err("empty database should not query playlists"),
+      listConfigLibrary: async () => Err("empty database should not query config library"),
     });
 
     assert.deepEqual(result, {
@@ -72,56 +31,26 @@ describe("appLogic bootstrap events", () => {
       playlists: [],
       collections: [],
       configLibrary: emptyConfigLibrary(),
-      savePath: "C:/Music",
+      savePath: "C:/Users/admin/Documents/slisic",
     });
   });
 
-  test("falls back to cold playlist queries for stale empty startup snapshots", async () => {
-    let coldQueryCount = 0;
-    const staleStartup: PlaylistStartupBootstrap = {
-      has_playlist: false,
-      playlists: [],
-      collections: [],
-      config_library: emptyConfigLibrary(),
-      save_path: "C:/Users/admin/Documents/slisic",
-    };
-    const library: ConfigLibraryView = {
-      ...emptyConfigLibrary(),
-      collections: [
-        {
-          name: "Quiet Morning",
-          url: "https://example.com/quiet-morning",
-          folder: "youtube/quiet-morning",
-          last_updated: "2026-06-01T00:00:00+08:00",
-          enable_updates: null,
-        },
-      ],
-    };
-
+  test("loads playlists and config library from database when playlist data exists", async () => {
+    const configLibrary = emptyConfigLibrary();
+    const playlists = [{ name: "PlayList 1", created_at: "2026-05-31T00:00:00+08:00" }];
     const result = await loadCollectionsFromBackend({
-      getStartupBootstrap: async () => ({ status: "Ready", value: staleStartup }),
-      getMetaInfo: async () => Ok({ save_path: staleStartup.save_path }),
-      checkList: async () => {
-        coldQueryCount += 1;
-        return Ok(true);
-      },
-      listPlaylists: async () => {
-        coldQueryCount += 1;
-        return Ok([{ name: "PlayList 1", created_at: "2026-06-01T00:00:00+08:00" }]);
-      },
-      listConfigLibrary: async () => {
-        coldQueryCount += 1;
-        return Ok(library);
-      },
+      getMetaInfo: async () => Ok({ save_path: "C:/Users/admin/Documents/slisic" }),
+      checkList: async () => Ok(true),
+      listPlaylists: async () => Ok(playlists),
+      listConfigLibrary: async () => Ok(configLibrary),
     });
 
-    assert.equal(coldQueryCount, 3);
     assert.deepEqual(result, {
       hasPlayList: true,
-      playlists: [{ name: "PlayList 1", created_at: "2026-06-01T00:00:00+08:00" }],
+      playlists,
       collections: [],
-      configLibrary: library,
-      savePath: staleStartup.save_path,
+      configLibrary,
+      savePath: "C:/Users/admin/Documents/slisic",
     });
   });
 });

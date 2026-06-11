@@ -3,20 +3,18 @@ use super::event::WINDOW_READY;
 #[cfg(not(test))]
 use super::window;
 #[cfg(not(test))]
-use appdb::connection::reset_db;
+use appdb::prelude::reset_db_and_remove_path;
+#[cfg(test)]
+use std::fs;
+use std::path::{Path, PathBuf};
 #[cfg(not(test))]
 use std::process::Command;
 #[cfg(not(test))]
 use std::sync::atomic::Ordering;
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
 #[cfg(not(test))]
 use tauri::{AppHandle, Manager, WebviewWindow};
 
 pub const APP_DB_FILE_NAME: &str = "surreal.db";
-const DEV_RESET_TRIGGER_FILE_NAME: &str = "dev-reset-trigger.txt";
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -43,17 +41,17 @@ pub async fn reset_dev_database_and_restart(app: AppHandle) -> Result<(), String
     #[cfg(debug_assertions)]
     {
         let _ = crate::domain::player::service::stop_playback().await;
-        reset_db();
 
         let local_data_dir = app
             .path()
             .app_local_data_dir()
             .map_err(|error| error.to_string())?;
         let db_path = local_data_dir.join(APP_DB_FILE_NAME);
-        remove_db_artifacts(&db_path)?;
-        remove_optional_artifacts(&dev_reset_local_data_artifact_paths(&local_data_dir))?;
-        remove_optional_artifacts(&dev_reset_cache_artifact_paths(&app)?)?;
-        schedule_dev_reset_trigger()?;
+        reset_db_and_remove_path(&db_path).map_err(|error| error.to_string())?;
+        let mut reset_artifact_paths = Vec::new();
+        reset_artifact_paths.extend(dev_reset_local_data_artifact_paths(&local_data_dir));
+        reset_artifact_paths.extend(dev_reset_cache_artifact_paths(&app)?);
+        schedule_dev_reset_cleanup(&reset_artifact_paths)?;
         app.exit(0);
         Ok(())
     }
@@ -74,38 +72,7 @@ fn dev_reset_cache_artifact_paths(app: &AppHandle) -> Result<Vec<PathBuf>, Strin
         .map_err(|error| error.to_string())
 }
 
-fn remove_db_artifacts(db_path: &Path) -> Result<(), String> {
-    let Some(parent) = db_path.parent() else {
-        return Err("database path parent directory is missing".to_string());
-    };
-    if !parent.exists() {
-        return Ok(());
-    }
-
-    let Some(file_name) = db_path.file_name().and_then(|value| value.to_str()) else {
-        return Err("database file name is invalid".to_string());
-    };
-
-    for entry in fs::read_dir(parent).map_err(|error| error.to_string())? {
-        let entry = entry.map_err(|error| error.to_string())?;
-        let path = entry.path();
-        let Some(candidate) = path.file_name().and_then(|value| value.to_str()) else {
-            continue;
-        };
-        if !candidate.starts_with(file_name) {
-            continue;
-        }
-
-        if path.is_dir() {
-            fs::remove_dir_all(&path).map_err(|error| error.to_string())?;
-        } else if path.exists() {
-            fs::remove_file(&path).map_err(|error| error.to_string())?;
-        }
-    }
-
-    Ok(())
-}
-
+#[cfg(test)]
 fn remove_optional_file(path: &Path) -> Result<(), String> {
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
@@ -114,6 +81,7 @@ fn remove_optional_file(path: &Path) -> Result<(), String> {
     }
 }
 
+#[cfg(test)]
 pub(super) fn remove_optional_artifacts(paths: &[PathBuf]) -> Result<(), String> {
     for path in paths {
         remove_optional_artifact(path)?;
@@ -121,6 +89,7 @@ pub(super) fn remove_optional_artifacts(paths: &[PathBuf]) -> Result<(), String>
     Ok(())
 }
 
+#[cfg(test)]
 fn remove_optional_artifact(path: &Path) -> Result<(), String> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.is_dir() => fs::remove_dir_all(path)
@@ -132,25 +101,29 @@ fn remove_optional_artifact(path: &Path) -> Result<(), String> {
 }
 
 #[cfg(not(test))]
-fn schedule_dev_reset_trigger() -> Result<(), String> {
-    let trigger_path = dev_reset_trigger_path();
-    let payload = format!("{:?}\n", std::time::SystemTime::now());
-    spawn_delayed_trigger_writer(&trigger_path, &payload)
-}
-
-#[cfg(not(test))]
-fn dev_reset_trigger_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(DEV_RESET_TRIGGER_FILE_NAME)
+fn schedule_dev_reset_cleanup(paths: &[PathBuf]) -> Result<(), String> {
+    spawn_delayed_reset_cleanup(std::process::id(), paths)
 }
 
 #[cfg(all(windows, not(test)))]
-fn spawn_delayed_trigger_writer(path: &Path, payload: &str) -> Result<(), String> {
+fn spawn_delayed_reset_cleanup(owner_pid: u32, paths: &[PathBuf]) -> Result<(), String> {
     use std::os::windows::process::CommandExt;
 
-    let escaped_path = escape_powershell_single_quoted(path);
-    let escaped_payload = payload.replace('\'', "''");
+    let escaped_paths = paths
+        .iter()
+        .map(|path| format!("'{}'", escape_powershell_single_quoted(path)))
+        .collect::<Vec<_>>()
+        .join(", ");
     let script = format!(
-        "Start-Sleep -Milliseconds 500; Set-Content -LiteralPath '{escaped_path}' -Value '{escaped_payload}'"
+        "$paths = @({escaped_paths}); \
+         try {{ Wait-Process -Id {owner_pid} -Timeout 30 -ErrorAction SilentlyContinue }} catch {{ }}; \
+         $deadline = (Get-Date).AddSeconds(10); \
+         do {{ \
+             foreach ($path in $paths) {{ Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue }}; \
+             $remaining = @($paths | Where-Object {{ Test-Path -LiteralPath $_ }}); \
+             if ($remaining.Count -eq 0) {{ break }}; \
+             Start-Sleep -Milliseconds 200; \
+         }} while ((Get-Date) -lt $deadline)"
     );
 
     Command::new("powershell")
@@ -165,20 +138,39 @@ fn spawn_delayed_trigger_writer(path: &Path, payload: &str) -> Result<(), String
         .creation_flags(CREATE_NO_WINDOW)
         .spawn()
         .map(|_| ())
-        .map_err(|error| format!("failed to schedule dev reset trigger: {error}"))
+        .map_err(|error| format!("failed to schedule dev reset cleanup: {error}"))
 }
 
 #[cfg(all(not(windows), not(test)))]
-fn spawn_delayed_trigger_writer(path: &Path, payload: &str) -> Result<(), String> {
-    let escaped_path = path.to_string_lossy().replace('\'', "'\"'\"'");
-    let escaped_payload = payload.replace('\'', "'\"'\"'");
-    let script = format!("sleep 0.5; printf '%s' '{escaped_payload}' > '{escaped_path}'");
+fn spawn_delayed_reset_cleanup(owner_pid: u32, paths: &[PathBuf]) -> Result<(), String> {
+    let escaped_paths = paths
+        .iter()
+        .map(|path| shell_single_quote(&path.to_string_lossy()))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let script = format!(
+        "while kill -0 {owner_pid} 2>/dev/null; do sleep 0.1; done; \
+         sleep 0.3; \
+         attempts=0; \
+         while [ \"$attempts\" -lt 50 ]; do \
+             remaining=0; \
+             for path in {escaped_paths}; do rm -rf -- \"$path\"; [ -e \"$path\" ] && remaining=1; done; \
+             [ \"$remaining\" -eq 0 ] && break; \
+             attempts=$((attempts + 1)); \
+             sleep 0.2; \
+         done"
+    );
 
     Command::new("sh")
         .args(["-c", &script])
         .spawn()
         .map(|_| ())
-        .map_err(|error| format!("failed to schedule dev reset trigger: {error}"))
+        .map_err(|error| format!("failed to schedule dev reset cleanup: {error}"))
+}
+
+#[cfg(all(not(windows), not(test)))]
+fn shell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
 #[cfg(all(windows, not(test)))]

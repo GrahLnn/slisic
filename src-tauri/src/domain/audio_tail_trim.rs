@@ -16,7 +16,7 @@ use super::playlists::model::{Collection, Music};
 use super::playlists::repo as playlists_repo;
 use super::playlists::repo::MusicEndTrim;
 #[cfg(not(test))]
-use crate::utils::binaries::{ManagedBinary, ensure_managed_binary};
+use crate::utils::binaries::{ManagedBinary, acquire_managed_binary_usage, ensure_managed_binary};
 use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 #[cfg(not(test))]
@@ -27,7 +27,7 @@ use std::collections::VecDeque;
 use std::fs;
 use std::path::{Path, PathBuf};
 #[cfg(not(test))]
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(not(test))]
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
@@ -82,9 +82,8 @@ struct AudioTailTrimRuntime {
     app: AppHandle,
     pending_task_path: PathBuf,
     pending_task_file_lock: Mutex<()>,
-    active_binary_tasks: AtomicUsize,
-    active_collections: Mutex<HashSet<String>>,
-    coalesced_active_requests: Mutex<HashMap<String, CoalescedAudioTailTrim>>,
+    active_collections: Mutex<HashSet<AudioTailTrimCollectionKey>>,
+    coalesced_active_requests: Mutex<HashMap<AudioTailTrimCollectionKey, CoalescedAudioTailTrim>>,
     queue: Mutex<VecDeque<QueuedAudioTailTrim>>,
     worker_running: AtomicBool,
 }
@@ -103,38 +102,16 @@ struct CoalescedAudioTailTrim {
 }
 
 #[cfg(not(test))]
-struct ActiveAudioTailTrimBinaryTaskGuard {
-    runtime: Arc<AudioTailTrimRuntime>,
-}
-
-#[cfg(not(test))]
-impl ActiveAudioTailTrimBinaryTaskGuard {
-    fn new(runtime: Arc<AudioTailTrimRuntime>) -> Self {
-        runtime.active_binary_tasks.fetch_add(1, Ordering::SeqCst);
-        Self { runtime }
-    }
-}
-
-#[cfg(not(test))]
-impl Drop for ActiveAudioTailTrimBinaryTaskGuard {
-    fn drop(&mut self) {
-        self.runtime
-            .active_binary_tasks
-            .fetch_sub(1, Ordering::SeqCst);
-    }
-}
-
-#[cfg(not(test))]
 struct AudioTailTrimCollectionClaim {
     runtime: Arc<AudioTailTrimRuntime>,
-    collection_url: String,
+    collection_key: AudioTailTrimCollectionKey,
 }
 
 #[cfg(not(test))]
 impl Drop for AudioTailTrimCollectionClaim {
     fn drop(&mut self) {
         if let Ok(mut active) = self.runtime.active_collections.lock() {
-            active.remove(&self.collection_url);
+            active.remove(&self.collection_key);
         }
     }
 }
@@ -144,6 +121,8 @@ pub(crate) struct AudioTailTrimRequest {
     pub(crate) collection_url: String,
     pub(crate) source_kind: CollectionSourceKind,
     pub(crate) save_root: PathBuf,
+    #[serde(default)]
+    pub(crate) scope_group_url: Option<String>,
     #[serde(default)]
     pub(crate) focus_music: Option<AudioTailTrimFocusMusic>,
 }
@@ -160,6 +139,28 @@ pub(crate) struct AudioTailTrimFocusMusic {
 struct AudioTailTrimPendingTaskFile {
     version: String,
     requests: Vec<AudioTailTrimRequest>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct AudioTailTrimCollectionKey {
+    collection_url: String,
+    scope_group_url: Option<String>,
+}
+
+impl AudioTailTrimCollectionKey {
+    fn from_request(request: &AudioTailTrimRequest) -> Self {
+        Self {
+            collection_url: request.collection_url.clone(),
+            scope_group_url: normalized_optional_url(request.scope_group_url.as_deref()),
+        }
+    }
+
+    fn as_log_key(&self) -> String {
+        match self.scope_group_url.as_deref() {
+            Some(group_url) => format!("{}#{}", self.collection_url, group_url),
+            None => self.collection_url.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -303,7 +304,6 @@ pub(crate) fn initialize_runtime(app: AppHandle) {
                 app,
                 pending_task_path,
                 pending_task_file_lock: Mutex::new(()),
-                active_binary_tasks: AtomicUsize::new(0),
                 active_collections: Mutex::new(HashSet::new()),
                 coalesced_active_requests: Mutex::new(HashMap::new()),
                 queue: Mutex::new(VecDeque::new()),
@@ -313,15 +313,6 @@ pub(crate) fn initialize_runtime(app: AppHandle) {
         .clone();
 
     restore_pending_audio_tail_trim_tasks(runtime);
-}
-
-#[cfg(not(test))]
-pub(crate) fn has_active_audio_tail_trim_binary_tasks() -> bool {
-    let Some(runtime) = AUDIO_TAIL_TRIM_RUNTIME.get() else {
-        return false;
-    };
-
-    runtime.active_binary_tasks.load(Ordering::SeqCst) > 0
 }
 
 #[cfg(not(test))]
@@ -375,6 +366,7 @@ pub(crate) fn request_playback_current_audio_tail_trim(track: &PlaybackTrack) {
         return;
     };
     let collection_url = collection.url.clone();
+    let scope_group_url = Some(music.group.url.clone());
     let title = track.music_name.clone();
     let focus_music = AudioTailTrimFocusMusic {
         url: music.url.clone(),
@@ -410,6 +402,7 @@ pub(crate) fn request_playback_current_audio_tail_trim(track: &PlaybackTrack) {
                 collection_url,
                 source_kind: CollectionSourceKind::List,
                 save_root,
+                scope_group_url,
                 focus_music: Some(focus_music),
             },
             AudioTailTrimSource::PlaybackCurrent,
@@ -432,6 +425,92 @@ pub(crate) fn collect_audio_tail_trim_candidates(
         })
         .filter(|candidate| seen_paths.insert(candidate.path.clone()))
         .collect()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AudioTailTrimScopeKind {
+    Group,
+    Collection,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AudioTailTrimScopeSelection {
+    pub(crate) kind: AudioTailTrimScopeKind,
+    pub(crate) url: String,
+    pub(crate) candidates: Vec<AudioTailTrimCandidate>,
+    pub(crate) skipped_collection_candidates: usize,
+}
+
+impl AudioTailTrimScopeKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Group => "group",
+            Self::Collection => "collection",
+        }
+    }
+}
+
+pub(crate) fn select_audio_tail_trim_scope(
+    collection: &Collection,
+    candidates: Vec<AudioTailTrimCandidate>,
+    scope_group_url: Option<&str>,
+) -> Option<AudioTailTrimScopeSelection> {
+    let scope_group_url = normalized_optional_url(scope_group_url);
+    if let Some(group_url) = scope_group_url.as_deref() {
+        let scoped = candidates
+            .iter()
+            .filter(|candidate| music_belongs_to_group(collection, candidate, group_url))
+            .cloned()
+            .collect::<Vec<_>>();
+        if scoped.len() >= MIN_TAIL_SAMPLE_COUNT {
+            return Some(AudioTailTrimScopeSelection {
+                kind: AudioTailTrimScopeKind::Group,
+                url: group_url.to_string(),
+                skipped_collection_candidates: candidates.len().saturating_sub(scoped.len()),
+                candidates: scoped,
+            });
+        }
+        return None;
+    }
+
+    let group_urls = collection
+        .musics
+        .iter()
+        .filter_map(|music| {
+            candidate_from_music(music, Path::new(""))
+                .filter(|candidate| {
+                    candidate.playable_duration_ms() > MIN_COMMON_TAIL_MS + MIN_REMAINING_TRACK_MS
+                })
+                .map(|_| music.group.url.clone())
+        })
+        .collect::<HashSet<_>>();
+    if group_urls.len() > 1 {
+        return None;
+    }
+
+    (candidates.len() >= MIN_TAIL_SAMPLE_COUNT).then(|| AudioTailTrimScopeSelection {
+        kind: AudioTailTrimScopeKind::Collection,
+        url: collection.url.clone(),
+        skipped_collection_candidates: 0,
+        candidates,
+    })
+}
+
+fn music_belongs_to_group(
+    collection: &Collection,
+    candidate: &AudioTailTrimCandidate,
+    group_url: &str,
+) -> bool {
+    collection.musics.iter().any(|music| {
+        music.group.url == group_url
+            && music.url == candidate.url
+            && music.start_ms == candidate.start_ms
+            && music.end_ms == candidate.end_ms
+            && music
+                .path
+                .as_deref()
+                .is_some_and(|path| normalize_path_text(path) == candidate.path)
+    })
 }
 
 fn prioritize_audio_tail_trim_focus_candidate(
@@ -1120,18 +1199,19 @@ fn enqueue_audio_tail_trim(
     request: AudioTailTrimRequest,
     source: AudioTailTrimSource,
 ) {
+    let collection_key = AudioTailTrimCollectionKey::from_request(&request);
     if request.source_kind != CollectionSourceKind::List {
         log::info!(
             target: AUDIO_TAIL_TRIM_LOG_TARGET,
             "audio_tail_trim_request_skipped source={} reason=unsupported_source_kind collection=\"{}\" source_kind={}",
             source.as_str(),
-            request.collection_url,
+            collection_key.as_log_key(),
             request.source_kind.as_str()
         );
         return;
     }
 
-    if audio_tail_trim_collection_is_processing(&runtime, &request.collection_url) {
+    if audio_tail_trim_collection_is_processing(&runtime, &collection_key) {
         if source.persists_pending() {
             coalesce_active_audio_tail_trim_request(
                 &runtime,
@@ -1146,7 +1226,7 @@ fn enqueue_audio_tail_trim(
             target: AUDIO_TAIL_TRIM_LOG_TARGET,
             "audio_tail_trim_request_coalesced source={} reason=already_processing collection=\"{}\"",
             source.as_str(),
-            request.collection_url
+            collection_key.as_log_key()
         );
         return;
     }
@@ -1161,7 +1241,7 @@ fn enqueue_audio_tail_trim(
             target: AUDIO_TAIL_TRIM_LOG_TARGET,
             "audio_tail_trim_request_deferred source={} reason=queue_unavailable collection=\"{}\" pending_retained={}",
             source.as_str(),
-            request.collection_url,
+            collection_key.as_log_key(),
             source.persists_pending()
         );
         if source.persists_pending() {
@@ -1177,7 +1257,7 @@ fn enqueue_audio_tail_trim(
         target: AUDIO_TAIL_TRIM_LOG_TARGET,
         "audio_tail_trim_request_enqueued source={} collection=\"{}\"",
         source.as_str(),
-        request.collection_url
+        collection_key.as_log_key()
     );
     ensure_audio_tail_trim_worker(runtime);
 }
@@ -1200,7 +1280,8 @@ fn coalesce_active_audio_tail_trim_request(
             return;
         }
     };
-    let key = request.collection_url.clone();
+    let key = AudioTailTrimCollectionKey::from_request(&request);
+    let log_key = key.as_log_key();
     match coalesced.get_mut(&key) {
         Some(existing) => {
             existing.request = merge_audio_tail_trim_request(existing.request.clone(), request);
@@ -1227,6 +1308,11 @@ fn coalesce_active_audio_tail_trim_request(
         reason,
         coalesced.len()
     );
+    log::debug!(
+        target: AUDIO_TAIL_TRIM_LOG_TARGET,
+        "audio_tail_trim_active_request_key collection=\"{}\"",
+        log_key
+    );
 }
 
 #[cfg(not(test))]
@@ -1244,10 +1330,10 @@ fn push_audio_tail_trim_queue(
             return false;
         }
     };
-    if let Some(position) = queue
-        .iter()
-        .position(|current| current.request.collection_url == queued.request.collection_url)
-    {
+    let queued_key = AudioTailTrimCollectionKey::from_request(&queued.request);
+    if let Some(position) = queue.iter().position(|current| {
+        AudioTailTrimCollectionKey::from_request(&current.request) == queued_key
+    }) {
         let Some(mut existing) = queue.remove(position) else {
             return false;
         };
@@ -1261,7 +1347,7 @@ fn push_audio_tail_trim_queue(
             "audio_tail_trim_request_promoted source={} previous_source={} collection=\"{}\"",
             existing.source.as_str(),
             previous_source.as_str(),
-            existing.request.collection_url
+            queued_key.as_log_key()
         );
         insert_audio_tail_trim_queue(&mut queue, existing);
         return true;
@@ -1388,10 +1474,8 @@ async fn run_audio_tail_trim_worker(runtime: Arc<AudioTailTrimRuntime>) {
             return;
         };
 
-        let claim = match claim_audio_tail_trim_collection(
-            Arc::clone(&runtime),
-            &queued.request.collection_url,
-        ) {
+        let collection_key = AudioTailTrimCollectionKey::from_request(&queued.request);
+        let claim = match claim_audio_tail_trim_collection(Arc::clone(&runtime), &collection_key) {
             Ok(Some(claim)) => claim,
             Ok(None) => {
                 coalesce_active_audio_tail_trim_request(
@@ -1407,7 +1491,7 @@ async fn run_audio_tail_trim_worker(runtime: Arc<AudioTailTrimRuntime>) {
                     target: AUDIO_TAIL_TRIM_LOG_TARGET,
                     "audio_tail_trim_request_failed source={} reason=claim_failed collection=\"{}\" error=\"{}\"",
                     queued.source.as_str(),
-                    queued.request.collection_url,
+                    collection_key.as_log_key(),
                     error
                 );
                 if queued.source.persists_pending() {
@@ -1421,7 +1505,7 @@ async fn run_audio_tail_trim_worker(runtime: Arc<AudioTailTrimRuntime>) {
             target: AUDIO_TAIL_TRIM_LOG_TARGET,
             "audio_tail_trim_worker_processing source={} collection=\"{}\"",
             queued.source.as_str(),
-            queued.request.collection_url
+            collection_key.as_log_key()
         );
         let processed_ok = match process_audio_tail_trim_request(
             Arc::clone(&runtime),
@@ -1436,19 +1520,18 @@ async fn run_audio_tail_trim_worker(runtime: Arc<AudioTailTrimRuntime>) {
                     target: AUDIO_TAIL_TRIM_LOG_TARGET,
                     "audio_tail_trim_failed source={} collection=\"{}\" pending_retained=true error=\"{}\"",
                     queued.source.as_str(),
-                    queued.request.collection_url,
+                    collection_key.as_log_key(),
                     error
                 );
                 false
             }
         };
 
-        let collection_url = queued.request.collection_url.clone();
         let completed_request = queued.request.clone();
         drop(claim);
         drop(queued);
         let requeued =
-            requeue_coalesced_audio_tail_trim_if_present(Arc::clone(&runtime), &collection_url);
+            requeue_coalesced_audio_tail_trim_if_present(Arc::clone(&runtime), &collection_key);
         if processed_ok && !requeued {
             remove_pending_audio_tail_trim_request(&runtime, &completed_request);
         }
@@ -1459,15 +1542,15 @@ async fn run_audio_tail_trim_worker(runtime: Arc<AudioTailTrimRuntime>) {
 #[cfg(not(test))]
 fn requeue_coalesced_audio_tail_trim_if_present(
     runtime: Arc<AudioTailTrimRuntime>,
-    collection_url: &str,
+    collection_key: &AudioTailTrimCollectionKey,
 ) -> bool {
     let coalesced = match runtime.coalesced_active_requests.lock() {
-        Ok(mut coalesced) => coalesced.remove(collection_url),
+        Ok(mut coalesced) => coalesced.remove(collection_key),
         Err(_) => {
             log::error!(
                 target: AUDIO_TAIL_TRIM_LOG_TARGET,
                 "audio_tail_trim_request_failed reason=coalesced_lock_poisoned collection=\"{}\"",
-                collection_url
+                collection_key.as_log_key()
             );
             return false;
         }
@@ -1481,7 +1564,7 @@ fn requeue_coalesced_audio_tail_trim_if_present(
             target: AUDIO_TAIL_TRIM_LOG_TARGET,
             "audio_tail_trim_request_absorbed source={} reason=active_scan_consumed_focus collection=\"{}\"",
             coalesced.source.as_str(),
-            coalesced.request.collection_url
+            collection_key.as_log_key()
         );
         return false;
     }
@@ -1489,7 +1572,7 @@ fn requeue_coalesced_audio_tail_trim_if_present(
         target: AUDIO_TAIL_TRIM_LOG_TARGET,
         "audio_tail_trim_request_requeued source={} reason=coalesced_active collection=\"{}\"",
         coalesced.source.as_str(),
-        coalesced.request.collection_url
+        collection_key.as_log_key()
     );
     enqueue_audio_tail_trim(runtime, coalesced.request, coalesced.source);
     true
@@ -1498,7 +1581,7 @@ fn requeue_coalesced_audio_tail_trim_if_present(
 #[cfg(not(test))]
 fn coalesced_audio_tail_trim_focus_snapshot(
     runtime: &AudioTailTrimRuntime,
-    collection_url: &str,
+    collection_key: &AudioTailTrimCollectionKey,
 ) -> Option<AudioTailTrimFocusMusic> {
     runtime
         .coalesced_active_requests
@@ -1506,7 +1589,7 @@ fn coalesced_audio_tail_trim_focus_snapshot(
         .ok()
         .and_then(|coalesced| {
             coalesced
-                .get(collection_url)
+                .get(collection_key)
                 .and_then(|coalesced| coalesced.request.focus_music.clone())
         })
 }
@@ -1514,7 +1597,7 @@ fn coalesced_audio_tail_trim_focus_snapshot(
 #[cfg(not(test))]
 fn consume_coalesced_audio_tail_trim_focus_if_matched(
     runtime: &AudioTailTrimRuntime,
-    collection_url: &str,
+    collection_key: &AudioTailTrimCollectionKey,
     candidate: &AudioTailTrimCandidate,
 ) {
     let mut coalesced = match runtime.coalesced_active_requests.lock() {
@@ -1523,12 +1606,12 @@ fn consume_coalesced_audio_tail_trim_focus_if_matched(
             log::error!(
                 target: AUDIO_TAIL_TRIM_LOG_TARGET,
                 "audio_tail_trim_request_failed reason=coalesced_lock_poisoned collection=\"{}\"",
-                collection_url
+                collection_key.as_log_key()
             );
             return;
         }
     };
-    let Some(coalesced) = coalesced.get_mut(collection_url) else {
+    let Some(coalesced) = coalesced.get_mut(collection_key) else {
         return;
     };
     let Some(focus) = coalesced.request.focus_music.as_ref() else {
@@ -1543,7 +1626,7 @@ fn consume_coalesced_audio_tail_trim_focus_if_matched(
         target: AUDIO_TAIL_TRIM_LOG_TARGET,
         "audio_tail_trim_focus_absorbed source={} collection=\"{}\" path=\"{}\" rerun_required={}",
         coalesced.source.as_str(),
-        collection_url,
+        collection_key.as_log_key(),
         candidate.path,
         coalesced.rerun_required
     );
@@ -1566,33 +1649,33 @@ fn queue_has_pending_audio_tail_trim(runtime: &AudioTailTrimRuntime) -> bool {
 #[cfg(not(test))]
 fn audio_tail_trim_collection_is_processing(
     runtime: &AudioTailTrimRuntime,
-    collection_url: &str,
+    collection_key: &AudioTailTrimCollectionKey,
 ) -> bool {
     runtime
         .active_collections
         .lock()
         .ok()
-        .is_some_and(|active| active.contains(collection_url))
+        .is_some_and(|active| active.contains(collection_key))
 }
 
 #[cfg(not(test))]
 fn claim_audio_tail_trim_collection(
     runtime: Arc<AudioTailTrimRuntime>,
-    collection_url: &str,
+    collection_key: &AudioTailTrimCollectionKey,
 ) -> Result<Option<AudioTailTrimCollectionClaim>> {
     {
         let mut active = runtime
             .active_collections
             .lock()
             .map_err(|_| anyhow!("audio tail trim active collection set is poisoned"))?;
-        if !active.insert(collection_url.to_string()) {
+        if !active.insert(collection_key.clone()) {
             return Ok(None);
         }
     }
 
     Ok(Some(AudioTailTrimCollectionClaim {
         runtime,
-        collection_url: collection_url.to_string(),
+        collection_key: collection_key.clone(),
     }))
 }
 
@@ -1602,6 +1685,7 @@ async fn process_audio_tail_trim_request(
     request: &AudioTailTrimRequest,
     source: AudioTailTrimSource,
 ) -> Result<()> {
+    let collection_key = AudioTailTrimCollectionKey::from_request(request);
     let Some(collection) = playlists_repo::get_collection_by_url(&request.collection_url).await?
     else {
         log::info!(
@@ -1617,14 +1701,35 @@ async fn process_audio_tail_trim_request(
         .into_iter()
         .filter(|candidate| candidate.file_path.is_file())
         .collect::<Vec<_>>();
+    let raw_candidate_count = candidates.len();
+    let Some(scope) =
+        select_audio_tail_trim_scope(&collection, candidates, request.scope_group_url.as_deref())
+    else {
+        log::info!(
+            target: AUDIO_TAIL_TRIM_LOG_TARGET,
+            "audio_tail_trim_skipped source={} reason=ineligible_scope collection=\"{}\" scope_group=\"{}\" source_kind={} candidates={} musics={}",
+            source.as_str(),
+            collection.url,
+            request.scope_group_url.as_deref().unwrap_or(""),
+            request.source_kind.as_str(),
+            raw_candidate_count,
+            collection.musics.len()
+        );
+        return Ok(());
+    };
+    candidates = scope.candidates;
     let focus_matched =
         prioritize_audio_tail_trim_focus_candidate(&mut candidates, request.focus_music.as_ref());
     log::info!(
         target: AUDIO_TAIL_TRIM_LOG_TARGET,
-        "audio_tail_trim_collection_loaded source={} collection=\"{}\" candidates={} musics={} focus={}",
+        "audio_tail_trim_collection_loaded source={} collection=\"{}\" scope_kind={} scope=\"{}\" candidates={} raw_candidates={} skipped_collection_candidates={} musics={} focus={}",
         source.as_str(),
         collection.url,
+        scope.kind.as_str(),
+        scope.url,
         candidates.len(),
+        raw_candidate_count,
+        scope.skipped_collection_candidates,
         collection.musics.len(),
         focus_matched
     );
@@ -1653,7 +1758,7 @@ async fn process_audio_tail_trim_request(
     let mut applied_trim_keys = HashSet::new();
     let mut absorbed_focus = None::<AudioTailTrimFocusMusic>;
     while !candidates.is_empty() {
-        let coalesced_focus = coalesced_audio_tail_trim_focus_snapshot(&runtime, &collection.url);
+        let coalesced_focus = coalesced_audio_tail_trim_focus_snapshot(&runtime, &collection_key);
         let active_focus_snapshot = coalesced_focus
             .clone()
             .or_else(|| absorbed_focus.clone())
@@ -1668,9 +1773,8 @@ async fn process_audio_tail_trim_request(
         {
             absorbed_focus = Some(focus.clone());
         }
-        consume_coalesced_audio_tail_trim_focus_if_matched(&runtime, &collection.url, &candidate);
+        consume_coalesced_audio_tail_trim_focus_if_matched(&runtime, &collection_key, &candidate);
         let signature = match analyze_candidate_tail_signature(
-            Arc::clone(&runtime),
             ffmpeg_path.clone(),
             candidate.clone(),
         )
@@ -1886,13 +1990,12 @@ fn request_current_session_identity_updates_for_trimmed_music(
 
 #[cfg(not(test))]
 async fn analyze_candidate_tail_signature(
-    runtime: Arc<AudioTailTrimRuntime>,
     ffmpeg_path: PathBuf,
     candidate: AudioTailTrimCandidate,
 ) -> Result<TailEvidenceSignature> {
     let duration_ms = candidate.playable_duration_ms().min(TAIL_SEARCH_MS);
     let start_ms = candidate.end_ms.saturating_sub(duration_ms);
-    let _guard = ActiveAudioTailTrimBinaryTaskGuard::new(Arc::clone(&runtime));
+    let _guard = acquire_managed_binary_usage(ManagedBinary::Ffmpeg, "audio_tail_trim");
     task::spawn_blocking(move || {
         let mut request = ffplayr::AudioTailFingerprintAnalysisRequest::new(candidate.file_path);
         request.time_range = Some(ffplayr::PlaybackTimeRange {
@@ -2046,7 +2149,8 @@ fn upsert_audio_tail_trim_pending_task_file(
     request: &AudioTailTrimRequest,
 ) -> Result<()> {
     let mut requests = read_audio_tail_trim_pending_task_file(path)?;
-    requests.retain(|existing| existing.collection_url != request.collection_url);
+    let request_key = AudioTailTrimCollectionKey::from_request(request);
+    requests.retain(|existing| AudioTailTrimCollectionKey::from_request(existing) != request_key);
     requests.push(request.clone());
     write_audio_tail_trim_pending_task_file(path, &requests)
 }
@@ -2056,7 +2160,8 @@ fn remove_audio_tail_trim_pending_task_from_file(
     request: &AudioTailTrimRequest,
 ) -> Result<()> {
     let mut requests = read_audio_tail_trim_pending_task_file(path)?;
-    requests.retain(|existing| existing.collection_url != request.collection_url);
+    let request_key = AudioTailTrimCollectionKey::from_request(request);
+    requests.retain(|existing| AudioTailTrimCollectionKey::from_request(existing) != request_key);
     write_audio_tail_trim_pending_task_file(path, &requests)
 }
 
@@ -2102,10 +2207,19 @@ fn deduplicate_audio_tail_trim_requests(
 ) -> Vec<AudioTailTrimRequest> {
     let mut deduplicated = Vec::<AudioTailTrimRequest>::new();
     for request in requests {
-        deduplicated.retain(|existing| existing.collection_url != request.collection_url);
+        let request_key = AudioTailTrimCollectionKey::from_request(&request);
+        deduplicated
+            .retain(|existing| AudioTailTrimCollectionKey::from_request(existing) != request_key);
         deduplicated.push(request);
     }
     deduplicated
+}
+
+fn normalized_optional_url(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 #[cfg_attr(test, allow(dead_code))]

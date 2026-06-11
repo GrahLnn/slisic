@@ -1368,7 +1368,7 @@ fn request_prepared_first_tracks_loudness_evidence(
 ) {
     #[cfg(not(test))]
     {
-        for credential in _credentials.iter().rev() {
+        for credential in prepared_first_track_loudness_request_order(_credentials) {
             if playlist_playback_service::playlist_track_needs_loudness_evidence(&credential.track)
             {
                 loudness_evidence::request_first_slot_playback_track_loudness_evidence(
@@ -1377,6 +1377,12 @@ fn request_prepared_first_tracks_loudness_evidence(
             }
         }
     }
+}
+
+fn prepared_first_track_loudness_request_order(
+    credentials: &[PreparedPlaylistSourceCredential],
+) -> impl Iterator<Item = &PreparedPlaylistSourceCredential> {
+    credentials.iter()
 }
 
 fn try_runtime() -> Result<&'static Arc<PlayableIndexRuntime>> {
@@ -2657,6 +2663,23 @@ pub(crate) fn mark_playlist_source_kind_for_test(
         source.source_kind = source_kind;
     }
     Ok(())
+}
+
+#[cfg(test)]
+pub(crate) fn first_slot_loudness_request_order_for_test(
+    playlist_name: &str,
+) -> Result<Vec<String>> {
+    let runtime = try_runtime()?;
+    let state = runtime
+        .state
+        .lock()
+        .map_err(|_| anyhow!("playlist playable index lock is poisoned"))?;
+    let Some(pool) = state.playlists.get(playlist_name) else {
+        return Ok(Vec::new());
+    };
+    Ok(prepared_first_track_loudness_request_order(&pool.sources)
+        .map(|credential| credential.track.music_url.clone())
+        .collect())
 }
 
 #[cfg(not(test))]

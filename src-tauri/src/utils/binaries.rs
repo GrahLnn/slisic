@@ -1,6 +1,7 @@
 use reqwest::blocking::{Client, Response};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::{Read, Write};
 #[cfg(unix)]
@@ -9,7 +10,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{LazyLock, Mutex};
 use std::thread;
 use std::time::Duration;
 use tauri::{AppHandle, Manager};
@@ -26,6 +27,8 @@ const BINARY_HTTP_RETRY_BASE_DELAY_MS: u64 = 350;
 const USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
 static BINARY_OPERATION_LOCKS: LazyLock<[Mutex<()>; 2]> =
     LazyLock::new(|| [Mutex::new(()), Mutex::new(())]);
+static BINARY_USAGE_TRACKERS: LazyLock<[Mutex<BTreeMap<&'static str, usize>>; 2]> =
+    LazyLock::new(|| [Mutex::new(BTreeMap::new()), Mutex::new(BTreeMap::new())]);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ManagedBinary {
@@ -62,12 +65,24 @@ pub(crate) struct StagedBinary {
     pub(crate) version: Option<String>,
 }
 
-#[derive(Clone)]
-pub(crate) struct BinaryMaintenanceActivity {
-    has_active_player_binary_tasks: Arc<dyn Fn() -> bool + Send + Sync>,
-    has_active_download_tasks: Arc<dyn Fn() -> bool + Send + Sync>,
-    has_active_loudness_binary_tasks: Arc<dyn Fn() -> bool + Send + Sync>,
-    has_active_audio_tail_trim_binary_tasks: Arc<dyn Fn() -> bool + Send + Sync>,
+#[derive(Clone, Default)]
+pub(crate) struct BinaryMaintenanceActivity;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ManagedBinaryUsageSnapshot {
+    pub(crate) kind: ManagedBinary,
+    pub(crate) owners: Vec<ManagedBinaryUsageOwnerSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ManagedBinaryUsageOwnerSnapshot {
+    pub(crate) owner: &'static str,
+    pub(crate) count: usize,
+}
+
+pub(crate) struct ManagedBinaryUsageGuard {
+    kind: ManagedBinary,
+    owner: &'static str,
 }
 
 #[derive(Debug, Deserialize)]
@@ -94,28 +109,98 @@ pub(crate) struct BinaryInstallState {
 }
 
 impl BinaryMaintenanceActivity {
-    pub(crate) fn new(
-        has_active_player_binary_tasks: impl Fn() -> bool + Send + Sync + 'static,
-        has_active_download_tasks: impl Fn() -> bool + Send + Sync + 'static,
-        has_active_loudness_binary_tasks: impl Fn() -> bool + Send + Sync + 'static,
-        has_active_audio_tail_trim_binary_tasks: impl Fn() -> bool + Send + Sync + 'static,
-    ) -> Self {
-        Self {
-            has_active_player_binary_tasks: Arc::new(has_active_player_binary_tasks),
-            has_active_download_tasks: Arc::new(has_active_download_tasks),
-            has_active_loudness_binary_tasks: Arc::new(has_active_loudness_binary_tasks),
-            has_active_audio_tail_trim_binary_tasks: Arc::new(
-                has_active_audio_tail_trim_binary_tasks,
-            ),
-        }
+    pub(crate) fn new() -> Self {
+        Self
     }
 
-    pub(crate) fn is_busy(&self) -> bool {
-        (self.has_active_player_binary_tasks)()
-            || (self.has_active_download_tasks)()
-            || (self.has_active_loudness_binary_tasks)()
-            || (self.has_active_audio_tail_trim_binary_tasks)()
+    pub(crate) fn snapshot(&self, kind: ManagedBinary) -> ManagedBinaryUsageSnapshot {
+        managed_binary_usage_snapshot(kind)
     }
+}
+
+impl ManagedBinaryUsageSnapshot {
+    pub(crate) fn is_busy(&self) -> bool {
+        !self.owners.is_empty()
+    }
+
+    fn blocker_summary(&self) -> String {
+        if self.owners.is_empty() {
+            return "none".to_string();
+        }
+
+        self.owners
+            .iter()
+            .map(|owner| format!("{}:{}", owner.owner, owner.count))
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+}
+
+impl ManagedBinaryUsageGuard {
+    fn new(kind: ManagedBinary, owner: &'static str) -> Self {
+        let mut usages = binary_usage_tracker(kind)
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *usages.entry(owner).or_insert(0) += 1;
+        Self { kind, owner }
+    }
+}
+
+impl Drop for ManagedBinaryUsageGuard {
+    fn drop(&mut self) {
+        let mut usages = binary_usage_tracker(self.kind)
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(count) = usages.get_mut(self.owner) else {
+            eprintln!(
+                "[binary-maintenance] {} usage release ignored for untracked owner {}",
+                self.kind.key(),
+                self.owner
+            );
+            return;
+        };
+        *count = count.saturating_sub(1);
+        if *count == 0 {
+            usages.remove(self.owner);
+        }
+    }
+}
+
+pub(crate) fn acquire_managed_binary_usage(
+    kind: ManagedBinary,
+    owner: &'static str,
+) -> ManagedBinaryUsageGuard {
+    ManagedBinaryUsageGuard::new(kind, owner)
+}
+
+pub(crate) fn managed_binary_usage_snapshot(kind: ManagedBinary) -> ManagedBinaryUsageSnapshot {
+    let usages = binary_usage_tracker(kind)
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    ManagedBinaryUsageSnapshot {
+        kind,
+        owners: usages
+            .iter()
+            .map(|(owner, count)| ManagedBinaryUsageOwnerSnapshot {
+                owner,
+                count: *count,
+            })
+            .collect(),
+    }
+}
+
+pub(crate) fn activate_managed_binary_if_idle<T>(
+    kind: ManagedBinary,
+    work: impl FnOnce() -> Result<T, String>,
+) -> Result<Option<T>, String> {
+    let usages = binary_usage_tracker(kind)
+        .lock()
+        .map_err(|_| format!("{} usage tracker is poisoned", kind.key()))?;
+    if !usages.is_empty() {
+        return Ok(None);
+    }
+
+    work().map(Some)
 }
 
 impl ManagedBinary {
@@ -275,6 +360,13 @@ fn binary_operation_lock(kind: ManagedBinary) -> &'static Mutex<()> {
     }
 }
 
+fn binary_usage_tracker(kind: ManagedBinary) -> &'static Mutex<BTreeMap<&'static str, usize>> {
+    match kind {
+        ManagedBinary::Ffmpeg => &BINARY_USAGE_TRACKERS[0],
+        ManagedBinary::YtDlp => &BINARY_USAGE_TRACKERS[1],
+    }
+}
+
 /// Persist the last remote identity so periodic update checks can stay on the
 /// relay download path instead of depending on GitHub API metadata.
 fn install_binary(
@@ -388,11 +480,13 @@ fn activate_staged_binary_when_idle(
 ) -> Result<(), String> {
     let mut deferred_logged = false;
     loop {
-        if activity.is_busy() {
+        let snapshot = activity.snapshot(kind);
+        if snapshot.is_busy() {
             if !deferred_logged {
                 println!(
-                    "[binary-maintenance] {} update downloaded; activation deferred until playback and tasks are idle",
-                    kind.key()
+                    "[binary-maintenance] {} update downloaded; activation deferred until binary usage is idle blockers={}",
+                    kind.key(),
+                    snapshot.blocker_summary()
                 );
                 deferred_logged = true;
             }
@@ -401,12 +495,10 @@ fn activate_staged_binary_when_idle(
         }
 
         let activated = with_binary_kind_lock(kind, || {
-            if activity.is_busy() {
-                return Ok(false);
-            }
-
-            activate_staged_binary(kind, install_path, state_path, &staged)?;
-            Ok(true)
+            activate_managed_binary_if_idle(kind, || {
+                activate_staged_binary(kind, install_path, state_path, &staged)
+            })
+            .map(|activated| activated.is_some())
         })?;
 
         if activated {

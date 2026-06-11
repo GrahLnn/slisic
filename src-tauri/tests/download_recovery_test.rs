@@ -129,7 +129,8 @@ use appdb::connection::{InitDbOptions, get_db, reinit_db_with_options, reset_db}
 use appdb::model::meta::ModelMeta;
 use domain::collection_import::repair_stale_single_source_collections;
 use domain::downloads::model::{
-    CollectionSourceKind, DownloadLeaf, DownloadLeafStatus, DownloadTask, DownloadTrigger,
+    CollectionSourceKind, DownloadLeaf, DownloadLeafStatus, DownloadTask, DownloadTaskStatus,
+    DownloadTrigger,
 };
 use domain::downloads::repo::save_task;
 use domain::playlists::model::Collection;
@@ -258,6 +259,94 @@ fn repair_stale_single_source_collections_restores_playable_music_from_completed
         assert_eq!(restored.musics[0].group.folder, collection.folder);
         assert_eq!(restored.musics[0].start_ms, 0);
         assert_eq!(restored.musics[0].end_ms, 245_000);
+
+        let _ = std::fs::remove_dir_all(&save_root);
+        reset_db();
+    });
+}
+
+#[test]
+fn repair_stale_single_source_collections_recovers_stable_file_before_leaf_commit() {
+    let _guard = domain::playlists::PLAYLIST_DB_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let runtime = Runtime::new().expect("runtime should be created");
+
+    runtime.block_on(async {
+        let db_root = temp_test_dir("download_recovery_db");
+        reinit_db_with_options(
+            db_root,
+            InitDbOptions::default()
+                .versioned(false)
+                .changefeed_gc_interval(None),
+        )
+        .await
+        .expect("download recovery test db should initialize");
+        bootstrap_table(domain::playlists::model::Music::table_name()).await;
+        bootstrap_relation_table("includes").await;
+
+        let save_root = temp_test_dir("download_recovery_save");
+        let collection = Collection {
+            name: "Islands of the Lost and Forgotten - Disc 1: Isles of Serenity and Amnesia"
+                .to_string(),
+            url: "https://www.youtube.com/watch?v=S2q7r4_UaYM".to_string(),
+            folder:
+                "youtube/Islands of the Lost and Forgotten - Disc 1- Isles of Serenity and Amnesia"
+                    .to_string(),
+            musics: vec![],
+            last_updated: "2026-06-10T00:00:00+00:00".to_string(),
+            enable_updates: None,
+        };
+        let stable_file_name =
+            "Islands of the Lost and Forgotten - Disc 1- Isles of Serenity and Amnesia.m4a";
+        let absolute_path = save_root.join(&collection.folder).join(stable_file_name);
+        std::fs::create_dir_all(
+            absolute_path
+                .parent()
+                .expect("stable single file should have a parent directory"),
+        )
+        .expect("save root should be created for repair test");
+        std::fs::write(&absolute_path, b"ok")
+            .expect("downloaded stable file should exist for repair test");
+
+        domain::playlists::repo::upsert_collection(&collection)
+            .await
+            .expect("empty single collection shell should persist");
+
+        let mut task = DownloadTask::new(
+            "task-repair-half-committed-single",
+            collection.url.clone(),
+            DownloadTrigger::Manual,
+        );
+        task.collection_url = Some(collection.url.clone());
+        task.collection_name = Some(collection.name.clone());
+        task.collection_folder = Some(collection.folder.clone());
+        task.source_kind = Some(CollectionSourceKind::Single);
+        task.status = DownloadTaskStatus::Interrupted;
+
+        let mut leaf = DownloadLeaf::new("leaf-repair-half-committed-single", collection.url.clone(), 0);
+        leaf.title = Some(collection.name.clone());
+        leaf.duration_seconds = Some(5_733);
+        leaf.status = DownloadLeafStatus::Interrupted;
+        task.replace_leaf(leaf);
+
+        save_task(task)
+            .await
+            .expect("half-committed single download task should persist for recovery");
+
+        let repaired = repair_stale_single_source_collections(&save_root)
+            .await
+            .expect("stale single-source collections should repair from stable file evidence");
+        let restored = domain::playlists::repo::get_collection_by_url(&collection.url)
+            .await
+            .expect("reloaded collection lookup should succeed")
+            .expect("repaired collection should exist");
+
+        assert_eq!(repaired, 1);
+        assert_eq!(restored.musics.len(), 1);
+        assert_eq!(restored.musics[0].url, collection.url);
+        assert_eq!(restored.musics[0].path.as_deref(), Some(stable_file_name));
+        assert_eq!(restored.musics[0].end_ms, 5_733_000);
 
         let _ = std::fs::remove_dir_all(&save_root);
         reset_db();

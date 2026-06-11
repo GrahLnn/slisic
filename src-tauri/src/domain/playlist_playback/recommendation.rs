@@ -9,7 +9,10 @@ use crate::domain::playlists::model::{
 };
 #[cfg(test)]
 use crate::domain::playlists::model::{CollectionGroupOwner, Group, Music};
+use crate::domain::playlists::model::LoudnessProfile;
 use crate::domain::playlists::repo::PlaylistPlaybackTrackSource;
+#[cfg(not(test))]
+use crate::utils::binaries::{ManagedBinary, acquire_managed_binary_usage};
 #[cfg(not(test))]
 use anyhow::{Context, Result, anyhow};
 use appdb::{VectorDistance, VectorIndexType, impl_hnsw_index};
@@ -29,19 +32,18 @@ use std::fs;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 #[cfg(not(test))]
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::RwLock;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
-#[cfg(not(test))]
-use std::sync::{RwLock, TryLockError};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 #[cfg(not(test))]
 use tauri::{AppHandle, Manager};
 
-const AUDIO_STYLE_EMBEDDING_VERSION: &str = "audio-style-watermark-transition-v2";
+const AUDIO_STYLE_EMBEDDING_VERSION: &str = "audio-style-watermark-transition-v3-measured-flow";
 #[cfg(test)]
 pub(crate) const AUDIO_STYLE_EMBEDDING_VERSION_FOR_TEST: &str = AUDIO_STYLE_EMBEDDING_VERSION;
-const AUDIO_STYLE_MODEL_EVIDENCE_VERSION: &str = "audio-style-model-evidence-v1";
+const AUDIO_STYLE_MODEL_EVIDENCE_VERSION: &str = "audio-style-model-evidence-v2-measured-flow";
 const AUDIO_STYLE_SAMPLE_RATE: u32 = 16_000;
 const AUDIO_STYLE_INTERVAL_SECONDS: f64 = 8.0;
 const AUDIO_STYLE_INTERVAL_COUNT: usize = 1;
@@ -71,14 +73,23 @@ const AUDIO_STYLE_ROUTE_STYLE_PRESSURE_DECAY: f32 = 0.92;
 const AUDIO_STYLE_ROUTE_STYLE_PRESSURE_STRENGTH: f32 = 1.15;
 const AUDIO_STYLE_ROUTE_STYLE_PRESSURE_CAP: f32 = 1.25;
 const AUDIO_STYLE_LIKED_ROUTE_PRESSURE_SCALE: f32 = 0.30;
+const AUDIO_STYLE_AUDITORY_STATE_WIDTH: usize = 4;
+const AUDIO_STYLE_AUDITORY_PRESSURE_STRENGTHS: [f32; AUDIO_STYLE_AUDITORY_STATE_WIDTH] =
+    [3.90, 1.35, 0.70, 0.90];
+const AUDIO_STYLE_AUDITORY_PRESSURE_TARGETS: [f32; AUDIO_STYLE_AUDITORY_STATE_WIDTH] =
+    [0.44, 0.50, 0.50, 0.54];
+const AUDIO_STYLE_AUDITORY_PRESSURE_DECAY: f32 = 0.90;
+const AUDIO_STYLE_AUDITORY_RECENT_STATE_STRENGTH: f32 = 0.45;
+const AUDIO_STYLE_AUDITORY_EXTREME_STATE_STRENGTH: f32 = 1.15;
 #[cfg(not(test))]
-const AUDIO_STYLE_COMPLETED_SNAPSHOT_FALLBACK_LIMIT: usize = 8;
+const AUDIO_STYLE_COMPLETED_SNAPSHOT_FALLBACK_LIMIT: usize = 2;
 #[cfg(not(test))]
 const AUDIO_STYLE_INPUT_CHANGE_DEBOUNCE_MS: u64 = 500;
 #[cfg(not(test))]
 const AUDIO_STYLE_TRAINING_BASE_WORKERS: usize = 6;
 #[cfg(test)]
 const AUDIO_STYLE_TRAINING_BASE_WORKERS: usize = 1;
+const AUDIO_STYLE_TRAINING_HARDWARE_DECODE_WORKER_CAP: usize = 12;
 #[cfg(not(test))]
 const AUDIO_STYLE_TRAINING_PROGRESS_BATCH: usize = 16;
 #[cfg(test)]
@@ -89,6 +100,17 @@ const AUDIO_STYLE_TENSOR_BACKEND_ENV: &str = "SLISIC_AUDIO_STYLE_TENSOR_BACKEND"
 const CUBECL_WGPU_DEFAULT_DEVICE_ENV: &str = "CUBECL_WGPU_DEFAULT_DEVICE";
 const AUDIO_STYLE_TENSOR_HARDWARE_PROBE_ATTEMPTS: usize = 30;
 const AUDIO_STYLE_TENSOR_HARDWARE_PROBE_RETRY_MS: u64 = 500;
+const AUDIO_STYLE_TENSOR_HARDWARE_DECODE_PREFETCH_PER_DEVICE: usize = 1;
+const AUDIO_STYLE_TENSOR_HARDWARE_DECODE_PREFETCH_MAX: usize = 2;
+const AUDIO_STYLE_TENSOR_HARDWARE_MEMORY_BUDGET_MIN_BYTES: usize = 64 * 1024 * 1024;
+const AUDIO_STYLE_TENSOR_HARDWARE_MEMORY_BUDGET_BASE_BYTES: usize = 192 * 1024 * 1024;
+const AUDIO_STYLE_TENSOR_HARDWARE_MEMORY_BUDGET_DISCRETE_BYTES: usize = 512 * 1024 * 1024;
+const AUDIO_STYLE_TENSOR_HARDWARE_MEMORY_BUDGET_INTEGRATED_BYTES: usize = 192 * 1024 * 1024;
+const AUDIO_STYLE_TENSOR_HARDWARE_MEMORY_BUDGET_VIRTUAL_BYTES: usize = 256 * 1024 * 1024;
+const AUDIO_STYLE_TENSOR_HARDWARE_MEMORY_BUDGET_DEFAULT_BYTES: usize = 256 * 1024 * 1024;
+const AUDIO_STYLE_TENSOR_F32_BYTES: usize = std::mem::size_of::<f32>();
+const AUDIO_STYLE_TENSOR_HARDWARE_OP_COOLDOWN_MS: u64 = 15_000;
+const AUDIO_STYLE_TENSOR_HARDWARE_CLEANUP_SLOW_MS: u128 = 50;
 
 #[allow(dead_code)]
 struct AudioStyleEmbeddingVectorIndex;
@@ -112,6 +134,8 @@ static AUDIO_STYLE_RECOMMENDATION_RUNTIME: OnceLock<Arc<AudioStyleRecommendation
 
 #[cfg(not(test))]
 static AUDIO_STYLE_PENDING_INPUT_CHANGES: AtomicU64 = AtomicU64::new(0);
+static AUDIO_STYLE_HARDWARE_OP_ACTIVE: AtomicBool = AtomicBool::new(false);
+static AUDIO_STYLE_HARDWARE_OP_COOLDOWN_UNTIL_MS: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct PlaybackTrackKey {
@@ -197,6 +221,7 @@ struct CachedAudioStyleModelEvidence {
 struct CachedAudioStyleModelEmbedding {
     key: CachedPlaybackTrackKey,
     values: Vec<f32>,
+    loudness_profile: Option<LoudnessProfile>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -245,14 +270,19 @@ pub(crate) struct AudioStyleEmbeddingCache {
 pub(crate) struct AudioStylePlaylistPlaybackRecommender {
     embeddings: AudioStyleEmbeddingMap,
     #[cfg_attr(not(test), allow(dead_code))]
+    loudness_profiles: AudioStyleLoudnessProfileMap,
+    #[cfg_attr(not(test), allow(dead_code))]
     indexed_tracks: HashMap<PlaybackTrackKey, AudioStyleIndexedTrack>,
     sampling_geometry: Option<AudioStyleSamplingGeometry>,
+    auditory_geometry: Option<AudioStyleAuditoryGeometry>,
     trained: bool,
 }
 
 #[derive(Clone)]
 struct AudioStyleModelState {
     embeddings: AudioStyleEmbeddingMap,
+    loudness_profiles: AudioStyleLoudnessProfileMap,
+    auditory_geometry: Option<AudioStyleAuditoryGeometry>,
     indexed_tracks: HashMap<PlaybackTrackKey, AudioStyleIndexedTrack>,
     stats: AudioStyleStats,
     neighbor_index: AudioStyleNeighborIndex,
@@ -291,6 +321,18 @@ struct AudioStyleSamplingGeometry {
     similarity_high: f32,
 }
 
+type AudioStyleLoudnessProfileMap = HashMap<PlaybackTrackKey, LoudnessProfile>;
+
+#[derive(Clone)]
+struct AudioStyleAuditoryGeometry {
+    states: HashMap<PlaybackTrackKey, AudioStyleAuditoryState>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct AudioStyleAuditoryState {
+    values: [f32; AUDIO_STYLE_AUDITORY_STATE_WIDTH],
+}
+
 #[derive(Clone)]
 enum AudioStyleTensorRuntime {
     Hardware(AudioStyleTensorDevicePool),
@@ -300,6 +342,7 @@ enum AudioStyleTensorRuntime {
 #[derive(Clone)]
 struct AudioStyleTensorDevicePool {
     devices: Arc<Mutex<Vec<WgpuDevice>>>,
+    memory_budget_bytes: Arc<Mutex<usize>>,
     device_source: &'static str,
 }
 
@@ -313,6 +356,7 @@ struct AudioStyleCpuTensorRuntime {
 struct AudioStyleTensorBackendProfile {
     backend: AudioStyleTrainingTensorBackend,
     tensor_device_count: usize,
+    hardware_memory_budget_bytes: usize,
     device_source: &'static str,
 }
 
@@ -420,7 +464,6 @@ impl From<CachedPlaybackTrackKey> for PlaybackTrackKey {
 struct AudioStyleRecommendationRuntime {
     app: AppHandle,
     stable_snapshot: RwLock<Option<Arc<AudioStyleModelSnapshot>>>,
-    nightly_snapshot: RwLock<Option<Arc<AudioStyleModelSnapshot>>>,
     completed_snapshots: RwLock<Vec<Arc<AudioStyleModelSnapshot>>>,
     training: Mutex<AudioStyleTrainingState>,
     next_generation: AtomicU64,
@@ -594,10 +637,9 @@ impl AudioStyleRecommendationRuntime {
 
         let previous_snapshot = self.stable_snapshot();
         let generation_runtime = Arc::clone(self);
-        let publish_runtime = Arc::clone(self);
         let build_started = Instant::now();
         let final_snapshot = tauri::async_runtime::spawn_blocking(move || {
-            AudioStyleModelSnapshot::refresh_from_indexed_tracks_progressively(
+            AudioStyleModelSnapshot::refresh_from_indexed_tracks(
                 previous_snapshot.as_deref(),
                 &cache,
                 indexed_tracks,
@@ -607,7 +649,6 @@ impl AudioStyleRecommendationRuntime {
                         .fetch_add(1, Ordering::SeqCst)
                         + 1
                 },
-                |snapshot| publish_runtime.publish_nightly_snapshot(snapshot),
             )
         })
         .await
@@ -627,31 +668,6 @@ impl AudioStyleRecommendationRuntime {
         );
 
         Ok(())
-    }
-
-    fn publish_nightly_snapshot(&self, snapshot: AudioStyleModelSnapshot) {
-        let snapshot = Arc::new(snapshot);
-        let generation = snapshot.generation();
-        match self.nightly_snapshot.write() {
-            Ok(mut nightly) => {
-                *nightly = Some(Arc::clone(&snapshot));
-                log::info!(
-                    target: AUDIO_STYLE_LOG_TARGET,
-                    "audio_style_snapshot_published stage=nightly generation={generation}"
-                );
-            }
-            Err(_) => {
-                log::error!(
-                    target: AUDIO_STYLE_LOG_TARGET,
-                    "audio_style_snapshot_publish_failed stage=nightly generation={generation} error=\"lock_poisoned\""
-                );
-            }
-        }
-
-        self.try_publish_stable_snapshot(
-            snapshot,
-            StableSnapshotPublicationReason::NightlyProgress,
-        );
     }
 
     fn stable_snapshot(&self) -> Option<Arc<AudioStyleModelSnapshot>> {
@@ -700,72 +716,7 @@ impl AudioStyleRecommendationRuntime {
             }
         }
 
-        self.clear_nightly_snapshot_through_generation(generation);
         self.remember_completed_snapshot(snapshot);
-    }
-
-    fn try_publish_stable_snapshot(
-        &self,
-        snapshot: Arc<AudioStyleModelSnapshot>,
-        reason: StableSnapshotPublicationReason,
-    ) -> bool {
-        let generation = snapshot.generation();
-        match self.stable_snapshot.try_write() {
-            Ok(mut stable) => {
-                let stable_existed = stable.is_some();
-                if !should_replace_stable_snapshot(stable.as_deref(), snapshot.as_ref()) {
-                    return false;
-                }
-                *stable = Some(Arc::clone(&snapshot));
-                log::info!(
-                    target: AUDIO_STYLE_LOG_TARGET,
-                    "audio_style_snapshot_published stage=stable reason={} generation={generation}",
-                    reason.as_str()
-                );
-                if stable_snapshot_publication_requests_first_slot_refresh(reason, stable_existed) {
-                    playable_index::request_audio_style_model_available_refresh();
-                }
-            }
-            Err(TryLockError::WouldBlock) => {
-                log::debug!(
-                    target: AUDIO_STYLE_LOG_TARGET,
-                    "audio_style_snapshot_stable_promotion_skipped reason={} generation={generation} status=stable_busy",
-                    reason.as_str()
-                );
-                return false;
-            }
-            Err(TryLockError::Poisoned(_)) => {
-                log::error!(
-                    target: AUDIO_STYLE_LOG_TARGET,
-                    "audio_style_snapshot_publish_failed stage=stable reason={} generation={generation} error=\"lock_poisoned\"",
-                    reason.as_str()
-                );
-                return false;
-            }
-        }
-
-        self.clear_nightly_snapshot_through_generation(generation);
-        self.remember_completed_snapshot(snapshot);
-        true
-    }
-
-    fn clear_nightly_snapshot_through_generation(&self, generation: u64) {
-        match self.nightly_snapshot.write() {
-            Ok(mut nightly) => {
-                if nightly
-                    .as_ref()
-                    .is_some_and(|candidate| candidate.generation <= generation)
-                {
-                    *nightly = None;
-                }
-            }
-            Err(_) => {
-                log::error!(
-                    target: AUDIO_STYLE_LOG_TARGET,
-                    "audio_style_nightly_snapshot_clear_failed stable_generation={generation} error=\"lock_poisoned\""
-                );
-            }
-        }
     }
 
     fn remember_completed_snapshot(&self, snapshot: Arc<AudioStyleModelSnapshot>) {
@@ -819,7 +770,6 @@ pub(crate) fn initialize_audio_style_recommendation_runtime(app: AppHandle) {
         Arc::new(AudioStyleRecommendationRuntime {
             app: app.clone(),
             stable_snapshot: RwLock::new(None),
-            nightly_snapshot: RwLock::new(None),
             completed_snapshots: RwLock::new(Vec::new()),
             training: Mutex::new(AudioStyleTrainingState::default()),
             next_generation: AtomicU64::new(0),
@@ -1113,10 +1063,11 @@ impl AudioStyleTensorRuntime {
         let profile = runtime.backend_profile();
         log::info!(
             target: AUDIO_STYLE_LOG_TARGET,
-            "audio_style_tensor_runtime_selected tensor_backend={} tensor_device_count={} tensor_device_source={} cacheable={cacheable}",
+            "audio_style_tensor_runtime_selected tensor_backend={} tensor_device_count={} tensor_device_source={} hardware_memory_budget_bytes={} cacheable={cacheable}",
             profile.backend.as_str(),
             profile.tensor_device_count,
-            profile.device_source
+            profile.device_source,
+            profile.hardware_memory_budget_bytes
         );
         if cacheable {
             let _ = RUNTIME.set(runtime.clone());
@@ -1160,6 +1111,13 @@ impl AudioStyleTensorRuntime {
             devices: Arc::new(Mutex::new(
                 (0..device_count).map(WgpuDevice::DiscreteGpu).collect(),
             )),
+            memory_budget_bytes: Arc::new(Mutex::new(
+                audio_style_hardware_memory_budget_bytes_for_devices(
+                    &(0..device_count)
+                        .map(WgpuDevice::DiscreteGpu)
+                        .collect::<Vec<_>>(),
+                ),
+            )),
             device_source,
         })
     }
@@ -1169,28 +1127,36 @@ impl AudioStyleTensorRuntime {
             Self::Hardware(pool) => AudioStyleTensorBackendProfile {
                 backend: AudioStyleTrainingTensorBackend::Hardware,
                 tensor_device_count: pool.device_count(),
+                hardware_memory_budget_bytes: pool.memory_budget_bytes(),
                 device_source: pool.device_source,
             },
             Self::Cpu(runtime) => AudioStyleTensorBackendProfile {
                 backend: AudioStyleTrainingTensorBackend::Cpu,
                 tensor_device_count: 0,
+                hardware_memory_budget_bytes: 0,
                 device_source: runtime.device_source,
             },
         }
     }
 
     fn hardware_device_is_available(device: &WgpuDevice) -> bool {
-        run_audio_style_tensor_op(|| {
+        let mut touched_device = false;
+        let available = run_audio_style_tensor_op(|| {
             let probe = Tensor::<AudioStyleHardwareTensorBackend, 1>::from_data(
                 TensorData::new(vec![1.0_f32], [1]),
                 device,
             );
+            touched_device = true;
             AudioStyleHardwareTensorBackend::sync(device).ok()?;
             let values = probe.into_data().into_vec::<f32>().ok()?;
             (values == [1.0]).then_some(())
         })
         .flatten()
-        .is_some()
+        .is_some();
+        if touched_device {
+            audio_style_cleanup_hardware_device_memory("hardware_device_probe", device);
+        }
+        available
     }
 
     fn matrix_from_embeddings(
@@ -1224,30 +1190,56 @@ impl AudioStyleTensorRuntime {
         .unwrap_or_else(|| vec![0.0; AUDIO_STYLE_EMBEDDING_WIDTH])
     }
 
-    fn centered_similarity_matrix(
+    fn visit_centered_similarity_pairs(
         &self,
-        matrix: &AudioStyleTensorMatrix,
+        embeddings: &AudioStyleEmbeddingMap,
         mean: &[f32],
-    ) -> Option<Vec<f32>> {
+        mut visit: impl FnMut(&PlaybackTrackKey, &PlaybackTrackKey, f32),
+    ) -> bool {
+        if embeddings.len() < 2 || mean.len() != AUDIO_STYLE_EMBEDDING_WIDTH {
+            return false;
+        }
+
+        let matrix = self.matrix_from_embeddings(embeddings);
+        if matrix.keys.len() < 2 {
+            return false;
+        }
+
         match self {
             Self::Hardware(pool) => {
-                if let Some(values) = pool.centered_similarity_matrix(matrix, mean) {
-                    return Some(values);
+                if pool.visit_centered_similarity_pairs(&matrix, mean, &mut visit) {
+                    true
+                } else {
+                    Self::visit_centered_similarity_pairs_on_cpu(&matrix, mean, visit)
                 }
-                Self::centered_similarity_matrix_on::<AudioStyleCpuTensorBackend>(
-                    matrix,
-                    mean,
-                    &NdArrayDevice::Cpu,
-                )
             }
-            Self::Cpu(runtime) => {
-                Self::centered_similarity_matrix_on::<AudioStyleCpuTensorBackend>(
-                    matrix,
-                    mean,
-                    &runtime.device,
-                )
+            Self::Cpu(_) => Self::visit_centered_similarity_pairs_on_cpu(&matrix, mean, visit),
+        }
+    }
+
+    fn visit_centered_similarity_pairs_on_cpu(
+        matrix: &AudioStyleTensorMatrix,
+        mean: &[f32],
+        mut visit: impl FnMut(&PlaybackTrackKey, &PlaybackTrackKey, f32),
+    ) -> bool {
+        let Some(embeddings) = audio_style_embeddings_from_matrix(matrix) else {
+            return false;
+        };
+        for left_index in 0..embeddings.len() {
+            for right_index in (left_index + 1)..embeddings.len() {
+                let Some(similarity) =
+                    centered_cosine_cpu(&embeddings[left_index], &embeddings[right_index], mean)
+                else {
+                    continue;
+                };
+                visit(
+                    &matrix.keys[left_index],
+                    &matrix.keys[right_index],
+                    similarity,
+                );
             }
         }
+        true
     }
 
     fn centered_similarity_to_many(
@@ -1268,16 +1260,23 @@ impl AudioStyleTensorRuntime {
 
         let values =
             match self {
-                Self::Hardware(pool) => pool
-                    .centered_similarity_to_many(anchor, candidates, mean)
-                    .or_else(|| {
-                        Self::centered_similarity_to_many_on::<AudioStyleCpuTensorBackend>(
-                            anchor,
-                            candidates,
-                            mean,
-                            &NdArrayDevice::Cpu,
-                        )
-                    }),
+                Self::Hardware(pool) => if audio_style_hardware_similarity_grid_budget_allows(
+                    1,
+                    candidates.len(),
+                    pool.memory_budget_bytes(),
+                ) {
+                    pool.centered_similarity_to_many(anchor, candidates, mean)
+                } else {
+                    pool.centered_similarity_grid_tiled(&[anchor], candidates, mean)
+                }
+                .or_else(|| {
+                    Self::centered_similarity_to_many_on::<AudioStyleCpuTensorBackend>(
+                        anchor,
+                        candidates,
+                        mean,
+                        &NdArrayDevice::Cpu,
+                    )
+                }),
                 Self::Cpu(runtime) => Self::centered_similarity_to_many_on::<
                     AudioStyleCpuTensorBackend,
                 >(anchor, candidates, mean, &runtime.device),
@@ -1323,13 +1322,17 @@ impl AudioStyleTensorRuntime {
 
         let len = similarities.len();
         match self {
-            Self::Hardware(pool) => pool
-                .softmin_weights(
-                    similarity_values.clone(),
-                    liked_values.clone(),
-                    penalty_values.clone(),
-                    valid_values.clone(),
-                )
+            Self::Hardware(pool) => {
+                if audio_style_hardware_softmin_budget_allows(len, pool.memory_budget_bytes()) {
+                    pool.softmin_weights(
+                        similarity_values.clone(),
+                        liked_values.clone(),
+                        penalty_values.clone(),
+                        valid_values.clone(),
+                    )
+                } else {
+                    None
+                }
                 .or_else(|| {
                     Self::softmin_weights_on::<AudioStyleCpuTensorBackend>(
                         similarity_values,
@@ -1338,7 +1341,8 @@ impl AudioStyleTensorRuntime {
                         valid_values,
                         &NdArrayDevice::Cpu,
                     )
-                }),
+                })
+            }
             Self::Cpu(runtime) => Self::softmin_weights_on::<AudioStyleCpuTensorBackend>(
                 similarity_values,
                 liked_values,
@@ -1416,16 +1420,23 @@ impl AudioStyleTensorRuntime {
         }
 
         match self {
-            Self::Hardware(pool) => pool
-                .centered_similarity_grid(anchors, candidates, mean)
-                .or_else(|| {
-                    Self::centered_similarity_grid_on::<AudioStyleCpuTensorBackend>(
-                        anchors,
-                        candidates,
-                        mean,
-                        &NdArrayDevice::Cpu,
-                    )
-                }),
+            Self::Hardware(pool) => if audio_style_hardware_similarity_grid_budget_allows(
+                anchors.len(),
+                candidates.len(),
+                pool.memory_budget_bytes(),
+            ) {
+                pool.centered_similarity_grid(anchors, candidates, mean)
+            } else {
+                pool.centered_similarity_grid_tiled(anchors, candidates, mean)
+            }
+            .or_else(|| {
+                Self::centered_similarity_grid_on::<AudioStyleCpuTensorBackend>(
+                    anchors,
+                    candidates,
+                    mean,
+                    &NdArrayDevice::Cpu,
+                )
+            }),
             Self::Cpu(runtime) => Self::centered_similarity_grid_on::<AudioStyleCpuTensorBackend>(
                 anchors,
                 candidates,
@@ -1445,42 +1456,6 @@ impl AudioStyleTensorRuntime {
                 .into_data()
                 .into_vec::<f32>()
                 .ok()
-        })
-        .flatten()
-    }
-
-    fn centered_similarity_matrix_on<B: Backend>(
-        matrix: &AudioStyleTensorMatrix,
-        mean: &[f32],
-        device: &B::Device,
-    ) -> Option<Vec<f32>> {
-        if matrix.keys.is_empty() || mean.len() != AUDIO_STYLE_EMBEDDING_WIDTH {
-            return None;
-        }
-        run_audio_style_tensor_op(|| {
-            let rows = matrix.keys.len();
-            let embeddings = Self::matrix_tensor::<B>(matrix, device);
-            let mean = Self::vector_tensor::<B>(mean, device)?
-                .unsqueeze_dim::<2>(0)
-                .expand([rows, AUDIO_STYLE_EMBEDDING_WIDTH]);
-            let centered = embeddings - mean;
-            let norms = centered
-                .clone()
-                .square()
-                .sum_dim(1)
-                .sqrt()
-                .clamp_min(1.0e-6);
-            let denom = norms.clone().matmul(norms.transpose()).clamp_min(1.0e-6);
-            let similarities = (centered.clone().matmul(centered.transpose()) / denom)
-                .clamp(-1.0, 1.0)
-                .into_data()
-                .into_vec::<f32>()
-                .ok()?;
-            if similarities.len() == rows * rows {
-                Some(similarities)
-            } else {
-                None
-            }
         })
         .flatten()
     }
@@ -1647,15 +1622,22 @@ impl AudioStyleTensorDevicePool {
                 "audio_style_tensor_hardware_candidates_empty source={requested_source}"
             );
         }
-        let mut devices = available_audio_style_wgpu_hardware_devices_from_candidates(&candidates);
+        let mut devices =
+            selected_audio_style_wgpu_hardware_device_from_candidates(&candidates)
+                .into_iter()
+                .collect::<Vec<_>>();
         if devices.is_empty() && !candidates.is_empty() {
-            devices = wait_for_available_audio_style_wgpu_hardware_devices(&candidates);
+            devices = wait_for_available_audio_style_wgpu_hardware_device(&candidates)
+                .into_iter()
+                .collect::<Vec<_>>();
             if !devices.is_empty() {
                 device_source = "wgpu_runtime_recovered";
             }
         }
+        let memory_budget_bytes = audio_style_hardware_memory_budget_bytes_for_devices(&devices);
         Self {
             devices: Arc::new(Mutex::new(devices)),
+            memory_budget_bytes: Arc::new(Mutex::new(memory_budget_bytes)),
             device_source,
         }
     }
@@ -1675,9 +1657,31 @@ impl AudioStyleTensorDevicePool {
     }
 
     fn replace_devices(&self, devices: Vec<WgpuDevice>) {
+        let devices = audio_style_bound_hardware_device_pool(devices);
+        let budget = audio_style_hardware_memory_budget_bytes_for_devices(&devices);
         if let Ok(mut current) = self.devices.lock() {
             *current = devices;
         }
+        if let Ok(mut current_budget) = self.memory_budget_bytes.lock() {
+            *current_budget = budget;
+        }
+    }
+
+    fn memory_budget_bytes(&self) -> usize {
+        self.memory_budget_bytes
+            .lock()
+            .map(|budget| *budget)
+            .unwrap_or(AUDIO_STYLE_TENSOR_HARDWARE_MEMORY_BUDGET_MIN_BYTES)
+    }
+
+    fn throttle_memory_budget(&self) -> usize {
+        self.memory_budget_bytes
+            .lock()
+            .map(|mut budget| {
+                *budget = (*budget / 2).max(AUDIO_STYLE_TENSOR_HARDWARE_MEMORY_BUDGET_MIN_BYTES);
+                *budget
+            })
+            .unwrap_or(AUDIO_STYLE_TENSOR_HARDWARE_MEMORY_BUDGET_MIN_BYTES)
     }
 
     fn try_hardware_then_refresh<T>(
@@ -1685,44 +1689,53 @@ impl AudioStyleTensorDevicePool {
         operation: &'static str,
         mut run: impl FnMut(&WgpuDevice) -> Option<T>,
     ) -> Option<T> {
+        let Some(_permit) = AudioStyleHardwareOpPermit::try_acquire(operation) else {
+            return None;
+        };
         for device in self.devices() {
-            if let Some(values) = run(&device) {
+            let values = run(&device);
+            audio_style_cleanup_hardware_device_memory(operation, &device);
+            if let Some(values) = values {
                 return Some(values);
             }
         }
 
+        let budget_bytes = self.throttle_memory_budget();
+        audio_style_hardware_op_enter_cooldown();
         log::warn!(
             target: AUDIO_STYLE_LOG_TARGET,
-            "audio_style_tensor_hardware_op_failed operation={operation} action=refresh_accelerators"
+            "audio_style_tensor_hardware_op_failed operation={operation} action=throttle_and_refresh budget_bytes={budget_bytes}"
         );
         let candidates = audio_style_wgpu_hardware_device_candidates();
         let refreshed = if candidates.is_empty() {
-            Vec::new()
+            None
         } else {
-            wait_for_available_audio_style_wgpu_hardware_devices(&candidates)
+            wait_for_available_audio_style_wgpu_hardware_device(&candidates)
         };
-        if refreshed.is_empty() {
+        let Some(refreshed) = refreshed else {
             log::warn!(
                 target: AUDIO_STYLE_LOG_TARGET,
-                "audio_style_tensor_hardware_op_unavailable operation={operation} action=cpu_fallback"
+                "audio_style_tensor_hardware_op_unavailable operation={operation} action=cpu_fallback_for_this_call"
             );
             return None;
-        }
+        };
 
-        self.replace_devices(refreshed.clone());
+        self.replace_devices(vec![refreshed.clone()]);
         log::info!(
             target: AUDIO_STYLE_LOG_TARGET,
-            "audio_style_tensor_hardware_op_recovered operation={operation} devices={}",
-            refreshed.len()
+            "audio_style_tensor_hardware_op_recovered operation={operation} devices=1 selected_device={refreshed:?} budget_bytes={}",
+            self.memory_budget_bytes()
         );
-        for device in refreshed {
-            if let Some(values) = run(&device) {
-                return Some(values);
-            }
+        let values = run(&refreshed);
+        audio_style_cleanup_hardware_device_memory(operation, &refreshed);
+        if let Some(values) = values {
+            return Some(values);
         }
+        let budget_bytes = self.throttle_memory_budget();
+        audio_style_hardware_op_enter_cooldown();
         log::warn!(
             target: AUDIO_STYLE_LOG_TARGET,
-            "audio_style_tensor_hardware_op_retry_failed operation={operation} action=cpu_fallback"
+            "audio_style_tensor_hardware_op_retry_failed operation={operation} action=cpu_fallback_for_this_call budget_bytes={budget_bytes}"
         );
         None
     }
@@ -1735,16 +1748,65 @@ impl AudioStyleTensorDevicePool {
         })
     }
 
-    fn centered_similarity_matrix(
+    fn visit_centered_similarity_pairs(
         &self,
         matrix: &AudioStyleTensorMatrix,
         mean: &[f32],
-    ) -> Option<Vec<f32>> {
-        self.try_hardware_then_refresh("centered_similarity_matrix", |device| {
-            AudioStyleTensorRuntime::centered_similarity_matrix_on::<AudioStyleHardwareTensorBackend>(
-                matrix, mean, device,
-            )
-        })
+        visit: &mut impl FnMut(&PlaybackTrackKey, &PlaybackTrackKey, f32),
+    ) -> bool {
+        let Some(embeddings) = audio_style_embeddings_from_matrix(matrix) else {
+            return false;
+        };
+        let refs = embeddings.iter().collect::<Vec<_>>();
+        let (anchor_tile, candidate_tile) = match audio_style_hardware_similarity_grid_tile_shape(
+            refs.len(),
+            refs.len(),
+            self.memory_budget_bytes(),
+        ) {
+            Some(tile_shape) => tile_shape,
+            None => return false,
+        };
+
+        log::info!(
+            target: AUDIO_STYLE_LOG_TARGET,
+            "audio_style_tensor_hardware_op_streamed operation=centered_similarity_pairs rows={} anchor_tile={} candidate_tile={} budget_bytes={}",
+            refs.len(),
+            anchor_tile,
+            candidate_tile,
+            self.memory_budget_bytes()
+        );
+
+        for anchor_start in (0..refs.len()).step_by(anchor_tile) {
+            let anchor_end = (anchor_start + anchor_tile).min(refs.len());
+            for candidate_start in (0..refs.len()).step_by(candidate_tile) {
+                let candidate_end = (candidate_start + candidate_tile).min(refs.len());
+                let Some(tile) = self.centered_similarity_grid(
+                    &refs[anchor_start..anchor_end],
+                    &refs[candidate_start..candidate_end],
+                    mean,
+                ) else {
+                    return false;
+                };
+                let tile_candidate_count = candidate_end - candidate_start;
+                for local_anchor in 0..(anchor_end - anchor_start) {
+                    let left_index = anchor_start + local_anchor;
+                    for local_candidate in 0..tile_candidate_count {
+                        let right_index = candidate_start + local_candidate;
+                        if right_index <= left_index {
+                            continue;
+                        }
+                        let similarity =
+                            tile[local_anchor * tile_candidate_count + local_candidate];
+                        visit(
+                            &matrix.keys[left_index],
+                            &matrix.keys[right_index],
+                            similarity,
+                        );
+                    }
+                }
+            }
+        }
+        true
     }
 
     fn centered_similarity_to_many(
@@ -1790,6 +1852,167 @@ impl AudioStyleTensorDevicePool {
             )
         })
     }
+
+    fn centered_similarity_grid_tiled(
+        &self,
+        anchors: &[&AudioStyleEmbedding],
+        candidates: &[&AudioStyleEmbedding],
+        mean: &[f32],
+    ) -> Option<Vec<f32>> {
+        let (anchor_tile, candidate_tile) = audio_style_hardware_similarity_grid_tile_shape(
+            anchors.len(),
+            candidates.len(),
+            self.memory_budget_bytes(),
+        )?;
+        log::info!(
+            target: AUDIO_STYLE_LOG_TARGET,
+            "audio_style_tensor_hardware_op_tiled operation=centered_similarity_grid anchors={} candidates={} anchor_tile={} candidate_tile={} budget_bytes={}",
+            anchors.len(),
+            candidates.len(),
+            anchor_tile,
+            candidate_tile,
+            self.memory_budget_bytes()
+        );
+        let mut values = vec![0.0; anchors.len() * candidates.len()];
+        for anchor_start in (0..anchors.len()).step_by(anchor_tile) {
+            let anchor_end = (anchor_start + anchor_tile).min(anchors.len());
+            for candidate_start in (0..candidates.len()).step_by(candidate_tile) {
+                let candidate_end = (candidate_start + candidate_tile).min(candidates.len());
+                let tile = self.centered_similarity_grid(
+                    &anchors[anchor_start..anchor_end],
+                    &candidates[candidate_start..candidate_end],
+                    mean,
+                )?;
+                let tile_candidate_count = candidate_end - candidate_start;
+                for local_anchor in 0..(anchor_end - anchor_start) {
+                    let target_start =
+                        (anchor_start + local_anchor) * candidates.len() + candidate_start;
+                    let source_start = local_anchor * tile_candidate_count;
+                    values[target_start..target_start + tile_candidate_count]
+                        .copy_from_slice(&tile[source_start..source_start + tile_candidate_count]);
+                }
+            }
+        }
+        Some(values)
+    }
+}
+
+struct AudioStyleHardwareOpPermit;
+
+impl AudioStyleHardwareOpPermit {
+    fn try_acquire(operation: &'static str) -> Option<Self> {
+        let now_ms = current_time_millis();
+        let cooldown_until =
+            AUDIO_STYLE_HARDWARE_OP_COOLDOWN_UNTIL_MS.load(Ordering::SeqCst);
+        if now_ms < cooldown_until {
+            log::info!(
+                target: AUDIO_STYLE_LOG_TARGET,
+                "audio_style_tensor_hardware_op_skipped operation={operation} reason=cooldown active=false cooldown_remaining_ms={} action=cpu_fallback_for_this_call",
+                cooldown_until.saturating_sub(now_ms)
+            );
+            return None;
+        }
+
+        if AUDIO_STYLE_HARDWARE_OP_ACTIVE
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            log::info!(
+                target: AUDIO_STYLE_LOG_TARGET,
+                "audio_style_tensor_hardware_op_skipped operation={operation} reason=busy action=cpu_fallback_for_this_call"
+            );
+            return None;
+        }
+
+        Some(Self)
+    }
+}
+
+impl Drop for AudioStyleHardwareOpPermit {
+    fn drop(&mut self) {
+        AUDIO_STYLE_HARDWARE_OP_ACTIVE.store(false, Ordering::SeqCst);
+    }
+}
+
+fn audio_style_cleanup_hardware_device_memory(operation: &'static str, device: &WgpuDevice) {
+    let started = Instant::now();
+    let cleanup = catch_unwind(AssertUnwindSafe(|| {
+        let sync_ok = AudioStyleHardwareTensorBackend::sync(device).is_ok();
+        AudioStyleHardwareTensorBackend::memory_cleanup(device);
+        let cleanup_sync_ok = AudioStyleHardwareTensorBackend::sync(device).is_ok();
+        (sync_ok, cleanup_sync_ok)
+    }));
+    let elapsed_ms = started.elapsed().as_millis();
+    match cleanup {
+        Ok((sync_ok, cleanup_sync_ok))
+            if audio_style_hardware_cleanup_should_log(sync_ok, cleanup_sync_ok, elapsed_ms) =>
+        {
+            log::warn!(
+                target: AUDIO_STYLE_LOG_TARGET,
+                "audio_style_tensor_hardware_memory_cleanup operation={operation} device={device:?} sync_ok={sync_ok} cleanup_sync_ok={cleanup_sync_ok} elapsed_ms={elapsed_ms}"
+            );
+        }
+        Ok(_) => {}
+        Err(_) => {
+            log::warn!(
+                target: AUDIO_STYLE_LOG_TARGET,
+                "audio_style_tensor_hardware_memory_cleanup operation={operation} device={device:?} sync_ok=false cleanup_sync_ok=false panicked=true elapsed_ms={elapsed_ms}"
+            );
+        }
+    }
+}
+
+fn audio_style_hardware_cleanup_should_log(
+    sync_ok: bool,
+    cleanup_sync_ok: bool,
+    elapsed_ms: u128,
+) -> bool {
+    !sync_ok
+        || !cleanup_sync_ok
+        || elapsed_ms >= AUDIO_STYLE_TENSOR_HARDWARE_CLEANUP_SLOW_MS
+}
+
+#[cfg(test)]
+pub(crate) fn audio_style_hardware_cleanup_should_log_for_test(
+    sync_ok: bool,
+    cleanup_sync_ok: bool,
+    elapsed_ms: u128,
+) -> bool {
+    audio_style_hardware_cleanup_should_log(sync_ok, cleanup_sync_ok, elapsed_ms)
+}
+
+fn audio_style_hardware_op_enter_cooldown() {
+    let cooldown_until = current_time_millis()
+        .saturating_add(AUDIO_STYLE_TENSOR_HARDWARE_OP_COOLDOWN_MS);
+    AUDIO_STYLE_HARDWARE_OP_COOLDOWN_UNTIL_MS.store(cooldown_until, Ordering::SeqCst);
+}
+
+fn current_time_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+pub(crate) fn reset_audio_style_hardware_op_gate_for_test() {
+    AUDIO_STYLE_HARDWARE_OP_ACTIVE.store(false, Ordering::SeqCst);
+    AUDIO_STYLE_HARDWARE_OP_COOLDOWN_UNTIL_MS.store(0, Ordering::SeqCst);
+}
+
+#[cfg(test)]
+pub(crate) fn acquire_audio_style_hardware_op_for_test() -> bool {
+    AudioStyleHardwareOpPermit::try_acquire("test").is_some()
+}
+
+#[cfg(test)]
+pub(crate) fn hold_audio_style_hardware_op_for_test() -> Option<Box<dyn Send>> {
+    AudioStyleHardwareOpPermit::try_acquire("test").map(|permit| Box::new(permit) as Box<dyn Send>)
+}
+
+#[cfg(test)]
+pub(crate) fn enter_audio_style_hardware_op_cooldown_for_test() {
+    audio_style_hardware_op_enter_cooldown();
 }
 
 fn audio_style_wgpu_hardware_device_candidates() -> Vec<WgpuDevice> {
@@ -1813,7 +2036,9 @@ fn audio_style_wgpu_hardware_device_candidates() -> Vec<WgpuDevice> {
         .map(<WgpuDevice as CubeDevice>::from_id)
         .filter(audio_style_wgpu_device_is_hardware)
         .collect::<Vec<_>>();
-    devices.push(WgpuDevice::DefaultDevice);
+    if devices.is_empty() {
+        devices.push(WgpuDevice::DefaultDevice);
+    }
     devices.sort_by_key(audio_style_wgpu_device_priority_key);
     devices.dedup_by_key(|device| device.to_id());
     log::info!(
@@ -1832,19 +2057,18 @@ fn audio_style_wgpu_hardware_device_enumeration_roots() -> [WgpuDevice; 3] {
     ]
 }
 
-fn available_audio_style_wgpu_hardware_devices_from_candidates(
+fn selected_audio_style_wgpu_hardware_device_from_candidates(
     candidates: &[WgpuDevice],
-) -> Vec<WgpuDevice> {
+) -> Option<WgpuDevice> {
     candidates
         .iter()
-        .filter(|device| AudioStyleTensorRuntime::hardware_device_is_available(device))
+        .find(|device| AudioStyleTensorRuntime::hardware_device_is_available(device))
         .cloned()
-        .collect()
 }
 
-fn wait_for_available_audio_style_wgpu_hardware_devices(
+fn wait_for_available_audio_style_wgpu_hardware_device(
     candidates: &[WgpuDevice],
-) -> Vec<WgpuDevice> {
+) -> Option<WgpuDevice> {
     for attempt in 1..=AUDIO_STYLE_TENSOR_HARDWARE_PROBE_ATTEMPTS {
         log::warn!(
             target: AUDIO_STYLE_LOG_TARGET,
@@ -1856,14 +2080,13 @@ fn wait_for_available_audio_style_wgpu_hardware_devices(
         thread::sleep(Duration::from_millis(
             AUDIO_STYLE_TENSOR_HARDWARE_PROBE_RETRY_MS,
         ));
-        let devices = available_audio_style_wgpu_hardware_devices_from_candidates(candidates);
-        if !devices.is_empty() {
+        if let Some(device) = selected_audio_style_wgpu_hardware_device_from_candidates(candidates)
+        {
             log::info!(
                 target: AUDIO_STYLE_LOG_TARGET,
-                "audio_style_tensor_hardware_probe_recovered attempt={attempt} devices={}",
-                devices.len()
+                "audio_style_tensor_hardware_probe_recovered attempt={attempt} devices=1 selected_device={device:?}"
             );
-            return devices;
+            return Some(device);
         }
     }
     log::warn!(
@@ -1873,7 +2096,11 @@ fn wait_for_available_audio_style_wgpu_hardware_devices(
         AUDIO_STYLE_TENSOR_HARDWARE_PROBE_RETRY_MS,
         candidates.len()
     );
-    Vec::new()
+    None
+}
+
+fn audio_style_bound_hardware_device_pool(devices: Vec<WgpuDevice>) -> Vec<WgpuDevice> {
+    devices.into_iter().take(1).collect()
 }
 
 fn audio_style_wgpu_device_priority_key(device: &WgpuDevice) -> (u8, usize) {
@@ -2053,6 +2280,19 @@ pub(crate) fn sort_audio_style_wgpu_devices_for_test(values: &[&str]) -> Vec<Str
 }
 
 #[cfg(test)]
+pub(crate) fn bound_audio_style_hardware_device_pool_for_test(values: &[&str]) -> Vec<String> {
+    audio_style_bound_hardware_device_pool(
+        values
+            .iter()
+            .filter_map(|value| parse_audio_style_wgpu_device(value))
+            .collect(),
+    )
+    .into_iter()
+    .map(|device| format!("{device:?}"))
+    .collect()
+}
+
+#[cfg(test)]
 pub(crate) fn audio_style_wgpu_hardware_device_enumeration_roots_for_test() -> Vec<String> {
     audio_style_wgpu_hardware_device_enumeration_roots()
         .into_iter()
@@ -2114,12 +2354,242 @@ impl AudioStyleSamplingGeometry {
     }
 }
 
+impl AudioStyleAuditoryGeometry {
+    fn from_loudness_profiles(profiles: &AudioStyleLoudnessProfileMap) -> Option<Self> {
+        let rows = profiles
+            .iter()
+            .filter_map(|(key, profile)| {
+                AudioStyleRawAuditoryProfile::from_loudness_profile(*profile)
+                    .map(|raw| (key.clone(), raw))
+            })
+            .collect::<Vec<_>>();
+        if rows.len() < 2 {
+            return None;
+        }
+
+        let arousal_values = rows.iter().map(|(_, raw)| raw.arousal).collect::<Vec<_>>();
+        let brightness_values = rows
+            .iter()
+            .map(|(_, raw)| raw.brightness)
+            .collect::<Vec<_>>();
+        let density_values = rows.iter().map(|(_, raw)| raw.density).collect::<Vec<_>>();
+        let complexity_values = rows
+            .iter()
+            .map(|(_, raw)| raw.complexity)
+            .collect::<Vec<_>>();
+        let arousal_scale = AudioStyleRobustUnitScale::from_values(arousal_values);
+        let brightness_scale = AudioStyleRobustUnitScale::from_values(brightness_values);
+        let density_scale = AudioStyleRobustUnitScale::from_values(density_values);
+        let complexity_scale = AudioStyleRobustUnitScale::from_values(complexity_values);
+        let states = rows
+            .into_iter()
+            .map(|(key, raw)| {
+                (
+                    key,
+                    AudioStyleAuditoryState {
+                        values: [
+                            arousal_scale.project(raw.arousal),
+                            brightness_scale.project(raw.brightness),
+                            density_scale.project(raw.density),
+                            complexity_scale.project(raw.complexity),
+                        ],
+                    },
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        (!states.is_empty()).then_some(Self { states })
+    }
+
+    fn state_for_track(&self, track: &PlaybackTrack) -> Option<AudioStyleAuditoryState> {
+        self.states.get(&PlaybackTrackKey::from_track(track)).copied()
+    }
+
+    fn penalty_for_decision(
+        &self,
+        candidate: &PlaybackTrack,
+        recent_tracks: &[PlaybackTrack],
+    ) -> f32 {
+        let Some(candidate_state) = self.state_for_track(candidate) else {
+            return 0.0;
+        };
+        let recent_states = recent_tracks
+            .iter()
+            .rev()
+            .take(AUDIO_STYLE_ROUTE_RECENT_WINDOW)
+            .filter_map(|track| self.state_for_track(track))
+            .collect::<Vec<_>>();
+        if recent_states.is_empty() {
+            return 0.0;
+        }
+        let ewma = audio_style_auditory_recent_ewma(&recent_states);
+        let recent_center = audio_style_auditory_recent_center(&recent_states);
+        audio_style_auditory_penalty(candidate_state, ewma, recent_center)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AudioStyleRawAuditoryProfile {
+    arousal: f32,
+    brightness: f32,
+    density: f32,
+    complexity: f32,
+}
+
+impl AudioStyleRawAuditoryProfile {
+    fn from_loudness_profile(profile: LoudnessProfile) -> Option<Self> {
+        if !profile.is_valid() {
+            return None;
+        }
+        let integrated = finite_f32(profile.integrated_lufs)?;
+        let true_peak = finite_f32(profile.true_peak_dbtp?)?;
+        let lra = finite_f32(profile.lra?)?;
+        let short_p50 = finite_f32(profile.short_lufs_p50?)?;
+        let short_p80 = finite_f32(profile.short_lufs_p80?)?;
+        let short_p95 = finite_f32(profile.short_lufs_p95?)?;
+        let short_max = finite_f32(profile.short_lufs_max?)?;
+        let presence = finite_f32(profile.presence_db?)?;
+        let short_spread = (short_max - short_p50).max(0.0);
+        let sustained_gap = (short_p50 - integrated).abs();
+        Some(Self {
+            arousal: 0.45 * short_p95 + 0.28 * short_p80 + 0.17 * integrated + 0.10 * true_peak,
+            brightness: 0.78 * presence + 0.22 * true_peak,
+            density: 0.36 * short_p50 + 0.28 * short_p80 + 0.20 * integrated
+                - 0.11 * lra
+                - 0.05 * short_spread,
+            complexity: 0.54 * lra + 0.34 * short_spread + 0.12 * sustained_gap,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AudioStyleRobustUnitScale {
+    low: f32,
+    high: f32,
+}
+
+impl AudioStyleRobustUnitScale {
+    fn from_values(mut values: Vec<f32>) -> Self {
+        values.retain(|value| value.is_finite());
+        if values.is_empty() {
+            return Self {
+                low: 0.0,
+                high: 1.0,
+            };
+        }
+        values.sort_by(|left, right| left.total_cmp(right));
+        Self {
+            low: sorted_quantile(&values, 0.05),
+            high: sorted_quantile(&values, 0.95),
+        }
+    }
+
+    fn project(self, value: f32) -> f32 {
+        ((value - self.low) / (self.high - self.low).max(1.0e-6)).clamp(0.0, 1.0)
+    }
+}
+
+fn finite_f32(value: f32) -> Option<f32> {
+    value.is_finite().then_some(value)
+}
+
+fn audio_style_auditory_recent_ewma(
+    states_newest_first: &[AudioStyleAuditoryState],
+) -> AudioStyleAuditoryState {
+    let mut values = states_newest_first
+        .last()
+        .map(|state| state.values)
+        .unwrap_or(AUDIO_STYLE_AUDITORY_PRESSURE_TARGETS);
+    for state in states_newest_first.iter().rev().skip(1) {
+        for (value, next) in values.iter_mut().zip(state.values) {
+            *value = AUDIO_STYLE_AUDITORY_PRESSURE_DECAY * *value
+                + (1.0 - AUDIO_STYLE_AUDITORY_PRESSURE_DECAY) * next;
+        }
+    }
+    AudioStyleAuditoryState { values }
+}
+
+fn audio_style_auditory_recent_center(
+    states_newest_first: &[AudioStyleAuditoryState],
+) -> AudioStyleAuditoryState {
+    let count = states_newest_first.len().min(8);
+    if count == 0 {
+        return AudioStyleAuditoryState {
+            values: AUDIO_STYLE_AUDITORY_PRESSURE_TARGETS,
+        };
+    }
+    let mut values = [0.0_f32; AUDIO_STYLE_AUDITORY_STATE_WIDTH];
+    for state in states_newest_first.iter().take(count) {
+        for (value, component) in values.iter_mut().zip(state.values) {
+            *value += component;
+        }
+    }
+    for value in &mut values {
+        *value /= count as f32;
+    }
+    AudioStyleAuditoryState { values }
+}
+
+fn audio_style_auditory_penalty(
+    candidate: AudioStyleAuditoryState,
+    ewma: AudioStyleAuditoryState,
+    recent_center: AudioStyleAuditoryState,
+) -> f32 {
+    let mut directional = 0.0_f32;
+    let mut distance_to_recent = 0.0_f32;
+    let mut extreme = 0.0_f32;
+    for index in 0..AUDIO_STYLE_AUDITORY_STATE_WIDTH {
+        let target = AUDIO_STYLE_AUDITORY_PRESSURE_TARGETS[index];
+        let candidate_delta = candidate.values[index] - target;
+        let ewma_delta = ewma.values[index] - target;
+        directional += candidate_delta * ewma_delta * AUDIO_STYLE_AUDITORY_PRESSURE_STRENGTHS[index];
+        let recent_delta = candidate.values[index] - recent_center.values[index];
+        distance_to_recent += recent_delta * recent_delta;
+        extreme += (candidate_delta.abs() - 0.43).max(0.0);
+    }
+    let proximity = (-distance_to_recent / 0.08).exp();
+    (directional
+        + AUDIO_STYLE_AUDITORY_RECENT_STATE_STRENGTH * proximity
+        + AUDIO_STYLE_AUDITORY_EXTREME_STATE_STRENGTH * extreme)
+        .max(0.0)
+}
+
+fn audio_style_loudness_profiles_from_indexed_tracks(
+    indexed_tracks: &HashMap<PlaybackTrackKey, AudioStyleIndexedTrack>,
+) -> AudioStyleLoudnessProfileMap {
+    indexed_tracks
+        .iter()
+        .filter_map(|(key, indexed)| {
+            indexed
+                .track
+                .loudness_profile
+                .filter(|profile| profile.is_valid())
+                .map(|profile| (key.clone(), profile))
+        })
+        .collect()
+}
+
+fn audio_style_loudness_profiles_for_embeddings(
+    mut profiles: AudioStyleLoudnessProfileMap,
+    indexed_tracks: &HashMap<PlaybackTrackKey, AudioStyleIndexedTrack>,
+    embeddings: &AudioStyleEmbeddingMap,
+) -> AudioStyleLoudnessProfileMap {
+    for (key, indexed) in indexed_tracks {
+        if !embeddings.contains_key(key) || profiles.contains_key(key) {
+            continue;
+        }
+        if let Some(profile) = indexed.track.loudness_profile.filter(|profile| profile.is_valid()) {
+            profiles.insert(key.clone(), profile);
+        }
+    }
+    profiles.retain(|key, profile| embeddings.contains_key(key) && profile.is_valid());
+    profiles
+}
+
 impl AudioStyleModelState {
     fn refresh_from_with_progress(
         previous: Option<&Self>,
         cache: &AudioStyleEmbeddingCache,
         indexed_tracks: Vec<AudioStyleIndexedTrack>,
-        mut on_progress: impl FnMut(Self),
     ) -> Result<Self, AudioStyleModelUpdateFailure> {
         let mut indexed_by_key = HashMap::new();
         let mut ordered_tracks = Vec::new();
@@ -2141,19 +2611,15 @@ impl AudioStyleModelState {
             ordered_tracks.push((key, track));
         }
 
-        let previous_state = previous.cloned();
+        let loudness_profiles = audio_style_loudness_profiles_from_indexed_tracks(&indexed_by_key);
         let mut embeddings = AudioStyleEmbeddingMap::new();
         let mut previous_reused = HashSet::new();
         let mut cache_reused = 0usize;
         let mut missing_tracks = Vec::new();
         let mut failed = Vec::new();
-        let mut latest_state = None;
 
         for (key, track) in ordered_tracks {
-            if let Some(embedding) = previous_state
-                .as_ref()
-                .and_then(|state| state.embeddings.get(&key))
-            {
+            if let Some(embedding) = previous.and_then(|state| state.embeddings.get(&key)) {
                 embeddings.insert(key.clone(), Arc::clone(embedding));
                 previous_reused.insert(key);
                 continue;
@@ -2183,14 +2649,6 @@ impl AudioStyleModelState {
 
         let worker_profile = AudioStyleTrainingWorkerProfile::detect(missing_tracks.len());
         let worker_count = worker_profile.worker_count();
-        if worker_count > 0 && cache_reused > 0 {
-            latest_state = Some(Self::from_embeddings(
-                previous_state.as_ref(),
-                embeddings.clone(),
-                indexed_by_key.clone(),
-                &previous_reused,
-            ));
-        }
         if worker_count > 0 {
             let embedding_started = Instant::now();
             let missing_count = missing_tracks.len();
@@ -2268,14 +2726,18 @@ impl AudioStyleModelState {
                         || heartbeat_timed_out
                         || remaining == 0)
                 {
-                    let state = Self::publish_embedding_progress(
-                        latest_state.as_ref().or(previous_state.as_ref()),
-                        &mut embeddings,
-                        &indexed_by_key,
-                        pending.drain(..),
-                        &mut on_progress,
+                    Self::apply_embedding_progress(&mut embeddings, pending.drain(..));
+                    log::info!(
+                        target: AUDIO_STYLE_LOG_TARGET,
+                        "audio_style_training_embedding_progress total_tracks={} indexed_embeddings={} completed={} remaining={} cache_hits={} decoded={} failed={} policy=\"defer_snapshot_until_complete\"",
+                        indexed_by_key.len(),
+                        embeddings.len(),
+                        completed,
+                        remaining,
+                        cache_hits,
+                        decoded,
+                        failed.len()
                     );
-                    latest_state = Some(state);
                 }
             }
 
@@ -2292,14 +2754,7 @@ impl AudioStyleModelState {
             );
 
             if !pending.is_empty() {
-                let state = Self::publish_embedding_progress(
-                    latest_state.as_ref().or(previous_state.as_ref()),
-                    &mut embeddings,
-                    &indexed_by_key,
-                    pending.drain(..),
-                    &mut on_progress,
-                );
-                latest_state = Some(state);
+                Self::apply_embedding_progress(&mut embeddings, pending.drain(..));
             }
         } else if !indexed_by_key.is_empty() {
             log::info!(
@@ -2311,14 +2766,13 @@ impl AudioStyleModelState {
             );
         }
 
-        let state = latest_state.unwrap_or_else(|| {
-            Self::from_embeddings(
-                previous_state.as_ref(),
-                embeddings,
-                indexed_by_key,
-                &previous_reused,
-            )
-        });
+        let state = Self::from_embeddings(
+            previous,
+            embeddings,
+            loudness_profiles,
+            indexed_by_key,
+            &previous_reused,
+        );
         if state.embeddings.is_empty() {
             return Err(AudioStyleModelUpdateFailure {
                 state,
@@ -2335,38 +2789,35 @@ impl AudioStyleModelState {
         Ok(state)
     }
 
-    fn publish_embedding_progress(
-        previous: Option<&Self>,
+    fn apply_embedding_progress(
         embeddings: &mut AudioStyleEmbeddingMap,
-        indexed_by_key: &HashMap<PlaybackTrackKey, AudioStyleIndexedTrack>,
         progress: impl IntoIterator<Item = (PlaybackTrackKey, AudioStyleEmbedding)>,
-        on_progress: &mut impl FnMut(Self),
-    ) -> Self {
-        let reused_before_insert = embeddings.keys().cloned().collect::<HashSet<_>>();
+    ) {
         for (key, embedding) in progress {
             embeddings.insert(key, Arc::new(embedding));
         }
-        let state = Self::from_embeddings(
-            previous,
-            embeddings.clone(),
-            indexed_by_key.clone(),
-            &reused_before_insert,
-        );
-        on_progress(state.clone());
-        state
     }
 
     fn from_embeddings(
         previous: Option<&Self>,
         embeddings: AudioStyleEmbeddingMap,
+        loudness_profiles: AudioStyleLoudnessProfileMap,
         indexed_tracks: HashMap<PlaybackTrackKey, AudioStyleIndexedTrack>,
         previous_reused: &HashSet<PlaybackTrackKey>,
     ) -> Self {
         let stats = AudioStyleStats::from_embeddings(&embeddings);
         let neighbor_index =
             AudioStyleNeighborIndex::refresh_from(previous, &embeddings, &stats, previous_reused);
+        let loudness_profiles = audio_style_loudness_profiles_for_embeddings(
+            loudness_profiles,
+            &indexed_tracks,
+            &embeddings,
+        );
+        let auditory_geometry = AudioStyleAuditoryGeometry::from_loudness_profiles(&loudness_profiles);
         Self {
             embeddings,
+            loudness_profiles,
+            auditory_geometry,
             indexed_tracks,
             stats,
             neighbor_index,
@@ -2501,12 +2952,14 @@ impl AudioStyleTrainingWorkerProfile {
         let decode_prefetch_worker_count = audio_style_decode_prefetch_worker_count(
             tensor_profile.backend,
             tensor_profile.tensor_device_count,
+            tensor_profile.hardware_memory_budget_bytes,
         );
         let decode_worker_count = audio_style_training_worker_count_for_profile(
             track_count,
             cpu_parallelism,
             tensor_profile.backend,
             tensor_profile.tensor_device_count,
+            tensor_profile.hardware_memory_budget_bytes,
         );
         Self {
             cpu_parallelism,
@@ -2529,15 +2982,25 @@ fn audio_style_training_worker_count_for_profile(
     cpu_parallelism: usize,
     tensor_backend: AudioStyleTrainingTensorBackend,
     tensor_device_count: usize,
+    hardware_memory_budget_bytes: usize,
 ) -> usize {
     if track_count == 0 {
         return 0;
     }
 
     let cpu_parallelism = cpu_parallelism.max(1);
-    let decode_prefetch_workers =
-        audio_style_decode_prefetch_worker_count(tensor_backend, tensor_device_count);
-    let limit = cpu_parallelism
+    let decode_prefetch_workers = audio_style_decode_prefetch_worker_count(
+        tensor_backend,
+        tensor_device_count,
+        hardware_memory_budget_bytes,
+    );
+    let decode_workers = match tensor_backend {
+        AudioStyleTrainingTensorBackend::Hardware => {
+            cpu_parallelism.min(AUDIO_STYLE_TRAINING_HARDWARE_DECODE_WORKER_CAP)
+        }
+        AudioStyleTrainingTensorBackend::Cpu => cpu_parallelism,
+    };
+    let limit = decode_workers
         .saturating_add(decode_prefetch_workers)
         .max(1);
     track_count.min(limit)
@@ -2546,13 +3009,151 @@ fn audio_style_training_worker_count_for_profile(
 fn audio_style_decode_prefetch_worker_count(
     tensor_backend: AudioStyleTrainingTensorBackend,
     tensor_device_count: usize,
+    hardware_memory_budget_bytes: usize,
 ) -> usize {
     match tensor_backend {
         AudioStyleTrainingTensorBackend::Hardware => {
-            tensor_device_count.saturating_mul(AUDIO_STYLE_TRAINING_BASE_WORKERS)
+            let budget_units = hardware_memory_budget_bytes
+                .checked_div(AUDIO_STYLE_TENSOR_HARDWARE_MEMORY_BUDGET_BASE_BYTES)
+                .unwrap_or(0)
+                .max(1);
+            tensor_device_count
+                .saturating_mul(AUDIO_STYLE_TENSOR_HARDWARE_DECODE_PREFETCH_PER_DEVICE)
+                .min(budget_units.saturating_mul(2))
+                .min(AUDIO_STYLE_TENSOR_HARDWARE_DECODE_PREFETCH_MAX)
         }
         AudioStyleTrainingTensorBackend::Cpu => 0,
     }
+}
+
+fn audio_style_hardware_similarity_grid_budget_allows(
+    anchors: usize,
+    candidates: usize,
+    hardware_memory_budget_bytes: usize,
+) -> bool {
+    let bytes = anchors
+        .checked_mul(candidates)
+        .and_then(|values| values.checked_mul(AUDIO_STYLE_TENSOR_F32_BYTES))
+        .and_then(|similarities| {
+            anchors
+                .checked_add(candidates)
+                .and_then(|rows| rows.checked_mul(AUDIO_STYLE_EMBEDDING_WIDTH))
+                .and_then(|values| values.checked_mul(AUDIO_STYLE_TENSOR_F32_BYTES))
+                .and_then(|matrix| matrix.checked_mul(4))
+                .and_then(|working| working.checked_add(similarities.checked_mul(2)?))
+        });
+    audio_style_hardware_tensor_budget_allows(
+        "centered_similarity_grid",
+        bytes,
+        hardware_memory_budget_bytes,
+    )
+}
+
+fn audio_style_hardware_softmin_budget_allows(
+    len: usize,
+    hardware_memory_budget_bytes: usize,
+) -> bool {
+    let bytes = len
+        .checked_mul(8)
+        .and_then(|values| values.checked_mul(AUDIO_STYLE_TENSOR_F32_BYTES));
+    audio_style_hardware_tensor_budget_allows(
+        "softmin_weights",
+        bytes,
+        hardware_memory_budget_bytes,
+    )
+}
+
+fn audio_style_hardware_similarity_grid_tile_shape(
+    anchors: usize,
+    candidates: usize,
+    hardware_memory_budget_bytes: usize,
+) -> Option<(usize, usize)> {
+    if anchors == 0 || candidates == 0 {
+        return None;
+    }
+    if !audio_style_hardware_similarity_grid_budget_allows(1, 1, hardware_memory_budget_bytes) {
+        return None;
+    }
+    let mut anchor_tile = anchors;
+    let mut candidate_tile = candidates;
+    while !audio_style_hardware_similarity_grid_budget_allows(
+        anchor_tile,
+        candidate_tile,
+        hardware_memory_budget_bytes,
+    ) {
+        if anchor_tile >= candidate_tile && anchor_tile > 1 {
+            anchor_tile = anchor_tile.div_ceil(2);
+        } else if candidate_tile > 1 {
+            candidate_tile = candidate_tile.div_ceil(2);
+        } else if anchor_tile > 1 {
+            anchor_tile = anchor_tile.div_ceil(2);
+        } else {
+            return None;
+        }
+    }
+    Some((anchor_tile.max(1), candidate_tile.max(1)))
+}
+
+fn audio_style_hardware_tensor_budget_allows(
+    operation: &'static str,
+    bytes: Option<usize>,
+    hardware_memory_budget_bytes: usize,
+) -> bool {
+    let Some(bytes) = bytes else {
+        log::warn!(
+            target: AUDIO_STYLE_LOG_TARGET,
+            "audio_style_tensor_hardware_op_skipped operation={operation} reason=budget_overflow action=try_tile_or_cpu_fallback"
+        );
+        return false;
+    };
+    if bytes <= hardware_memory_budget_bytes {
+        return true;
+    }
+    log::info!(
+        target: AUDIO_STYLE_LOG_TARGET,
+        "audio_style_tensor_hardware_op_skipped operation={operation} reason=budget_exceeded bytes={bytes} budget_bytes={} action=try_tile_or_cpu_fallback",
+        hardware_memory_budget_bytes
+    );
+    false
+}
+
+fn audio_style_hardware_memory_budget_bytes_for_devices(devices: &[WgpuDevice]) -> usize {
+    devices
+        .iter()
+        .map(audio_style_hardware_memory_budget_bytes_for_device)
+        .max()
+        .unwrap_or(0)
+        .max(AUDIO_STYLE_TENSOR_HARDWARE_MEMORY_BUDGET_MIN_BYTES)
+}
+
+fn audio_style_hardware_memory_budget_bytes_for_device(device: &WgpuDevice) -> usize {
+    match device {
+        WgpuDevice::DiscreteGpu(_) => AUDIO_STYLE_TENSOR_HARDWARE_MEMORY_BUDGET_DISCRETE_BYTES,
+        WgpuDevice::IntegratedGpu(_) => AUDIO_STYLE_TENSOR_HARDWARE_MEMORY_BUDGET_INTEGRATED_BYTES,
+        WgpuDevice::VirtualGpu(_) => AUDIO_STYLE_TENSOR_HARDWARE_MEMORY_BUDGET_VIRTUAL_BYTES,
+        WgpuDevice::DefaultDevice => AUDIO_STYLE_TENSOR_HARDWARE_MEMORY_BUDGET_DEFAULT_BYTES,
+        #[allow(deprecated)]
+        WgpuDevice::BestAvailable => AUDIO_STYLE_TENSOR_HARDWARE_MEMORY_BUDGET_DEFAULT_BYTES,
+        WgpuDevice::Existing(_) => AUDIO_STYLE_TENSOR_HARDWARE_MEMORY_BUDGET_DEFAULT_BYTES,
+        WgpuDevice::Cpu => 0,
+    }
+}
+
+fn audio_style_embeddings_from_matrix(
+    matrix: &AudioStyleTensorMatrix,
+) -> Option<Vec<AudioStyleEmbedding>> {
+    if matrix.flat_values.len() != matrix.keys.len() * AUDIO_STYLE_EMBEDDING_WIDTH {
+        return None;
+    }
+    matrix
+        .flat_values
+        .chunks_exact(AUDIO_STYLE_EMBEDDING_WIDTH)
+        .map(|values| {
+            Some(AudioStyleEmbedding {
+                values: values.to_vec(),
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -2571,6 +3172,29 @@ pub(crate) fn audio_style_training_worker_count_for_test(
             AudioStyleTrainingTensorBackend::Cpu
         },
         tensor_device_count,
+        audio_style_hardware_memory_budget_bytes_for_test(tensor_device_count),
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn audio_style_hardware_similarity_grid_tile_shape_for_test(
+    anchors: usize,
+    candidates: usize,
+    tensor_device_count: usize,
+) -> Option<(usize, usize)> {
+    audio_style_hardware_similarity_grid_tile_shape(
+        anchors,
+        candidates,
+        audio_style_hardware_memory_budget_bytes_for_test(tensor_device_count),
+    )
+}
+
+#[cfg(test)]
+fn audio_style_hardware_memory_budget_bytes_for_test(tensor_device_count: usize) -> usize {
+    audio_style_hardware_memory_budget_bytes_for_devices(
+        &(0..tensor_device_count)
+            .map(WgpuDevice::DiscreteGpu)
+            .collect::<Vec<_>>(),
     )
 }
 
@@ -2794,31 +3418,19 @@ impl AudioStyleNeighborIndex {
 
         let mean = stats.mean();
         let runtime = AudioStyleTensorRuntime::new();
-        let matrix = runtime.matrix_from_embeddings(embeddings);
-        let Some(similarities) = runtime.centered_similarity_matrix(&matrix, &mean) else {
+        let mut neighbor_lists =
+            HashMap::<PlaybackTrackKey, Vec<(PlaybackTrackKey, f32)>>::with_capacity(
+                embeddings.len(),
+            );
+        for key in embeddings.keys() {
+            neighbor_lists.insert(key.clone(), Vec::new());
+        }
+
+        if !runtime.visit_centered_similarity_pairs(embeddings, &mean, |left, right, similarity| {
+            push_audio_style_neighbor(neighbor_lists.get_mut(left), right.clone(), similarity);
+            push_audio_style_neighbor(neighbor_lists.get_mut(right), left.clone(), similarity);
+        }) {
             return Self::from_embeddings_pairwise(embeddings, &mean);
-        };
-        let mut neighbor_lists = matrix
-            .keys
-            .iter()
-            .cloned()
-            .map(|key| (key, Vec::<(PlaybackTrackKey, f32)>::new()))
-            .collect::<HashMap<_, _>>();
-        let row_count = matrix.keys.len();
-        for left_index in 0..row_count {
-            for right_index in (left_index + 1)..row_count {
-                let similarity = similarities[left_index * row_count + right_index];
-                push_audio_style_neighbor(
-                    neighbor_lists.get_mut(&matrix.keys[left_index]),
-                    matrix.keys[right_index].clone(),
-                    similarity,
-                );
-                push_audio_style_neighbor(
-                    neighbor_lists.get_mut(&matrix.keys[right_index]),
-                    matrix.keys[left_index].clone(),
-                    similarity,
-                );
-            }
         }
 
         let neighbors = neighbor_lists
@@ -3068,6 +3680,35 @@ fn centered_cosine(
         .flatten()
 }
 
+fn centered_cosine_cpu(
+    left: &AudioStyleEmbedding,
+    right: &AudioStyleEmbedding,
+    mean: &[f32],
+) -> Option<f32> {
+    if left.values.len() != AUDIO_STYLE_EMBEDDING_WIDTH
+        || right.values.len() != AUDIO_STYLE_EMBEDDING_WIDTH
+        || mean.len() != AUDIO_STYLE_EMBEDDING_WIDTH
+    {
+        return None;
+    }
+
+    let mut dot = 0.0_f32;
+    let mut left_norm = 0.0_f32;
+    let mut right_norm = 0.0_f32;
+    for ((left, right), mean) in left.values.iter().zip(right.values.iter()).zip(mean.iter()) {
+        let centered_left = left - mean;
+        let centered_right = right - mean;
+        dot += centered_left * centered_right;
+        left_norm += centered_left * centered_left;
+        right_norm += centered_right * centered_right;
+    }
+    let denom = left_norm.sqrt() * right_norm.sqrt();
+    if denom <= 1.0e-6 {
+        return None;
+    }
+    Some((dot / denom).clamp(-1.0, 1.0))
+}
+
 fn centered_cosine_to_zero_mean(embedding: &AudioStyleEmbedding, mean: &[f32]) -> Option<f32> {
     if embedding.values.len() != AUDIO_STYLE_EMBEDDING_WIDTH
         || mean.len() != AUDIO_STYLE_EMBEDDING_WIDTH
@@ -3156,6 +3797,7 @@ impl AudioStyleEmbeddingCache {
             }
         }
 
+        let _usage = acquire_audio_style_ffmpeg_usage();
         let embedding = decode_audio_style_embedding(&self.ffmpeg_path, track)?;
         write_cached_audio_style_embedding(&cache_path, &embedding)?;
         Ok(AudioStyleEmbeddingTrainingResult {
@@ -3222,8 +3864,10 @@ impl AudioStylePlaylistPlaybackRecommender {
         (
             Self {
                 embeddings,
+                loudness_profiles: HashMap::new(),
                 indexed_tracks: HashMap::new(),
                 sampling_geometry: None,
+                auditory_geometry: None,
                 trained: false,
             },
             missing_tracks,
@@ -3258,8 +3902,10 @@ impl AudioStylePlaylistPlaybackRecommender {
             .collect();
         Self {
             embeddings,
+            loudness_profiles: HashMap::new(),
             indexed_tracks: HashMap::new(),
             sampling_geometry: None,
+            auditory_geometry: None,
             trained: false,
         }
     }
@@ -3269,12 +3915,16 @@ impl AudioStylePlaylistPlaybackRecommender {
         values: impl IntoIterator<Item = (PlaybackTrack, Vec<f32>, String)>,
     ) -> Self {
         let mut embeddings = HashMap::new();
+        let mut loudness_profiles = HashMap::new();
         let mut indexed_tracks = HashMap::new();
         for (track, values, collection_folder) in values {
             let Some(embedding) = AudioStyleEmbedding::normalize(values) else {
                 continue;
             };
             let key = PlaybackTrackKey::from_track(&track);
+            if let Some(profile) = track.loudness_profile.filter(|profile| profile.is_valid()) {
+                loudness_profiles.insert(key.clone(), profile);
+            }
             embeddings.insert(key.clone(), Arc::new(embedding));
             indexed_tracks.insert(
                 key,
@@ -3287,7 +3937,7 @@ impl AudioStylePlaylistPlaybackRecommender {
                 },
             );
         }
-        Self::from_trained_embeddings(embeddings, indexed_tracks)
+        Self::from_trained_embeddings_with_loudness(embeddings, loudness_profiles, indexed_tracks)
     }
 
     pub(crate) fn has_embedding_for(&self, track: &PlaybackTrack) -> bool {
@@ -3514,6 +4164,7 @@ impl AudioStylePlaylistPlaybackRecommender {
             &PlaybackTrackKey::from_track(current_track),
             &self.embeddings,
             self.sampling_geometry.as_ref(),
+            self.auditory_geometry.as_ref(),
             self.trained,
             recently_played_tracks,
             draw,
@@ -3529,9 +4180,19 @@ impl AudioStylePlaylistPlaybackRecommender {
         embeddings: AudioStyleEmbeddingMap,
         indexed_tracks: HashMap<PlaybackTrackKey, AudioStyleIndexedTrack>,
     ) -> Self {
+        Self::from_trained_embeddings_with_loudness(embeddings, HashMap::new(), indexed_tracks)
+    }
+
+    #[cfg(test)]
+    fn from_trained_embeddings_with_loudness(
+        embeddings: AudioStyleEmbeddingMap,
+        loudness_profiles: AudioStyleLoudnessProfileMap,
+        indexed_tracks: HashMap<PlaybackTrackKey, AudioStyleIndexedTrack>,
+    ) -> Self {
         let state = AudioStyleModelState::from_embeddings(
             None,
             embeddings,
+            loudness_profiles,
             indexed_tracks,
             &HashSet::new(),
         );
@@ -3542,8 +4203,10 @@ impl AudioStylePlaylistPlaybackRecommender {
         let sampling_geometry = AudioStyleSamplingGeometry::from_state(state);
         Self {
             embeddings: state.embeddings.clone(),
+            loudness_profiles: state.loudness_profiles.clone(),
             indexed_tracks: state.indexed_tracks.clone(),
             sampling_geometry,
+            auditory_geometry: state.auditory_geometry.clone(),
             trained,
         }
     }
@@ -3585,47 +4248,21 @@ impl AudioStyleModelSnapshot {
                 track,
             })
             .collect();
-        let mut snapshots = Vec::new();
-        Self::refresh_from_indexed_tracks_progressively(
-            previous,
-            cache,
-            indexed_tracks,
-            || generation,
-            |snapshot| snapshots.push(snapshot),
-        )?;
-        Ok(snapshots
-            .pop()
-            .expect("audio style refresh publishes a snapshot on success"))
+        Self::refresh_from_indexed_tracks(previous, cache, indexed_tracks, || generation)
     }
 
-    fn refresh_from_indexed_tracks_progressively(
+    fn refresh_from_indexed_tracks(
         previous: Option<&Self>,
         cache: &AudioStyleEmbeddingCache,
         indexed_tracks: Vec<AudioStyleIndexedTrack>,
         mut next_generation: impl FnMut() -> u64,
-        mut publish: impl FnMut(Self),
     ) -> Result<Self, AudioStyleModelUpdateFailure> {
-        let mut published_progress = false;
-        let mut last_published = None;
         let state = AudioStyleModelState::refresh_from_with_progress(
             previous.map(|snapshot| snapshot.state.as_ref()),
             cache,
             indexed_tracks,
-            |state| {
-                let snapshot = Self::from_state(next_generation(), Arc::new(state));
-                published_progress = true;
-                publish(snapshot.clone());
-                last_published = Some(snapshot);
-            },
         )?;
-
-        if !published_progress {
-            let snapshot = Self::from_state(next_generation(), Arc::new(state));
-            publish(snapshot.clone());
-            return Ok(snapshot);
-        }
-
-        Ok(last_published.expect("progressive refresh must publish when progress was reported"))
+        Ok(Self::from_state(next_generation(), Arc::new(state)))
     }
 
     fn from_state(generation: u64, state: Arc<AudioStyleModelState>) -> Self {
@@ -3643,6 +4280,7 @@ impl AudioStyleModelSnapshot {
     fn from_model_evidence(
         generation: u64,
         embeddings: AudioStyleEmbeddingMap,
+        loudness_profiles: AudioStyleLoudnessProfileMap,
     ) -> Result<Self, String> {
         if embeddings.is_empty() {
             return Err("audio style model evidence has no embeddings".to_string());
@@ -3650,6 +4288,7 @@ impl AudioStyleModelSnapshot {
         let state = Arc::new(AudioStyleModelState::from_embeddings(
             None,
             embeddings,
+            loudness_profiles,
             HashMap::new(),
             &HashSet::new(),
         ));
@@ -3677,6 +4316,7 @@ impl AudioStyleModelSnapshot {
         let state = Arc::new(AudioStyleModelState::from_embeddings(
             None,
             recommender.embeddings.clone(),
+            recommender.loudness_profiles.clone(),
             HashMap::new(),
             &HashSet::new(),
         ));
@@ -3693,6 +4333,7 @@ impl AudioStyleModelSnapshot {
         let state = Arc::new(AudioStyleModelState::from_embeddings(
             None,
             recommender.embeddings.clone(),
+            recommender.loudness_profiles.clone(),
             recommender.indexed_tracks.clone(),
             &HashSet::new(),
         ));
@@ -3710,14 +4351,12 @@ impl AudioStyleModelSnapshot {
     }
 
     #[cfg(test)]
-    pub(crate) fn refresh_progressively_for_test(
-        first_generation: u64,
+    pub(crate) fn refresh_from_indexed_tracks_for_test(
+        generation: u64,
         previous: Option<&Self>,
         cache: &AudioStyleEmbeddingCache,
         tracks: Vec<PlaybackTrack>,
-    ) -> Result<Vec<Self>, String> {
-        let mut next_generation = first_generation;
-        let mut snapshots = Vec::new();
+    ) -> Result<Self, String> {
         let indexed_tracks = tracks
             .into_iter()
             .map(|track| AudioStyleIndexedTrack {
@@ -3732,19 +4371,8 @@ impl AudioStyleModelSnapshot {
                 track,
             })
             .collect();
-        Self::refresh_from_indexed_tracks_progressively(
-            previous,
-            cache,
-            indexed_tracks,
-            || {
-                let generation = next_generation;
-                next_generation += 1;
-                generation
-            },
-            |snapshot| snapshots.push(snapshot),
-        )
-        .map_err(|error| error.into_message())?;
-        Ok(snapshots)
+        Self::refresh_from_indexed_tracks(previous, cache, indexed_tracks, || generation)
+            .map_err(|error| error.into_message())
     }
 
     #[cfg(test)]
@@ -3768,7 +4396,6 @@ pub(crate) fn should_replace_stable_snapshot(
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum StableSnapshotPublicationReason {
-    NightlyProgress,
     TrainingComplete,
     StartupEvidence,
 }
@@ -3777,7 +4404,6 @@ impl StableSnapshotPublicationReason {
     #[cfg(not(test))]
     fn as_str(self) -> &'static str {
         match self {
-            Self::NightlyProgress => "nightly_progress",
             Self::TrainingComplete => "training_complete",
             Self::StartupEvidence => "startup_evidence",
         }
@@ -3789,7 +4415,6 @@ pub(crate) fn stable_snapshot_publication_requests_first_slot_refresh(
     stable_existed: bool,
 ) -> bool {
     match reason {
-        StableSnapshotPublicationReason::NightlyProgress => !stable_existed,
         StableSnapshotPublicationReason::TrainingComplete => true,
         StableSnapshotPublicationReason::StartupEvidence => !stable_existed,
     }
@@ -4185,6 +4810,7 @@ fn select_next_audio_style_candidate(
     anchor_key: &PlaybackTrackKey,
     embeddings: &AudioStyleEmbeddingMap,
     sampling_geometry: Option<&AudioStyleSamplingGeometry>,
+    auditory_geometry: Option<&AudioStyleAuditoryGeometry>,
     model_trained: bool,
     recently_played_tracks: &[PlaybackTrack],
     draw_unit: f32,
@@ -4271,6 +4897,11 @@ fn select_next_audio_style_candidate(
         .enumerate()
         .map(|(index, candidate)| {
             basin_pressure.penalty_for_track(candidate) + route_pressure.penalty_for_index(index)
+                + auditory_geometry
+                    .map(|geometry| {
+                        geometry.penalty_for_decision(candidate, recently_played_tracks)
+                    })
+                    .unwrap_or(0.0)
         })
         .collect::<Vec<_>>();
     let weights =
@@ -4710,6 +5341,14 @@ fn decode_audio_style_embedding(
     AudioStyleEmbedding::normalize(merged)
         .ok_or_else(|| "audio style embedding has invalid width".to_string())
 }
+
+#[cfg(not(test))]
+fn acquire_audio_style_ffmpeg_usage() -> crate::utils::binaries::ManagedBinaryUsageGuard {
+    acquire_managed_binary_usage(ManagedBinary::Ffmpeg, "audio_style")
+}
+
+#[cfg(test)]
+fn acquire_audio_style_ffmpeg_usage() {}
 
 fn audio_style_interval_starts(track: &PlaybackTrack) -> Vec<f64> {
     let start_seconds = track.start_ms as f64 / 1000.0;
@@ -5268,6 +5907,7 @@ fn cached_audio_style_model_evidence_from_snapshot(
             .map(|(key, embedding)| CachedAudioStyleModelEmbedding {
                 key: CachedPlaybackTrackKey::from(key),
                 values: embedding.values.clone(),
+                loudness_profile: snapshot.state.loudness_profiles.get(key).copied(),
             })
             .collect(),
     }
@@ -5293,6 +5933,7 @@ fn snapshot_from_cached_audio_style_model_evidence(
     }
 
     let mut embeddings = AudioStyleEmbeddingMap::new();
+    let mut loudness_profiles = AudioStyleLoudnessProfileMap::new();
     for cached_embedding in cached.embeddings {
         let key = PlaybackTrackKey::from(cached_embedding.key);
         let embedding =
@@ -5302,10 +5943,16 @@ fn snapshot_from_cached_audio_style_model_evidence(
                     path.display()
                 )
             })?;
+        if let Some(profile) = cached_embedding
+            .loudness_profile
+            .filter(|profile| profile.is_valid())
+        {
+            loudness_profiles.insert(key.clone(), profile);
+        }
         embeddings.insert(key, Arc::new(embedding));
     }
 
-    AudioStyleModelSnapshot::from_model_evidence(cached.generation, embeddings)
+    AudioStyleModelSnapshot::from_model_evidence(cached.generation, embeddings, loudness_profiles)
 }
 
 fn read_cached_audio_style_model_evidence(path: &Path) -> Result<AudioStyleModelSnapshot, String> {
@@ -5548,6 +6195,7 @@ pub(crate) fn choose_next_audio_style_candidate_for_test(
         &PlaybackTrackKey::from_track(current_track),
         &embeddings.embeddings,
         embeddings.sampling_geometry.as_ref(),
+        embeddings.auditory_geometry.as_ref(),
         embeddings.trained,
         &[],
         draw_unit,
@@ -5568,6 +6216,7 @@ pub(crate) fn choose_next_audio_style_candidate_with_generation_for_test(
         &PlaybackTrackKey::from_track(current_track),
         &embeddings.embeddings,
         embeddings.sampling_geometry.as_ref(),
+        embeddings.auditory_geometry.as_ref(),
         embeddings.trained,
         &[],
         draw_unit,
@@ -5609,6 +6258,7 @@ pub(crate) fn choose_next_audio_style_candidate_with_recent_history_for_test(
         &PlaybackTrackKey::from_track(current_track),
         &embeddings.embeddings,
         embeddings.sampling_geometry.as_ref(),
+        embeddings.auditory_geometry.as_ref(),
         embeddings.trained,
         recently_played_tracks,
         draw_unit,

@@ -1,14 +1,16 @@
 use super::{
-    AudioTailTrimCandidate, AudioTailTrimFocusMusic, AudioTailTrimRequest, TailEvidenceFrame,
-    TailEvidenceSignature, audio_tail_trim_queue_insert_index_for_test,
+    AudioTailTrimCandidate, AudioTailTrimFocusMusic, AudioTailTrimRequest, AudioTailTrimScopeKind,
+    TailEvidenceFrame, TailEvidenceSignature, audio_tail_trim_queue_insert_index_for_test,
     audio_tail_trim_queue_overflow_action_for_test,
     audio_tail_trim_source_requires_active_rerun_for_test, build_audio_tail_trim_focus_plan,
     build_audio_tail_trim_plan, detect_common_tail_evidence, merge_audio_tail_trim_request,
     prioritize_audio_tail_trim_focus_candidate, read_audio_tail_trim_pending_task_file_for_test,
     remove_audio_tail_trim_pending_task_from_file_for_test, resolve_audio_tail_trim_evidence,
-    take_next_audio_tail_trim_candidate, upsert_audio_tail_trim_pending_task_file_for_test,
+    select_audio_tail_trim_scope, take_next_audio_tail_trim_candidate,
+    upsert_audio_tail_trim_pending_task_file_for_test,
 };
 use crate::domain::downloads::model::CollectionSourceKind;
+use crate::domain::playlists::model::{Collection, CollectionGroupOwner, Group, Music};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -33,7 +35,54 @@ fn request(collection_url: &str, save_root: &str) -> AudioTailTrimRequest {
         collection_url: collection_url.to_string(),
         source_kind: CollectionSourceKind::List,
         save_root: PathBuf::from(save_root),
+        scope_group_url: None,
         focus_music: None,
+    }
+}
+
+fn collection_owner() -> CollectionGroupOwner {
+    CollectionGroupOwner {
+        name: "Collection".to_string(),
+        url: "https://example.com/collection".to_string(),
+        folder: "Collection".to_string(),
+        last_updated: "now".to_string(),
+        enable_updates: None,
+    }
+}
+
+fn group(url: &str, folder: &str) -> Group {
+    Group {
+        name: folder.to_string(),
+        url: url.to_string(),
+        collection: collection_owner(),
+        folder: folder.to_string(),
+    }
+}
+
+fn music(group: &Group, name: &str, path: &str, start_ms: u32, end_ms: u32) -> Music {
+    Music {
+        occurrence_id: String::new(),
+        name: name.to_string(),
+        alias: name.to_string(),
+        group: group.clone(),
+        canonical_music_id: format!("source:https://example.com/{name}:{start_ms}:{end_ms}"),
+        url: format!("https://example.com/{name}"),
+        path: Some(path.to_string()),
+        start_ms,
+        end_ms,
+        liked: false,
+        loudness_profile: None,
+    }
+}
+
+fn collection_with_musics(musics: Vec<Music>) -> Collection {
+    Collection {
+        name: "Collection".to_string(),
+        url: "https://example.com/collection".to_string(),
+        folder: "Collection".to_string(),
+        musics,
+        last_updated: "now".to_string(),
+        enable_updates: None,
     }
 }
 
@@ -148,11 +197,74 @@ fn candidate(name: &str, end_ms: u32) -> AudioTailTrimCandidate {
 }
 
 #[test]
-fn pending_audio_tail_trim_tasks_deduplicate_by_collection_url() {
+fn tail_trim_scope_rejects_single_audio_chapter_group() {
+    let album = group("https://example.com/group", "Album");
+    let collection = collection_with_musics(vec![
+        music(&album, "chapter-1", "album.m4a", 0, 90_000),
+        music(&album, "chapter-2", "album.m4a", 90_000, 180_000),
+        music(&album, "chapter-3", "album.m4a", 180_000, 270_000),
+    ]);
+    let candidates =
+        super::collect_audio_tail_trim_candidates(&collection, &PathBuf::from("C:/Music"));
+
+    assert_eq!(
+        select_audio_tail_trim_scope(&collection, candidates, Some(&album.url)),
+        None
+    );
+}
+
+#[test]
+fn tail_trim_scope_prefers_requested_group_over_parent_collection() {
+    let focused_group = group("https://example.com/focused", "Focused");
+    let other_group = group("https://example.com/other", "Other");
+    let collection = collection_with_musics(vec![
+        music(&focused_group, "a", "focused/a.m4a", 0, 90_000),
+        music(&focused_group, "b", "focused/b.m4a", 0, 90_000),
+        music(&focused_group, "c", "focused/c.m4a", 0, 90_000),
+        music(&other_group, "d", "other/d.m4a", 0, 90_000),
+        music(&other_group, "e", "other/e.m4a", 0, 90_000),
+        music(&other_group, "f", "other/f.m4a", 0, 90_000),
+    ]);
+    let candidates =
+        super::collect_audio_tail_trim_candidates(&collection, &PathBuf::from("C:/Music"));
+
+    let scope = select_audio_tail_trim_scope(&collection, candidates, Some(&focused_group.url))
+        .expect("multi-file group should be eligible");
+
+    assert_eq!(scope.kind, AudioTailTrimScopeKind::Group);
+    assert_eq!(scope.url, focused_group.url);
+    assert_eq!(scope.candidates.len(), 3);
+    assert_eq!(scope.skipped_collection_candidates, 3);
+}
+
+#[test]
+fn tail_trim_scope_rejects_parent_collection_when_multiple_groups_exist() {
+    let first_group = group("https://example.com/first", "First");
+    let second_group = group("https://example.com/second", "Second");
+    let collection = collection_with_musics(vec![
+        music(&first_group, "a", "first/a.m4a", 0, 90_000),
+        music(&first_group, "b", "first/b.m4a", 0, 90_000),
+        music(&first_group, "c", "first/c.m4a", 0, 90_000),
+        music(&second_group, "d", "second/d.m4a", 0, 90_000),
+        music(&second_group, "e", "second/e.m4a", 0, 90_000),
+        music(&second_group, "f", "second/f.m4a", 0, 90_000),
+    ]);
+    let candidates =
+        super::collect_audio_tail_trim_candidates(&collection, &PathBuf::from("C:/Music"));
+
+    assert_eq!(
+        select_audio_tail_trim_scope(&collection, candidates, None),
+        None
+    );
+}
+
+#[test]
+fn pending_audio_tail_trim_tasks_deduplicate_by_collection_scope() {
     let path = temp_pending_path("deduplicate");
     let first = request("https://example.com/list", "C:/Music/Old");
     let replacement = request("https://example.com/list", "C:/Music/New");
-    let other = request("https://example.com/other", "C:/Music/Other");
+    let mut other = request("https://example.com/list", "C:/Music/Other");
+    other.scope_group_url = Some("https://example.com/group".to_string());
 
     upsert_audio_tail_trim_pending_task_file_for_test(&path, &first)
         .expect("first pending task should persist");

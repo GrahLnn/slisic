@@ -4,17 +4,19 @@ use super::model::{
 use super::service::{
     BACKEND_PLAYBACK_TARGET_LUFS, PlaybackRangeCompletion, PlaybackStartRequestRegistry,
     PlaybackTrackLikedUpdate, SpectrumPlaybackScope, are_playback_tracks_equal,
-    backend_playback_normalization, playback_normalization_for_track_loudness_profile,
-    playback_request_for_track_range, playback_tracks_match,
-    resolve_active_request_track_liked_update,
-    resolve_playback_absolute_position_ms, resolve_playback_range_completion,
-    resolve_playback_request_position, resolve_playback_seek_pause_after_request,
-    resolve_playback_seek_range, resolve_playback_status_track_identity,
-    resolve_repeated_playback_range_override, resolve_session_track_liked_update,
-    resolve_spectrum_loop_playback_range, resolve_spectrum_loop_signal_active_range,
-    resolve_spectrum_loop_signal_seek_position, resolve_spectrum_music_playback_range,
-    resolve_spectrum_playback_loop_signal, should_accept_spectrum_playback_signal,
-    should_commit_spectrum_playback_scope_exit, should_resume_playback_seek_cancel,
+    backend_playback_normalization, playback_loudness_plan_for_profile,
+    playback_normalization_for_track_loudness_profile, playback_request_for_track_range,
+    playback_tracks_match, resolve_active_request_track_liked_update,
+    resolve_playback_absolute_position_ms, resolve_plain_playback_status_completion,
+    resolve_playback_clock_position_ms, resolve_playback_range_completion,
+    resolve_playback_range_deadline_ms, resolve_playback_request_position,
+    resolve_playback_seek_pause_after_request, resolve_playback_seek_range,
+    resolve_playback_status_track_identity, resolve_repeated_playback_range_override,
+    resolve_session_track_liked_update, resolve_spectrum_loop_playback_range,
+    resolve_spectrum_loop_signal_active_range, resolve_spectrum_loop_signal_seek_position,
+    resolve_spectrum_music_playback_range, resolve_spectrum_playback_loop_signal,
+    should_accept_spectrum_playback_signal, should_commit_spectrum_playback_scope_exit,
+    should_resume_playback_seek_cancel,
 };
 use super::track_identity_substitution::{
     PlaybackTrackIdentityUpdate, resolve_active_request_track_identity_update,
@@ -81,6 +83,79 @@ fn playback_normalization_requires_loudness_evidence() {
     assert_eq!(normalization.target_lufs, BACKEND_PLAYBACK_TARGET_LUFS);
     assert_eq!(normalization.integrated_lufs, Some(-24.0));
     assert_eq!(normalization.true_peak_dbtp, None);
+}
+
+#[test]
+fn loudness_profile_correction_does_not_penalize_dynamic_tracks_by_lra() {
+    let dark_shadows = LoudnessProfile {
+        integrated_lufs: -7.580,
+        true_peak_dbtp: Some(1.550),
+        lra: Some(3.300),
+        short_lufs_p50: Some(-7.800),
+        short_lufs_p80: Some(-6.700),
+        short_lufs_p95: Some(-5.900),
+        short_lufs_max: Some(-5.600),
+        presence_db: Some(-6.946),
+        model_adjustment_db: None,
+    };
+    let parade = LoudnessProfile {
+        integrated_lufs: -10.420,
+        true_peak_dbtp: Some(0.570),
+        lra: Some(19.100),
+        short_lufs_p50: Some(-12.400),
+        short_lufs_p80: Some(-8.800),
+        short_lufs_p95: Some(-7.900),
+        short_lufs_max: Some(-7.500),
+        presence_db: Some(-9.543),
+        model_adjustment_db: None,
+    };
+
+    let dark_plan =
+        playback_loudness_plan_for_profile(&dark_shadows).expect("valid profile should plan");
+    let parade_plan =
+        playback_loudness_plan_for_profile(&parade).expect("valid profile should plan");
+
+    assert_eq!(parade_plan.lra_correction_db, 0.0);
+    assert!(
+        parade_plan.final_gain_db > dark_plan.final_gain_db,
+        "a quieter integrated track should still receive more gain when LRA is only profile evidence"
+    );
+}
+
+#[test]
+fn loudness_profile_correction_uses_body_loudness_not_only_p95() {
+    let underground = LoudnessProfile {
+        integrated_lufs: -16.700,
+        true_peak_dbtp: Some(-0.450),
+        lra: Some(5.300),
+        short_lufs_p50: Some(-17.000),
+        short_lufs_p80: Some(-15.700),
+        short_lufs_p95: Some(-14.600),
+        short_lufs_max: Some(-13.900),
+        presence_db: Some(-8.300),
+        model_adjustment_db: None,
+    };
+    let caelestinum = LoudnessProfile {
+        integrated_lufs: -12.630,
+        true_peak_dbtp: Some(-0.170),
+        lra: Some(11.000),
+        short_lufs_p50: Some(-13.400),
+        short_lufs_p80: Some(-11.000),
+        short_lufs_p95: Some(-9.600),
+        short_lufs_max: Some(-8.700),
+        presence_db: Some(-8.404),
+        model_adjustment_db: None,
+    };
+
+    let underground_plan =
+        playback_loudness_plan_for_profile(&underground).expect("valid profile should plan");
+    let caelestinum_plan =
+        playback_loudness_plan_for_profile(&caelestinum).expect("valid profile should plan");
+
+    assert!(
+        caelestinum_plan.short_term_correction_db > underground_plan.short_term_correction_db,
+        "a track whose body remains quieter after base gain should not be penalized only because p95 is hotter"
+    );
 }
 
 #[test]
@@ -518,6 +593,90 @@ fn playback_range_completion_finishes_random_playback_after_open_ended_spectrum_
     assert_eq!(
         resolve_playback_range_completion(80_000, active_range, None),
         PlaybackRangeCompletion::Finish,
+    );
+}
+
+#[test]
+fn plain_playback_completion_uses_player_position_not_wall_clock() {
+    let active_range = ActivePlaybackRange {
+        start_ms: 156_000,
+        end_ms: 241_000,
+    };
+    let status = ffplayr::AudioStatus {
+        duration_ms: Some(5_000_000),
+        path: Some("album.m4a".to_string()),
+        paused: false,
+        playing: true,
+        position_ms: 7_000,
+    };
+
+    assert_eq!(
+        resolve_plain_playback_status_completion(&status, active_range),
+        (PlaybackRangeCompletion::Continue, 163_000),
+    );
+
+    let status = ffplayr::AudioStatus {
+        position_ms: 85_000,
+        ..status
+    };
+
+    assert_eq!(
+        resolve_plain_playback_status_completion(&status, active_range),
+        (PlaybackRangeCompletion::Finish, 241_000),
+    );
+}
+
+#[test]
+fn playback_clock_advances_between_player_status_samples() {
+    assert_eq!(resolve_playback_clock_position_ms(156_000, 7_000, true), 163_000);
+    assert_eq!(
+        resolve_playback_clock_position_ms(156_000, 30_000, false),
+        156_000,
+        "paused playback keeps the current request clock anchored"
+    );
+}
+
+#[test]
+fn playback_range_deadline_uses_the_current_request_boundary() {
+    let active_range = ActivePlaybackRange {
+        start_ms: 2_924_000,
+        end_ms: 2_983_000,
+    };
+
+    assert_eq!(
+        resolve_playback_range_deadline_ms(2_924_000, active_range, None, true, false),
+        Some(59_000)
+    );
+    assert_eq!(
+        resolve_playback_range_deadline_ms(2_983_000, active_range, None, true, false),
+        Some(0)
+    );
+    assert_eq!(
+        resolve_playback_range_deadline_ms(2_940_000, active_range, None, false, false),
+        None,
+        "stopped playback must wait for fresh status instead of consuming a wall-clock deadline"
+    );
+    assert_eq!(
+        resolve_playback_range_deadline_ms(2_940_000, active_range, None, true, true),
+        None,
+        "paused playback must not consume the current track deadline"
+    );
+}
+
+#[test]
+fn playback_range_deadline_uses_spectrum_loop_boundary_when_present() {
+    let active_range = ActivePlaybackRange {
+        start_ms: 20_000,
+        end_ms: 80_000,
+    };
+    let loop_range = ActivePlaybackRange {
+        start_ms: 25_000,
+        end_ms: 45_000,
+    };
+
+    assert_eq!(
+        resolve_playback_range_deadline_ms(40_000, active_range, Some(loop_range), true, false),
+        Some(5_000)
     );
 }
 

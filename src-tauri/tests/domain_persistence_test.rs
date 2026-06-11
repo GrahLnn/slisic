@@ -157,6 +157,13 @@ mod domain {
         ));
     }
 
+    pub mod audio_tail_trim {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/domain/audio_tail_trim.rs"
+        ));
+    }
+
     pub mod downloads {
         pub mod model {
             include!(concat!(

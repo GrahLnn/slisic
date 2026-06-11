@@ -20,7 +20,7 @@ use super::repo::{
     upsert_playlist_surface,
 };
 use crate::domain::playlists::PLAYLIST_DB_TEST_LOCK;
-use appdb::connection::{InitDbOptions, get_db, reinit_db_with_options, reset_db};
+use appdb::connection::{get_db, reinit_db, reset_db};
 use appdb::model::meta::{ModelMeta, ResolveRecordId};
 use appdb::{AutoFill, Crud};
 use serde_json::json;
@@ -58,14 +58,9 @@ fn acquire_db_test_lock() -> std::sync::MutexGuard<'static, ()> {
 }
 
 async fn ensure_db() {
-    reinit_db_with_options(
-        test_db_path(),
-        InitDbOptions::default()
-            .versioned(false)
-            .changefeed_gc_interval(None),
-    )
-    .await
-    .expect("playlist repo database should initialize");
+    reinit_db(test_db_path())
+        .await
+        .expect("playlist repo database should initialize");
 }
 
 async fn bootstrap_table(table: &str) {

@@ -16,6 +16,8 @@ use super::yt_dlp::{
 };
 use crate::domain::collection_import::{self, CollectionSyncPlan, PlannedLeaf};
 use crate::domain::playlists::model::{Collection, Group};
+#[cfg(not(test))]
+use crate::utils::binaries::{ManagedBinary, acquire_managed_binary_usage};
 use anyhow::{Context, Result, bail};
 use appdb::Id;
 use reqwest::Url;
@@ -427,7 +429,12 @@ pub(crate) async fn probe_root_with_limit(
         .acquire_owned()
         .await
         .context("download root probe limiter closed")?;
-    run_blocking(move || client.probe_root(&url)).await
+    let _usage = acquire_downloads_ytdlp_usage();
+    run_blocking(move || {
+        let _usage = _usage;
+        client.probe_root(&url)
+    })
+    .await
 }
 
 pub(crate) async fn probe_root_shell_with_limit(
@@ -451,7 +458,13 @@ pub(crate) async fn probe_root_shell_with_limit(
     }
 
     let probe_start = Instant::now();
-    match run_blocking(move || client.probe_root_shell(&url)).await {
+    let _usage = acquire_downloads_ytdlp_usage();
+    match run_blocking(move || {
+        let _usage = _usage;
+        client.probe_root_shell(&url)
+    })
+    .await
+    {
         Ok(shell) => {
             if let Some(trace) = trace.as_ref() {
                 trace(RootShellProbeTraceEvent::Done {
@@ -471,6 +484,14 @@ pub(crate) async fn probe_root_shell_with_limit(
         }
     }
 }
+
+#[cfg(not(test))]
+fn acquire_downloads_ytdlp_usage() -> crate::utils::binaries::ManagedBinaryUsageGuard {
+    acquire_managed_binary_usage(ManagedBinary::YtDlp, "downloads_probe")
+}
+
+#[cfg(test)]
+fn acquire_downloads_ytdlp_usage() {}
 
 #[cfg(test)]
 pub(crate) fn root_probe_parallelism() -> usize {

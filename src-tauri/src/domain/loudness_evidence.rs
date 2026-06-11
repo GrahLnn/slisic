@@ -7,7 +7,7 @@ use super::playlists::model::LoudnessProfile;
 #[cfg(not(test))]
 use super::playlists::repo as playlists_repo;
 #[cfg(not(test))]
-use crate::utils::binaries::{ManagedBinary, ensure_managed_binary};
+use crate::utils::binaries::{ManagedBinary, acquire_managed_binary_usage, ensure_managed_binary};
 #[cfg(not(test))]
 use anyhow::bail;
 use anyhow::{Context, Result, anyhow};
@@ -18,7 +18,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 #[cfg(not(test))]
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(not(test))]
 use std::sync::{Arc, Mutex, OnceLock};
 #[cfg(not(test))]
@@ -51,7 +51,6 @@ struct LoudnessEvidenceRuntime {
     app: AppHandle,
     pending_task_path: PathBuf,
     pending_task_file_lock: Mutex<()>,
-    active_binary_tasks: AtomicUsize,
     active_identities: Mutex<HashSet<String>>,
     published_profiles: Mutex<HashMap<String, LoudnessProfile>>,
     completion_notify: tokio::sync::Notify,
@@ -64,28 +63,6 @@ struct QueuedLoudnessEvidence {
     request: LoudnessEvidenceRequest,
     source: LoudnessEvidenceSource,
     _claim: LoudnessIdentityClaim,
-}
-
-#[cfg(not(test))]
-struct ActiveLoudnessBinaryTaskGuard {
-    runtime: Arc<LoudnessEvidenceRuntime>,
-}
-
-#[cfg(not(test))]
-impl ActiveLoudnessBinaryTaskGuard {
-    fn new(runtime: Arc<LoudnessEvidenceRuntime>) -> Self {
-        runtime.active_binary_tasks.fetch_add(1, Ordering::SeqCst);
-        Self { runtime }
-    }
-}
-
-#[cfg(not(test))]
-impl Drop for ActiveLoudnessBinaryTaskGuard {
-    fn drop(&mut self) {
-        self.runtime
-            .active_binary_tasks
-            .fetch_sub(1, Ordering::SeqCst);
-    }
 }
 
 #[cfg(not(test))]
@@ -168,7 +145,6 @@ pub(crate) fn initialize_runtime(app: AppHandle) {
                 app,
                 pending_task_path,
                 pending_task_file_lock: Mutex::new(()),
-                active_binary_tasks: AtomicUsize::new(0),
                 active_identities: Mutex::new(HashSet::new()),
                 published_profiles: Mutex::new(HashMap::new()),
                 completion_notify: tokio::sync::Notify::new(),
@@ -179,15 +155,6 @@ pub(crate) fn initialize_runtime(app: AppHandle) {
         .clone();
 
     restore_pending_loudness_tasks(runtime);
-}
-
-#[cfg(not(test))]
-pub(crate) fn has_active_loudness_binary_tasks() -> bool {
-    let Some(runtime) = LOUDNESS_EVIDENCE_RUNTIME.get() else {
-        return false;
-    };
-
-    runtime.active_binary_tasks.load(Ordering::SeqCst) > 0
 }
 
 #[cfg(not(test))]
@@ -353,8 +320,8 @@ impl LoudnessEvidenceSource {
             Self::PendingStore => 0,
             Self::DownloadedLeaf => 1,
             Self::AudioTailTrim => 1,
-            Self::DirectRequest => 2,
-            Self::FirstSlot => 3,
+            Self::FirstSlot => 2,
+            Self::DirectRequest => 3,
         }
     }
 
@@ -572,7 +539,7 @@ fn loudness_queue_insert_index(
     }
     current_sources
         .into_iter()
-        .position(|current| current.priority() <= priority)
+        .position(|current| current.priority() < priority)
         .unwrap_or(current_len)
 }
 
@@ -1052,7 +1019,7 @@ async fn measure_and_persist_loudness(
             return Ok(persisted.integrated_lufs);
         }
 
-        let _guard = ActiveLoudnessBinaryTaskGuard::new(Arc::clone(&runtime));
+        let _guard = acquire_managed_binary_usage(ManagedBinary::Ffmpeg, "loudness_evidence");
         let ffmpeg_path = ensure_managed_binary(&runtime.app, ManagedBinary::Ffmpeg)
             .map_err(|error| anyhow!(error))?;
         let analysis = run_loudness_analysis(ffmpeg_path, current_request.clone()).await?;

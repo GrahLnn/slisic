@@ -2,7 +2,6 @@
 pub mod cmd;
 pub mod model;
 pub mod repo;
-pub mod startup_bootstrap;
 
 #[cfg(not(test))]
 pub use cmd::*;
@@ -18,7 +17,3 @@ mod model_test;
 #[cfg(test)]
 #[path = "repo.test.rs"]
 mod repo_test;
-
-#[cfg(test)]
-#[path = "startup_bootstrap.test.rs"]
-mod startup_bootstrap_test;

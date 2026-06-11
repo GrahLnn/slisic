@@ -36,6 +36,8 @@ use crate::domain::meta::service as meta_service;
 use crate::domain::player::event::{PlaybackDiagnosticTraceDetail, PlaybackDiagnosticTraceEvent};
 use crate::domain::playlists::model::{Collection, Group};
 #[cfg(not(test))]
+use crate::utils::binaries::acquire_managed_binary_usage;
+#[cfg(not(test))]
 use crate::utils::binaries::{ManagedBinary, ensure_managed_binary};
 use anyhow::{Context, Result, anyhow, bail};
 #[cfg(not(test))]
@@ -48,8 +50,6 @@ use specta::Type;
 use std::collections::VecDeque;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-#[cfg(not(test))]
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 #[cfg(not(test))]
 use std::thread;
@@ -84,29 +84,6 @@ static PENDING_ENQUEUE_URLS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 pub struct DownloadRuntime {
     app: AppHandle,
     active_task_ids: Mutex<HashSet<String>>,
-    active_binary_tasks: AtomicUsize,
-}
-
-#[cfg(not(test))]
-struct ActiveBinaryTaskGuard {
-    runtime: &'static DownloadRuntime,
-}
-
-#[cfg(not(test))]
-impl ActiveBinaryTaskGuard {
-    fn new(runtime: &'static DownloadRuntime) -> Self {
-        runtime.active_binary_tasks.fetch_add(1, Ordering::SeqCst);
-        Self { runtime }
-    }
-}
-
-#[cfg(not(test))]
-impl Drop for ActiveBinaryTaskGuard {
-    fn drop(&mut self) {
-        self.runtime
-            .active_binary_tasks
-            .fetch_sub(1, Ordering::SeqCst);
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -419,7 +396,7 @@ fn retry_cooldown_jitter(retry_key: &str, failed_attempt: usize) -> Duration {
 
 pub(crate) fn is_retryable_leaf_download_error(error: &anyhow::Error) -> bool {
     let message = format!("{error:#}");
-    if is_non_retryable_leaf_access_error(&message) {
+    if is_non_retryable_leaf_access_error_message(&message) {
         return false;
     }
 
@@ -434,13 +411,10 @@ pub(crate) fn is_retryable_leaf_download_error(error: &anyhow::Error) -> bool {
     .any(|fatal| message.contains(fatal))
 }
 
-fn is_non_retryable_leaf_access_error(message: &str) -> bool {
+pub(crate) fn is_non_retryable_leaf_access_error_message(message: &str) -> bool {
     let message = message.to_ascii_lowercase();
     [
         "private video",
-        "sign in if you've been granted access",
-        "sign in to confirm",
-        "use --cookies-from-browser or --cookies",
         "this video is private",
         "members-only content",
         "video unavailable",
@@ -474,26 +448,10 @@ pub fn initialize_runtime(app: AppHandle) {
     let runtime = DOWNLOAD_RUNTIME.get_or_init(|| DownloadRuntime {
         app: app.clone(),
         active_task_ids: Mutex::new(HashSet::new()),
-        active_binary_tasks: AtomicUsize::new(0),
     });
 
     spawn_recovery(runtime.app.clone());
     spawn_auto_update_loop(runtime.app.clone());
-}
-
-#[cfg(not(test))]
-pub(crate) fn has_active_download_tasks() -> bool {
-    let Some(runtime) = DOWNLOAD_RUNTIME.get() else {
-        return false;
-    };
-
-    let has_active_task = runtime
-        .active_task_ids
-        .lock()
-        .ok()
-        .is_some_and(|active| !active.is_empty());
-
-    has_active_task || runtime.active_binary_tasks.load(Ordering::SeqCst) > 0
 }
 
 #[cfg(not(test))]
@@ -1121,11 +1079,24 @@ fn spawn_task(task_id: String, root_probe: Option<RootProbe>) -> Result<()> {
 
     let app = runtime.app.clone();
     tauri::async_runtime::spawn(async move {
-        let result = run_task(task_id.clone(), app, root_probe).await;
-        if let Err(error) = result {
-            let _ = mark_task_failed(&task_id, error.to_string()).await;
+        let _claim = ActiveDownloadTaskClaim::new(task_id.clone());
+        let task_id_for_worker = task_id.clone();
+        let handle = tauri::async_runtime::spawn(async move {
+            run_task(task_id_for_worker, app, root_probe).await
+        });
+        match handle.await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                let _ = mark_task_failed(&task_id, error.to_string()).await;
+            }
+            Err(join_error) => {
+                let _ = mark_task_failed(
+                    &task_id,
+                    format!("download task worker stopped unexpectedly: {join_error}"),
+                )
+                .await;
+            }
         }
-        release_task(&task_id);
     });
 
     Ok(())
@@ -1147,11 +1118,8 @@ async fn bootstrap_enqueued_collection_with_deps(
 
 #[cfg(not(test))]
 async fn run_task(task_id: String, app: AppHandle, root_probe: Option<RootProbe>) -> Result<()> {
-    let active_binary_task = ActiveBinaryTaskGuard::new(runtime()?);
     let deps = resolve_execution_deps(&app).await?;
-    let result = run_task_with_deps(task_id, deps, root_probe).await;
-    drop(active_binary_task);
-    result
+    run_task_with_deps(task_id, deps, root_probe).await
 }
 
 #[cfg(not(test))]
@@ -1249,7 +1217,7 @@ async fn run_task_with_deps(
 
     mark_unresolved_leaves_failed(&mut task_snapshot).await?;
     let completed = task_snapshot.completed_leaves;
-    let next_status = if task_snapshot.failed_leaves == 0 {
+    let next_status = if task_snapshot.failed_leaves == 0 && task_snapshot.completed_leaves > 0 {
         DownloadTaskStatus::Completed
     } else if completed > 0 {
         DownloadTaskStatus::CompletedWithErrors
@@ -1409,7 +1377,13 @@ async fn prepare_leaf_download_worker(
         Some(probe) => probe,
         None => {
             let url = input.planned.url.clone();
-            match run_blocking(move || client.probe_leaf(&url)).await {
+            let usage = acquire_downloads_ytdlp_probe_usage();
+            match run_blocking(move || {
+                let _usage = usage;
+                client.probe_leaf(&url)
+            })
+            .await
+            {
                 Ok(probe) => probe,
                 Err(error) => {
                     return LeafPipelineEvent::Prepared(Err(FailedLeafPreparation {
@@ -1450,7 +1424,11 @@ async fn download_leaf_audio_worker(
         let url = input.url.clone();
         let target_dir = input.target_dir.clone();
         let temp_file_stem = input.temp_file_stem.clone();
+        let ytdlp_usage = acquire_downloads_ytdlp_download_usage();
+        let ffmpeg_usage = acquire_downloads_ffmpeg_download_usage();
         let download_result = run_blocking(move || {
+            let _ytdlp_usage = ytdlp_usage;
+            let _ffmpeg_usage = ffmpeg_usage;
             let mut latest_progress = DownloadProgress::default();
             let downloaded = client.download_leaf_audio(
                 &url,
@@ -1636,6 +1614,10 @@ async fn handle_prepared_leaf_download(
     let prepared = match outcome {
         Ok(prepared) => prepared,
         Err(failed) => {
+            if is_non_retryable_leaf_access_error_message(&failed.error) {
+                discard_inaccessible_leaf(task_snapshot, failed.leaf, failed.error).await?;
+                return Ok(());
+            }
             eprintln!(
                 "[downloads] leaf {} prepare failed: {}",
                 failed.leaf.id, failed.error
@@ -1749,6 +1731,25 @@ async fn handle_prepared_leaf_download(
         group,
         url: prepared.url,
     });
+    Ok(())
+}
+
+#[cfg(not(test))]
+async fn discard_inaccessible_leaf(
+    task_snapshot: &mut DownloadTask,
+    leaf: DownloadLeaf,
+    error: String,
+) -> Result<()> {
+    let leaf_id = leaf.id.clone();
+    let leaf_url = leaf.url.clone();
+    let removed = task_snapshot.remove_leaf(&leaf_id).is_some();
+    task_snapshot.last_error = Some(error.clone());
+    let saved = repo::save_task(task_snapshot.clone()).await?;
+    *task_snapshot = saved;
+    eprintln!(
+        "[downloads] leaf {} discarded permanent access error url={} removed={} error={}",
+        leaf_id, leaf_url, removed, error
+    );
     Ok(())
 }
 
@@ -2259,8 +2260,8 @@ fn request_downloaded_leaf_audio_tail_trim(
         .musics
         .iter()
         .filter(|music| music.path.as_deref() == Some(relative_path))
-        .count();
-    if matching_musics == 0 {
+        .collect::<Vec<_>>();
+    if matching_musics.is_empty() {
         log::info!(
             target: "downloads",
             "downloaded_leaf_audio_tail_trim_skipped collection=\"{}\" relative_path=\"{}\" reason=no_matching_music musics={}",
@@ -2270,24 +2271,26 @@ fn request_downloaded_leaf_audio_tail_trim(
         );
         return;
     }
+    let scope_group_url = matching_musics.first().map(|music| music.group.url.clone());
 
     log::info!(
         target: "downloads",
-        "downloaded_leaf_audio_tail_trim_requested collection=\"{}\" relative_path=\"{}\" source_kind={} matching_musics={}",
+        "downloaded_leaf_audio_tail_trim_requested collection=\"{}\" relative_path=\"{}\" source_kind={} matching_musics={} scope_group=\"{}\"",
         collection.url,
         relative_path,
         source_kind.as_str(),
-        matching_musics
+        matching_musics.len(),
+        scope_group_url.as_deref().unwrap_or("")
     );
     audio_tail_trim::request_downloaded_leaf_audio_tail_trim(AudioTailTrimRequest {
         collection_url: collection.url.clone(),
         source_kind,
         save_root: save_root.to_path_buf(),
+        scope_group_url,
         focus_music: None,
     });
 }
 
-#[cfg(not(test))]
 fn write_collection_manifest_after_download(
     save_root: &Path,
     collection: &Collection,
@@ -2318,17 +2321,6 @@ fn write_collection_manifest_after_download(
         relative_path,
         &group,
     )
-}
-
-#[cfg(test)]
-fn write_collection_manifest_after_download(
-    _save_root: &Path,
-    _collection: &Collection,
-    _source_kind: CollectionSourceKind,
-    _probe: &LeafProbe,
-    _relative_path: &str,
-) -> Result<()> {
-    Ok(())
 }
 
 #[cfg(not(test))]
@@ -2419,6 +2411,25 @@ pub(crate) fn release_task(task_id: &str) {
         && let Ok(mut active) = runtime.active_task_ids.lock()
     {
         active.remove(task_id);
+    }
+}
+
+#[cfg(not(test))]
+struct ActiveDownloadTaskClaim {
+    task_id: String,
+}
+
+#[cfg(not(test))]
+impl ActiveDownloadTaskClaim {
+    fn new(task_id: String) -> Self {
+        Self { task_id }
+    }
+}
+
+#[cfg(not(test))]
+impl Drop for ActiveDownloadTaskClaim {
+    fn drop(&mut self) {
+        release_task(&self.task_id);
     }
 }
 
@@ -2584,7 +2595,9 @@ async fn completed_local_audio_duration_ms(
     ffmpeg_path: PathBuf,
     file_path: PathBuf,
 ) -> Result<u32> {
+    let usage = acquire_downloads_ffmpeg_probe_usage();
     run_blocking(move || {
+        let _usage = usage;
         probe_downloaded_audio_duration_ms(&ffmpeg_path, &file_path)?.with_context(|| {
             format!(
                 "local audio file has no playable audio stream: {}",
@@ -2632,6 +2645,38 @@ where
         .await
         .context("blocking download task panicked")?
 }
+
+#[cfg(not(test))]
+fn acquire_downloads_ytdlp_probe_usage() -> crate::utils::binaries::ManagedBinaryUsageGuard {
+    acquire_managed_binary_usage(ManagedBinary::YtDlp, "downloads_probe")
+}
+
+#[cfg(test)]
+fn acquire_downloads_ytdlp_probe_usage() {}
+
+#[cfg(not(test))]
+fn acquire_downloads_ytdlp_download_usage() -> crate::utils::binaries::ManagedBinaryUsageGuard {
+    acquire_managed_binary_usage(ManagedBinary::YtDlp, "downloads_download")
+}
+
+#[cfg(test)]
+fn acquire_downloads_ytdlp_download_usage() {}
+
+#[cfg(not(test))]
+fn acquire_downloads_ffmpeg_download_usage() -> crate::utils::binaries::ManagedBinaryUsageGuard {
+    acquire_managed_binary_usage(ManagedBinary::Ffmpeg, "downloads_download")
+}
+
+#[cfg(test)]
+fn acquire_downloads_ffmpeg_download_usage() {}
+
+#[cfg(not(test))]
+fn acquire_downloads_ffmpeg_probe_usage() -> crate::utils::binaries::ManagedBinaryUsageGuard {
+    acquire_managed_binary_usage(ManagedBinary::Ffmpeg, "downloads_probe")
+}
+
+#[cfg(test)]
+fn acquire_downloads_ffmpeg_probe_usage() {}
 
 #[cfg(test)]
 pub(crate) fn leaf_download_parallelism(

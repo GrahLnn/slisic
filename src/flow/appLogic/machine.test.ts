@@ -492,6 +492,38 @@ describe("appLogic machine", () => {
     assert.equal(actor.getSnapshot().context.playingPlaylistName, "Focus Session");
   });
 
+  test("marks playlist playback intent as starting immediately", async () => {
+    const collection = createCollection([createMusic()]);
+    const actor = createActor(
+      machine.provide({
+        actors: {
+          loadCollections: fromPromise<BootstrapResult>(async () =>
+            createBootstrapResult([collection]),
+          ),
+        },
+      }),
+    );
+
+    actor.start();
+    actor.send(sig.mainx.run);
+    await waitForState(actor, "ready");
+
+    actor.send(payloads["playlist.play"].load({ playlistName: "Focus Session", requestId: 1 }));
+    assert.equal(actor.getSnapshot().value, "ready");
+    assert.equal(actor.getSnapshot().context.pendingPlaylistPlaybackRequest?.phase, "starting");
+    assert.equal(actor.getSnapshot().context.playbackSurfaceStatus, null);
+
+    actor.send(
+      payloads["playlist.playback.accepted"].load({
+        playlistName: "Focus Session",
+        requestId: 1,
+        session: createStartedPlaybackSession(),
+      }),
+    );
+    assert.equal(actor.getSnapshot().value, "play");
+    assert.equal(actor.getSnapshot().context.playingPlaylistName, "Focus Session");
+  });
+
   test("rejects accepted playback evidence that does not own the pending request", async () => {
     const collection = createCollection([createMusic()]);
     const actor = createActor(

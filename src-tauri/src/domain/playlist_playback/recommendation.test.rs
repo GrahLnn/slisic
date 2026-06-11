@@ -10,7 +10,7 @@ use super::recommendation::{
     write_cached_audio_style_model_evidence_for_test,
 };
 use crate::domain::player::model::PlaybackTrack;
-use crate::domain::playlists::model::{CollectionGroupOwner, Group, Music};
+use crate::domain::playlists::model::{CollectionGroupOwner, Group, LoudnessProfile, Music};
 use crate::domain::playlists::repo::PlaylistPlaybackTrackSource;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -29,6 +29,35 @@ fn track(name: &str) -> PlaybackTrack {
         source_music: None,
         liked: false,
         loudness_profile: None,
+    }
+}
+
+fn track_with_loudness(name: &str, profile: LoudnessProfile) -> PlaybackTrack {
+    PlaybackTrack {
+        loudness_profile: Some(profile),
+        ..track(name)
+    }
+}
+
+fn loudness_profile(
+    integrated_lufs: f32,
+    short_lufs_p50: f32,
+    short_lufs_p80: f32,
+    short_lufs_p95: f32,
+    short_lufs_max: f32,
+    presence_db: f32,
+    lra: f32,
+) -> LoudnessProfile {
+    LoudnessProfile {
+        integrated_lufs,
+        true_peak_dbtp: Some(-0.5),
+        lra: Some(lra),
+        short_lufs_p50: Some(short_lufs_p50),
+        short_lufs_p80: Some(short_lufs_p80),
+        short_lufs_p95: Some(short_lufs_p95),
+        short_lufs_max: Some(short_lufs_max),
+        presence_db: Some(presence_db),
+        model_adjustment_db: None,
     }
 }
 
@@ -606,6 +635,53 @@ fn audio_style_readonly_route_pressure_keeps_liked_recent_style_candidate_sample
 }
 
 #[test]
+fn audio_style_measured_loudness_pressure_reduces_repeated_high_arousal_candidate_weight() {
+    let current = track_with_loudness(
+        "current",
+        loudness_profile(-18.0, -18.5, -17.0, -15.0, -14.5, -10.0, 8.0),
+    );
+    let played_hot = track_with_loudness(
+        "played_hot",
+        loudness_profile(-8.0, -8.5, -7.0, -5.5, -5.0, -5.0, 4.0),
+    );
+    let hot_candidate = track_with_loudness(
+        "hot_candidate",
+        loudness_profile(-7.5, -8.0, -6.8, -5.2, -4.9, -4.8, 4.0),
+    );
+    let calm_candidate = track_with_loudness(
+        "calm_candidate",
+        loudness_profile(-22.0, -23.0, -21.0, -19.0, -18.5, -13.0, 10.0),
+    );
+    let recommender = AudioStylePlaylistPlaybackRecommender::from_test_indexed_embeddings([
+        (current.clone(), embedding(2), "source".to_string()),
+        (played_hot.clone(), embedding(2), "source".to_string()),
+        (hot_candidate.clone(), embedding(2), "source".to_string()),
+        (calm_candidate.clone(), embedding(2), "source".to_string()),
+    ]);
+
+    let without_history = choose_next_audio_style_candidate_with_recent_history_for_test(
+        &current,
+        &[hot_candidate.clone(), calm_candidate.clone()],
+        &recommender,
+        &[],
+        0.0,
+    );
+    let with_hot_history = choose_next_audio_style_candidate_with_recent_history_for_test(
+        &current,
+        &[hot_candidate, calm_candidate],
+        &recommender,
+        std::slice::from_ref(&played_hot),
+        0.0,
+    );
+
+    assert_eq!(without_history.index, 0);
+    assert_eq!(with_hot_history.index, 0);
+    assert!(without_history.probability > 0.0);
+    assert!(with_hot_history.probability > 0.0);
+    assert!(with_hot_history.probability < without_history.probability);
+}
+
+#[test]
 fn recommendation_history_falls_back_when_attractor_basin_fatigue_would_empty_candidates() {
     let played_a = track_in_basin("Kurzgesagt", "played_a");
     let played_b = track_in_basin("Kurzgesagt", "played_b");
@@ -1015,6 +1091,56 @@ fn restored_audio_style_model_evidence_ranks_current_candidate_tracks() {
 }
 
 #[test]
+fn restored_audio_style_model_evidence_preserves_measured_loudness_pressure() {
+    let root = temp_cache_root("model-evidence-loudness");
+    std::fs::create_dir_all(&root).expect("cache test root should be created");
+    let path = root.join("stable.json");
+    let current = track_with_loudness(
+        "current",
+        loudness_profile(-18.0, -18.5, -17.0, -15.0, -14.5, -10.0, 8.0),
+    );
+    let played_hot = track_with_loudness(
+        "played_hot",
+        loudness_profile(-8.0, -8.5, -7.0, -5.5, -5.0, -5.0, 4.0),
+    );
+    let hot_candidate = track_with_loudness(
+        "hot_candidate",
+        loudness_profile(-7.5, -8.0, -6.8, -5.2, -4.9, -4.8, 4.0),
+    );
+    let calm_candidate = track_with_loudness(
+        "calm_candidate",
+        loudness_profile(-22.0, -23.0, -21.0, -19.0, -18.5, -13.0, 10.0),
+    );
+    let snapshot = AudioStyleModelSnapshot::from_test_indexed_embeddings(
+        13,
+        [
+            (current.clone(), embedding(2), "source".to_string()),
+            (played_hot.clone(), embedding(2), "source".to_string()),
+            (hot_candidate.clone(), embedding(2), "source".to_string()),
+            (calm_candidate.clone(), embedding(2), "source".to_string()),
+        ],
+    );
+    write_cached_audio_style_model_evidence_for_test(&path, &snapshot)
+        .expect("model evidence should be written");
+    let restored = read_cached_audio_style_model_evidence_for_test(&path)
+        .expect("model evidence should be restored");
+
+    let selection = choose_next_audio_style_candidate_with_recent_history_for_test(
+        &current,
+        &[hot_candidate, calm_candidate],
+        restored.recommender(),
+        std::slice::from_ref(&played_hot),
+        0.0,
+    );
+
+    assert_eq!(restored.generation(), 13);
+    assert_eq!(selection.source.as_str(), "audio_style");
+    assert_eq!(selection.index, 0);
+    assert!(selection.probability > 0.0);
+    assert!(selection.probability < 0.5);
+}
+
+#[test]
 fn audio_style_model_refresh_reuses_unchanged_embeddings() {
     let root = temp_cache_root("refresh_reuse");
     std::fs::create_dir_all(&root).expect("cache test root should be created");
@@ -1089,7 +1215,7 @@ fn audio_style_model_refresh_reuses_cached_embeddings_without_progressive_traini
         .write_test_embedding_for_track(&added_two, embedding(4))
         .expect("second new embedding should be cached");
 
-    let snapshots = AudioStyleModelSnapshot::refresh_progressively_for_test(
+    let snapshot = AudioStyleModelSnapshot::refresh_from_indexed_tracks_for_test(
         2,
         Some(&previous),
         &cache,
@@ -1097,11 +1223,10 @@ fn audio_style_model_refresh_reuses_cached_embeddings_without_progressive_traini
     )
     .expect("refresh should reuse cache-backed embeddings without training progress");
 
-    assert_eq!(snapshots.len(), 1);
-    assert_eq!(snapshots[0].generation(), 2);
-    assert!(snapshots[0].recommender().has_embedding_for(&current));
-    assert!(snapshots[0].recommender().has_embedding_for(&added_one));
-    assert!(snapshots[0].recommender().has_embedding_for(&added_two));
+    assert_eq!(snapshot.generation(), 2);
+    assert!(snapshot.recommender().has_embedding_for(&current));
+    assert!(snapshot.recommender().has_embedding_for(&added_one));
+    assert!(snapshot.recommender().has_embedding_for(&added_two));
 
     let _ = std::fs::remove_dir_all(root);
 }
@@ -1131,7 +1256,7 @@ fn audio_style_model_refresh_uses_cache_evidence_without_previous_snapshot() {
         .write_test_embedding_for_track(&third, embedding(4))
         .expect("third embedding should be cached");
 
-    let snapshots = AudioStyleModelSnapshot::refresh_progressively_for_test(
+    let snapshot = AudioStyleModelSnapshot::refresh_from_indexed_tracks_for_test(
         2,
         None,
         &cache,
@@ -1139,11 +1264,10 @@ fn audio_style_model_refresh_uses_cache_evidence_without_previous_snapshot() {
     )
     .expect("refresh should restore cache evidence without requiring model evidence");
 
-    assert_eq!(snapshots.len(), 1);
-    assert_eq!(snapshots[0].generation(), 2);
-    assert!(snapshots[0].recommender().has_embedding_for(&first));
-    assert!(snapshots[0].recommender().has_embedding_for(&second));
-    assert!(snapshots[0].recommender().has_embedding_for(&third));
+    assert_eq!(snapshot.generation(), 2);
+    assert!(snapshot.recommender().has_embedding_for(&first));
+    assert!(snapshot.recommender().has_embedding_for(&second));
+    assert!(snapshot.recommender().has_embedding_for(&third));
 
     let _ = std::fs::remove_dir_all(root);
 }
@@ -1581,14 +1705,6 @@ fn stable_audio_style_snapshot_publication_refreshes_first_slot_only_on_availabi
     };
 
     assert!(stable_snapshot_publication_requests_first_slot_refresh(
-        StableSnapshotPublicationReason::NightlyProgress,
-        false,
-    ));
-    assert!(!stable_snapshot_publication_requests_first_slot_refresh(
-        StableSnapshotPublicationReason::NightlyProgress,
-        true,
-    ));
-    assert!(stable_snapshot_publication_requests_first_slot_refresh(
         StableSnapshotPublicationReason::TrainingComplete,
         false,
     ));
@@ -1652,15 +1768,60 @@ fn audio_style_training_worker_count_scales_with_hardware_profile_and_task_count
         super::recommendation::audio_style_training_worker_count_for_test(64, 12, true, 1);
     let dual_large_hardware =
         super::recommendation::audio_style_training_worker_count_for_test(64, 12, true, 2);
+    let quad_large_hardware =
+        super::recommendation::audio_style_training_worker_count_for_test(64, 12, true, 4);
     assert!(
         single_hardware
             > super::recommendation::audio_style_training_worker_count_for_test(64, 12, false, 0)
     );
-    assert!(dual_large_hardware > single_hardware);
+    assert_eq!(single_hardware, 13);
+    assert_eq!(dual_large_hardware, 14);
+    assert_eq!(quad_large_hardware, 14);
     assert_eq!(
         super::recommendation::audio_style_training_worker_count_for_test(20, 64, true, 2),
-        20
+        dual_large_hardware
     );
+    assert_eq!(quad_large_hardware, 14);
+}
+
+#[test]
+fn audio_style_hardware_budget_tiles_large_similarity_grids_before_cpu_fallback() {
+    let single_gpu_grid =
+        super::recommendation::audio_style_hardware_similarity_grid_tile_shape_for_test(
+            4096, 4096, 1,
+        );
+    let dual_gpu_grid =
+        super::recommendation::audio_style_hardware_similarity_grid_tile_shape_for_test(
+            4096, 4096, 2,
+        );
+
+    let single_gpu_grid = single_gpu_grid.expect("single gpu should still use hardware tiles");
+    let dual_gpu_grid = dual_gpu_grid.expect("dual gpu should still use hardware tiles");
+
+    assert!(single_gpu_grid.0 < 4096 || single_gpu_grid.1 < 4096);
+    assert_eq!(dual_gpu_grid, single_gpu_grid);
+}
+
+#[test]
+fn audio_style_hardware_op_gate_falls_back_when_busy_or_cooling_down() {
+    super::recommendation::reset_audio_style_hardware_op_gate_for_test();
+    let held = super::recommendation::hold_audio_style_hardware_op_for_test()
+        .expect("first hardware operation should acquire the gate");
+
+    assert!(
+        !super::recommendation::acquire_audio_style_hardware_op_for_test(),
+        "a second operation must fall back instead of queueing more GPU work"
+    );
+    drop(held);
+    assert!(super::recommendation::acquire_audio_style_hardware_op_for_test());
+
+    super::recommendation::reset_audio_style_hardware_op_gate_for_test();
+    super::recommendation::enter_audio_style_hardware_op_cooldown_for_test();
+    assert!(
+        !super::recommendation::acquire_audio_style_hardware_op_for_test(),
+        "after a hardware failure, background work must cool down before trying the GPU again"
+    );
+    super::recommendation::reset_audio_style_hardware_op_gate_for_test();
 }
 
 #[test]
@@ -1776,6 +1937,41 @@ fn audio_style_wgpu_hardware_candidates_prefer_accelerators_before_cpu() {
             "Cpu",
         ]
     );
+}
+
+#[test]
+fn audio_style_hardware_runtime_pool_keeps_one_selected_device() {
+    assert_eq!(
+        super::recommendation::bound_audio_style_hardware_device_pool_for_test(&[
+            "DiscreteGpu(0)",
+            "DiscreteGpu(1)",
+            "IntegratedGpu(0)",
+        ]),
+        vec!["DiscreteGpu(0)"]
+    );
+    assert_eq!(
+        super::recommendation::bound_audio_style_hardware_device_pool_for_test(&[
+            "IntegratedGpu(0)",
+            "VirtualGpu(0)",
+        ]),
+        vec!["IntegratedGpu(0)"]
+    );
+}
+
+#[test]
+fn audio_style_hardware_cleanup_logs_only_unhealthy_or_slow_cleanup() {
+    assert!(!super::recommendation::audio_style_hardware_cleanup_should_log_for_test(
+        true, true, 0,
+    ));
+    assert!(super::recommendation::audio_style_hardware_cleanup_should_log_for_test(
+        false, true, 0,
+    ));
+    assert!(super::recommendation::audio_style_hardware_cleanup_should_log_for_test(
+        true, false, 0,
+    ));
+    assert!(super::recommendation::audio_style_hardware_cleanup_should_log_for_test(
+        true, true, 50,
+    ));
 }
 
 #[test]
