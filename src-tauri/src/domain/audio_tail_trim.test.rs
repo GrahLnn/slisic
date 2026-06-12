@@ -401,7 +401,7 @@ fn merging_collection_cargo_keeps_existing_focus_when_incoming_has_none() {
 }
 
 #[test]
-fn playback_current_tail_trim_requests_preempt_downloaded_leaf_work() {
+fn playback_current_focus_update_preempts_explicit_tail_trim_work() {
     assert_eq!(
         audio_tail_trim_queue_insert_index_for_test(
             &["downloaded_leaf", "pending_store", "pending_store"],
@@ -423,19 +423,7 @@ fn downloaded_leaf_tail_trim_requests_run_before_pending_restore_work() {
 }
 
 #[test]
-fn playback_current_tail_trim_requests_replace_queue_tail_when_queue_is_full() {
-    assert_eq!(
-        audio_tail_trim_queue_overflow_action_for_test("playback_current"),
-        "drop_tail"
-    );
-    assert_eq!(
-        audio_tail_trim_queue_overflow_action_for_test("downloaded_leaf"),
-        "defer"
-    );
-}
-
-#[test]
-fn playback_focus_cargo_does_not_force_active_collection_rerun() {
+fn downloaded_leaf_tail_trim_requests_require_active_rerun() {
     assert!(!audio_tail_trim_source_requires_active_rerun_for_test(
         "playback_current"
     ));
@@ -445,6 +433,18 @@ fn playback_focus_cargo_does_not_force_active_collection_rerun() {
     assert!(!audio_tail_trim_source_requires_active_rerun_for_test(
         "pending_store"
     ));
+}
+
+#[test]
+fn playback_current_focus_update_can_replace_queue_tail_after_explicit_task_match() {
+    assert_eq!(
+        audio_tail_trim_queue_overflow_action_for_test("playback_current"),
+        "drop_tail"
+    );
+    assert_eq!(
+        audio_tail_trim_queue_overflow_action_for_test("downloaded_leaf"),
+        "defer"
+    );
 }
 
 #[test]

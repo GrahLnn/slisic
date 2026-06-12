@@ -4,8 +4,6 @@ use super::downloads::model::CollectionSourceKind;
 #[cfg(not(test))]
 use super::loudness_evidence::{self, LoudnessEvidenceRequest};
 #[cfg(not(test))]
-use super::meta::service as meta_service;
-#[cfg(not(test))]
 use super::player::model::PlaybackTrack;
 #[cfg(not(test))]
 use super::player::service as player_service;
@@ -163,7 +161,7 @@ impl AudioTailTrimCollectionKey {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AudioTailTrimSource {
     PendingStore,
     DownloadedLeaf,
@@ -189,6 +187,11 @@ impl AudioTailTrimSource {
 
     #[cfg(not(test))]
     fn persists_pending(self) -> bool {
+        matches!(self, Self::DownloadedLeaf)
+    }
+
+    #[cfg(not(test))]
+    fn coalesces_active(self) -> bool {
         matches!(self, Self::DownloadedLeaf | Self::PlaybackCurrent)
     }
 
@@ -347,8 +350,8 @@ pub(crate) fn request_playback_current_audio_tail_trim(track: &PlaybackTrack) {
         return;
     };
 
-    let collection = &music.group.collection;
-    if collection.url.trim().is_empty() {
+    let collection_url = music.group.collection.url.clone();
+    if collection_url.trim().is_empty() {
         log::info!(
             target: AUDIO_TAIL_TRIM_LOG_TARGET,
             "audio_tail_trim_request_skipped source=playback_current reason=missing_collection_url title=\"{}\"",
@@ -360,54 +363,41 @@ pub(crate) fn request_playback_current_audio_tail_trim(track: &PlaybackTrack) {
         log::warn!(
             target: AUDIO_TAIL_TRIM_LOG_TARGET,
             "audio_tail_trim_request_skipped source=playback_current reason=runtime_uninitialized collection=\"{}\" title=\"{}\"",
-            collection.url,
+            collection_url,
             track.music_name
         );
         return;
     };
-    let collection_url = collection.url.clone();
-    let scope_group_url = Some(music.group.url.clone());
-    let title = track.music_name.clone();
-    let focus_music = AudioTailTrimFocusMusic {
+
+    let collection_key = AudioTailTrimCollectionKey {
+        collection_url,
+        scope_group_url: normalized_optional_url(Some(&music.group.url)),
+    };
+    let Some(mut request) =
+        explicit_audio_tail_trim_request_for_key(runtime.as_ref(), &collection_key)
+    else {
+        log::info!(
+            target: AUDIO_TAIL_TRIM_LOG_TARGET,
+            "audio_tail_trim_request_skipped source=playback_current reason=no_explicit_task collection=\"{}\" title=\"{}\"",
+            collection_key.as_log_key(),
+            track.music_name
+        );
+        return;
+    };
+
+    request.focus_music = Some(AudioTailTrimFocusMusic {
         url: music.url.clone(),
         path: normalize_path_text(music.path.as_deref().unwrap_or_default()),
         start_ms: music.start_ms,
         end_ms: music.end_ms,
-    };
-    tauri::async_runtime::spawn(async move {
-        let save_root = match meta_service::resolve_save_root(&runtime.app).await {
-            Ok(save_root) => save_root,
-            Err(error) => {
-                log::warn!(
-                    target: AUDIO_TAIL_TRIM_LOG_TARGET,
-                    "audio_tail_trim_request_skipped source=playback_current reason=save_root_unavailable collection=\"{}\" title=\"{}\" error=\"{}\"",
-                    collection_url,
-                    title,
-                    error
-                );
-                return;
-            }
-        };
-
-        log::info!(
-            target: AUDIO_TAIL_TRIM_LOG_TARGET,
-            "audio_tail_trim_request_received source=playback_current collection=\"{}\" title=\"{}\" save_root=\"{}\"",
-            collection_url,
-            title,
-            save_root.display()
-        );
-        enqueue_audio_tail_trim(
-            runtime,
-            AudioTailTrimRequest {
-                collection_url,
-                source_kind: CollectionSourceKind::List,
-                save_root,
-                scope_group_url,
-                focus_music: Some(focus_music),
-            },
-            AudioTailTrimSource::PlaybackCurrent,
-        );
     });
+    log::info!(
+        target: AUDIO_TAIL_TRIM_LOG_TARGET,
+        "audio_tail_trim_request_received source=playback_current reason=explicit_task_found collection=\"{}\" title=\"{}\"",
+        collection_key.as_log_key(),
+        track.music_name
+    );
+    enqueue_audio_tail_trim(runtime, request, AudioTailTrimSource::PlaybackCurrent);
 }
 
 pub(crate) fn collect_audio_tail_trim_candidates(
@@ -1212,15 +1202,16 @@ fn enqueue_audio_tail_trim(
     }
 
     if audio_tail_trim_collection_is_processing(&runtime, &collection_key) {
-        if source.persists_pending() {
+        if source.coalesces_active() {
             coalesce_active_audio_tail_trim_request(
                 &runtime,
                 request.clone(),
                 source,
                 "already_processing",
             );
+        }
+        if source.persists_pending() {
             persist_pending_audio_tail_trim_request(&runtime, &request);
-            ensure_audio_tail_trim_worker(runtime);
         }
         log::info!(
             target: AUDIO_TAIL_TRIM_LOG_TARGET,
@@ -1363,6 +1354,58 @@ fn push_audio_tail_trim_queue(
     }
     insert_audio_tail_trim_queue(&mut queue, queued);
     true
+}
+
+#[cfg(not(test))]
+fn explicit_audio_tail_trim_request_for_key(
+    runtime: &AudioTailTrimRuntime,
+    collection_key: &AudioTailTrimCollectionKey,
+) -> Option<AudioTailTrimRequest> {
+    if let Some(request) = active_explicit_audio_tail_trim_request_for_key(runtime, collection_key) {
+        return Some(request);
+    }
+    if let Some(request) = queued_explicit_audio_tail_trim_request_for_key(runtime, collection_key) {
+        return Some(request);
+    }
+    pending_explicit_audio_tail_trim_request_for_key(runtime, collection_key)
+}
+
+#[cfg(not(test))]
+fn active_explicit_audio_tail_trim_request_for_key(
+    runtime: &AudioTailTrimRuntime,
+    collection_key: &AudioTailTrimCollectionKey,
+) -> Option<AudioTailTrimRequest> {
+    let active = runtime.active_collections.lock().ok()?;
+    active
+        .contains(collection_key)
+        .then(|| pending_explicit_audio_tail_trim_request_for_key(runtime, collection_key))
+        .flatten()
+}
+
+#[cfg(not(test))]
+fn queued_explicit_audio_tail_trim_request_for_key(
+    runtime: &AudioTailTrimRuntime,
+    collection_key: &AudioTailTrimCollectionKey,
+) -> Option<AudioTailTrimRequest> {
+    runtime.queue.lock().ok()?.iter().find_map(|queued| {
+        if queued.source == AudioTailTrimSource::PlaybackCurrent {
+            return None;
+        }
+        (AudioTailTrimCollectionKey::from_request(&queued.request) == *collection_key)
+            .then(|| queued.request.clone())
+    })
+}
+
+#[cfg(not(test))]
+fn pending_explicit_audio_tail_trim_request_for_key(
+    runtime: &AudioTailTrimRuntime,
+    collection_key: &AudioTailTrimCollectionKey,
+) -> Option<AudioTailTrimRequest> {
+    let _guard = runtime.pending_task_file_lock.lock().ok()?;
+    read_audio_tail_trim_pending_task_file(&runtime.pending_task_path)
+        .ok()?
+        .into_iter()
+        .find(|request| AudioTailTrimCollectionKey::from_request(request) == *collection_key)
 }
 
 #[cfg(not(test))]
