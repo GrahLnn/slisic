@@ -70,6 +70,14 @@ const AUDIO_STYLE_BIO_ROUTE_IBNN_IMPLICIT_BIAS_STRENGTH: f32 = 0.26;
 const AUDIO_STYLE_BIO_ROUTE_HCR_STRENGTH: f32 = 0.22;
 const AUDIO_STYLE_BIO_ROUTE_HCR_PRIOR_STRENGTH: f32 = 3.0;
 const AUDIO_STYLE_BIO_ROUTE_HCR_UNCERTAINTY_STRENGTH: f32 = 0.08;
+const AUDIO_STYLE_DISTRIBUTED_REPEAT_GATE_FLOOR: f32 = 0.08;
+const AUDIO_STYLE_DISTRIBUTED_REGION_FATIGUE_STRENGTH: f32 = 0.55;
+const AUDIO_STYLE_DISTRIBUTED_HOMEOSTASIS_STRENGTH: f32 = 1.55;
+const AUDIO_STYLE_DISTRIBUTED_REGION_RUN_HAZARD_STRENGTH: f32 = 0.40;
+const AUDIO_STYLE_DISTRIBUTED_FIELD_RELAXATION_STEPS: usize = 10;
+const AUDIO_STYLE_DISTRIBUTED_FIELD_RELAXATION_RATE: f32 = 0.28;
+const AUDIO_STYLE_DISTRIBUTED_FIELD_CROWDING_STRENGTH: f32 = 0.18;
+const AUDIO_STYLE_DISTRIBUTED_TAIL_SUPPORT_FLOOR: f32 = 0.62;
 const AUDIO_STYLE_LOCAL_DENSITY_TOP_K: usize = 10;
 const AUDIO_STYLE_BASIN_FATIGUE_DECAY: f32 = 0.86;
 const AUDIO_STYLE_BASIN_FATIGUE_IMPULSE: f32 = 1.0;
@@ -2639,6 +2647,37 @@ impl<'a> AudioStyleRegionPressure<'a> {
             .unwrap_or(0.0);
         (target_share - self.usage_share(region)).max(0.0)
             * AUDIO_STYLE_BIO_ROUTE_FUTURE_WINDOW.sqrt()
+    }
+
+    fn target_share_for_track(&self, track: &PlaybackTrack) -> f32 {
+        let key = PlaybackTrackKey::from_track(track);
+        let Some(region) = self.geometry.regions.get(&key) else {
+            return 0.0;
+        };
+        self.geometry
+            .target_share
+            .get(region)
+            .copied()
+            .unwrap_or(0.0)
+    }
+
+    fn usage_share_for_track(&self, track: &PlaybackTrack) -> f32 {
+        let key = PlaybackTrackKey::from_track(track);
+        let Some(region) = self.geometry.regions.get(&key) else {
+            return 0.0;
+        };
+        self.usage_share(region)
+    }
+
+    fn recent_same_region_count_for_track(&self, track: &PlaybackTrack, window: usize) -> usize {
+        let key = PlaybackTrackKey::from_track(track);
+        let Some(region) = self.geometry.regions.get(&key) else {
+            return 0;
+        };
+        if self.current_region.as_ref() != Some(region) {
+            return 0;
+        }
+        self.current_region_run.min(window)
     }
 
     fn usage_share(&self, region: &PlaybackTrackKey) -> f32 {
@@ -5289,11 +5328,18 @@ impl AudioStyleBioRouteDecision {
             &damping,
         );
         let base_weights = audio_style_distance_base_weights(candidates, similarities);
+        let repeat_gate = audio_style_distributed_repeat_gate(candidates, recently_played_tracks);
+        let region_homeostasis =
+            audio_style_distributed_region_homeostasis(candidates, region_pressure);
+        let region_fatigue = audio_style_distributed_region_fatigue(candidates, region_pressure);
+        let region_run_hazard =
+            audio_style_distributed_region_run_hazard(candidates, region_pressure);
         let mut base = Vec::with_capacity(candidates.len());
         let mut diagnostics = Vec::with_capacity(candidates.len());
         for index in 0..candidates.len() {
             let distance_base = base_weights.get(index).copied().unwrap_or(0.0);
-            // Distance remains the legal sampling domain; biological route gates only modulate it.
+            // Distance remains the legal sampling domain; every biological signal is a
+            // distributed field constraint over the same candidate set.
             let order = AUDIO_STYLE_BIO_ROUTE_ORDER_STRENGTH
                 * local_reference.get(index).copied().unwrap_or(0.0).max(0.0);
             let route_drive_value = route_drive.get(index).copied().unwrap_or(0.0);
@@ -5305,10 +5351,13 @@ impl AudioStyleBioRouteDecision {
                 * (1.0 + order)
                 * local_gate_value
                 * hcr_drive_value
-                * (1.0 + ibnn_state_value)
+                * (1.0 + 0.18 * ibnn_state_value.max(0.0))
+                * repeat_gate.get(index).copied().unwrap_or(1.0)
+                * region_homeostasis.get(index).copied().unwrap_or(1.0)
+                * region_fatigue.get(index).copied().unwrap_or(1.0)
+                * region_run_hazard.get(index).copied().unwrap_or(1.0)
                 / (1.0
-                    + AUDIO_STYLE_BIO_ROUTE_DAMPING_STRENGTH
-                        * damping_value.max(0.0));
+                    + AUDIO_STYLE_BIO_ROUTE_DAMPING_STRENGTH * damping_value.max(0.0));
             let final_weight = if value.is_finite() {
                 value.max(0.0)
             } else {
@@ -5324,6 +5373,12 @@ impl AudioStyleBioRouteDecision {
                 local_gate: local_gate_value,
                 final_weight,
             }));
+        }
+        let base = audio_style_relaxed_distributed_candidate_field(base);
+        for (index, weight) in base.iter().copied().enumerate() {
+            if let Some(Some(diagnostic)) = diagnostics.get_mut(index) {
+                diagnostic.final_weight = weight;
+            }
         }
 
         Self {
@@ -5736,6 +5791,123 @@ fn audio_style_distance_base_weights(
     similarities: &[Option<f32>],
 ) -> Vec<f32> {
     audio_style_distance_softmin_weights(candidates, similarities, &[])
+}
+
+fn audio_style_distributed_repeat_gate(
+    candidates: &[PlaybackTrack],
+    recently_played_tracks: &[PlaybackTrack],
+) -> Vec<f32> {
+    if recently_played_tracks.is_empty() {
+        return vec![1.0; candidates.len()];
+    }
+    let recent_keys = recently_played_tracks
+        .iter()
+        .rev()
+        .take(24)
+        .map(PlaybackTrackKey::from_track)
+        .collect::<HashSet<_>>();
+    candidates
+        .iter()
+        .map(|candidate| {
+            if !candidate.liked && recent_keys.contains(&PlaybackTrackKey::from_track(candidate)) {
+                AUDIO_STYLE_DISTRIBUTED_REPEAT_GATE_FLOOR
+            } else {
+                1.0
+            }
+        })
+        .collect()
+}
+
+fn audio_style_distributed_region_homeostasis(
+    candidates: &[PlaybackTrack],
+    region_pressure: Option<&AudioStyleRegionPressure<'_>>,
+) -> Vec<f32> {
+    let Some(region_pressure) = region_pressure else {
+        return vec![1.0; candidates.len()];
+    };
+    candidates
+        .iter()
+        .map(|candidate| {
+            let target = region_pressure.target_share_for_track(candidate);
+            let usage = region_pressure.usage_share_for_track(candidate);
+            let deficit = (target - usage).max(0.0);
+            let excess = (usage - target).max(0.0);
+            (1.0 + deficit)
+                / (1.0 + AUDIO_STYLE_DISTRIBUTED_HOMEOSTASIS_STRENGTH * excess)
+        })
+        .collect()
+}
+
+fn audio_style_distributed_region_fatigue(
+    candidates: &[PlaybackTrack],
+    region_pressure: Option<&AudioStyleRegionPressure<'_>>,
+) -> Vec<f32> {
+    let Some(region_pressure) = region_pressure else {
+        return vec![1.0; candidates.len()];
+    };
+    candidates
+        .iter()
+        .map(|candidate| {
+            let recent_same =
+                region_pressure.recent_same_region_count_for_track(candidate, 16) as f32;
+            1.0 / (1.0 + AUDIO_STYLE_DISTRIBUTED_REGION_FATIGUE_STRENGTH * recent_same)
+        })
+        .collect()
+}
+
+fn audio_style_distributed_region_run_hazard(
+    candidates: &[PlaybackTrack],
+    region_pressure: Option<&AudioStyleRegionPressure<'_>>,
+) -> Vec<f32> {
+    let Some(region_pressure) = region_pressure else {
+        return vec![1.0; candidates.len()];
+    };
+    candidates
+        .iter()
+        .map(|candidate| {
+            let run_len = region_pressure.recent_same_region_count_for_track(candidate, usize::MAX);
+            1.0 / (1.0
+                + AUDIO_STYLE_DISTRIBUTED_REGION_RUN_HAZARD_STRENGTH
+                    * run_len.saturating_sub(1) as f32)
+        })
+        .collect()
+}
+
+fn audio_style_relaxed_distributed_candidate_field(values: Vec<f32>) -> Vec<f32> {
+    if values.len() <= 1 {
+        return values;
+    }
+    let normalized_base = normalize_positive_weights(values.clone());
+    let mut state = normalized_base.clone();
+    if state.iter().all(|value| *value <= 0.0) {
+        return values;
+    }
+    let strongest = normalized_base.iter().copied().fold(0.0_f32, f32::max);
+    for _ in 0..AUDIO_STYLE_DISTRIBUTED_FIELD_RELAXATION_STEPS {
+        let target = state
+            .iter()
+            .zip(normalized_base.iter())
+            .map(|(state_value, base_value)| {
+                let crowding = (*state_value * state.len() as f32).min(0.35);
+                let support = if strongest > 0.0 {
+                    (*base_value / strongest).clamp(AUDIO_STYLE_DISTRIBUTED_TAIL_SUPPORT_FLOOR, 1.0)
+                } else {
+                    1.0
+                };
+                base_value * support
+                    / (1.0 + AUDIO_STYLE_DISTRIBUTED_FIELD_CROWDING_STRENGTH * crowding)
+            })
+            .collect::<Vec<_>>();
+        let target = normalize_positive_weights(target);
+        if target.iter().all(|value| *value <= 0.0) {
+            break;
+        }
+        for (state_value, target_value) in state.iter_mut().zip(target.iter()) {
+            *state_value = (1.0 - AUDIO_STYLE_DISTRIBUTED_FIELD_RELAXATION_RATE) * *state_value
+                + AUDIO_STYLE_DISTRIBUTED_FIELD_RELAXATION_RATE * *target_value;
+        }
+    }
+    state
 }
 
 fn local_candidate_similarity_reference(values: &[f32]) -> Vec<f32> {

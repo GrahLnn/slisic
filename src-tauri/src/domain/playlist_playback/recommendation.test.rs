@@ -883,6 +883,81 @@ fn audio_style_bio_route_hcr_dendrite_prefers_open_basin_without_replacing_dista
 }
 
 #[test]
+fn audio_style_distributed_field_reduces_recent_region_without_breaking_style_continuity() {
+    let current = track_in_basin("Current", "current");
+    let recent = (0..10)
+        .map(|index| track_in_basin(&format!("Recent {index}"), &format!("recent_{index}")))
+        .collect::<Vec<_>>();
+    let same_region = track_in_basin("Fresh Same Region", "same_region");
+    let open_region = track_in_basin("Fresh Open Region", "open_region");
+    let mut embeddings = vec![(current.clone(), dense_embedding(&[(0, 1.0)]))];
+    embeddings.extend(
+        recent
+            .iter()
+            .cloned()
+            .map(|track| (track, dense_embedding(&[(0, 0.98), (1, 0.20)]))),
+    );
+    embeddings.extend([
+        (
+            same_region.clone(),
+            dense_embedding(&[(0, 0.98), (1, 0.20)]),
+        ),
+        (
+            open_region.clone(),
+            dense_embedding(&[(0, 0.97), (2, 0.243)]),
+        ),
+    ]);
+    let recommender = AudioStylePlaylistPlaybackRecommender::from_test_embeddings(embeddings);
+
+    let without_history = choose_next_audio_style_candidate_with_recent_history_for_test(
+        &current,
+        &[same_region.clone(), open_region.clone()],
+        &recommender,
+        &[],
+        0.0,
+    );
+    let with_recent_region = choose_next_audio_style_candidate_with_recent_history_for_test(
+        &current,
+        &[same_region.clone(), open_region.clone()],
+        &recommender,
+        &recent,
+        0.0,
+    );
+
+    assert_eq!(without_history.index, 0);
+    assert_eq!(with_recent_region.index, 0);
+    assert!(with_recent_region.probability < without_history.probability);
+    assert!(with_recent_region.probability > 0.0);
+}
+
+#[test]
+fn audio_style_distributed_field_keeps_recent_liked_track_from_becoming_attractor() {
+    let current = track_in_basin("Current", "current");
+    let mut liked_recent = track_in_basin("Current", "liked_recent");
+    liked_recent.liked = true;
+    let open_region = track_in_basin("Open", "open_region");
+    let recommender = AudioStylePlaylistPlaybackRecommender::from_test_embeddings([
+        (current.clone(), embedding(2)),
+        (liked_recent.clone(), embedding(2)),
+        (open_region.clone(), embedding(2)),
+    ]);
+
+    let selection = choose_next_audio_style_candidate_with_recent_history_for_test(
+        &current,
+        &[liked_recent.clone(), open_region.clone()],
+        &recommender,
+        std::slice::from_ref(&liked_recent),
+        0.60,
+    );
+
+    assert_eq!(selection.index, 1);
+    assert!(
+        selection.probability > selection.uniform_probability,
+        "open candidate should remain a real style-continuity choice"
+    );
+}
+
+#[test]
 fn audio_style_recommender_after_exclude_does_not_reinsert_current_track() {
     let current = track("current");
     let near = track("near");
