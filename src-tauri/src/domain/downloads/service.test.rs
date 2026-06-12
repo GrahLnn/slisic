@@ -213,10 +213,7 @@ fn leaf_download_retry_policy_keeps_temporary_auth_or_bot_challenges_retryable()
     for message in errors {
         let error = anyhow!(message);
 
-        assert!(
-            is_retryable_leaf_download_error(&error),
-            "{message}"
-        );
+        assert!(is_retryable_leaf_download_error(&error), "{message}");
         assert!(
             LeafDownloadRetryPolicy::default()
                 .cooldown_after_failure(1, "leaf-a", &error)
@@ -646,7 +643,11 @@ fn single_leaf_download_completion_commits_music_and_manifest() {
             .await
             .expect("collection shell should save before leaf completion");
 
-        let mut task = DownloadTask::new("task-single-leaf-completion", collection_url, DownloadTrigger::Manual);
+        let mut task = DownloadTask::new(
+            "task-single-leaf-completion",
+            collection_url,
+            DownloadTrigger::Manual,
+        );
         task.collection_url = Some(collection.url.clone());
         task.collection_name = Some(collection.name.clone());
         task.collection_folder = Some(collection.folder.clone());

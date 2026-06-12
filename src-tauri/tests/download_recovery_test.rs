@@ -324,7 +324,11 @@ fn repair_stale_single_source_collections_recovers_stable_file_before_leaf_commi
         task.source_kind = Some(CollectionSourceKind::Single);
         task.status = DownloadTaskStatus::Interrupted;
 
-        let mut leaf = DownloadLeaf::new("leaf-repair-half-committed-single", collection.url.clone(), 0);
+        let mut leaf = DownloadLeaf::new(
+            "leaf-repair-half-committed-single",
+            collection.url.clone(),
+            0,
+        );
         leaf.title = Some(collection.name.clone());
         leaf.duration_seconds = Some(5_733);
         leaf.status = DownloadLeafStatus::Interrupted;

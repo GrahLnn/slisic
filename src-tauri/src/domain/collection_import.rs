@@ -2322,7 +2322,8 @@ pub(crate) fn restore_single_source_musics_from_task(
     let mut seen_urls = HashSet::new();
 
     for leaf in &task.leafs {
-        let Some(relative_path) = recover_single_source_leaf_relative_path(collection, leaf, save_root)
+        let Some(relative_path) =
+            recover_single_source_leaf_relative_path(collection, leaf, save_root)
         else {
             continue;
         };
