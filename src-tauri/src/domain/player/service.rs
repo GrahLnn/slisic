@@ -419,6 +419,8 @@ async fn play_tracks_with_initial_track(
         .playback_run_generation
         .fetch_add(1, Ordering::SeqCst)
         + 1;
+    let previous_active_track = runtime.active_request_track_snapshot()?;
+    let previous_active_range = runtime.active_playback_range_snapshot()?;
 
     emit_player_trace(
         "player-session-stop-start",
@@ -436,6 +438,16 @@ async fn play_tracks_with_initial_track(
                 .error(error),
         );
     } else {
+        if let Some(track) = previous_active_track.as_ref() {
+            log_player_stop_done(
+                track,
+                previous_active_range.unwrap_or(ActivePlaybackRange {
+                    start_ms: track.start_ms,
+                    end_ms: track.end_ms,
+                }),
+                "session_restart",
+            );
+        }
         emit_player_trace(
             "player-session-stop-ok",
             PlayerTrace::new(&runtime.app)
@@ -2186,6 +2198,8 @@ async fn run_playback_session(
                 start_ms: track.start_ms,
                 end_ms: track.end_ms,
             });
+        let replaced_track = runtime.active_request_track_snapshot()?;
+        let replaced_range = runtime.active_playback_range_snapshot()?;
         let request = playback_request_for_track_range(&track, active_range);
         let request_has_normalization = request.normalization.is_some();
         let range_duration_ms = active_range.end_ms.saturating_sub(active_range.start_ms);
@@ -2204,6 +2218,19 @@ async fn run_playback_session(
         );
         match playback.play_request(request).await {
             Ok(_) => {
+                if let Some(replaced_track) = replaced_track
+                    .as_ref()
+                    .filter(|previous| !are_playback_tracks_equal(previous, &track))
+                {
+                    log_player_stop_done(
+                        replaced_track,
+                        replaced_range.unwrap_or(ActivePlaybackRange {
+                            start_ms: replaced_track.start_ms,
+                            end_ms: replaced_track.end_ms,
+                        }),
+                        "track_replaced",
+                    );
+                }
                 log::info!(
                     target: "player",
                     "[now play] playlist=\"{}\" title=\"{}\" integrated={} base_gain={} final_gain={} target_lufs={} true_peak={} lra={} short_p50={} short_p80={} short_p95={} short_max={} presence={} correction={} reason={} normalization={} range={}..{} range_duration_ms={}",
@@ -2839,12 +2866,28 @@ pub(crate) enum PlaybackRangeCompletion {
     Repeat(ActivePlaybackRange),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PlaybackRangeCompletionPlaybackAction {
+    KeepRunning,
+    StopCompletedRange,
+}
+
+pub(crate) fn resolve_playback_completion_playback_action(
+    completion: PlaybackRangeCompletion,
+) -> PlaybackRangeCompletionPlaybackAction {
+    match completion {
+        PlaybackRangeCompletion::Continue | PlaybackRangeCompletion::Repeat(_) => {
+            PlaybackRangeCompletionPlaybackAction::KeepRunning
+        }
+        PlaybackRangeCompletion::Finish => PlaybackRangeCompletionPlaybackAction::StopCompletedRange,
+    }
+}
+
 pub(crate) fn resolve_plain_playback_status_completion(
     status: &ffplayr::AudioStatus,
     active_range: ActivePlaybackRange,
 ) -> (PlaybackRangeCompletion, u32) {
-    let current_position_ms =
-        resolve_playback_absolute_position_ms(status, Some(active_range));
+    let current_position_ms = resolve_playback_absolute_position_ms(status, Some(active_range));
     (
         resolve_playback_range_completion(current_position_ms, active_range, None),
         current_position_ms,
@@ -3049,6 +3092,77 @@ fn playback_track_path_matches(track: Option<&PlaybackTrack>, current_path: &Pat
 }
 
 #[cfg(not(test))]
+fn log_player_end_signal(
+    track: Option<&PlaybackTrack>,
+    active_range: ActivePlaybackRange,
+    spectrum_loop_range: Option<ActivePlaybackRange>,
+    current_position_ms: u32,
+    elapsed_ms: u32,
+    status_read_ms: Option<u32>,
+    reason: &'static str,
+) {
+    let Some(track) = track else {
+        return;
+    };
+    log::info!(
+        target: "player",
+        "[end signal] playlist=\"{}\" title=\"{}\" current_position_ms={} elapsed_ms={} status_read_ms={} reason={} range={}..{} range_duration_ms={} spectrum_loop={}",
+        track.playlist_name,
+        track.music_name,
+        current_position_ms,
+        elapsed_ms,
+        status_read_ms
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        reason,
+        active_range.start_ms,
+        active_range.end_ms,
+        active_range.end_ms.saturating_sub(active_range.start_ms),
+        spectrum_loop_range
+            .map(|range| format!("{}..{}", range.start_ms, range.end_ms))
+            .unwrap_or_else(|| "none".to_string()),
+    );
+}
+
+#[cfg(not(test))]
+fn log_player_stop_done(track: &PlaybackTrack, active_range: ActivePlaybackRange, reason: &str) {
+    log::info!(
+        target: "player",
+        "[stop done] playlist=\"{}\" title=\"{}\" range={}..{} range_duration_ms={} reason={}",
+        track.playlist_name,
+        track.music_name,
+        active_range.start_ms,
+        active_range.end_ms,
+        active_range.end_ms.saturating_sub(active_range.start_ms),
+        reason,
+    );
+}
+
+#[cfg(not(test))]
+async fn stop_completed_playback_range(
+    runtime: &PlayerRuntime,
+    playback: &Playback,
+    track: Option<&PlaybackTrack>,
+    active_range: ActivePlaybackRange,
+    generation: u64,
+    reason: &'static str,
+) -> Result<()> {
+    let Some(track) = track else {
+        return Ok(());
+    };
+    if runtime.playback_run_generation.load(Ordering::SeqCst) != generation {
+        return Ok(());
+    }
+
+    playback
+        .stop()
+        .await
+        .map_err(|error| anyhow!("failed to stop completed playback range: {error}"))?;
+    log_player_stop_done(track, active_range, reason);
+    Ok(())
+}
+
+#[cfg(not(test))]
 async fn wait_until_track_finishes(
     runtime: &PlayerRuntime,
     playback: &Playback,
@@ -3136,6 +3250,15 @@ async fn wait_until_track_finishes(
         );
         let status_result = match deadline_ms {
             Some(0) => {
+                log_player_end_signal(
+                    active_track.as_ref(),
+                    active_range,
+                    spectrum_loop_range,
+                    clock_position_ms,
+                    wall_elapsed_ms,
+                    None,
+                    "finish_deadline",
+                );
                 emit_player_trace(
                     "player-range-completion",
                     PlayerTrace::new(&runtime.app)
@@ -3150,12 +3273,32 @@ async fn wait_until_track_finishes(
                             trace_detail("activeScopeId", trace_scope_id(active_scope)),
                         ]),
                 );
+                stop_completed_playback_range(
+                    runtime,
+                    playback,
+                    active_track.as_ref(),
+                    active_range,
+                    generation,
+                    "finish_deadline",
+                )
+                .await?;
                 return Ok(());
             }
             Some(deadline_ms) => {
                 tokio::select! {
                     result = playback.status() => result,
                     _ = tokio::time::sleep(Duration::from_millis(deadline_ms)) => {
+                        let signaled_elapsed_ms = wall_elapsed_ms.saturating_add(deadline_ms.min(u64::from(u32::MAX)) as u32);
+                        let status_read_ms = status_read_started.elapsed().as_millis().min(u128::from(u32::MAX)) as u32;
+                        log_player_end_signal(
+                            active_track.as_ref(),
+                            active_range,
+                            spectrum_loop_range,
+                            active_range.end_ms,
+                            signaled_elapsed_ms,
+                            Some(status_read_ms),
+                            "finish_deadline",
+                        );
                         emit_player_trace(
                             "player-range-completion",
                             PlayerTrace::new(&runtime.app)
@@ -3164,13 +3307,22 @@ async fn wait_until_track_finishes(
                                 .details(vec![
                                     trace_detail("generation", generation),
                                     trace_detail("currentPositionMs", active_range.end_ms),
-                                    trace_detail("elapsedMs", wall_elapsed_ms.saturating_add(deadline_ms.min(u64::from(u32::MAX)) as u32)),
-                                    trace_detail("statusReadMs", status_read_started.elapsed().as_millis().min(u128::from(u32::MAX)) as u32),
+                                    trace_detail("elapsedMs", signaled_elapsed_ms),
+                                    trace_detail("statusReadMs", status_read_ms),
                                     trace_detail("activeRange", trace_range(Some(active_range))),
                                     trace_detail("spectrumLoopRange", trace_range(spectrum_loop_range)),
                                     trace_detail("activeScopeId", trace_scope_id(active_scope)),
                                 ]),
                         );
+                        stop_completed_playback_range(
+                            runtime,
+                            playback,
+                            active_track.as_ref(),
+                            active_range,
+                            generation,
+                            "finish_deadline",
+                        )
+                        .await?;
                         return Ok(());
                     }
                 }
@@ -3260,6 +3412,15 @@ async fn wait_until_track_finishes(
                 }
             }
             PlaybackRangeCompletion::Finish => {
+                log_player_end_signal(
+                    active_track.as_ref(),
+                    active_range,
+                    spectrum_loop_range,
+                    current_position_ms,
+                    wall_elapsed_ms,
+                    Some(status_read_ms),
+                    "finish",
+                );
                 emit_player_trace(
                     "player-range-completion",
                     PlayerTrace::new(&runtime.app)
@@ -3278,6 +3439,19 @@ async fn wait_until_track_finishes(
                             trace_detail("activeScopeId", trace_scope_id(active_scope)),
                         ]),
                 );
+                if resolve_playback_completion_playback_action(completion)
+                    == PlaybackRangeCompletionPlaybackAction::StopCompletedRange
+                {
+                    stop_completed_playback_range(
+                        runtime,
+                        playback,
+                        active_track.as_ref(),
+                        active_range,
+                        generation,
+                        "finish",
+                    )
+                    .await?;
+                }
                 return Ok(());
             }
             PlaybackRangeCompletion::Repeat(loop_range) => {

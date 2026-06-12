@@ -2,21 +2,21 @@ use super::model::{
     ActivePlaybackRange, PlaybackTrack, PlaybackTrackPayload, PlaybackTrackProjectionError,
 };
 use super::service::{
-    BACKEND_PLAYBACK_TARGET_LUFS, PlaybackRangeCompletion, PlaybackStartRequestRegistry,
-    PlaybackTrackLikedUpdate, SpectrumPlaybackScope, are_playback_tracks_equal,
-    backend_playback_normalization, playback_loudness_plan_for_profile,
+    BACKEND_PLAYBACK_TARGET_LUFS, PlaybackRangeCompletion, PlaybackRangeCompletionPlaybackAction,
+    PlaybackStartRequestRegistry, PlaybackTrackLikedUpdate, SpectrumPlaybackScope,
+    are_playback_tracks_equal, backend_playback_normalization, playback_loudness_plan_for_profile,
     playback_normalization_for_track_loudness_profile, playback_request_for_track_range,
     playback_tracks_match, resolve_active_request_track_liked_update,
-    resolve_playback_absolute_position_ms, resolve_plain_playback_status_completion,
-    resolve_playback_clock_position_ms, resolve_playback_range_completion,
-    resolve_playback_range_deadline_ms, resolve_playback_request_position,
-    resolve_playback_seek_pause_after_request, resolve_playback_seek_range,
-    resolve_playback_status_track_identity, resolve_repeated_playback_range_override,
-    resolve_session_track_liked_update, resolve_spectrum_loop_playback_range,
-    resolve_spectrum_loop_signal_active_range, resolve_spectrum_loop_signal_seek_position,
-    resolve_spectrum_music_playback_range, resolve_spectrum_playback_loop_signal,
-    should_accept_spectrum_playback_signal, should_commit_spectrum_playback_scope_exit,
-    should_resume_playback_seek_cancel,
+    resolve_plain_playback_status_completion, resolve_playback_absolute_position_ms,
+    resolve_playback_clock_position_ms, resolve_playback_completion_playback_action,
+    resolve_playback_range_completion, resolve_playback_range_deadline_ms,
+    resolve_playback_request_position, resolve_playback_seek_pause_after_request,
+    resolve_playback_seek_range, resolve_playback_status_track_identity,
+    resolve_repeated_playback_range_override, resolve_session_track_liked_update,
+    resolve_spectrum_loop_playback_range, resolve_spectrum_loop_signal_active_range,
+    resolve_spectrum_loop_signal_seek_position, resolve_spectrum_music_playback_range,
+    resolve_spectrum_playback_loop_signal, should_accept_spectrum_playback_signal,
+    should_commit_spectrum_playback_scope_exit, should_resume_playback_seek_cancel,
 };
 use super::track_identity_substitution::{
     PlaybackTrackIdentityUpdate, resolve_active_request_track_identity_update,
@@ -597,6 +597,27 @@ fn playback_range_completion_finishes_random_playback_after_open_ended_spectrum_
 }
 
 #[test]
+fn playback_range_completion_stops_finished_range_but_keeps_loop_running() {
+    let loop_range = ActivePlaybackRange {
+        start_ms: 25_000,
+        end_ms: 45_000,
+    };
+
+    assert_eq!(
+        resolve_playback_completion_playback_action(PlaybackRangeCompletion::Continue),
+        PlaybackRangeCompletionPlaybackAction::KeepRunning,
+    );
+    assert_eq!(
+        resolve_playback_completion_playback_action(PlaybackRangeCompletion::Repeat(loop_range)),
+        PlaybackRangeCompletionPlaybackAction::KeepRunning,
+    );
+    assert_eq!(
+        resolve_playback_completion_playback_action(PlaybackRangeCompletion::Finish),
+        PlaybackRangeCompletionPlaybackAction::StopCompletedRange,
+    );
+}
+
+#[test]
 fn plain_playback_completion_uses_player_position_not_wall_clock() {
     let active_range = ActivePlaybackRange {
         start_ms: 156_000,
@@ -628,7 +649,10 @@ fn plain_playback_completion_uses_player_position_not_wall_clock() {
 
 #[test]
 fn playback_clock_advances_between_player_status_samples() {
-    assert_eq!(resolve_playback_clock_position_ms(156_000, 7_000, true), 163_000);
+    assert_eq!(
+        resolve_playback_clock_position_ms(156_000, 7_000, true),
+        163_000
+    );
     assert_eq!(
         resolve_playback_clock_position_ms(156_000, 30_000, false),
         156_000,
