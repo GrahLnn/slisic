@@ -497,6 +497,54 @@ fn audio_style_attractor_basin_pressure_can_move_out_of_repeated_basin() {
 }
 
 #[test]
+fn audio_style_region_pressure_reduces_repeated_model_region_without_changing_basin_contract() {
+    let current = track_in_basin("Current", "current");
+    let recent = (0..8)
+        .map(|index| track_in_basin(&format!("Recent {index}"), &format!("recent_{index}")))
+        .collect::<Vec<_>>();
+    let same_region = track_in_basin("Fresh Same Region", "same_region");
+    let open_region = track_in_basin("Fresh Open Region", "open_region");
+    let mut embeddings = vec![(current.clone(), dense_embedding(&[(0, 1.0)]))];
+    embeddings.extend(
+        recent
+            .iter()
+            .cloned()
+            .map(|track| (track, dense_embedding(&[(0, 0.98), (1, 0.20)]))),
+    );
+    embeddings.extend([
+        (
+            same_region.clone(),
+            dense_embedding(&[(0, 0.98), (1, 0.20)]),
+        ),
+        (
+            open_region.clone(),
+            dense_embedding(&[(0, 0.97), (2, 0.243)]),
+        ),
+    ]);
+    let recommender = AudioStylePlaylistPlaybackRecommender::from_test_embeddings(embeddings);
+
+    let without_history = choose_next_audio_style_candidate_with_recent_history_for_test(
+        &current,
+        &[same_region.clone(), open_region.clone()],
+        &recommender,
+        &[],
+        0.0,
+    );
+    let with_region_history = choose_next_audio_style_candidate_with_recent_history_for_test(
+        &current,
+        &[same_region.clone(), open_region.clone()],
+        &recommender,
+        &recent,
+        0.0,
+    );
+
+    assert_eq!(without_history.index, 0);
+    assert_eq!(with_region_history.index, 0);
+    assert!(with_region_history.probability < without_history.probability);
+    assert!(with_region_history.probability > 0.0);
+}
+
+#[test]
 fn audio_style_readonly_route_pressure_moves_out_of_recent_style_macro_basin() {
     let current = track_in_basin("Current", "current");
     let mut embeddings = vec![(current.clone(), dense_embedding(&[(0, 1.0)]))];
@@ -595,13 +643,14 @@ fn audio_style_attractor_basin_pressure_does_not_remove_liked_tracks_from_sampli
 }
 
 #[test]
-fn audio_style_readonly_route_pressure_keeps_liked_recent_style_candidate_sampleable() {
+fn audio_style_readonly_route_pressure_does_not_discount_liked_recent_style_candidate() {
     let current = track_in_basin("Current", "current");
     let recent_same_style = (0..10)
         .map(|index| track_in_basin("Cinematic", &format!("played_{index}")))
         .collect::<Vec<_>>();
     let mut liked_same_style = track_in_basin("Fresh Cinematic", "liked_same_style");
     liked_same_style.liked = true;
+    let plain_same_style = track_in_basin("Fresh Cinematic", "plain_same_style");
     let open_style = track_in_basin("Fresh Open", "open_style");
     let mut embeddings = vec![(current.clone(), dense_embedding(&[(0, 1.0)]))];
     embeddings.extend(
@@ -616,22 +665,36 @@ fn audio_style_readonly_route_pressure_keeps_liked_recent_style_candidate_sample
             dense_embedding(&[(0, 0.9), (1, 0.43589)]),
         ),
         (
+            plain_same_style.clone(),
+            dense_embedding(&[(0, 0.9), (1, 0.43589)]),
+        ),
+        (
             open_style.clone(),
             dense_embedding(&[(0, 0.9), (2, 0.43589)]),
         ),
     ]);
     let recommender = AudioStylePlaylistPlaybackRecommender::from_test_embeddings(embeddings);
 
-    let selection = choose_next_audio_style_candidate_with_recent_history_for_test(
+    let liked_selection = choose_next_audio_style_candidate_with_recent_history_for_test(
         &current,
         &[liked_same_style.clone(), open_style.clone()],
         &recommender,
         &recent_same_style,
         0.0,
     );
+    let plain_selection = choose_next_audio_style_candidate_with_recent_history_for_test(
+        &current,
+        &[plain_same_style.clone(), open_style.clone()],
+        &recommender,
+        &recent_same_style,
+        0.0,
+    );
 
-    assert_eq!(selection.index, 0);
-    assert!(selection.probability > 0.0);
+    assert_eq!(liked_selection.index, plain_selection.index);
+    assert!(
+        (liked_selection.probability - plain_selection.probability).abs() <= 1.0e-6,
+        "liked status must not discount route pressure; it only keeps recent tracks sampleable"
+    );
 }
 
 #[test]
@@ -698,7 +761,7 @@ fn recommendation_history_falls_back_when_attractor_basin_fatigue_would_empty_ca
 }
 
 #[test]
-fn audio_style_history_filter_keeps_recent_liked_candidate_in_weight_band() {
+fn audio_style_history_filter_keeps_recent_liked_candidate_sampleable_without_weight_bonus() {
     let current = track("current");
     let low = track("low");
     let mut liked = track("liked");
@@ -716,16 +779,16 @@ fn audio_style_history_filter_keeps_recent_liked_candidate_in_weight_band() {
     );
 
     let selected_after_liked =
-        choose_next_audio_style_candidate_for_test(&current, &filtered, &recommender, 0.003);
+        choose_next_audio_style_candidate_for_test(&current, &filtered, &recommender, 0.50);
     let selected_after_near =
         choose_next_audio_style_candidate_for_test(&current, &filtered, &recommender, 0.5);
 
-    assert_eq!(selected_after_liked, 1);
+    assert_eq!(selected_after_liked, 2);
     assert_eq!(selected_after_near, 2);
 }
 
 #[test]
-fn audio_style_liked_multiplier_does_not_override_distance_distribution() {
+fn audio_style_liked_status_does_not_change_distance_distribution() {
     let current = track("current");
     let low = track("low");
     let mut liked = track("liked");
@@ -742,7 +805,7 @@ fn audio_style_liked_multiplier_does_not_override_distance_distribution() {
         &current,
         &[low.clone(), liked.clone(), high.clone()],
         &recommender,
-        0.003,
+        0.50,
     );
     let selected_after_near = choose_next_audio_style_candidate_for_test(
         &current,
@@ -751,8 +814,72 @@ fn audio_style_liked_multiplier_does_not_override_distance_distribution() {
         0.5,
     );
 
-    assert_eq!(selected_after_liked, 1);
+    assert_eq!(selected_after_liked, 2);
     assert_eq!(selected_after_near, 2);
+}
+
+#[test]
+fn audio_style_bio_route_gate_modulates_distance_base_without_replacing_it() {
+    let current = track_in_basin("Current", "current");
+    let played = (0..12)
+        .map(|index| track_in_basin("Current", &format!("played_{index}")))
+        .collect::<Vec<_>>();
+    let near_same_basin = track_in_basin("Current", "near_same_basin");
+    let mut far_liked_open_basin = track_in_basin("Open", "far_liked_open_basin");
+    far_liked_open_basin.liked = true;
+    let recommender = AudioStylePlaylistPlaybackRecommender::from_test_embeddings([
+        (current.clone(), embedding(2)),
+        (near_same_basin.clone(), embedding(2)),
+        (far_liked_open_basin.clone(), embedding(128)),
+    ]);
+
+    let selection = choose_next_audio_style_candidate_with_recent_history_for_test(
+        &current,
+        &[near_same_basin.clone(), far_liked_open_basin.clone()],
+        &recommender,
+        &played,
+        0.70,
+    );
+
+    assert_eq!(selection.index, 0);
+    assert!(selection.probability > 0.0);
+}
+
+#[test]
+fn audio_style_bio_route_hcr_dendrite_prefers_open_basin_without_replacing_distance() {
+    let current = track_in_basin("Current", "current");
+    let played = (0..10)
+        .map(|index| track_in_basin("Current", &format!("played_{index}")))
+        .collect::<Vec<_>>();
+    let repeated_basin = track_in_basin("Current", "repeated_basin");
+    let open_basin = track_in_basin("Open", "open_basin");
+    let far_open = track_in_basin("Open", "far_open");
+    let recommender = AudioStylePlaylistPlaybackRecommender::from_test_embeddings([
+        (current.clone(), embedding(2)),
+        (repeated_basin.clone(), embedding(2)),
+        (open_basin.clone(), embedding(2)),
+        (far_open.clone(), embedding(128)),
+    ]);
+
+    let open_selection = choose_next_audio_style_candidate_with_recent_history_for_test(
+        &current,
+        &[repeated_basin.clone(), open_basin.clone()],
+        &recommender,
+        &played,
+        0.60,
+    );
+    let distance_selection = choose_next_audio_style_candidate_with_recent_history_for_test(
+        &current,
+        &[repeated_basin, far_open],
+        &recommender,
+        &played,
+        0.95,
+    );
+
+    assert_eq!(open_selection.index, 1);
+    assert!(open_selection.probability > 0.50);
+    assert_eq!(distance_selection.index, 0);
+    assert!(distance_selection.probability > 0.0);
 }
 
 #[test]
@@ -1495,7 +1622,7 @@ fn trained_audio_style_snapshot_uses_centered_local_density_corrected_scores() {
 }
 
 #[test]
-fn trained_audio_style_snapshot_keeps_liked_tail_candidate_sampleable() {
+fn trained_audio_style_snapshot_does_not_promote_liked_tail_candidate() {
     let current = track("current");
     let best = track("best");
     let mut liked_tail = track("liked_tail");
@@ -1516,18 +1643,22 @@ fn trained_audio_style_snapshot_keeps_liked_tail_candidate_sampleable() {
 
     let selection = choose_next_audio_style_candidate_with_generation_for_test(
         &current,
-        &[best, liked_tail, low],
+        &[best, liked_tail.clone(), low],
         snapshot.recommender(),
         0.995,
         Some(snapshot.generation()),
     );
 
-    assert_eq!(selection.index, 1);
+    assert_eq!(selection.index, 0);
     assert_eq!(selection.model_generation, Some(9));
+    assert_ne!(
+        selection.index, 1,
+        "liked status must not add a sampling bonus over distance and flow pressure"
+    );
     assert!(
         selection
             .local_rank_fraction
-            .is_some_and(|rank| rank >= 0.5)
+            .is_some_and(|rank| rank <= 0.5)
     );
 }
 
@@ -2028,18 +2159,18 @@ fn audio_style_hardware_runtime_pool_keeps_one_selected_device() {
 
 #[test]
 fn audio_style_hardware_cleanup_logs_only_unhealthy_or_slow_cleanup() {
-    assert!(!super::recommendation::audio_style_hardware_cleanup_should_log_for_test(
-        true, true, 0,
-    ));
-    assert!(super::recommendation::audio_style_hardware_cleanup_should_log_for_test(
-        false, true, 0,
-    ));
-    assert!(super::recommendation::audio_style_hardware_cleanup_should_log_for_test(
-        true, false, 0,
-    ));
-    assert!(super::recommendation::audio_style_hardware_cleanup_should_log_for_test(
-        true, true, 50,
-    ));
+    assert!(
+        !super::recommendation::audio_style_hardware_cleanup_should_log_for_test(true, true, 0,)
+    );
+    assert!(
+        super::recommendation::audio_style_hardware_cleanup_should_log_for_test(false, true, 0,)
+    );
+    assert!(
+        super::recommendation::audio_style_hardware_cleanup_should_log_for_test(true, false, 0,)
+    );
+    assert!(
+        super::recommendation::audio_style_hardware_cleanup_should_log_for_test(true, true, 50,)
+    );
 }
 
 #[test]

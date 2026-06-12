@@ -9,6 +9,7 @@ use crate::domain::player::model::{PlaybackTrack, PlaybackTrackPayload};
 #[cfg(not(test))]
 use crate::domain::playlist_playback::recommendation::{
     AudioStyleCenterlessSourceStatus, published_audio_style_centerless_source_from_candidates,
+    published_audio_style_model_snapshot,
 };
 #[cfg(not(test))]
 use crate::domain::playlist_playback::service as playlist_playback_service;
@@ -2109,6 +2110,16 @@ async fn prepare_playlist_source(
     selection: &PlaylistPlaybackSelection,
     excluded_source_keys: &HashSet<String>,
 ) -> Result<Option<PreparedPlaylistSource>> {
+    if published_audio_style_model_snapshot().is_none() {
+        return prepare_playlist_random_fallback_source(
+            app,
+            selection,
+            excluded_source_keys,
+            "model_unavailable",
+        )
+        .await;
+    }
+
     let candidates =
         prepare_audio_style_candidate_tracks(app, selection, excluded_source_keys).await?;
     match published_audio_style_centerless_source_from_candidates(candidates) {

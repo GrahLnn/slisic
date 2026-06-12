@@ -929,7 +929,8 @@ fn seed_playlist_session_next_from_prepared_pool(
     session: &player_service::PlaybackSessionHandle,
     anchor: &PlaybackTrack,
 ) -> Result<bool> {
-    let Some((snapshot, next)) = read_prepared_next_cargo_from_first_slot_pool(playlist_name, anchor)?
+    let Some((snapshot, next)) =
+        read_prepared_next_cargo_from_first_slot_pool(playlist_name, anchor)?
     else {
         emit_playlist_playback_trace(
             "playlist-playback-prepared-next-miss",
@@ -942,7 +943,8 @@ fn seed_playlist_session_next_from_prepared_pool(
     };
 
     let tracks = create_short_playback_queue(anchor.clone(), vec![next.clone()]);
-    let updated = player_service::update_session_tracks_for_anchor(session, anchor, tracks.clone())?;
+    let updated =
+        player_service::update_session_tracks_for_anchor(session, anchor, tracks.clone())?;
     if updated {
         consume_playlist_initial_prepared_source(&Some(snapshot));
     }
@@ -1321,11 +1323,13 @@ async fn fill_playlist_track_queue(
                     .playlist_name(&playlist_name)
                     .track(&active_track)
                     .queue_count(player_service::current_session_tracks_snapshot()?.len())
-                    .status(if current_session_queue_contains_next(&session, &active_track)? {
-                        "next_ready"
-                    } else {
-                        "next_missing"
-                    }),
+                    .status(
+                        if current_session_queue_contains_next(&session, &active_track)? {
+                            "next_ready"
+                        } else {
+                            "next_missing"
+                        },
+                    ),
             );
             current_anchor = Some(active_track);
         }
@@ -2008,6 +2012,7 @@ fn propose_random_playlist_playback_queue_with_trace(
             valid_similarity_count: 0,
             selected_basin: None,
             top_candidate_basins: "none".to_string(),
+            bio_route: "none".to_string(),
         }
     });
     PlaylistPlaybackQueueProposal { tracks, selection }
@@ -2036,6 +2041,7 @@ struct PlaylistPlaybackSelectionTrace {
     valid_similarity_count: usize,
     selected_basin: Option<String>,
     top_candidate_basins: String,
+    bio_route: String,
 }
 
 #[cfg(not(test))]
@@ -2059,8 +2065,29 @@ impl From<&AudioStyleCandidateSelection> for PlaylistPlaybackSelectionTrace {
             top_candidate_basins: format_audio_style_candidate_basins(
                 &selection.diagnostics.top_candidate_basins,
             ),
+            bio_route: format_audio_style_bio_route(selection.diagnostics.bio_route),
         }
     }
+}
+
+#[cfg(not(test))]
+fn format_audio_style_bio_route(
+    diagnostics: Option<super::recommendation::AudioStyleBioRouteDiagnostics>,
+) -> String {
+    diagnostics
+        .map(|diagnostics| {
+            format!(
+                "distance_base:{:.6},route_drive:{:.3},hcr:{:.3},ibnn:{:.3},damping:{:.3},local_gate:{:.3},final_weight:{:.6}",
+                diagnostics.distance_base,
+                diagnostics.route_drive,
+                diagnostics.hcr_drive,
+                diagnostics.ibnn_state,
+                diagnostics.damping,
+                diagnostics.local_gate,
+                diagnostics.final_weight
+            )
+        })
+        .unwrap_or_else(|| "none".to_string())
 }
 
 #[cfg(not(test))]
@@ -2162,10 +2189,14 @@ fn log_playlist_playback_next_track_selection(
         .as_ref()
         .map(|trace| trace.top_candidate_basins.as_str())
         .unwrap_or("none");
+    let bio_route = trace
+        .as_ref()
+        .map(|trace| trace.bio_route.as_str())
+        .unwrap_or("none");
 
     log::info!(
         target: PLAYLIST_PLAYBACK_LOG_TARGET,
-        "next track proposed source={source} requested_source={requested_source} mode={} model_generation={model_generation} probability={probability:.6} uniform_probability={uniform_probability:.6} similarity={similarity} best_similarity={best_similarity} local_rank_fraction={local_rank_fraction} draw={draw} candidates={candidate_count} anchor_embedded={anchor_embedded} embedded_candidates={embedded_candidate_count} valid_similarities={valid_similarity_count} selected_basin=\"{selected_basin}\" candidate_basin_top=\"{candidate_basin_top}\" reason={reason} playlist=\"{}\" title=\"{}\" integrated_lufs={}",
+        "next track proposed source={source} requested_source={requested_source} mode={} model_generation={model_generation} probability={probability:.6} uniform_probability={uniform_probability:.6} similarity={similarity} best_similarity={best_similarity} local_rank_fraction={local_rank_fraction} draw={draw} candidates={candidate_count} anchor_embedded={anchor_embedded} embedded_candidates={embedded_candidate_count} valid_similarities={valid_similarity_count} selected_basin=\"{selected_basin}\" candidate_basin_top=\"{candidate_basin_top}\" bio_route=\"{bio_route}\" reason={reason} playlist=\"{}\" title=\"{}\" integrated_lufs={}",
         mode.as_str(),
         escape_log_value(&next_track.playlist_name),
         escape_log_value(&next_track.music_name),

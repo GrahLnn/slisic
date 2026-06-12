@@ -3,13 +3,13 @@ use crate::domain::meta::service as meta_service;
 use crate::domain::player::model::PlaybackTrack;
 #[cfg(not(test))]
 use crate::domain::playlist_playback::playable_index;
+use crate::domain::playlists::model::LoudnessProfile;
 #[cfg(not(test))]
 use crate::domain::playlists::model::{
     AudioStyleTrainingTrackInput, CollectionGroupOwner, Group, Music,
 };
 #[cfg(test)]
 use crate::domain::playlists::model::{CollectionGroupOwner, Group, Music};
-use crate::domain::playlists::model::LoudnessProfile;
 use crate::domain::playlists::repo::PlaylistPlaybackTrackSource;
 #[cfg(not(test))]
 use crate::utils::binaries::{ManagedBinary, acquire_managed_binary_usage};
@@ -56,7 +56,20 @@ const AUDIO_STYLE_EMBEDDING_WIDTH: usize = AUDIO_STYLE_TERMINAL_LATENT_WIDTH
 const AUDIO_STYLE_FRAME_SIZE: usize = 1024;
 const AUDIO_STYLE_HOP_SIZE: usize = 256;
 const AUDIO_STYLE_DISTANCE_SOFTMIN_BETA: f32 = 6.0;
-const AUDIO_STYLE_LIKED_WEIGHT_MULTIPLIER: f32 = 1.35;
+const AUDIO_STYLE_BIO_ROUTE_BETA: f32 = 8.0;
+const AUDIO_STYLE_BIO_ROUTE_FUTURE_WINDOW: f32 = 12.0;
+const AUDIO_STYLE_BIO_ROUTE_REGION_WEIGHT: f32 = 0.05;
+const AUDIO_STYLE_BIO_ROUTE_DAMPING_STRENGTH: f32 = 0.80;
+const AUDIO_STYLE_BIO_ROUTE_ORDER_STRENGTH: f32 = 0.12;
+const AUDIO_STYLE_BIO_ROUTE_LOCAL_CONTRAST_STRENGTH: f32 = 0.10;
+const AUDIO_STYLE_BIO_ROUTE_LOCAL_CONTRAST_THRESHOLD: f32 = 0.35;
+const AUDIO_STYLE_BIO_ROUTE_LOCAL_CONTRAST_SENSITIVITY: f32 = 6.0;
+const AUDIO_STYLE_BIO_ROUTE_IBNN_STEPS: usize = 48;
+const AUDIO_STYLE_BIO_ROUTE_IBNN_STEP_SIZE: f32 = 0.20;
+const AUDIO_STYLE_BIO_ROUTE_IBNN_IMPLICIT_BIAS_STRENGTH: f32 = 0.26;
+const AUDIO_STYLE_BIO_ROUTE_HCR_STRENGTH: f32 = 0.22;
+const AUDIO_STYLE_BIO_ROUTE_HCR_PRIOR_STRENGTH: f32 = 3.0;
+const AUDIO_STYLE_BIO_ROUTE_HCR_UNCERTAINTY_STRENGTH: f32 = 0.08;
 const AUDIO_STYLE_LOCAL_DENSITY_TOP_K: usize = 10;
 const AUDIO_STYLE_BASIN_FATIGUE_DECAY: f32 = 0.86;
 const AUDIO_STYLE_BASIN_FATIGUE_IMPULSE: f32 = 1.0;
@@ -72,7 +85,10 @@ const AUDIO_STYLE_ROUTE_STYLE_SIMILARITY_FLOOR: f32 = 0.18;
 const AUDIO_STYLE_ROUTE_STYLE_PRESSURE_DECAY: f32 = 0.92;
 const AUDIO_STYLE_ROUTE_STYLE_PRESSURE_STRENGTH: f32 = 1.15;
 const AUDIO_STYLE_ROUTE_STYLE_PRESSURE_CAP: f32 = 1.25;
-const AUDIO_STYLE_LIKED_ROUTE_PRESSURE_SCALE: f32 = 0.30;
+const AUDIO_STYLE_REGION_USAGE_DECAY: f32 = 0.88;
+const AUDIO_STYLE_REGION_USAGE_STRENGTH: f32 = 0.45;
+const AUDIO_STYLE_REGION_RUN_HAZARD_STRENGTH: f32 = 0.50;
+const AUDIO_STYLE_REGION_PRESSURE_CAP: f32 = 0.70;
 const AUDIO_STYLE_AUDITORY_STATE_WIDTH: usize = 4;
 const AUDIO_STYLE_AUDITORY_PRESSURE_STRENGTHS: [f32; AUDIO_STYLE_AUDITORY_STATE_WIDTH] =
     [3.90, 1.35, 0.70, 0.90];
@@ -183,6 +199,38 @@ struct AudioStyleReadOnlyRoutePressure {
     candidate_penalties: Vec<f32>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct AudioStyleHcrContext {
+    similarity_bin: u8,
+    route_bin: u8,
+    damping_bin: u8,
+    same_basin: bool,
+    same_region: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AudioStyleHcrObservation {
+    reward_sum: f32,
+    weight: f32,
+}
+
+struct AudioStyleHcrJointDendrite {
+    observations: HashMap<AudioStyleHcrContext, AudioStyleHcrObservation>,
+}
+
+struct AudioStyleBioRouteDecision {
+    weights: Vec<f32>,
+    diagnostics: Vec<Option<AudioStyleBioRouteDiagnostics>>,
+}
+
+#[derive(Clone)]
+struct AudioStyleRegionPressure<'a> {
+    geometry: &'a AudioStyleRegionGeometry,
+    current_region: Option<PlaybackTrackKey>,
+    current_region_run: usize,
+    usage: HashMap<PlaybackTrackKey, f32>,
+}
+
 struct AudioStyleRoutePressureCandidate<'a> {
     embedding: &'a AudioStyleEmbedding,
     anchor_similarity: f32,
@@ -196,6 +244,7 @@ pub(crate) struct AudioStyleCandidateDiagnostics {
     pub(crate) valid_similarity_count: usize,
     pub(crate) selected_basin: Option<String>,
     pub(crate) top_candidate_basins: Vec<AudioStyleCandidateBasinDiagnostics>,
+    pub(crate) bio_route: Option<AudioStyleBioRouteDiagnostics>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -203,6 +252,24 @@ pub(crate) struct AudioStyleCandidateBasinDiagnostics {
     pub(crate) basin: String,
     pub(crate) candidate_count: usize,
     pub(crate) embedded_candidate_count: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct AudioStyleBioRouteDiagnostics {
+    pub(crate) distance_base: f32,
+    pub(crate) route_drive: f32,
+    pub(crate) hcr_drive: f32,
+    pub(crate) ibnn_state: f32,
+    pub(crate) damping: f32,
+    pub(crate) local_gate: f32,
+    pub(crate) final_weight: f32,
+}
+
+impl AudioStyleCandidateDiagnostics {
+    fn with_bio_route(mut self, bio_route: Option<AudioStyleBioRouteDiagnostics>) -> Self {
+        self.bio_route = bio_route;
+        self
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -276,6 +343,7 @@ pub(crate) struct AudioStylePlaylistPlaybackRecommender {
     #[cfg_attr(not(test), allow(dead_code))]
     indexed_tracks: HashMap<PlaybackTrackKey, AudioStyleIndexedTrack>,
     sampling_geometry: Option<AudioStyleSamplingGeometry>,
+    region_geometry: Option<AudioStyleRegionGeometry>,
     auditory_geometry: Option<AudioStyleAuditoryGeometry>,
     trained: bool,
 }
@@ -286,8 +354,9 @@ struct AudioStyleModelState {
     loudness_profiles: AudioStyleLoudnessProfileMap,
     auditory_geometry: Option<AudioStyleAuditoryGeometry>,
     indexed_tracks: HashMap<PlaybackTrackKey, AudioStyleIndexedTrack>,
-    stats: AudioStyleStats,
     neighbor_index: AudioStyleNeighborIndex,
+    sampling_geometry: Option<AudioStyleSamplingGeometry>,
+    region_geometry: Option<AudioStyleRegionGeometry>,
 }
 
 struct AudioStyleModelUpdateFailure {
@@ -329,6 +398,12 @@ struct AudioStyleSamplingGeometry {
 }
 
 type AudioStyleLoudnessProfileMap = HashMap<PlaybackTrackKey, LoudnessProfile>;
+
+#[derive(Clone)]
+struct AudioStyleRegionGeometry {
+    regions: HashMap<PlaybackTrackKey, PlaybackTrackKey>,
+    target_share: HashMap<PlaybackTrackKey, f32>,
+}
 
 #[derive(Clone)]
 struct AudioStyleAuditoryGeometry {
@@ -1324,7 +1399,7 @@ impl AudioStyleTensorRuntime {
 
     fn softmin_weights(
         &self,
-        liked_flags: &[bool],
+        _liked_flags: &[bool],
         similarities: &[Option<f32>],
         basin_penalties: &[f32],
     ) -> Vec<f32> {
@@ -1346,11 +1421,7 @@ impl AudioStyleTensorRuntime {
                     valid_values.push(0.0);
                 }
             }
-            liked_values.push(if liked_flags.get(index).copied().unwrap_or(false) {
-                AUDIO_STYLE_LIKED_WEIGHT_MULTIPLIER.ln()
-            } else {
-                0.0
-            });
+            liked_values.push(0.0);
             penalty_values.push(basin_penalties.get(index).copied().unwrap_or(0.0).max(0.0));
         }
 
@@ -1422,15 +1493,9 @@ impl AudioStyleTensorRuntime {
 
             let anchor_distance = (1.0 - candidate.anchor_similarity.clamp(-1.0, 1.0)) * 0.5;
             let continuity_gate = (1.0 - anchor_distance).clamp(0.0, 1.0);
-            let liked_scale = if candidate.liked {
-                AUDIO_STYLE_LIKED_ROUTE_PRESSURE_SCALE
-            } else {
-                1.0
-            };
             penalties[candidate_index] = (pressure
                 * continuity_gate
-                * AUDIO_STYLE_ROUTE_STYLE_PRESSURE_STRENGTH
-                * liked_scale)
+                * AUDIO_STYLE_ROUTE_STYLE_PRESSURE_STRENGTH)
                 .clamp(0.0, AUDIO_STYLE_ROUTE_STYLE_PRESSURE_CAP);
         }
         penalties
@@ -1656,10 +1721,9 @@ impl AudioStyleTensorDevicePool {
                 "audio_style_tensor_hardware_candidates_empty source={requested_source}"
             );
         }
-        let mut devices =
-            selected_audio_style_wgpu_hardware_device_from_candidates(&candidates)
-                .into_iter()
-                .collect::<Vec<_>>();
+        let mut devices = selected_audio_style_wgpu_hardware_device_from_candidates(&candidates)
+            .into_iter()
+            .collect::<Vec<_>>();
         if devices.is_empty() && !candidates.is_empty() {
             devices = wait_for_available_audio_style_wgpu_hardware_device(&candidates)
                 .into_iter()
@@ -1936,8 +2000,7 @@ struct AudioStyleHardwareOpPermit;
 impl AudioStyleHardwareOpPermit {
     fn try_acquire(operation: &'static str) -> Option<Self> {
         let now_ms = current_time_millis();
-        let cooldown_until =
-            AUDIO_STYLE_HARDWARE_OP_COOLDOWN_UNTIL_MS.load(Ordering::SeqCst);
+        let cooldown_until = AUDIO_STYLE_HARDWARE_OP_COOLDOWN_UNTIL_MS.load(Ordering::SeqCst);
         if now_ms < cooldown_until {
             log::info!(
                 target: AUDIO_STYLE_LOG_TARGET,
@@ -2001,9 +2064,7 @@ fn audio_style_hardware_cleanup_should_log(
     cleanup_sync_ok: bool,
     elapsed_ms: u128,
 ) -> bool {
-    !sync_ok
-        || !cleanup_sync_ok
-        || elapsed_ms >= AUDIO_STYLE_TENSOR_HARDWARE_CLEANUP_SLOW_MS
+    !sync_ok || !cleanup_sync_ok || elapsed_ms >= AUDIO_STYLE_TENSOR_HARDWARE_CLEANUP_SLOW_MS
 }
 
 #[cfg(test)]
@@ -2016,8 +2077,8 @@ pub(crate) fn audio_style_hardware_cleanup_should_log_for_test(
 }
 
 fn audio_style_hardware_op_enter_cooldown() {
-    let cooldown_until = current_time_millis()
-        .saturating_add(AUDIO_STYLE_TENSOR_HARDWARE_OP_COOLDOWN_MS);
+    let cooldown_until =
+        current_time_millis().saturating_add(AUDIO_STYLE_TENSOR_HARDWARE_OP_COOLDOWN_MS);
     AUDIO_STYLE_HARDWARE_OP_COOLDOWN_UNTIL_MS.store(cooldown_until, Ordering::SeqCst);
 }
 
@@ -2339,20 +2400,22 @@ fn run_audio_style_tensor_op<T>(op: impl FnOnce() -> T) -> Option<T> {
 }
 
 impl AudioStyleSamplingGeometry {
-    fn from_state(state: &AudioStyleModelState) -> Option<Self> {
-        if state.embeddings.len() < 2 {
+    fn from_model_parts(
+        embeddings: &AudioStyleEmbeddingMap,
+        stats: &AudioStyleStats,
+        neighbor_index: &AudioStyleNeighborIndex,
+    ) -> Option<Self> {
+        if embeddings.len() < 2 {
             return None;
         }
 
-        let mean = state.stats.mean();
-        let local_density = state
-            .neighbor_index
-            .local_density_map(&state.embeddings, &mean);
+        let mean = stats.mean();
+        let local_density = neighbor_index.local_density_map(embeddings, &mean);
         Some(Self {
             mean,
             local_density,
-            similarity_low: state.neighbor_index.similarity_low,
-            similarity_high: state.neighbor_index.similarity_high,
+            similarity_low: neighbor_index.similarity_low,
+            similarity_high: neighbor_index.similarity_high,
         })
     }
 
@@ -2385,6 +2448,52 @@ impl AudioStyleSamplingGeometry {
             minmax_unit_similarity(corrected, self.similarity_low, self.similarity_high)
                 .clamp(-1.0, 1.0),
         )
+    }
+}
+
+impl AudioStyleRegionGeometry {
+    fn from_sampling_geometry(
+        embeddings: &AudioStyleEmbeddingMap,
+        neighbor_index: &AudioStyleNeighborIndex,
+        sampling_geometry: &AudioStyleSamplingGeometry,
+    ) -> Option<Self> {
+        if embeddings.len() < 3 {
+            return None;
+        }
+
+        let regions = audio_style_regions_from_neighbors(
+            embeddings,
+            &neighbor_index.neighbors,
+            &sampling_geometry.local_density,
+        );
+        if regions.len() < 3 {
+            return None;
+        }
+
+        let mut counts = HashMap::<PlaybackTrackKey, usize>::new();
+        for region in regions.values() {
+            *counts.entry(region.clone()).or_insert(0) += 1;
+        }
+        let total = counts
+            .values()
+            .map(|count| (*count as f32).sqrt())
+            .sum::<f32>();
+        if total <= 0.0 || !total.is_finite() {
+            return None;
+        }
+        let target_share = counts
+            .into_iter()
+            .map(|(region, count)| (region, (count as f32).sqrt() / total))
+            .collect::<HashMap<_, _>>();
+
+        Some(Self {
+            regions,
+            target_share,
+        })
+    }
+
+    fn region_for_track(&self, track: &PlaybackTrack) -> Option<&PlaybackTrackKey> {
+        self.regions.get(&PlaybackTrackKey::from_track(track))
     }
 }
 
@@ -2435,7 +2544,9 @@ impl AudioStyleAuditoryGeometry {
     }
 
     fn state_for_track(&self, track: &PlaybackTrack) -> Option<AudioStyleAuditoryState> {
-        self.states.get(&PlaybackTrackKey::from_track(track)).copied()
+        self.states
+            .get(&PlaybackTrackKey::from_track(track))
+            .copied()
     }
 
     fn penalty_for_decision(
@@ -2459,6 +2570,96 @@ impl AudioStyleAuditoryGeometry {
         let recent_center = audio_style_auditory_recent_center(&recent_states);
         audio_style_auditory_penalty(candidate_state, ewma, recent_center)
     }
+}
+
+impl<'a> AudioStyleRegionPressure<'a> {
+    fn from_recent_history(
+        geometry: &'a AudioStyleRegionGeometry,
+        recently_played_tracks: &[PlaybackTrack],
+    ) -> Self {
+        let mut pressure = Self {
+            geometry,
+            current_region: None,
+            current_region_run: 0,
+            usage: HashMap::new(),
+        };
+
+        for track in recently_played_tracks {
+            let Some(region) = geometry.region_for_track(track).cloned() else {
+                continue;
+            };
+            decay_audio_style_region_map(&mut pressure.usage, AUDIO_STYLE_REGION_USAGE_DECAY);
+            *pressure.usage.entry(region.clone()).or_insert(0.0) += 1.0;
+            if pressure.current_region.as_ref() == Some(&region) {
+                pressure.current_region_run += 1;
+            } else {
+                pressure.current_region = Some(region);
+                pressure.current_region_run = 1;
+            }
+        }
+
+        pressure
+    }
+
+    fn penalty_for_track(&self, track: &PlaybackTrack) -> f32 {
+        let key = PlaybackTrackKey::from_track(track);
+        let Some(region) = self.geometry.regions.get(&key) else {
+            return 0.0;
+        };
+        let target_share = self
+            .geometry
+            .target_share
+            .get(region)
+            .copied()
+            .unwrap_or(0.0);
+        let usage_share = self.usage_share(region);
+        let usage_penalty =
+            (usage_share - target_share).max(0.0) * AUDIO_STYLE_REGION_USAGE_STRENGTH;
+        let run_hazard = if self.current_region.as_ref() == Some(region) {
+            (self.current_region_run as f32).max(1.0).ln() * AUDIO_STYLE_REGION_RUN_HAZARD_STRENGTH
+        } else {
+            0.0
+        };
+
+        (usage_penalty + run_hazard)
+            .max(0.0)
+            .min(AUDIO_STYLE_REGION_PRESSURE_CAP)
+    }
+
+    fn future_deficit_for_track(&self, track: &PlaybackTrack) -> f32 {
+        let key = PlaybackTrackKey::from_track(track);
+        let Some(region) = self.geometry.regions.get(&key) else {
+            return 0.0;
+        };
+        let target_share = self
+            .geometry
+            .target_share
+            .get(region)
+            .copied()
+            .unwrap_or(0.0);
+        (target_share - self.usage_share(region)).max(0.0)
+            * AUDIO_STYLE_BIO_ROUTE_FUTURE_WINDOW.sqrt()
+    }
+
+    fn usage_share(&self, region: &PlaybackTrackKey) -> f32 {
+        let total = self
+            .usage
+            .values()
+            .copied()
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .sum::<f32>();
+        if total <= 0.0 || !total.is_finite() {
+            return 0.0;
+        }
+        self.usage.get(region).copied().unwrap_or(0.0).max(0.0) / total
+    }
+}
+
+fn decay_audio_style_region_map(map: &mut HashMap<PlaybackTrackKey, f32>, decay: f32) {
+    map.retain(|_, value| {
+        *value *= decay;
+        value.is_finite() && *value > 1.0e-6
+    });
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2575,7 +2776,8 @@ fn audio_style_auditory_penalty(
         let target = AUDIO_STYLE_AUDITORY_PRESSURE_TARGETS[index];
         let candidate_delta = candidate.values[index] - target;
         let ewma_delta = ewma.values[index] - target;
-        directional += candidate_delta * ewma_delta * AUDIO_STYLE_AUDITORY_PRESSURE_STRENGTHS[index];
+        directional +=
+            candidate_delta * ewma_delta * AUDIO_STYLE_AUDITORY_PRESSURE_STRENGTHS[index];
         let recent_delta = candidate.values[index] - recent_center.values[index];
         distance_to_recent += recent_delta * recent_delta;
         extreme += (candidate_delta.abs() - 0.43).max(0.0);
@@ -2611,7 +2813,11 @@ fn audio_style_loudness_profiles_for_embeddings(
         if !embeddings.contains_key(key) || profiles.contains_key(key) {
             continue;
         }
-        if let Some(profile) = indexed.track.loudness_profile.filter(|profile| profile.is_valid()) {
+        if let Some(profile) = indexed
+            .track
+            .loudness_profile
+            .filter(|profile| profile.is_valid())
+        {
             profiles.insert(key.clone(), profile);
         }
     }
@@ -2867,19 +3073,30 @@ impl AudioStyleModelState {
         let stats = AudioStyleStats::from_embeddings(&embeddings);
         let neighbor_index =
             AudioStyleNeighborIndex::refresh_from(previous, &embeddings, &stats, previous_reused);
+        let sampling_geometry =
+            AudioStyleSamplingGeometry::from_model_parts(&embeddings, &stats, &neighbor_index);
+        let region_geometry = sampling_geometry.as_ref().and_then(|sampling_geometry| {
+            AudioStyleRegionGeometry::from_sampling_geometry(
+                &embeddings,
+                &neighbor_index,
+                sampling_geometry,
+            )
+        });
         let loudness_profiles = audio_style_loudness_profiles_for_embeddings(
             loudness_profiles,
             &indexed_tracks,
             &embeddings,
         );
-        let auditory_geometry = AudioStyleAuditoryGeometry::from_loudness_profiles(&loudness_profiles);
+        let auditory_geometry =
+            AudioStyleAuditoryGeometry::from_loudness_profiles(&loudness_profiles);
         Self {
             embeddings,
             loudness_profiles,
             auditory_geometry,
             indexed_tracks,
-            stats,
             neighbor_index,
+            sampling_geometry,
+            region_geometry,
         }
     }
 }
@@ -3818,6 +4035,30 @@ fn audio_style_local_density_from_neighbors(
     result
 }
 
+fn audio_style_regions_from_neighbors(
+    embeddings: &AudioStyleEmbeddingMap,
+    neighbors: &HashMap<PlaybackTrackKey, Vec<PlaybackTrackKey>>,
+    local_density: &HashMap<PlaybackTrackKey, f32>,
+) -> HashMap<PlaybackTrackKey, PlaybackTrackKey> {
+    let mut regions = HashMap::with_capacity(embeddings.len());
+    for key in embeddings.keys() {
+        let mut region = key.clone();
+        let mut best_density = local_density.get(key).copied().unwrap_or(0.0);
+        for neighbor in neighbors.get(key).into_iter().flatten() {
+            if !embeddings.contains_key(neighbor) {
+                continue;
+            }
+            let density = local_density.get(neighbor).copied().unwrap_or(0.0);
+            if density > best_density {
+                best_density = density;
+                region = neighbor.clone();
+            }
+        }
+        regions.insert(key.clone(), region);
+    }
+    regions
+}
+
 impl AudioStyleEmbeddingCache {
     pub(crate) fn new(ffmpeg_path: PathBuf, cache_root: PathBuf) -> Result<Self, String> {
         fs::create_dir_all(&cache_root).map_err(|error| {
@@ -3926,6 +4167,7 @@ impl AudioStylePlaylistPlaybackRecommender {
                 loudness_profiles: HashMap::new(),
                 indexed_tracks: HashMap::new(),
                 sampling_geometry: None,
+                region_geometry: None,
                 auditory_geometry: None,
                 trained: false,
             },
@@ -3964,6 +4206,7 @@ impl AudioStylePlaylistPlaybackRecommender {
             loudness_profiles: HashMap::new(),
             indexed_tracks: HashMap::new(),
             sampling_geometry: None,
+            region_geometry: None,
             auditory_geometry: None,
             trained: false,
         }
@@ -4223,6 +4466,7 @@ impl AudioStylePlaylistPlaybackRecommender {
             &PlaybackTrackKey::from_track(current_track),
             &self.embeddings,
             self.sampling_geometry.as_ref(),
+            self.region_geometry.as_ref(),
             self.auditory_geometry.as_ref(),
             self.trained,
             recently_played_tracks,
@@ -4259,12 +4503,12 @@ impl AudioStylePlaylistPlaybackRecommender {
     }
 
     fn from_state(state: &AudioStyleModelState, trained: bool) -> Self {
-        let sampling_geometry = AudioStyleSamplingGeometry::from_state(state);
         Self {
             embeddings: state.embeddings.clone(),
             loudness_profiles: state.loudness_profiles.clone(),
             indexed_tracks: state.indexed_tracks.clone(),
-            sampling_geometry,
+            sampling_geometry: state.sampling_geometry.clone(),
+            region_geometry: state.region_geometry.clone(),
             auditory_geometry: state.auditory_geometry.clone(),
             trained,
         }
@@ -4344,11 +4588,9 @@ impl AudioStyleModelSnapshot {
     ) -> Result<Self, AudioStyleModelUpdateFailure> {
         match Self::refresh_from_indexed_tracks(previous, cache, indexed_tracks, next_generation)? {
             AudioStyleModelRefreshOutcome::Updated(snapshot) => Ok(snapshot),
-            AudioStyleModelRefreshOutcome::Unchanged { .. } => {
-                Ok(previous
-                    .expect("unchanged audio style refresh requires a previous snapshot")
-                    .clone())
-            }
+            AudioStyleModelRefreshOutcome::Unchanged { .. } => Ok(previous
+                .expect("unchanged audio style refresh requires a previous snapshot")
+                .clone()),
         }
     }
 
@@ -4664,6 +4906,15 @@ impl PlaybackAttractorBasinPressure {
             .min(AUDIO_STYLE_BASIN_PENALTY_CAP)
     }
 
+    fn future_deficit_for_track(&self, track: &PlaybackTrack) -> f32 {
+        let Some(basin) = PlaybackAttractorBasinKey::from_track(track) else {
+            return 0.0;
+        };
+        let target_share = self.target_share.get(&basin).copied().unwrap_or(0.0);
+        (target_share - self.usage_share(&basin)).max(0.0)
+            * AUDIO_STYLE_BIO_ROUTE_FUTURE_WINDOW.sqrt()
+    }
+
     fn usage_share(&self, basin: &PlaybackAttractorBasinKey) -> f32 {
         let total = self
             .usage
@@ -4766,6 +5017,7 @@ fn audio_style_candidate_diagnostics(
             .and_then(PlaybackAttractorBasinKey::from_track)
             .map(|basin| basin.value),
         top_candidate_basins,
+        bio_route: None,
     }
 }
 
@@ -4856,6 +5108,231 @@ impl AudioStyleReadOnlyRoutePressure {
     }
 }
 
+impl AudioStyleHcrJointDendrite {
+    fn from_recent_history(
+        basin_pressure: &PlaybackAttractorBasinPressure,
+        region_pressure: Option<&AudioStyleRegionPressure<'_>>,
+        recent_tracks: &[PlaybackTrack],
+    ) -> Self {
+        let mut observations = HashMap::<AudioStyleHcrContext, AudioStyleHcrObservation>::new();
+        let Some(current_basin) = basin_pressure.current_basin.as_ref() else {
+            return Self { observations };
+        };
+        let current_region = region_pressure.and_then(|pressure| pressure.current_region.as_ref());
+
+        for track in recent_tracks.iter().rev().take(AUDIO_STYLE_ROUTE_RECENT_WINDOW) {
+            let basin = PlaybackAttractorBasinKey::from_track(track);
+            let same_basin = basin.as_ref() == Some(current_basin);
+            let same_region = match (region_pressure, current_region) {
+                (Some(pressure), Some(region)) => pressure.geometry.region_for_track(track) == Some(region),
+                _ => false,
+            };
+            let context = AudioStyleHcrContext {
+                similarity_bin: if same_basin { 3 } else { 1 },
+                route_bin: if same_basin { 0 } else { 2 },
+                damping_bin: if same_basin { 3 } else { 1 },
+                same_basin,
+                same_region,
+            };
+            let reward = if same_basin { 0.34 } else { 0.66 };
+            let entry = observations
+                .entry(context)
+                .or_insert(AudioStyleHcrObservation {
+                    reward_sum: 0.0,
+                    weight: 0.0,
+                });
+            entry.reward_sum += reward;
+            entry.weight += 1.0;
+        }
+
+        Self { observations }
+    }
+
+    fn drive(&self, context: AudioStyleHcrContext, prior: f32) -> f32 {
+        let observation = self.observations.get(&context).copied().unwrap_or(
+            AudioStyleHcrObservation {
+                reward_sum: 0.0,
+                weight: 0.0,
+            },
+        );
+        let denom = AUDIO_STYLE_BIO_ROUTE_HCR_PRIOR_STRENGTH + observation.weight;
+        let mean = (AUDIO_STYLE_BIO_ROUTE_HCR_PRIOR_STRENGTH * prior.clamp(0.05, 0.95)
+            + observation.reward_sum)
+            / denom.max(1.0e-6);
+        let uncertainty = AUDIO_STYLE_BIO_ROUTE_HCR_UNCERTAINTY_STRENGTH / denom.max(1.0).sqrt();
+        let centered = ((mean + uncertainty - 0.50) * 2.0).clamp(-1.0, 1.0);
+        (1.0 + AUDIO_STYLE_BIO_ROUTE_HCR_STRENGTH * centered).clamp(0.35, 1.65)
+    }
+}
+
+fn audio_style_hcr_context_for_candidate(
+    candidate: &PlaybackTrack,
+    anchor_similarity: f32,
+    route_drive: f32,
+    damping: f32,
+    basin_pressure: &PlaybackAttractorBasinPressure,
+    region_pressure: Option<&AudioStyleRegionPressure<'_>>,
+) -> AudioStyleHcrContext {
+    let same_basin = PlaybackAttractorBasinKey::from_track(candidate)
+        .as_ref()
+        .is_some_and(|basin| basin_pressure.current_basin.as_ref() == Some(basin));
+    let same_region = region_pressure.is_some_and(|pressure| {
+        pressure
+            .geometry
+            .region_for_track(candidate)
+            .is_some_and(|region| pressure.current_region.as_ref() == Some(region))
+    });
+    AudioStyleHcrContext {
+        similarity_bin: audio_style_hcr_bin(anchor_similarity, &[-0.20, 0.05, 0.25, 0.45]),
+        route_bin: audio_style_hcr_bin(route_drive, &[0.02, 0.08, 0.18, 0.35]),
+        damping_bin: audio_style_hcr_bin(damping, &[0.10, 0.35, 0.70, 1.20]),
+        same_basin,
+        same_region,
+    }
+}
+
+fn audio_style_hcr_prior(anchor_similarity: f32, route_drive: f32, damping: f32) -> f32 {
+    (0.50 + 0.28 * anchor_similarity.clamp(-0.5, 0.8) + 0.18 * route_drive.clamp(0.0, 1.0)
+        - 0.20 * damping.clamp(0.0, 2.0) / 2.0)
+        .clamp(0.05, 0.95)
+}
+
+fn audio_style_hcr_bin(value: f32, thresholds: &[f32]) -> u8 {
+    thresholds
+        .iter()
+        .position(|threshold| value < *threshold)
+        .unwrap_or(thresholds.len()) as u8
+}
+
+impl AudioStyleBioRouteDecision {
+    fn diagnostics_for_index(&self, index: usize) -> Option<AudioStyleBioRouteDiagnostics> {
+        self.diagnostics.get(index).copied().flatten()
+    }
+
+    fn from_decision(
+        candidates: &[PlaybackTrack],
+        similarities: &[Option<f32>],
+        basin_pressure: &PlaybackAttractorBasinPressure,
+        route_pressure: &AudioStyleReadOnlyRoutePressure,
+        region_pressure: Option<&AudioStyleRegionPressure<'_>>,
+        auditory_geometry: Option<&AudioStyleAuditoryGeometry>,
+        recently_played_tracks: &[PlaybackTrack],
+    ) -> Self {
+        let route_drive = candidates
+            .iter()
+            .map(|candidate| {
+                basin_pressure.future_deficit_for_track(candidate)
+                    + region_pressure
+                        .map(|pressure| {
+                            pressure.future_deficit_for_track(candidate)
+                                * AUDIO_STYLE_BIO_ROUTE_REGION_WEIGHT
+                        })
+                        .unwrap_or(0.0)
+            })
+            .collect::<Vec<_>>();
+        let anchor_similarities = similarities
+            .iter()
+            .map(|similarity| {
+                similarity
+                    .filter(|value| value.is_finite())
+                    .unwrap_or(-1.0)
+                    .clamp(-1.0, 1.0)
+            })
+            .collect::<Vec<_>>();
+        let local_reference = local_candidate_similarity_reference(&anchor_similarities);
+        let local_gate =
+            audio_style_bio_local_contrast_gate(&anchor_similarities, &local_reference);
+        let hcr_dendrite = AudioStyleHcrJointDendrite::from_recent_history(
+            basin_pressure,
+            region_pressure,
+            recently_played_tracks,
+        );
+        let damping = (0..candidates.len())
+            .map(|index| {
+                basin_pressure.penalty_for_track(&candidates[index])
+                    + route_pressure.penalty_for_index(index)
+                    + region_pressure
+                        .map(|pressure| pressure.penalty_for_track(&candidates[index]))
+                        .unwrap_or(0.0)
+                    + auditory_geometry
+                        .map(|geometry| {
+                            geometry.penalty_for_decision(&candidates[index], recently_played_tracks)
+                        })
+                        .unwrap_or(0.0)
+            })
+            .collect::<Vec<_>>();
+        let hcr_drive = candidates
+            .iter()
+            .enumerate()
+            .map(|(index, candidate)| {
+                let context = audio_style_hcr_context_for_candidate(
+                    candidate,
+                    anchor_similarities.get(index).copied().unwrap_or(-1.0),
+                    route_drive.get(index).copied().unwrap_or(0.0),
+                    damping.get(index).copied().unwrap_or(0.0),
+                    basin_pressure,
+                    region_pressure,
+                );
+                let prior = audio_style_hcr_prior(
+                    anchor_similarities.get(index).copied().unwrap_or(-1.0),
+                    route_drive.get(index).copied().unwrap_or(0.0),
+                    damping.get(index).copied().unwrap_or(0.0),
+                );
+                hcr_dendrite.drive(context, prior)
+            })
+            .collect::<Vec<_>>();
+        let ibnn_state = audio_style_bio_ibnn_dominant_candidate_state(
+            &route_drive,
+            &anchor_similarities,
+            &local_gate,
+            &hcr_drive,
+            &damping,
+        );
+        let base_weights = audio_style_distance_base_weights(candidates, similarities);
+        let mut base = Vec::with_capacity(candidates.len());
+        let mut diagnostics = Vec::with_capacity(candidates.len());
+        for index in 0..candidates.len() {
+            let distance_base = base_weights.get(index).copied().unwrap_or(0.0);
+            // Distance remains the legal sampling domain; biological route gates only modulate it.
+            let order = AUDIO_STYLE_BIO_ROUTE_ORDER_STRENGTH
+                * local_reference.get(index).copied().unwrap_or(0.0).max(0.0);
+            let route_drive_value = route_drive.get(index).copied().unwrap_or(0.0);
+            let hcr_drive_value = hcr_drive.get(index).copied().unwrap_or(1.0);
+            let ibnn_state_value = ibnn_state.get(index).copied().unwrap_or(0.0);
+            let damping_value = damping.get(index).copied().unwrap_or(0.0);
+            let local_gate_value = local_gate.get(index).copied().unwrap_or(1.0);
+            let value = distance_base
+                * (1.0 + order)
+                * local_gate_value
+                * hcr_drive_value
+                * (1.0 + ibnn_state_value)
+                / (1.0
+                    + AUDIO_STYLE_BIO_ROUTE_DAMPING_STRENGTH
+                        * damping_value.max(0.0));
+            let final_weight = if value.is_finite() {
+                value.max(0.0)
+            } else {
+                0.0
+            };
+            base.push(final_weight);
+            diagnostics.push(Some(AudioStyleBioRouteDiagnostics {
+                distance_base,
+                route_drive: route_drive_value,
+                hcr_drive: hcr_drive_value,
+                ibnn_state: ibnn_state_value,
+                damping: damping_value,
+                local_gate: local_gate_value,
+                final_weight,
+            }));
+        }
+
+        Self {
+            weights: normalize_positive_weights(base),
+            diagnostics,
+        }
+    }
+}
+
 fn youtube_leaf_basin_from_path(path: &Path) -> Option<String> {
     let parts = normalized_path_components(path);
     let youtube_index = parts.iter().position(|part| part == "youtube")?;
@@ -4897,6 +5374,7 @@ fn select_next_audio_style_candidate(
     anchor_key: &PlaybackTrackKey,
     embeddings: &AudioStyleEmbeddingMap,
     sampling_geometry: Option<&AudioStyleSamplingGeometry>,
+    region_geometry: Option<&AudioStyleRegionGeometry>,
     auditory_geometry: Option<&AudioStyleAuditoryGeometry>,
     model_trained: bool,
     recently_played_tracks: &[PlaybackTrack],
@@ -4979,20 +5457,19 @@ fn select_next_audio_style_candidate(
         embeddings,
         geometry,
     );
-    let pressure_penalties = candidates
-        .iter()
-        .enumerate()
-        .map(|(index, candidate)| {
-            basin_pressure.penalty_for_track(candidate) + route_pressure.penalty_for_index(index)
-                + auditory_geometry
-                    .map(|geometry| {
-                        geometry.penalty_for_decision(candidate, recently_played_tracks)
-                    })
-                    .unwrap_or(0.0)
-        })
-        .collect::<Vec<_>>();
-    let weights =
-        audio_style_distance_softmin_weights(candidates, &similarities, &pressure_penalties);
+    let region_pressure = region_geometry.map(|geometry| {
+        AudioStyleRegionPressure::from_recent_history(geometry, recently_played_tracks)
+    });
+    let route_decision = AudioStyleBioRouteDecision::from_decision(
+        candidates,
+        &similarities,
+        &basin_pressure,
+        &route_pressure,
+        region_pressure.as_ref(),
+        auditory_geometry,
+        recently_played_tracks,
+    );
+    let weights = &route_decision.weights;
     let total = weights.iter().copied().sum::<f32>();
 
     if total <= 0.0 || !total.is_finite() {
@@ -5024,6 +5501,8 @@ fn select_next_audio_style_candidate(
                 &similarities,
                 Some(index),
             );
+            let candidate_diagnostics =
+                candidate_diagnostics.with_bio_route(route_decision.diagnostics_for_index(index));
             return AudioStyleCandidateSelection {
                 index,
                 probability: weight / total,
@@ -5050,9 +5529,11 @@ fn select_next_audio_style_candidate(
         &similarities,
         Some(index),
     );
+    let candidate_diagnostics =
+        candidate_diagnostics.with_bio_route(route_decision.diagnostics_for_index(index));
     AudioStyleCandidateSelection {
         index,
-        probability: weights[index] / total,
+        probability: weights.get(index).copied().unwrap_or(0.0) / total,
         uniform_probability: random_selection_probability(candidates.len()),
         similarity: similarity_diagnostics.similarity,
         best_similarity: similarity_diagnostics.best_similarity,
@@ -5248,6 +5729,169 @@ fn audio_style_distance_softmin_weights(
         .map(|candidate| candidate.liked)
         .collect::<Vec<_>>();
     AudioStyleTensorRuntime::new().softmin_weights(&liked_flags, similarities, basin_penalties)
+}
+
+fn audio_style_distance_base_weights(
+    candidates: &[PlaybackTrack],
+    similarities: &[Option<f32>],
+) -> Vec<f32> {
+    audio_style_distance_softmin_weights(candidates, similarities, &[])
+}
+
+fn local_candidate_similarity_reference(values: &[f32]) -> Vec<f32> {
+    if values.len() <= 1 {
+        return vec![0.0; values.len()];
+    }
+    let width = values.len().min(32).max(2);
+    values
+        .iter()
+        .enumerate()
+        .map(|(index, _)| {
+            let mut peers = values
+                .iter()
+                .enumerate()
+                .filter_map(|(peer_index, value)| {
+                    (peer_index != index && value.is_finite()).then_some(*value)
+                })
+                .collect::<Vec<_>>();
+            if peers.is_empty() {
+                return 0.0;
+            }
+            peers.sort_by(|left, right| right.total_cmp(left));
+            peers.truncate(width.min(peers.len()));
+            sorted_quantile(&mut_sorted(peers), 0.50)
+        })
+        .collect()
+}
+
+fn audio_style_bio_local_contrast_gate(values: &[f32], local_reference: &[f32]) -> Vec<f32> {
+    values
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            let reference = local_reference.get(index).copied().unwrap_or(0.0);
+            let contrast = (*value - reference).max(0.0);
+            let gate = 1.0
+                / (1.0
+                    + (-AUDIO_STYLE_BIO_ROUTE_LOCAL_CONTRAST_SENSITIVITY
+                        * (contrast - AUDIO_STYLE_BIO_ROUTE_LOCAL_CONTRAST_THRESHOLD))
+                        .exp());
+            (1.0 - AUDIO_STYLE_BIO_ROUTE_LOCAL_CONTRAST_STRENGTH)
+                + AUDIO_STYLE_BIO_ROUTE_LOCAL_CONTRAST_STRENGTH * gate
+        })
+        .collect()
+}
+
+fn audio_style_bio_ibnn_dominant_candidate_state(
+    route_drive: &[f32],
+    anchor_similarities: &[f32],
+    local_gate: &[f32],
+    hcr_drive: &[f32],
+    damping: &[f32],
+) -> Vec<f32> {
+    let mut drive = route_drive
+        .iter()
+        .zip(anchor_similarities.iter())
+        .enumerate()
+        .map(|(index, (drive, similarity))| {
+            let value = (1.0 + AUDIO_STYLE_BIO_ROUTE_BETA * 0.10 * similarity.clamp(-1.0, 1.0))
+                .max(0.0)
+                * local_gate.get(index).copied().unwrap_or(1.0)
+                * (1.0 + drive.max(0.0).min(1.0))
+                * hcr_drive.get(index).copied().unwrap_or(1.0)
+                / (1.0
+                    + AUDIO_STYLE_BIO_ROUTE_DAMPING_STRENGTH
+                        * damping.get(index).copied().unwrap_or(0.0).max(0.0));
+            if value.is_finite() {
+                value.max(0.0)
+            } else {
+                0.0
+            }
+        })
+        .collect::<Vec<_>>();
+    if drive.len() <= 1 {
+        return normalize_positive_weights(drive);
+    }
+    let initial = normalize_positive_weights(drive.clone());
+    for (value, normalized) in drive.iter_mut().zip(initial.iter()) {
+        *value = *normalized;
+    }
+    let mut state = drive.clone();
+    for _ in 0..AUDIO_STYLE_BIO_ROUTE_IBNN_STEPS {
+        let next = state
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                let dendritic_bias = audio_style_bio_ibnn_dendritic_bias(index, &state);
+                let target = drive.get(index).copied().unwrap_or(0.0)
+                    - AUDIO_STYLE_BIO_ROUTE_IBNN_IMPLICIT_BIAS_STRENGTH * dendritic_bias;
+                value + AUDIO_STYLE_BIO_ROUTE_IBNN_STEP_SIZE * (target - value)
+            })
+            .collect::<Vec<_>>();
+        state = next;
+    }
+    state
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            let fixed = drive.get(index).copied().unwrap_or(0.0)
+                - AUDIO_STYLE_BIO_ROUTE_IBNN_IMPLICIT_BIAS_STRENGTH
+                    * audio_style_bio_ibnn_dendritic_bias(index, &state);
+            if (*value - fixed).abs() <= 1.0e-3 {
+                value.max(0.0)
+            } else {
+                0.0
+            }
+        })
+        .collect()
+}
+
+fn audio_style_bio_ibnn_dendritic_bias(index: usize, state: &[f32]) -> f32 {
+    let Some(value) = state.get(index).copied() else {
+        return 0.0;
+    };
+    if state.len() <= 1 {
+        return 0.0;
+    }
+    let total = state
+        .iter()
+        .enumerate()
+        .filter_map(|(other_index, other)| (other_index != index).then_some(*other))
+        .filter(|other| other.is_finite() && *other > 0.0)
+        .sum::<f32>();
+    if total <= 0.0 || !total.is_finite() {
+        return 0.0;
+    }
+    state
+        .iter()
+        .enumerate()
+        .filter_map(|(other_index, other)| {
+            (other_index != index && other.is_finite() && *other > 0.0).then_some(*other)
+        })
+        .map(|other| {
+            let weight = other / total;
+            let sigmoid = 1.0 / (1.0 + (-(other - value).clamp(-30.0, 30.0)).exp());
+            weight * sigmoid
+        })
+        .sum()
+}
+
+fn normalize_positive_weights(mut values: Vec<f32>) -> Vec<f32> {
+    for value in &mut values {
+        if !value.is_finite() || *value < 0.0 {
+            *value = 0.0;
+        }
+    }
+    let total = values.iter().copied().sum::<f32>();
+    if total <= 0.0 || !total.is_finite() {
+        return vec![0.0; values.len()];
+    }
+    values.into_iter().map(|value| value / total).collect()
+}
+
+fn mut_sorted(mut values: Vec<f32>) -> Vec<f32> {
+    values.sort_by(|left, right| left.total_cmp(right));
+    values
 }
 
 struct AudioStyleSelectionSimilarityDiagnostics {
@@ -6282,6 +6926,7 @@ pub(crate) fn choose_next_audio_style_candidate_for_test(
         &PlaybackTrackKey::from_track(current_track),
         &embeddings.embeddings,
         embeddings.sampling_geometry.as_ref(),
+        embeddings.region_geometry.as_ref(),
         embeddings.auditory_geometry.as_ref(),
         embeddings.trained,
         &[],
@@ -6303,6 +6948,7 @@ pub(crate) fn choose_next_audio_style_candidate_with_generation_for_test(
         &PlaybackTrackKey::from_track(current_track),
         &embeddings.embeddings,
         embeddings.sampling_geometry.as_ref(),
+        embeddings.region_geometry.as_ref(),
         embeddings.auditory_geometry.as_ref(),
         embeddings.trained,
         &[],
@@ -6345,6 +6991,7 @@ pub(crate) fn choose_next_audio_style_candidate_with_recent_history_for_test(
         &PlaybackTrackKey::from_track(current_track),
         &embeddings.embeddings,
         embeddings.sampling_geometry.as_ref(),
+        embeddings.region_geometry.as_ref(),
         embeddings.auditory_geometry.as_ref(),
         embeddings.trained,
         recently_played_tracks,
