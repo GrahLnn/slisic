@@ -3,11 +3,14 @@ use super::playable_index::{
     claim_global_refresh_for_test, claim_playlist_refresh_for_test,
     commit_global_snapshot_for_test, commit_playlist_snapshot_for_test, consume_playlist_source,
     discard_playlist_source, first_slot_loudness_request_order_for_test,
-    initialize_runtime_for_test, mark_playlist_source_kind_for_test, notify_playlist_renamed,
-    publish_first_slot_loudness_evidence, read_playlist_source,
-    refresh_playlist_now_for_reason_for_test, refresh_playlist_now_for_test,
-    request_global_refresh_while_active_for_test, reset_for_test, restore_cache_file_json_for_test,
-    should_skip_global_refresh_for_test, should_skip_playlist_refresh_for_test,
+    initialize_runtime_for_test, mark_playlist_source_kind_for_test,
+    mark_startup_cache_restore_finished_for_test, notify_playlist_renamed,
+    pending_global_refresh_for_test, playlist_bootstrap_ready_for_test,
+    publish_first_slot_loudness_evidence, queue_global_refresh_for_test, read_playlist_source,
+    record_playlist_bootstrap_ready, refresh_playlist_now_for_reason_for_test,
+    refresh_playlist_now_for_test, request_global_refresh_while_active_for_test, reset_for_test,
+    restore_cache_file_json_for_test, should_skip_global_refresh_for_test,
+    should_skip_playlist_refresh_for_test, startup_cache_restore_finished_for_test,
 };
 use crate::domain::loudness_evidence::LoudnessEvidenceRequest;
 use crate::domain::playlists::model::{
@@ -885,6 +888,51 @@ async fn playable_index_cache_restore_preserves_source_kind_without_serializing_
     assert!(
         consume_playlist_source(&restored).expect("restored credential should be consumable"),
         "restored credential should receive a process-local linear identity"
+    );
+}
+
+#[test]
+fn playable_index_startup_refresh_waits_for_playlist_bootstrap_ready() {
+    let _guard = setup_playable_index_test();
+
+    assert!(
+        !playlist_bootstrap_ready_for_test().expect("bootstrap state should be readable"),
+        "runtime init must not mark playlist bootstrap ready"
+    );
+    assert!(
+        !startup_cache_restore_finished_for_test().expect("cache restore state should be readable"),
+        "runtime init must not mark startup cache restore finished"
+    );
+    queue_global_refresh_for_test(PlayableIndexRefreshReason::AudioStyleModelAvailable)
+        .expect("pre-bootstrap refresh should queue");
+    assert_eq!(
+        pending_global_refresh_for_test().expect("pending refresh should be readable"),
+        Some(PlayableIndexRefreshReason::AudioStyleModelAvailable)
+    );
+
+    record_playlist_bootstrap_ready();
+
+    assert!(
+        playlist_bootstrap_ready_for_test().expect("bootstrap state should be readable"),
+        "playlist bootstrap readiness must be recorded explicitly"
+    );
+    assert_eq!(
+        pending_global_refresh_for_test().expect("pending refresh should be readable"),
+        Some(PlayableIndexRefreshReason::AudioStyleModelAvailable),
+        "playlist readiness alone must not consume refresh before cache restore has a chance to load"
+    );
+
+    let released_reason = mark_startup_cache_restore_finished_for_test()
+        .expect("cache restore completion should be recorded");
+
+    assert_eq!(
+        released_reason,
+        Some(PlayableIndexRefreshReason::AudioStyleModelAvailable)
+    );
+    assert_eq!(
+        pending_global_refresh_for_test().expect("pending refresh should be readable"),
+        None,
+        "startup refresh is released only after playlist data and cache restore both finish"
     );
 }
 

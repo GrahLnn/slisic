@@ -497,6 +497,42 @@ fn audio_style_attractor_basin_pressure_can_move_out_of_repeated_basin() {
 }
 
 #[test]
+fn audio_style_future_occupancy_reduces_absorbing_local_basin_window() {
+    let current = track_in_basin("Tenet", "current");
+    let played = (0..7)
+        .map(|index| track_in_basin("Tenet", &format!("played_{index}")))
+        .collect::<Vec<_>>();
+    let tenet_a = track_in_basin("Tenet", "tenet_a");
+    let tenet_b = track_in_basin("Tenet", "tenet_b");
+    let open = track_in_basin("Death Stranding", "open");
+    let recommender = AudioStylePlaylistPlaybackRecommender::from_test_embeddings([
+        (current.clone(), embedding(2)),
+        (tenet_a.clone(), embedding(2)),
+        (tenet_b.clone(), embedding(2)),
+        (open.clone(), embedding(2)),
+    ]);
+
+    let without_history = choose_next_audio_style_candidate_with_recent_history_for_test(
+        &current,
+        &[tenet_a.clone(), tenet_b.clone(), open.clone()],
+        &recommender,
+        &[],
+        0.40,
+    );
+    let with_history = choose_next_audio_style_candidate_with_recent_history_for_test(
+        &current,
+        &[tenet_a.clone(), tenet_b.clone(), open.clone()],
+        &recommender,
+        &played,
+        0.40,
+    );
+
+    assert!(without_history.index < 2);
+    assert_eq!(with_history.index, 2);
+    assert!(with_history.probability > without_history.uniform_probability);
+}
+
+#[test]
 fn audio_style_region_pressure_reduces_repeated_model_region_without_changing_basin_contract() {
     let current = track_in_basin("Current", "current");
     let recent = (0..8)
@@ -650,7 +686,8 @@ fn audio_style_readonly_route_pressure_does_not_discount_liked_recent_style_cand
         .collect::<Vec<_>>();
     let mut liked_same_style = track_in_basin("Fresh Cinematic", "liked_same_style");
     liked_same_style.liked = true;
-    let plain_same_style = track_in_basin("Fresh Cinematic", "plain_same_style");
+    let mut plain_same_style = liked_same_style.clone();
+    plain_same_style.liked = false;
     let open_style = track_in_basin("Fresh Open", "open_style");
     let mut embeddings = vec![(current.clone(), dense_embedding(&[(0, 1.0)]))];
     embeddings.extend(
@@ -662,10 +699,6 @@ fn audio_style_readonly_route_pressure_does_not_discount_liked_recent_style_cand
     embeddings.extend([
         (
             liked_same_style.clone(),
-            dense_embedding(&[(0, 0.9), (1, 0.43589)]),
-        ),
-        (
-            plain_same_style.clone(),
             dense_embedding(&[(0, 0.9), (1, 0.43589)]),
         ),
         (
@@ -693,12 +726,14 @@ fn audio_style_readonly_route_pressure_does_not_discount_liked_recent_style_cand
     assert_eq!(liked_selection.index, plain_selection.index);
     assert!(
         (liked_selection.probability - plain_selection.probability).abs() <= 1.0e-6,
-        "liked status must not discount route pressure; it only keeps recent tracks sampleable"
+        "liked status must not discount route pressure; it only keeps recent tracks sampleable: liked_probability={} plain_probability={}",
+        liked_selection.probability,
+        plain_selection.probability
     );
 }
 
 #[test]
-fn audio_style_measured_loudness_pressure_reduces_repeated_high_arousal_candidate_weight() {
+fn audio_style_candidate_selection_ignores_measured_loudness_profiles() {
     let current = track_with_loudness(
         "current",
         loudness_profile(-18.0, -18.5, -17.0, -15.0, -14.5, -10.0, 8.0),
@@ -741,7 +776,10 @@ fn audio_style_measured_loudness_pressure_reduces_repeated_high_arousal_candidat
     assert_eq!(with_hot_history.index, 0);
     assert!(without_history.probability > 0.0);
     assert!(with_hot_history.probability > 0.0);
-    assert!(with_hot_history.probability < without_history.probability);
+    assert!(
+        (with_hot_history.probability - without_history.probability).abs() <= 1.0e-6,
+        "loudness is playback normalization evidence, not audio-style recommendation input"
+    );
 }
 
 #[test]
@@ -1293,7 +1331,7 @@ fn restored_audio_style_model_evidence_ranks_current_candidate_tracks() {
 }
 
 #[test]
-fn restored_audio_style_model_evidence_preserves_measured_loudness_pressure() {
+fn restored_audio_style_model_evidence_does_not_restore_loudness_as_recommendation_input() {
     let root = temp_cache_root("model-evidence-loudness");
     std::fs::create_dir_all(&root).expect("cache test root should be created");
     let path = root.join("stable.json");
@@ -1339,7 +1377,10 @@ fn restored_audio_style_model_evidence_preserves_measured_loudness_pressure() {
     assert_eq!(selection.source.as_str(), "audio_style");
     assert_eq!(selection.index, 0);
     assert!(selection.probability > 0.0);
-    assert!(selection.probability < 0.5);
+    assert!(
+        selection.probability >= 0.5,
+        "stable evidence restores embeddings only; loudness must not become a recommendation penalty"
+    );
 }
 
 #[test]
@@ -1470,7 +1511,7 @@ fn audio_style_model_refresh_keeps_previous_snapshot_when_inputs_are_unchanged()
 }
 
 #[test]
-fn audio_style_model_refresh_updates_when_loudness_profile_changes() {
+fn audio_style_model_refresh_ignores_loudness_profile_changes() {
     let root = temp_cache_root("refresh_loudness_changed");
     std::fs::create_dir_all(&root).expect("cache test root should be created");
     let cache = AudioStyleEmbeddingCache::new(PathBuf::from("missing-ffmpeg"), root.clone())
@@ -1493,10 +1534,20 @@ fn audio_style_model_refresh_updates_when_loudness_profile_changes() {
         &cache,
         vec![changed.clone()],
     )
-    .expect("loudness changes should publish a new snapshot");
+    .expect("loudness changes should keep the previous audio style snapshot");
 
-    assert_eq!(refreshed.generation(), 8);
+    assert_eq!(refreshed.generation(), 7);
     assert!(refreshed.recommender().has_embedding_for(&changed));
+    let previous_embedding = previous
+        .embedding_arc_for_track(&current)
+        .expect("previous embedding should exist");
+    let refreshed_embedding = refreshed
+        .embedding_arc_for_track(&changed)
+        .expect("refreshed embedding should exist");
+    assert!(std::sync::Arc::ptr_eq(
+        &previous_embedding,
+        &refreshed_embedding
+    ));
 
     let _ = std::fs::remove_dir_all(root);
 }
@@ -2017,6 +2068,23 @@ fn audio_style_startup_skips_training_when_model_evidence_restores_without_input
     assert_eq!(
         audio_style_startup_training_decision(false, 2),
         AudioStyleStartupTrainingDecision::TrainPendingInputChanges
+    );
+}
+
+#[test]
+fn audio_style_training_empty_inputs_are_noop_before_model_build() {
+    use super::recommendation::{
+        AudioStyleTrainingInputReadiness, audio_style_training_input_readiness,
+    };
+
+    assert_eq!(
+        audio_style_training_input_readiness(0),
+        AudioStyleTrainingInputReadiness::NoIndexableTracks,
+        "empty libraries are a legal idle state, not a failed model build"
+    );
+    assert_eq!(
+        audio_style_training_input_readiness(1),
+        AudioStyleTrainingInputReadiness::ReadyToBuildModel
     );
 }
 

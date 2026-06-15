@@ -1,6 +1,7 @@
 use super::recommendation::{
     AudioStyleCandidateSelectionSource, AudioStyleModelSnapshot,
     filter_recently_played_recommendation_candidates,
+    recommendation_candidate_allowed_by_recent_history,
 };
 use super::service::{
     PlaylistInitialTrackRelease, PlaylistPlaybackRecommendationMode,
@@ -741,6 +742,32 @@ fn recommendation_history_falls_back_when_every_candidate_was_recently_played() 
 
     assert_eq!(filtered.len(), 1);
     assert_eq!(filtered[0].music_url, played.music_url);
+}
+
+#[test]
+fn prepared_next_candidate_does_not_use_list_history_fallback_for_single_recent_track() {
+    let played = playback_track("played");
+    let fresh = playback_track("fresh");
+
+    assert!(!recommendation_candidate_allowed_by_recent_history(
+        &played,
+        std::slice::from_ref(&played),
+    ));
+    assert!(recommendation_candidate_allowed_by_recent_history(
+        &fresh,
+        std::slice::from_ref(&played),
+    ));
+}
+
+#[test]
+fn prepared_next_candidate_keeps_recent_liked_track_sampleable() {
+    let mut liked = playback_track("liked");
+    liked.liked = true;
+
+    assert!(recommendation_candidate_allowed_by_recent_history(
+        &liked,
+        std::slice::from_ref(&liked),
+    ));
 }
 
 #[test]

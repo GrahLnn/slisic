@@ -23,6 +23,8 @@ use crate::domain::player::strategy::PlaybackQueueMode;
 #[cfg(not(test))]
 use crate::domain::playlist_playback::playable_index;
 #[cfg(not(test))]
+use crate::domain::playlist_playback::recommendation::recommendation_candidate_allowed_by_recent_history;
+#[cfg(not(test))]
 use crate::domain::playlist_playback::recommendation::{
     AudioStyleCandidateSelection, initialize_audio_style_recommendation_runtime,
     notify_audio_style_library_inputs_changed, published_audio_style_model_snapshot,
@@ -928,9 +930,14 @@ fn seed_playlist_session_next_from_prepared_pool(
     playlist_name: &str,
     session: &player_service::PlaybackSessionHandle,
     anchor: &PlaybackTrack,
+    recently_played_tracks: &[PlaybackTrack],
 ) -> Result<bool> {
-    let Some((snapshot, next)) =
-        read_prepared_next_cargo_from_first_slot_pool(playlist_name, anchor)?
+    let Some((snapshot, next)) = read_prepared_next_cargo_from_first_slot_pool(
+        app,
+        playlist_name,
+        anchor,
+        recently_played_tracks,
+    )?
     else {
         emit_playlist_playback_trace(
             "playlist-playback-prepared-next-miss",
@@ -961,8 +968,10 @@ fn seed_playlist_session_next_from_prepared_pool(
 
 #[cfg(not(test))]
 fn read_prepared_next_cargo_from_first_slot_pool(
+    app: &AppHandle,
     playlist_name: &str,
     anchor: &PlaybackTrack,
+    recently_played_tracks: &[PlaybackTrack],
 ) -> Result<Option<(playable_index::PlaylistPlayableIndexSnapshot, PlaybackTrack)>> {
     for _ in 0..3 {
         let Some(snapshot) = playable_index::read_playlist_source(playlist_name)? else {
@@ -973,6 +982,17 @@ fn read_prepared_next_cargo_from_first_slot_pool(
             continue;
         };
         if !are_playlist_playback_tracks_equal(&track, anchor) && track.file_path.is_file() {
+            if !recommendation_candidate_allowed_by_recent_history(&track, recently_played_tracks) {
+                emit_playlist_playback_trace(
+                    "playlist-playback-prepared-next-discard",
+                    PlaylistPlaybackTrace::new(app)
+                        .playlist_name(playlist_name)
+                        .track(&track)
+                        .status("recent_history"),
+                );
+                consume_playlist_initial_prepared_source(&Some(snapshot));
+                continue;
+            }
             return Ok(Some((snapshot, track)));
         }
         consume_playlist_initial_prepared_source(&Some(snapshot));
@@ -1300,6 +1320,7 @@ async fn fill_playlist_track_queue(
                 &playlist_name,
                 &session,
                 &active_track,
+                &recent_history_snapshot,
             )? {
                 current_anchor = Some(active_track);
                 tokio::time::sleep(std::time::Duration::from_millis(
@@ -2062,7 +2083,7 @@ impl From<&AudioStyleCandidateSelection> for PlaylistPlaybackSelectionTrace {
             embedded_candidate_count: selection.diagnostics.embedded_candidate_count,
             valid_similarity_count: selection.diagnostics.valid_similarity_count,
             selected_basin: selection.diagnostics.selected_basin.clone(),
-            top_candidate_basins: format_audio_style_candidate_basins(
+            top_candidate_basins: format_audio_style_candidate_basins_for_log(
                 &selection.diagnostics.top_candidate_basins,
             ),
             bio_route: format_audio_style_bio_route(selection.diagnostics.bio_route),
@@ -2091,7 +2112,7 @@ fn format_audio_style_bio_route(
 }
 
 #[cfg(not(test))]
-fn format_audio_style_candidate_basins(
+pub(crate) fn format_audio_style_candidate_basins_for_log(
     basins: &[super::recommendation::AudioStyleCandidateBasinDiagnostics],
 ) -> String {
     if basins.is_empty() {

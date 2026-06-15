@@ -13,6 +13,8 @@ use crate::domain::playlist_playback::recommendation::{
 };
 #[cfg(not(test))]
 use crate::domain::playlist_playback::service as playlist_playback_service;
+#[cfg(not(test))]
+use crate::domain::playlist_playback::service::format_audio_style_candidate_basins_for_log;
 use crate::domain::playlists::model::LoudnessProfile;
 #[cfg(not(test))]
 use crate::domain::playlists::repo as playlist_repo;
@@ -224,6 +226,8 @@ struct PlayableIndexState {
     playlists: HashMap<String, PlaylistPlayableIndexPool>,
     playlist_generations: HashMap<String, u64>,
     global_generation: u64,
+    playlist_bootstrap_ready: bool,
+    startup_cache_restore_finished: bool,
     active_refreshes: HashSet<String>,
     active_global_refresh: bool,
     pending_refreshes: HashMap<String, PlayableIndexRefreshReason>,
@@ -258,11 +262,11 @@ struct PlayableIndexState {
 #[cfg(not(test))]
 pub(crate) fn initialize_runtime(app: tauri::AppHandle) {
     register_runtime_app(app.clone());
-    spawn_startup_lifecycle(app);
+    spawn_startup_cache_restore(app);
 }
 
 #[cfg(not(test))]
-fn spawn_startup_lifecycle(app: tauri::AppHandle) {
+fn spawn_startup_cache_restore(app: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
         if let Err(error) = restore_first_slot_cache_for_runtime(&app).await {
             log::warn!(
@@ -271,8 +275,172 @@ fn spawn_startup_lifecycle(app: tauri::AppHandle) {
                 escape_log_value(&error.to_string())
             );
         }
-        spawn_refresh_all(app, PlayableIndexRefreshReason::Startup);
+        match mark_startup_cache_restore_finished(runtime()) {
+            Ok(Some(reason)) => spawn_refresh_all(app, reason),
+            Ok(None) => {}
+            Err(error) => {
+                log::error!(
+                    target: PLAYABLE_INDEX_LOG_TARGET,
+                    "first_slot_cache_restore_finish_failed error=\"{}\"",
+                    escape_log_value(&error.to_string())
+                );
+            }
+        }
     });
+}
+
+#[cfg(not(test))]
+pub(crate) fn record_playlist_bootstrap_ready() {
+    let runtime = Arc::clone(runtime());
+    let pending_reason = match mark_playlist_bootstrap_ready(runtime.as_ref()) {
+        Ok(pending_reason) => pending_reason,
+        Err(error) => {
+            log::error!(
+                target: PLAYABLE_INDEX_LOG_TARGET,
+                "first_slot_playlist_bootstrap_ready_failed error=\"{}\"",
+                escape_log_value(&error.to_string())
+            );
+            return;
+        }
+    };
+    if let Some(reason) = pending_reason {
+        log::info!(
+            target: PLAYABLE_INDEX_LOG_TARGET,
+            "first_slot_playlist_bootstrap_ready reason={}",
+            reason.as_str()
+        );
+        spawn_refresh_all_without_app(reason);
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn record_playlist_bootstrap_ready() {
+    let _ = try_runtime().and_then(|runtime| mark_playlist_bootstrap_ready(runtime.as_ref()));
+}
+
+fn mark_playlist_bootstrap_ready(
+    runtime: &PlayableIndexRuntime,
+) -> Result<Option<PlayableIndexRefreshReason>> {
+    let mut state = runtime
+        .state
+        .lock()
+        .map_err(|_| anyhow!("playlist playable index lock is poisoned"))?;
+    if state.playlist_bootstrap_ready {
+        return Ok(None);
+    }
+    state.playlist_bootstrap_ready = true;
+    if !state.startup_cache_restore_finished {
+        return Ok(None);
+    }
+    Ok(take_deferred_startup_refresh_reason(&mut state))
+}
+
+fn mark_startup_cache_restore_finished(
+    runtime: &PlayableIndexRuntime,
+) -> Result<Option<PlayableIndexRefreshReason>> {
+    let mut state = runtime
+        .state
+        .lock()
+        .map_err(|_| anyhow!("playlist playable index lock is poisoned"))?;
+    if state.startup_cache_restore_finished {
+        return Ok(None);
+    }
+    state.startup_cache_restore_finished = true;
+    if !state.playlist_bootstrap_ready {
+        return Ok(None);
+    }
+    Ok(take_deferred_startup_refresh_reason(&mut state))
+}
+
+fn take_deferred_startup_refresh_reason(
+    state: &mut PlayableIndexState,
+) -> Option<PlayableIndexRefreshReason> {
+    Some(
+        state
+            .pending_global_refresh
+            .take()
+            .unwrap_or(PlayableIndexRefreshReason::Startup),
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn playlist_bootstrap_ready_for_test() -> Result<bool> {
+    let runtime = try_runtime()?;
+    let state = runtime
+        .state
+        .lock()
+        .map_err(|_| anyhow!("playlist playable index lock is poisoned"))?;
+    Ok(state.playlist_bootstrap_ready)
+}
+
+#[cfg(test)]
+pub(crate) fn startup_cache_restore_finished_for_test() -> Result<bool> {
+    let runtime = try_runtime()?;
+    let state = runtime
+        .state
+        .lock()
+        .map_err(|_| anyhow!("playlist playable index lock is poisoned"))?;
+    Ok(state.startup_cache_restore_finished)
+}
+
+#[cfg(test)]
+pub(crate) fn pending_global_refresh_for_test() -> Result<Option<PlayableIndexRefreshReason>> {
+    let runtime = try_runtime()?;
+    let state = runtime
+        .state
+        .lock()
+        .map_err(|_| anyhow!("playlist playable index lock is poisoned"))?;
+    Ok(state.pending_global_refresh)
+}
+
+#[cfg(test)]
+pub(crate) fn queue_global_refresh_for_test(reason: PlayableIndexRefreshReason) -> Result<u64> {
+    let runtime = try_runtime()?;
+    let mut state = runtime
+        .state
+        .lock()
+        .map_err(|_| anyhow!("playlist playable index lock is poisoned"))?;
+    Ok(queue_global_refresh_before_bootstrap_ready_locked(
+        runtime.as_ref(),
+        &mut state,
+        reason,
+    ))
+}
+
+#[cfg(test)]
+pub(crate) fn mark_startup_cache_restore_finished_for_test()
+-> Result<Option<PlayableIndexRefreshReason>> {
+    let runtime = try_runtime()?;
+    mark_startup_cache_restore_finished(runtime.as_ref())
+}
+
+fn queue_global_refresh_before_bootstrap_ready_locked(
+    runtime: &PlayableIndexRuntime,
+    state: &mut PlayableIndexState,
+    reason: PlayableIndexRefreshReason,
+) -> u64 {
+    let generation = runtime.generation.load(Ordering::SeqCst);
+    state.pending_global_refresh =
+        merge_pending_global_refresh(state.pending_global_refresh, reason);
+    generation
+}
+
+#[cfg(not(test))]
+fn defer_global_refresh_until_startup_warmup_ready(
+    runtime: &PlayableIndexRuntime,
+    reason: PlayableIndexRefreshReason,
+) -> Result<Option<u64>> {
+    let mut state = runtime
+        .state
+        .lock()
+        .map_err(|_| anyhow!("playlist playable index lock is poisoned"))?;
+    if state.playlist_bootstrap_ready && state.startup_cache_restore_finished {
+        return Ok(None);
+    }
+
+    Ok(Some(queue_global_refresh_before_bootstrap_ready_locked(
+        runtime, &mut state, reason,
+    )))
 }
 
 #[cfg(test)]
@@ -1522,6 +1690,26 @@ fn spawn_refresh_all_with_app(app: Option<tauri::AppHandle>, reason: PlayableInd
     }
     let mut skip_status = "already_active";
     let run_id = runtime.next_refresh_run_id.fetch_add(1, Ordering::SeqCst) + 1;
+    match defer_global_refresh_until_startup_warmup_ready(runtime.as_ref(), reason) {
+        Ok(Some(generation)) => {
+            log::info!(
+                target: PLAYABLE_INDEX_LOG_TARGET,
+                "first_slot_global_refresh_deferred run_id={run_id} reason={} generation={generation} status=startup_warmup_pending",
+                reason.as_str()
+            );
+            return;
+        }
+        Ok(None) => {}
+        Err(error) => {
+            log::error!(
+                target: PLAYABLE_INDEX_LOG_TARGET,
+                "first_slot_global_refresh_defer_failed run_id={run_id} reason={} error=\"{}\"",
+                reason.as_str(),
+                escape_log_value(&error.to_string())
+            );
+            return;
+        }
+    }
     let (can_start, generation) = {
         let Ok(mut state) = runtime.state.lock() else {
             log::error!(
@@ -2124,9 +2312,18 @@ async fn prepare_playlist_source(
         prepare_audio_style_candidate_tracks(app, selection, excluded_source_keys).await?;
     match published_audio_style_centerless_source_from_candidates(candidates) {
         AudioStyleCenterlessSourceStatus::Ready(source, track, selection_trace) => {
+            let selected_basin = selection_trace
+                .diagnostics
+                .selected_basin
+                .as_ref()
+                .map(|basin| escape_log_value(basin))
+                .unwrap_or_else(|| "none".to_string());
+            let candidate_basin_top = format_audio_style_candidate_basins_for_log(
+                &selection_trace.diagnostics.top_candidate_basins,
+            );
             log::info!(
                 target: PLAYABLE_INDEX_LOG_TARGET,
-                "first_slot_source_prepared playlist=\"{}\" source={} selection_reason={} probability={:.6} candidates={} model_generation={}",
+                "first_slot_source_prepared playlist=\"{}\" source={} selection_reason={} probability={:.6} candidates={} model_generation={} title=\"{}\" collection=\"{}\" selected_basin=\"{}\" candidate_basin_top=\"{}\"",
                 escape_log_value(&selection.playlist_name),
                 selection_trace.source.as_str(),
                 selection_trace.reason.unwrap_or("none"),
@@ -2135,7 +2332,11 @@ async fn prepare_playlist_source(
                 selection_trace
                     .model_generation
                     .map(|generation| generation.to_string())
-                    .unwrap_or_else(|| "none".to_string())
+                    .unwrap_or_else(|| "none".to_string()),
+                escape_log_value(&track.music_name),
+                escape_log_value(&source.collection_folder),
+                selected_basin,
+                candidate_basin_top
             );
             Ok(Some(PreparedPlaylistSource {
                 source,
@@ -2315,7 +2516,7 @@ async fn prepare_playlist_random_fallback_source(
     }) else {
         log::warn!(
             target: PLAYABLE_INDEX_LOG_TARGET,
-            "first_slot_source_unavailable playlist=\"{}\" status=random_fallback_empty selection_reason={} action=none",
+            "first_slot_source_unavailable playlist=\"{}\" status=no_playable_local_sources selection_reason={} action=wait_for_library",
             escape_log_value(&selection.playlist_name),
             selection_reason
         );
