@@ -1361,10 +1361,12 @@ fn explicit_audio_tail_trim_request_for_key(
     runtime: &AudioTailTrimRuntime,
     collection_key: &AudioTailTrimCollectionKey,
 ) -> Option<AudioTailTrimRequest> {
-    if let Some(request) = active_explicit_audio_tail_trim_request_for_key(runtime, collection_key) {
+    if let Some(request) = active_explicit_audio_tail_trim_request_for_key(runtime, collection_key)
+    {
         return Some(request);
     }
-    if let Some(request) = queued_explicit_audio_tail_trim_request_for_key(runtime, collection_key) {
+    if let Some(request) = queued_explicit_audio_tail_trim_request_for_key(runtime, collection_key)
+    {
         return Some(request);
     }
     pending_explicit_audio_tail_trim_request_for_key(runtime, collection_key)

@@ -2879,7 +2879,9 @@ pub(crate) fn resolve_playback_completion_playback_action(
         PlaybackRangeCompletion::Continue | PlaybackRangeCompletion::Repeat(_) => {
             PlaybackRangeCompletionPlaybackAction::KeepRunning
         }
-        PlaybackRangeCompletion::Finish => PlaybackRangeCompletionPlaybackAction::StopCompletedRange,
+        PlaybackRangeCompletion::Finish => {
+            PlaybackRangeCompletionPlaybackAction::StopCompletedRange
+        }
     }
 }
 

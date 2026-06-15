@@ -18,7 +18,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 #[cfg(not(test))]
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(not(test))]
 use std::sync::{Arc, Mutex, OnceLock};
 #[cfg(not(test))]
@@ -33,13 +33,15 @@ const LOUDNESS_EVIDENCE_LOG_TARGET: &str = "loudness_evidence";
 #[cfg(not(test))]
 const MAX_LOUDNESS_EVIDENCE_QUEUE_LEN: usize = 256;
 #[cfg(not(test))]
-const LOUDNESS_MEASUREMENT_COOLDOWN: Duration = Duration::from_millis(1500);
-#[cfg(not(test))]
 const LOUDNESS_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 #[cfg(not(test))]
 const LOUDNESS_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(50);
 #[cfg(not(test))]
 const LOUDNESS_REQUEST_REBIND_ATTEMPT_LIMIT: usize = 3;
+#[cfg(not(test))]
+const LOUDNESS_MEASUREMENT_WORKER_CAP: usize = 4;
+#[cfg(not(test))]
+const LOUDNESS_MEASUREMENT_WORKER_MIN_PARALLELISM: usize = 2;
 pub(crate) const LOUDNESS_PENDING_TASK_FILE_NAME: &str = "loudness-evidence-pending.json";
 const LOUDNESS_PENDING_TASK_FILE_VERSION: &str = "loudness-evidence-pending.v1";
 
@@ -55,7 +57,7 @@ struct LoudnessEvidenceRuntime {
     published_profiles: Mutex<HashMap<String, LoudnessProfile>>,
     completion_notify: tokio::sync::Notify,
     queue: Mutex<VecDeque<QueuedLoudnessEvidence>>,
-    worker_running: AtomicBool,
+    active_workers: AtomicUsize,
 }
 
 #[cfg(not(test))]
@@ -149,7 +151,7 @@ pub(crate) fn initialize_runtime(app: AppHandle) {
                 published_profiles: Mutex::new(HashMap::new()),
                 completion_notify: tokio::sync::Notify::new(),
                 queue: Mutex::new(VecDeque::new()),
-                worker_running: AtomicBool::new(false),
+                active_workers: AtomicUsize::new(0),
             })
         })
         .clone();
@@ -545,30 +547,46 @@ fn loudness_queue_insert_index(
 
 #[cfg(not(test))]
 fn ensure_loudness_worker(runtime: Arc<LoudnessEvidenceRuntime>) {
-    if runtime
-        .worker_running
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
+    loop {
+        let active = runtime.active_workers.load(Ordering::SeqCst);
+        if active >= loudness_measurement_worker_budget() {
+            return;
+        }
+        if runtime
+            .active_workers
+            .compare_exchange(active, active + 1, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            continue;
+        }
+
+        let worker_id = active + 1;
+        tauri::async_runtime::spawn(async move {
+            run_loudness_worker(runtime, worker_id).await;
+        });
         return;
     }
-
-    tauri::async_runtime::spawn(async move {
-        run_loudness_worker(runtime).await;
-    });
 }
 
 #[cfg(not(test))]
-async fn run_loudness_worker(runtime: Arc<LoudnessEvidenceRuntime>) {
+async fn run_loudness_worker(runtime: Arc<LoudnessEvidenceRuntime>, worker_id: usize) {
     loop {
         let Some(queued) = pop_loudness_queue(&runtime) else {
-            runtime.worker_running.store(false, Ordering::SeqCst);
+            runtime.active_workers.fetch_sub(1, Ordering::SeqCst);
             if queue_has_pending_loudness(&runtime) {
                 ensure_loudness_worker(Arc::clone(&runtime));
             }
             return;
         };
 
+        log::info!(
+            target: LOUDNESS_EVIDENCE_LOG_TARGET,
+            "loudness_evidence_worker_processing worker={} active_workers={} source={} canonical_music_id=\"{}\"",
+            worker_id,
+            runtime.active_workers.load(Ordering::SeqCst),
+            queued.source.as_str(),
+            queued.request.canonical_music_id
+        );
         match measure_and_persist_loudness(Arc::clone(&runtime), &queued.request, queued.source)
             .await
         {
@@ -596,8 +614,19 @@ async fn run_loudness_worker(runtime: Arc<LoudnessEvidenceRuntime>) {
         }
 
         drop(queued);
-        tokio::time::sleep(LOUDNESS_MEASUREMENT_COOLDOWN).await;
     }
+}
+
+#[cfg(not(test))]
+fn loudness_measurement_worker_budget() -> usize {
+    std::thread::available_parallelism()
+        .map(|parallelism| {
+            parallelism.get().saturating_sub(1).clamp(
+                LOUDNESS_MEASUREMENT_WORKER_MIN_PARALLELISM,
+                LOUDNESS_MEASUREMENT_WORKER_CAP,
+            )
+        })
+        .unwrap_or(LOUDNESS_MEASUREMENT_WORKER_MIN_PARALLELISM)
 }
 
 #[cfg(not(test))]

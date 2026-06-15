@@ -68,6 +68,7 @@ pub fn run() {
         .commands(collect_commands![
             utils::file::exists,
             utils::core::app_ready,
+            utils::core::record_playlist_bootstrap_ready,
             utils::core::reset_dev_database_and_restart,
             utils::window::get_mouse_and_window_position,
             utils::window::get_window_kind,
@@ -127,6 +128,7 @@ pub fn run() {
             domain::downloads::resolve_pasted_download_url,
             domain::downloads::probe_download_root_title,
             domain::downloads::resume_download_task,
+            domain::downloads::submit_youtube_cookies_and_resume_download_task,
             domain::downloads::get_download_task,
             domain::downloads::list_download_tasks,
         ])

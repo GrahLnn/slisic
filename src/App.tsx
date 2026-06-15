@@ -12,6 +12,7 @@ import { installTrace, recordTrace, type TraceProbe } from "./debug/trace";
 import { PlayListPage } from "./components/PlayListPage";
 import { ListConfig } from "./components/ListConfig";
 import { SpectrumPage } from "./components/spectrum/SpectrumPage";
+import { DownloadCredentialPrompt } from "./flow/pasteDownload/DownloadCredentialPrompt";
 
 import { hook as appLogicHook } from "./flow/appLogic";
 import { useAppBootstrap } from "./flow/bootstrap";
@@ -23,10 +24,7 @@ import {
 } from "./components/scrollPosition";
 import { PageViewportScrollElementProvider } from "./components/pageViewportScroll";
 
-const enabledTraceProbes = [
-  "config-title-check-flow",
-  "title-handoff-flow",
-] satisfies TraceProbe[];
+const enabledTraceProbes = ["config-title-check-flow", "title-handoff-flow"] satisfies TraceProbe[];
 
 installTrace({
   enabledProbes: enabledTraceProbes,
@@ -113,6 +111,7 @@ function Base({ children }: PropsWithChildren) {
     <div className="min-h-screen overflow-hidden hide-scrollbar">
       <TopBar />
       <WindowMainArea>{children}</WindowMainArea>
+      <DownloadCredentialPrompt />
       <WindowToaster />
     </div>
   );
