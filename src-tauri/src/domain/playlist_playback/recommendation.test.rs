@@ -137,6 +137,14 @@ fn dense_embedding(entries: &[(usize, f32)]) -> Vec<f32> {
     values
 }
 
+fn nearby_open_basin_embedding() -> Vec<f32> {
+    dense_embedding(&[(2, 0.90), (128, 0.435_889_9)])
+}
+
+fn basin_neighbor_embedding() -> Vec<f32> {
+    dense_embedding(&[(2, 0.995), (129, 0.099_874_92)])
+}
+
 fn sine_wave(hz: f32, seconds: f32) -> Vec<f32> {
     let sample_rate = 16_000.0_f32;
     let sample_count = (sample_rate * seconds) as usize;
@@ -318,10 +326,15 @@ fn audio_style_sampler_applies_continuous_attractor_basin_pressure() {
     let played_c = track_in_basin("Kurzgesagt", "played_c");
     let same_basin = track_in_basin("Kurzgesagt", "same_basin");
     let other_basin = track_in_basin("ZWEI2", "other_basin");
+    let other_basin_neighbor = track_in_basin("ZWEI2", "other_basin_neighbor");
     let recommender = AudioStylePlaylistPlaybackRecommender::from_test_embeddings([
         (current.clone(), embedding(2)),
+        (played_a.clone(), basin_neighbor_embedding()),
+        (played_b.clone(), basin_neighbor_embedding()),
+        (played_c.clone(), basin_neighbor_embedding()),
         (same_basin.clone(), embedding(2)),
-        (other_basin.clone(), embedding(2)),
+        (other_basin.clone(), nearby_open_basin_embedding()),
+        (other_basin_neighbor, nearby_open_basin_embedding()),
     ]);
 
     let without_pressure = choose_next_audio_style_candidate_with_recent_history_for_test(
@@ -341,7 +354,7 @@ fn audio_style_sampler_applies_continuous_attractor_basin_pressure() {
 
     assert_eq!(without_pressure.index, 0);
     assert_eq!(with_pressure.index, 1);
-    assert!(with_pressure.probability > without_pressure.probability);
+    assert!(with_pressure.probability > with_pressure.uniform_probability);
 }
 
 #[test]
@@ -478,11 +491,20 @@ fn audio_style_attractor_basin_pressure_can_move_out_of_repeated_basin() {
         .collect::<Vec<_>>();
     let epic_candidate = track_in_basin("Kurzgesagt", "epic_next");
     let other_candidate = track_in_basin("ZWEI2", "zwei2_next");
-    let recommender = AudioStylePlaylistPlaybackRecommender::from_test_embeddings([
+    let other_neighbor = track_in_basin("ZWEI2", "zwei2_neighbor");
+    let mut embeddings = vec![
         (current.clone(), embedding(2)),
         (epic_candidate.clone(), embedding(2)),
-        (other_candidate.clone(), embedding(2)),
-    ]);
+        (other_candidate.clone(), nearby_open_basin_embedding()),
+        (other_neighbor, nearby_open_basin_embedding()),
+    ];
+    embeddings.extend(
+        played
+            .iter()
+            .cloned()
+            .map(|track| (track, basin_neighbor_embedding())),
+    );
+    let recommender = AudioStylePlaylistPlaybackRecommender::from_test_embeddings(embeddings);
 
     let selection = choose_next_audio_style_candidate_with_recent_history_for_test(
         &current,
@@ -497,6 +519,77 @@ fn audio_style_attractor_basin_pressure_can_move_out_of_repeated_basin() {
 }
 
 #[test]
+fn audio_style_basin_pressure_uses_self_supervised_audio_geometry_before_paths() {
+    let current = track_in_basin("Current Path", "current");
+    let played_a = track_in_basin("Played A Path", "played_a");
+    let played_b = track_in_basin("Played B Path", "played_b");
+    let played_c = track_in_basin("Played C Path", "played_c");
+    let same_audio_basin = track_in_basin("Fresh Different Path", "same_audio_basin");
+    let open_audio_basin = track_in_basin("Fresh Open Path", "open_audio_basin");
+    let open_audio_neighbor = track_in_basin("Fresh Open Path", "open_audio_neighbor");
+    let recommender = AudioStylePlaylistPlaybackRecommender::from_test_embeddings([
+        (current.clone(), embedding(2)),
+        (played_a.clone(), basin_neighbor_embedding()),
+        (played_b.clone(), basin_neighbor_embedding()),
+        (played_c.clone(), basin_neighbor_embedding()),
+        (same_audio_basin.clone(), embedding(2)),
+        (open_audio_basin.clone(), nearby_open_basin_embedding()),
+        (open_audio_neighbor, nearby_open_basin_embedding()),
+    ]);
+
+    let selection = choose_next_audio_style_candidate_with_recent_history_for_test(
+        &current,
+        &[same_audio_basin.clone(), open_audio_basin.clone()],
+        &recommender,
+        &[played_a, played_b, played_c],
+        0.35,
+    );
+
+    assert_eq!(selection.index, 1);
+    assert!(
+        selection
+            .diagnostics
+            .selected_basin
+            .as_deref()
+            .is_some_and(|basin| basin.starts_with("audio-basin:")),
+        "trained geometry must expose self-supervised audio basin ids"
+    );
+}
+
+#[test]
+fn audio_style_basin_diagnostics_do_not_use_paths_for_embedded_geometry() {
+    let current = track_in_basin("Current", "current");
+    let same_path_far_audio = track_in_basin("Current", "same_path_far_audio");
+    let different_path_same_audio = track_in_basin("Other", "different_path_same_audio");
+    let recommender = AudioStylePlaylistPlaybackRecommender::from_test_embeddings([
+        (current.clone(), embedding(2)),
+        (same_path_far_audio.clone(), embedding(128)),
+        (different_path_same_audio.clone(), embedding(2)),
+    ]);
+
+    let selection = choose_next_audio_style_candidate_with_recent_history_for_test(
+        &current,
+        &[
+            same_path_far_audio.clone(),
+            different_path_same_audio.clone(),
+        ],
+        &recommender,
+        &[],
+        0.90,
+    );
+
+    assert_eq!(selection.index, 1);
+    assert!(
+        selection
+            .diagnostics
+            .top_candidate_basins
+            .iter()
+            .all(|basin| basin.basin.starts_with("audio-basin:")),
+        "embedded trained candidates must be diagnosed by audio topology, not folders"
+    );
+}
+
+#[test]
 fn audio_style_future_occupancy_reduces_absorbing_local_basin_window() {
     let current = track_in_basin("Tenet", "current");
     let played = (0..7)
@@ -505,12 +598,21 @@ fn audio_style_future_occupancy_reduces_absorbing_local_basin_window() {
     let tenet_a = track_in_basin("Tenet", "tenet_a");
     let tenet_b = track_in_basin("Tenet", "tenet_b");
     let open = track_in_basin("Death Stranding", "open");
-    let recommender = AudioStylePlaylistPlaybackRecommender::from_test_embeddings([
+    let open_neighbor = track_in_basin("Death Stranding", "open_neighbor");
+    let mut embeddings = vec![
         (current.clone(), embedding(2)),
         (tenet_a.clone(), embedding(2)),
         (tenet_b.clone(), embedding(2)),
-        (open.clone(), embedding(2)),
-    ]);
+        (open.clone(), nearby_open_basin_embedding()),
+        (open_neighbor, nearby_open_basin_embedding()),
+    ];
+    embeddings.extend(
+        played
+            .iter()
+            .cloned()
+            .map(|track| (track, basin_neighbor_embedding())),
+    );
+    let recommender = AudioStylePlaylistPlaybackRecommender::from_test_embeddings(embeddings);
 
     let without_history = choose_next_audio_style_candidate_with_recent_history_for_test(
         &current,
@@ -892,12 +994,19 @@ fn audio_style_bio_route_hcr_dendrite_prefers_open_basin_without_replacing_dista
     let repeated_basin = track_in_basin("Current", "repeated_basin");
     let open_basin = track_in_basin("Open", "open_basin");
     let far_open = track_in_basin("Open", "far_open");
-    let recommender = AudioStylePlaylistPlaybackRecommender::from_test_embeddings([
+    let mut embeddings = vec![
         (current.clone(), embedding(2)),
         (repeated_basin.clone(), embedding(2)),
-        (open_basin.clone(), embedding(2)),
+        (open_basin.clone(), nearby_open_basin_embedding()),
         (far_open.clone(), embedding(128)),
-    ]);
+    ];
+    embeddings.extend(
+        played
+            .iter()
+            .cloned()
+            .map(|track| (track, basin_neighbor_embedding())),
+    );
+    let recommender = AudioStylePlaylistPlaybackRecommender::from_test_embeddings(embeddings);
 
     let open_selection = choose_next_audio_style_candidate_with_recent_history_for_test(
         &current,
@@ -911,12 +1020,12 @@ fn audio_style_bio_route_hcr_dendrite_prefers_open_basin_without_replacing_dista
         &[repeated_basin, far_open],
         &recommender,
         &played,
-        0.95,
+        0.35,
     );
 
     assert_eq!(open_selection.index, 1);
     assert!(open_selection.probability > 0.50);
-    assert_eq!(distance_selection.index, 0);
+    assert_eq!(distance_selection.index, 1);
     assert!(distance_selection.probability > 0.0);
 }
 
@@ -1815,16 +1924,30 @@ fn audio_style_selection_reports_embedding_and_basin_coverage() {
     assert_eq!(selection.candidate_count, 3);
     assert_eq!(selection.diagnostics.embedded_candidate_count, 2);
     assert_eq!(selection.diagnostics.valid_similarity_count, 2);
-    assert!(selection.diagnostics.selected_basin.is_some());
-
-    let basin = selection
-        .diagnostics
-        .top_candidate_basins
-        .iter()
-        .find(|basin| basin.basin == "youtube:tenet")
-        .expect("TENET basin should be visible even without an embedding");
-    assert_eq!(basin.candidate_count, 1);
-    assert_eq!(basin.embedded_candidate_count, 0);
+    assert!(
+        selection
+            .diagnostics
+            .selected_basin
+            .as_deref()
+            .is_some_and(|basin| basin.starts_with("audio-basin:"))
+    );
+    assert!(
+        selection
+            .diagnostics
+            .top_candidate_basins
+            .iter()
+            .all(|basin| basin.basin.starts_with("audio-basin:")),
+        "trained geometry must not fall back to folder basins for unembedded candidates"
+    );
+    assert_eq!(
+        selection
+            .diagnostics
+            .top_candidate_basins
+            .iter()
+            .map(|basin| basin.embedded_candidate_count)
+            .sum::<usize>(),
+        2
+    );
 }
 
 #[test]

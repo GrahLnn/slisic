@@ -72,6 +72,8 @@ const AUDIO_STYLE_BIO_ROUTE_HCR_PRIOR_STRENGTH: f32 = 3.0;
 const AUDIO_STYLE_BIO_ROUTE_HCR_UNCERTAINTY_STRENGTH: f32 = 0.08;
 const AUDIO_STYLE_BIO_ROUTE_FUTURE_OCCUPANCY_STRENGTH: f32 = 1.55;
 const AUDIO_STYLE_BIO_ROUTE_FUTURE_OCCUPANCY_RUN_STRENGTH: f32 = 0.62;
+const AUDIO_STYLE_BIO_ROUTE_BASIN_ESCAPE_STRENGTH: f32 = 0.65;
+const AUDIO_STYLE_BIO_ROUTE_BASIN_ESCAPE_CAP: f32 = 2.10;
 const AUDIO_STYLE_DISTRIBUTED_REPEAT_GATE_FLOOR: f32 = 0.08;
 const AUDIO_STYLE_DISTRIBUTED_REGION_FATIGUE_STRENGTH: f32 = 0.55;
 const AUDIO_STYLE_DISTRIBUTED_HOMEOSTASIS_STRENGTH: f32 = 1.55;
@@ -81,6 +83,11 @@ const AUDIO_STYLE_DISTRIBUTED_FIELD_RELAXATION_RATE: f32 = 0.28;
 const AUDIO_STYLE_DISTRIBUTED_FIELD_CROWDING_STRENGTH: f32 = 0.18;
 const AUDIO_STYLE_DISTRIBUTED_TAIL_SUPPORT_FLOOR: f32 = 0.62;
 const AUDIO_STYLE_LOCAL_DENSITY_TOP_K: usize = 10;
+const AUDIO_STYLE_SELF_SUPERVISED_BASIN_GAP_WEIGHT: f32 = 0.35;
+const AUDIO_STYLE_SELF_SUPERVISED_BASIN_SEPARATION_MIN: f32 = 0.55;
+const AUDIO_STYLE_SELF_SUPERVISED_BASIN_SEPARATION_MAX: f32 = 0.92;
+const AUDIO_STYLE_SELF_SUPERVISED_BASIN_SEPARATION_OFFSET: f32 = 0.08;
+const AUDIO_STYLE_SELF_SUPERVISED_BASIN_NEAR_DUPLICATE_FLOOR: f32 = 0.985;
 const AUDIO_STYLE_BASIN_FATIGUE_DECAY: f32 = 0.86;
 const AUDIO_STYLE_BASIN_FATIGUE_IMPULSE: f32 = 1.0;
 const AUDIO_STYLE_BASIN_FATIGUE_STRENGTH: f32 = 1.0;
@@ -391,6 +398,7 @@ struct AudioStyleNeighborIndex {
 struct AudioStyleSamplingGeometry {
     mean: Vec<f32>,
     local_density: HashMap<PlaybackTrackKey, f32>,
+    self_supervised_basins: HashMap<PlaybackTrackKey, PlaybackAttractorBasinKey>,
     similarity_low: f32,
     similarity_high: f32,
 }
@@ -2451,9 +2459,12 @@ impl AudioStyleSamplingGeometry {
 
         let mean = stats.mean();
         let local_density = neighbor_index.local_density_map(embeddings, &mean);
+        let self_supervised_basins =
+            self_supervised_style_basins_from_neighbors(embeddings, neighbor_index, &local_density);
         Some(Self {
             mean,
             local_density,
+            self_supervised_basins,
             similarity_low: neighbor_index.similarity_low,
             similarity_high: neighbor_index.similarity_high,
         })
@@ -2488,6 +2499,15 @@ impl AudioStyleSamplingGeometry {
             minmax_unit_similarity(corrected, self.similarity_low, self.similarity_high)
                 .clamp(-1.0, 1.0),
         )
+    }
+
+    fn self_supervised_basin_for_track(
+        &self,
+        track: &PlaybackTrack,
+    ) -> Option<PlaybackAttractorBasinKey> {
+        self.self_supervised_basins
+            .get(&PlaybackTrackKey::from_track(track))
+            .cloned()
     }
 }
 
@@ -3834,6 +3854,31 @@ fn centered_cosine_cpu(
     Some((dot / denom).clamp(-1.0, 1.0))
 }
 
+fn audio_style_raw_embedding_cosine(
+    left: &AudioStyleEmbedding,
+    right: &AudioStyleEmbedding,
+) -> Option<f32> {
+    if left.values.len() != AUDIO_STYLE_EMBEDDING_WIDTH
+        || right.values.len() != AUDIO_STYLE_EMBEDDING_WIDTH
+    {
+        return None;
+    }
+
+    let mut dot = 0.0_f32;
+    let mut left_norm = 0.0_f32;
+    let mut right_norm = 0.0_f32;
+    for (left, right) in left.values.iter().zip(right.values.iter()) {
+        dot += left * right;
+        left_norm += left * left;
+        right_norm += right * right;
+    }
+    let denom = left_norm.sqrt() * right_norm.sqrt();
+    if denom <= 1.0e-6 {
+        return None;
+    }
+    Some((dot / denom).clamp(-1.0, 1.0))
+}
+
 fn centered_cosine_to_zero_mean(embedding: &AudioStyleEmbedding, mean: &[f32]) -> Option<f32> {
     if embedding.values.len() != AUDIO_STYLE_EMBEDDING_WIDTH
         || mean.len() != AUDIO_STYLE_EMBEDDING_WIDTH
@@ -3906,6 +3951,140 @@ fn audio_style_regions_from_neighbors(
         regions.insert(key.clone(), region);
     }
     regions
+}
+
+fn self_supervised_style_basins_from_neighbors(
+    embeddings: &AudioStyleEmbeddingMap,
+    neighbor_index: &AudioStyleNeighborIndex,
+    local_density: &HashMap<PlaybackTrackKey, f32>,
+) -> HashMap<PlaybackTrackKey, PlaybackAttractorBasinKey> {
+    let keys = sorted_audio_style_embedding_keys(embeddings);
+    if keys.is_empty() {
+        return HashMap::new();
+    }
+    if keys.len() == 1 {
+        return keys
+            .into_iter()
+            .enumerate()
+            .map(|(index, key)| {
+                (
+                    key,
+                    PlaybackAttractorBasinKey {
+                        value: format!("audio-basin:{index}"),
+                    },
+                )
+            })
+            .collect();
+    }
+
+    let similarity_between_keys = |left: &PlaybackTrackKey, right: &PlaybackTrackKey| {
+        let left_embedding = embeddings.get(left)?;
+        let right_embedding = embeddings.get(right)?;
+        audio_style_raw_embedding_cosine(left_embedding, right_embedding)
+    };
+    let mut neighbor_tail_sum = 0.0_f32;
+    let mut neighbor_tail_count = 0usize;
+    let mut peak_scores = Vec::with_capacity(keys.len());
+    for key in &keys {
+        let neighbor_similarities = neighbor_index
+            .neighbors
+            .get(key)
+            .into_iter()
+            .flatten()
+            .filter_map(|neighbor| similarity_between_keys(key, neighbor))
+            .filter(|similarity| similarity.is_finite())
+            .collect::<Vec<_>>();
+        let local_gap = match (neighbor_similarities.first(), neighbor_similarities.last()) {
+            (Some(first), Some(last)) => (first - last).max(0.0),
+            _ => 0.0,
+        };
+        if let Some(tail) = neighbor_similarities.last() {
+            neighbor_tail_sum += *tail;
+            neighbor_tail_count += 1;
+        }
+        let density = local_density.get(key).copied().unwrap_or(0.0);
+        peak_scores.push((
+            key.clone(),
+            density + AUDIO_STYLE_SELF_SUPERVISED_BASIN_GAP_WEIGHT * local_gap,
+        ));
+    }
+
+    let tail_mean = if neighbor_tail_count == 0 {
+        0.0
+    } else {
+        neighbor_tail_sum / neighbor_tail_count as f32
+    };
+    let separation_floor = (tail_mean + AUDIO_STYLE_SELF_SUPERVISED_BASIN_SEPARATION_OFFSET).clamp(
+        AUDIO_STYLE_SELF_SUPERVISED_BASIN_SEPARATION_MIN,
+        AUDIO_STYLE_SELF_SUPERVISED_BASIN_SEPARATION_MAX,
+    );
+    peak_scores.sort_by(|left, right| {
+        right.1.total_cmp(&left.1).then_with(|| {
+            audio_style_track_key_sort_value(&left.0)
+                .cmp(&audio_style_track_key_sort_value(&right.0))
+        })
+    });
+
+    let max_prototypes = ((keys.len() as f32).sqrt() as usize + 2)
+        .max(1)
+        .min(keys.len());
+    let mut prototypes = Vec::<PlaybackTrackKey>::new();
+    for (candidate, _) in peak_scores {
+        let too_close = prototypes.iter().any(|prototype| {
+            similarity_between_keys(&candidate, prototype).is_some_and(|similarity| {
+                similarity >= separation_floor
+                    || similarity >= AUDIO_STYLE_SELF_SUPERVISED_BASIN_NEAR_DUPLICATE_FLOOR
+            })
+        });
+        if too_close {
+            continue;
+        }
+        prototypes.push(candidate);
+        if prototypes.len() >= max_prototypes {
+            break;
+        }
+    }
+    if prototypes.is_empty() {
+        prototypes.push(keys[0].clone());
+    }
+
+    let prototype_order = prototypes
+        .iter()
+        .cloned()
+        .enumerate()
+        .map(|(index, key)| (key, index))
+        .collect::<HashMap<_, _>>();
+    let mut result = HashMap::with_capacity(keys.len());
+    for key in keys {
+        let best_prototype = prototypes
+            .iter()
+            .max_by(|left, right| {
+                let left_similarity = if *left == &key {
+                    1.0
+                } else {
+                    similarity_between_keys(&key, left).unwrap_or(-1.0)
+                };
+                let right_similarity = if *right == &key {
+                    1.0
+                } else {
+                    similarity_between_keys(&key, right).unwrap_or(-1.0)
+                };
+                left_similarity.total_cmp(&right_similarity).then_with(|| {
+                    audio_style_track_key_sort_value(right)
+                        .cmp(&audio_style_track_key_sort_value(left))
+                })
+            })
+            .cloned()
+            .unwrap_or_else(|| key.clone());
+        let basin_index = prototype_order.get(&best_prototype).copied().unwrap_or(0);
+        result.insert(
+            key,
+            PlaybackAttractorBasinKey {
+                value: format!("audio-basin:{basin_index}"),
+            },
+        );
+    }
+    result
 }
 
 impl AudioStyleEmbeddingCache {
@@ -4681,7 +4860,7 @@ pub(crate) fn recommendation_candidate_allowed_by_recent_history(
 }
 
 impl PlaybackAttractorBasinKey {
-    fn from_track(track: &PlaybackTrack) -> Option<Self> {
+    fn fallback_from_track(track: &PlaybackTrack) -> Option<Self> {
         if let Some(value) = youtube_leaf_basin_from_path(&track.file_path) {
             return Some(Self { value });
         }
@@ -4702,12 +4881,31 @@ impl PlaybackAttractorBasinKey {
     }
 }
 
+#[derive(Clone, Copy)]
+struct AudioStyleBasinResolver<'a> {
+    sampling_geometry: Option<&'a AudioStyleSamplingGeometry>,
+}
+
+impl<'a> AudioStyleBasinResolver<'a> {
+    fn new(sampling_geometry: Option<&'a AudioStyleSamplingGeometry>) -> Self {
+        Self { sampling_geometry }
+    }
+
+    fn basin_for_track(&self, track: &PlaybackTrack) -> Option<PlaybackAttractorBasinKey> {
+        match self.sampling_geometry {
+            Some(geometry) => geometry.self_supervised_basin_for_track(track),
+            None => PlaybackAttractorBasinKey::fallback_from_track(track),
+        }
+    }
+}
+
 impl PlaybackAttractorBasinPressure {
     fn from_recent_history_and_candidates(
         recently_played_tracks: &[PlaybackTrack],
         candidates: &[PlaybackTrack],
+        basin_resolver: AudioStyleBasinResolver<'_>,
     ) -> Self {
-        let target_share = basin_target_share(candidates);
+        let target_share = basin_target_share(candidates, basin_resolver);
         let mut pressure = Self {
             current_basin: None,
             current_basin_run: 0,
@@ -4717,7 +4915,7 @@ impl PlaybackAttractorBasinPressure {
         };
 
         for track in recently_played_tracks {
-            let Some(basin) = PlaybackAttractorBasinKey::from_track(track) else {
+            let Some(basin) = basin_resolver.basin_for_track(track) else {
                 continue;
             };
             decay_attractor_basin_map(&mut pressure.fatigue, AUDIO_STYLE_BASIN_FATIGUE_DECAY);
@@ -4738,8 +4936,12 @@ impl PlaybackAttractorBasinPressure {
         pressure
     }
 
-    fn penalty_for_track(&self, track: &PlaybackTrack) -> f32 {
-        let Some(basin) = PlaybackAttractorBasinKey::from_track(track) else {
+    fn penalty_for_track(
+        &self,
+        track: &PlaybackTrack,
+        basin_resolver: AudioStyleBasinResolver<'_>,
+    ) -> f32 {
+        let Some(basin) = basin_resolver.basin_for_track(track) else {
             return 0.0;
         };
 
@@ -4760,8 +4962,12 @@ impl PlaybackAttractorBasinPressure {
             .min(AUDIO_STYLE_BASIN_PENALTY_CAP)
     }
 
-    fn future_deficit_for_track(&self, track: &PlaybackTrack) -> f32 {
-        let Some(basin) = PlaybackAttractorBasinKey::from_track(track) else {
+    fn future_deficit_for_track(
+        &self,
+        track: &PlaybackTrack,
+        basin_resolver: AudioStyleBasinResolver<'_>,
+    ) -> f32 {
+        let Some(basin) = basin_resolver.basin_for_track(track) else {
             return 0.0;
         };
         let target_share = self.target_share.get(&basin).copied().unwrap_or(0.0);
@@ -4790,10 +4996,13 @@ fn decay_attractor_basin_map(map: &mut HashMap<PlaybackAttractorBasinKey, f32>, 
     });
 }
 
-fn basin_target_share(candidates: &[PlaybackTrack]) -> HashMap<PlaybackAttractorBasinKey, f32> {
+fn basin_target_share(
+    candidates: &[PlaybackTrack],
+    basin_resolver: AudioStyleBasinResolver<'_>,
+) -> HashMap<PlaybackAttractorBasinKey, f32> {
     let mut counts = HashMap::<PlaybackAttractorBasinKey, usize>::new();
     for candidate in candidates {
-        let Some(basin) = PlaybackAttractorBasinKey::from_track(candidate) else {
+        let Some(basin) = basin_resolver.basin_for_track(candidate) else {
             continue;
         };
         *counts.entry(basin).or_insert(0) += 1;
@@ -4830,6 +5039,7 @@ fn audio_style_candidate_diagnostics(
     anchor_key: &PlaybackTrackKey,
     similarities: &[Option<f32>],
     selected_index: Option<usize>,
+    basin_resolver: AudioStyleBasinResolver<'_>,
 ) -> AudioStyleCandidateDiagnostics {
     let mut basin_counts =
         HashMap::<PlaybackAttractorBasinKey, AudioStyleCandidateBasinDiagnostics>::new();
@@ -4842,7 +5052,7 @@ fn audio_style_candidate_diagnostics(
             embedded_candidate_count += 1;
         }
 
-        let Some(basin) = PlaybackAttractorBasinKey::from_track(candidate) else {
+        let Some(basin) = basin_resolver.basin_for_track(candidate) else {
             continue;
         };
         let entry = basin_counts.entry(basin.clone()).or_insert_with(|| {
@@ -4881,7 +5091,7 @@ fn audio_style_candidate_diagnostics(
             .count(),
         selected_basin: selected_index
             .and_then(|index| candidates.get(index))
-            .and_then(PlaybackAttractorBasinKey::from_track)
+            .and_then(|candidate| basin_resolver.basin_for_track(candidate))
             .map(|basin| basin.value),
         top_candidate_basins,
         bio_route: None,
@@ -4980,6 +5190,7 @@ impl AudioStyleHcrJointDendrite {
         basin_pressure: &PlaybackAttractorBasinPressure,
         region_pressure: Option<&AudioStyleRegionPressure<'_>>,
         recent_tracks: &[PlaybackTrack],
+        basin_resolver: AudioStyleBasinResolver<'_>,
     ) -> Self {
         let mut observations = HashMap::<AudioStyleHcrContext, AudioStyleHcrObservation>::new();
         let Some(current_basin) = basin_pressure.current_basin.as_ref() else {
@@ -4992,7 +5203,7 @@ impl AudioStyleHcrJointDendrite {
             .rev()
             .take(AUDIO_STYLE_ROUTE_RECENT_WINDOW)
         {
-            let basin = PlaybackAttractorBasinKey::from_track(track);
+            let basin = basin_resolver.basin_for_track(track);
             let same_basin = basin.as_ref() == Some(current_basin);
             let same_region = match (region_pressure, current_region) {
                 (Some(pressure), Some(region)) => {
@@ -5047,8 +5258,10 @@ fn audio_style_hcr_context_for_candidate(
     damping: f32,
     basin_pressure: &PlaybackAttractorBasinPressure,
     region_pressure: Option<&AudioStyleRegionPressure<'_>>,
+    basin_resolver: AudioStyleBasinResolver<'_>,
 ) -> AudioStyleHcrContext {
-    let same_basin = PlaybackAttractorBasinKey::from_track(candidate)
+    let same_basin = basin_resolver
+        .basin_for_track(candidate)
         .as_ref()
         .is_some_and(|basin| basin_pressure.current_basin.as_ref() == Some(basin));
     let same_region = region_pressure.is_some_and(|pressure| {
@@ -5091,19 +5304,8 @@ impl AudioStyleBioRouteDecision {
         route_pressure: &AudioStyleReadOnlyRoutePressure,
         region_pressure: Option<&AudioStyleRegionPressure<'_>>,
         recently_played_tracks: &[PlaybackTrack],
+        basin_resolver: AudioStyleBasinResolver<'_>,
     ) -> Self {
-        let route_drive = candidates
-            .iter()
-            .map(|candidate| {
-                basin_pressure.future_deficit_for_track(candidate)
-                    + region_pressure
-                        .map(|pressure| {
-                            pressure.future_deficit_for_track(candidate)
-                                * AUDIO_STYLE_BIO_ROUTE_REGION_WEIGHT
-                        })
-                        .unwrap_or(0.0)
-            })
-            .collect::<Vec<_>>();
         let anchor_similarities = similarities
             .iter()
             .map(|similarity| {
@@ -5113,6 +5315,28 @@ impl AudioStyleBioRouteDecision {
                     .clamp(-1.0, 1.0)
             })
             .collect::<Vec<_>>();
+        let route_drive = candidates
+            .iter()
+            .enumerate()
+            .map(|(index, candidate)| {
+                let raw_drive = basin_pressure.future_deficit_for_track(candidate, basin_resolver)
+                    + region_pressure
+                        .map(|pressure| {
+                            pressure.future_deficit_for_track(candidate)
+                                * AUDIO_STYLE_BIO_ROUTE_REGION_WEIGHT
+                        })
+                        .unwrap_or(0.0);
+                let continuity = ((anchor_similarities
+                    .get(index)
+                    .copied()
+                    .unwrap_or(-1.0)
+                    .clamp(-1.0, 1.0)
+                    + 1.0)
+                    * 0.5)
+                    .powf(2.0);
+                raw_drive * continuity
+            })
+            .collect::<Vec<_>>();
         let local_reference = local_candidate_similarity_reference(&anchor_similarities);
         let local_gate =
             audio_style_bio_local_contrast_gate(&anchor_similarities, &local_reference);
@@ -5120,10 +5344,11 @@ impl AudioStyleBioRouteDecision {
             basin_pressure,
             region_pressure,
             recently_played_tracks,
+            basin_resolver,
         );
         let damping = (0..candidates.len())
             .map(|index| {
-                basin_pressure.penalty_for_track(&candidates[index])
+                basin_pressure.penalty_for_track(&candidates[index], basin_resolver)
                     + route_pressure.penalty_for_index(index)
                     + region_pressure
                         .map(|pressure| pressure.penalty_for_track(&candidates[index]))
@@ -5141,6 +5366,7 @@ impl AudioStyleBioRouteDecision {
                     damping.get(index).copied().unwrap_or(0.0),
                     basin_pressure,
                     region_pressure,
+                    basin_resolver,
                 );
                 let prior = audio_style_hcr_prior(
                     anchor_similarities.get(index).copied().unwrap_or(-1.0),
@@ -5157,13 +5383,15 @@ impl AudioStyleBioRouteDecision {
             &hcr_drive,
             &damping,
         );
-        let base_weights = audio_style_distance_base_weights(candidates, similarities);
         let repeat_gate = audio_style_distributed_repeat_gate(candidates, recently_played_tracks);
         let region_homeostasis =
             audio_style_distributed_region_homeostasis(candidates, region_pressure);
         let region_fatigue = audio_style_distributed_region_fatigue(candidates, region_pressure);
         let region_run_hazard =
             audio_style_distributed_region_run_hazard(candidates, region_pressure);
+        let basin_escape =
+            audio_style_basin_escape_gate(candidates, basin_pressure, basin_resolver);
+        let base_weights = audio_style_distance_softmin_weights(candidates, similarities, &damping);
         let mut base = Vec::with_capacity(candidates.len());
         let mut diagnostics = Vec::with_capacity(candidates.len());
         for index in 0..candidates.len() {
@@ -5186,7 +5414,8 @@ impl AudioStyleBioRouteDecision {
                 * region_homeostasis.get(index).copied().unwrap_or(1.0)
                 * region_fatigue.get(index).copied().unwrap_or(1.0)
                 * region_run_hazard.get(index).copied().unwrap_or(1.0)
-                / (1.0 + AUDIO_STYLE_BIO_ROUTE_DAMPING_STRENGTH * damping_value.max(0.0));
+                * basin_escape.get(index).copied().unwrap_or(1.0)
+                / (1.0 + 0.25 * AUDIO_STYLE_BIO_ROUTE_DAMPING_STRENGTH * damping_value.max(0.0));
             let final_weight = if value.is_finite() {
                 value.max(0.0)
             } else {
@@ -5203,7 +5432,8 @@ impl AudioStyleBioRouteDecision {
                 final_weight,
             }));
         }
-        let future_occupancy = audio_style_future_occupancy_gate(candidates, &base, basin_pressure);
+        let future_occupancy =
+            audio_style_future_occupancy_gate(candidates, &base, basin_pressure, basin_resolver);
         for (value, gate) in base.iter_mut().zip(future_occupancy.iter().copied()) {
             *value *= gate;
         }
@@ -5267,6 +5497,7 @@ fn select_next_audio_style_candidate(
     recently_played_tracks: &[PlaybackTrack],
     draw_unit: f32,
 ) -> AudioStyleCandidateSelection {
+    let basin_resolver = AudioStyleBasinResolver::new(sampling_geometry);
     if candidates.is_empty() {
         return AudioStyleCandidateSelection {
             index: 0,
@@ -5286,6 +5517,7 @@ fn select_next_audio_style_candidate(
                 anchor_key,
                 &[],
                 None,
+                basin_resolver,
             ),
         };
     }
@@ -5298,6 +5530,7 @@ fn select_next_audio_style_candidate(
             candidates.len(),
             draw_unit,
             Some("missing_anchor_embedding"),
+            basin_resolver,
         );
     };
     if !model_trained {
@@ -5309,6 +5542,7 @@ fn select_next_audio_style_candidate(
             candidates.len(),
             draw_unit,
             Some("untrained_model"),
+            basin_resolver,
         );
     };
     let Some(geometry) = sampling_geometry else {
@@ -5320,6 +5554,7 @@ fn select_next_audio_style_candidate(
             candidates.len(),
             draw_unit,
             Some("missing_sampling_geometry"),
+            basin_resolver,
         );
     };
 
@@ -5335,6 +5570,7 @@ fn select_next_audio_style_candidate(
     let basin_pressure = PlaybackAttractorBasinPressure::from_recent_history_and_candidates(
         recently_played_tracks,
         candidates,
+        basin_resolver,
     );
     let route_pressure = AudioStyleReadOnlyRoutePressure::from_decision(
         candidates,
@@ -5354,6 +5590,7 @@ fn select_next_audio_style_candidate(
         &route_pressure,
         region_pressure.as_ref(),
         recently_played_tracks,
+        basin_resolver,
     );
     let weights = &route_decision.weights;
     let total = weights.iter().copied().sum::<f32>();
@@ -5367,6 +5604,7 @@ fn select_next_audio_style_candidate(
             candidates.len(),
             draw_unit,
             Some("invalid_weights"),
+            basin_resolver,
         );
     }
 
@@ -5386,6 +5624,7 @@ fn select_next_audio_style_candidate(
                 anchor_key,
                 &similarities,
                 Some(index),
+                basin_resolver,
             );
             let candidate_diagnostics =
                 candidate_diagnostics.with_bio_route(route_decision.diagnostics_for_index(index));
@@ -5414,6 +5653,7 @@ fn select_next_audio_style_candidate(
         anchor_key,
         &similarities,
         Some(index),
+        basin_resolver,
     );
     let candidate_diagnostics =
         candidate_diagnostics.with_bio_route(route_decision.diagnostics_for_index(index));
@@ -5440,6 +5680,7 @@ fn select_centerless_audio_style_candidate(
     model_trained: bool,
     draw_unit: f32,
 ) -> AudioStyleCandidateSelection {
+    let basin_resolver = AudioStyleBasinResolver::new(sampling_geometry);
     if candidates.is_empty() {
         return AudioStyleCandidateSelection {
             index: 0,
@@ -5459,6 +5700,7 @@ fn select_centerless_audio_style_candidate(
                 &PlaybackTrackKey::empty_anchor(),
                 &[],
                 None,
+                basin_resolver,
             ),
         };
     }
@@ -5473,6 +5715,7 @@ fn select_centerless_audio_style_candidate(
                 &PlaybackTrackKey::empty_anchor(),
                 &[],
                 Some(random_fallback_index(candidates.len(), draw_unit)),
+                basin_resolver,
             ),
         );
     }
@@ -5487,6 +5730,7 @@ fn select_centerless_audio_style_candidate(
                 &PlaybackTrackKey::empty_anchor(),
                 &[],
                 Some(random_fallback_index(candidates.len(), draw_unit)),
+                basin_resolver,
             ),
         );
     };
@@ -5503,6 +5747,7 @@ fn select_centerless_audio_style_candidate(
                 &PlaybackTrackKey::empty_anchor(),
                 &similarities,
                 Some(random_fallback_index(candidates.len(), draw_unit)),
+                basin_resolver,
             ),
         );
     }
@@ -5519,6 +5764,7 @@ fn select_centerless_audio_style_candidate(
                 &PlaybackTrackKey::empty_anchor(),
                 &similarities,
                 Some(random_fallback_index(candidates.len(), draw_unit)),
+                basin_resolver,
             ),
         );
     }
@@ -5534,6 +5780,7 @@ fn select_centerless_audio_style_candidate(
             return audio_style_candidate_selection_from_centerless_weight(
                 candidates,
                 embeddings,
+                sampling_geometry,
                 &similarities,
                 index,
                 weight,
@@ -5548,6 +5795,7 @@ fn select_centerless_audio_style_candidate(
     audio_style_candidate_selection_from_centerless_weight(
         candidates,
         embeddings,
+        sampling_geometry,
         &similarities,
         index,
         weights[index],
@@ -5576,6 +5824,7 @@ fn audio_style_centerless_candidate_scores(
 fn audio_style_candidate_selection_from_centerless_weight(
     candidates: &[PlaybackTrack],
     embeddings: &AudioStyleEmbeddingMap,
+    sampling_geometry: Option<&AudioStyleSamplingGeometry>,
     similarities: &[Option<f32>],
     index: usize,
     weight: f32,
@@ -5601,6 +5850,7 @@ fn audio_style_candidate_selection_from_centerless_weight(
             &PlaybackTrackKey::empty_anchor(),
             similarities,
             Some(index),
+            AudioStyleBasinResolver::new(sampling_geometry),
         ),
     }
 }
@@ -5615,13 +5865,6 @@ fn audio_style_distance_softmin_weights(
         .map(|candidate| candidate.liked)
         .collect::<Vec<_>>();
     AudioStyleTensorRuntime::new().softmin_weights(&liked_flags, similarities, basin_penalties)
-}
-
-fn audio_style_distance_base_weights(
-    candidates: &[PlaybackTrack],
-    similarities: &[Option<f32>],
-) -> Vec<f32> {
-    audio_style_distance_softmin_weights(candidates, similarities, &[])
 }
 
 fn audio_style_distributed_repeat_gate(
@@ -5703,10 +5946,36 @@ fn audio_style_distributed_region_run_hazard(
         .collect()
 }
 
+fn audio_style_basin_escape_gate(
+    candidates: &[PlaybackTrack],
+    basin_pressure: &PlaybackAttractorBasinPressure,
+    basin_resolver: AudioStyleBasinResolver<'_>,
+) -> Vec<f32> {
+    if candidates.len() <= 1 || basin_pressure.current_basin_run <= 1 {
+        return vec![1.0; candidates.len()];
+    }
+
+    let run_drive = (basin_pressure.current_basin_run.saturating_sub(1) as f32).ln_1p()
+        * AUDIO_STYLE_BIO_ROUTE_BASIN_ESCAPE_STRENGTH;
+    candidates
+        .iter()
+        .map(|candidate| {
+            let Some(candidate_basin) = basin_resolver.basin_for_track(candidate) else {
+                return 1.0;
+            };
+            if basin_pressure.current_basin.as_ref() == Some(&candidate_basin) {
+                return 1.0;
+            }
+            (1.0 + run_drive).min(AUDIO_STYLE_BIO_ROUTE_BASIN_ESCAPE_CAP)
+        })
+        .collect()
+}
+
 fn audio_style_future_occupancy_gate(
     candidates: &[PlaybackTrack],
     base: &[f32],
     basin_pressure: &PlaybackAttractorBasinPressure,
+    basin_resolver: AudioStyleBasinResolver<'_>,
 ) -> Vec<f32> {
     if candidates.len() <= 1 || basin_pressure.current_basin_run <= 1 {
         return vec![1.0; candidates.len()];
@@ -5719,7 +5988,7 @@ fn audio_style_future_occupancy_gate(
     let mut basin_mass = HashMap::<PlaybackAttractorBasinKey, f32>::new();
     let mut basin_count = HashMap::<PlaybackAttractorBasinKey, usize>::new();
     for (candidate, weight) in candidates.iter().zip(normalized.iter().copied()) {
-        let Some(basin) = PlaybackAttractorBasinKey::from_track(candidate) else {
+        let Some(basin) = basin_resolver.basin_for_track(candidate) else {
             continue;
         };
         *basin_mass.entry(basin.clone()).or_insert(0.0) += weight.max(0.0);
@@ -5729,7 +5998,7 @@ fn audio_style_future_occupancy_gate(
     candidates
         .iter()
         .map(|candidate| {
-            let Some(basin) = PlaybackAttractorBasinKey::from_track(candidate) else {
+            let Some(basin) = basin_resolver.basin_for_track(candidate) else {
                 return 1.0;
             };
             if basin_pressure.current_basin.as_ref() != Some(&basin)
@@ -6056,6 +6325,7 @@ fn random_fallback_selection_with_diagnostics(
     len: usize,
     draw_unit: f32,
     reason: Option<&'static str>,
+    basin_resolver: AudioStyleBasinResolver<'_>,
 ) -> AudioStyleCandidateSelection {
     let index = random_fallback_index(len, draw_unit);
     random_fallback_selection_from_diagnostics(
@@ -6068,6 +6338,7 @@ fn random_fallback_selection_with_diagnostics(
             anchor_key,
             similarities,
             Some(index),
+            basin_resolver,
         ),
     )
 }
