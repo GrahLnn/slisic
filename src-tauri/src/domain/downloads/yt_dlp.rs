@@ -90,6 +90,7 @@ pub trait YtDlpClient: Send + Sync {
         url: &str,
         target_dir: &Path,
         file_stem: &str,
+        cookies_path: Option<&Path>,
         on_progress: &mut dyn FnMut(DownloadProgress),
     ) -> Result<DownloadedLeaf>;
 }
@@ -171,6 +172,7 @@ impl YtDlpClient for CliYtDlpClient {
         url: &str,
         target_dir: &Path,
         file_stem: &str,
+        cookies_path: Option<&Path>,
         on_progress: &mut dyn FnMut(DownloadProgress),
     ) -> Result<DownloadedLeaf> {
         std::fs::create_dir_all(target_dir)
@@ -191,6 +193,7 @@ impl YtDlpClient for CliYtDlpClient {
         command.args(build_leaf_audio_download_args(
             &self.ffmpeg_dir,
             &output_template,
+            cookies_path,
             url,
         ));
 
@@ -297,11 +300,12 @@ pub(crate) fn build_leaf_metadata_probe_args(url: &str) -> Vec<String> {
 pub(crate) fn build_leaf_audio_download_args(
     ffmpeg_dir: &Path,
     output_template: &str,
+    cookies_path: Option<&Path>,
     url: &str,
 ) -> Vec<String> {
     let ffmpeg_dir = ffmpeg_dir.to_string_lossy().to_string();
 
-    [
+    let mut args = [
             "--no-warnings",
             "--no-restrict-filenames",
             "--ignore-errors",
@@ -322,11 +326,18 @@ pub(crate) fn build_leaf_audio_download_args(
             "download:progress:%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.speed)s|%(progress.eta)s|%(progress.status)s",
             "--print",
             "after_move:after_move:%(filepath)s",
-            url,
     ]
     .into_iter()
     .map(str::to_string)
-    .collect()
+    .collect::<Vec<_>>();
+
+    if let Some(cookies_path) = cookies_path {
+        args.push("--cookies".to_string());
+        args.push(cookies_path.to_string_lossy().to_string());
+    }
+
+    args.push(url.to_string());
+    args
 }
 
 pub(crate) fn build_root_playlist_probe_args(url: &str) -> Vec<String> {

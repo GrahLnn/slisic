@@ -10,10 +10,15 @@ use surrealdb::types::{RecordId, Table};
 const SAVE_TASK_RETRY_ATTEMPTS: usize = 6;
 
 pub async fn save_task(task: DownloadTask) -> Result<DownloadTask> {
+    let mut task = task;
+    task.normalize_loaded_state();
     let mut backoff = Duration::from_millis(5);
     for attempt in 0..SAVE_TASK_RETRY_ATTEMPTS {
         match DownloadTask::save(task.clone()).await {
-            Ok(saved) => return Ok(saved),
+            Ok(mut saved) => {
+                saved.normalize_loaded_state();
+                return Ok(saved);
+            }
             Err(error)
                 if is_retryable_transaction_conflict(&error)
                     && attempt + 1 < SAVE_TASK_RETRY_ATTEMPTS =>
@@ -29,12 +34,17 @@ pub async fn save_task(task: DownloadTask) -> Result<DownloadTask> {
 }
 
 pub async fn get_task(id: &str) -> Result<DownloadTask> {
-    DownloadTask::get(id).await
+    let mut task = DownloadTask::get(id).await?;
+    task.normalize_loaded_state();
+    Ok(task)
 }
 
 pub async fn list_tasks() -> Result<Vec<DownloadTask>> {
     match DownloadTask::list().await {
         Ok(mut tasks) => {
+            for task in &mut tasks {
+                task.normalize_loaded_state();
+            }
             tasks.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
             Ok(tasks)
         }
@@ -74,7 +84,11 @@ pub async fn find_latest_active_task_for_url(url: &str) -> Result<Option<Downloa
 
     let task_ids: Vec<RecordId> = result.take(0)?;
     match task_ids.into_iter().next() {
-        Some(record) => Ok(Some(DownloadTask::get_record(record).await?)),
+        Some(record) => {
+            let mut task = DownloadTask::get_record(record).await?;
+            task.normalize_loaded_state();
+            Ok(Some(task))
+        }
         None => Ok(None),
     }
 }

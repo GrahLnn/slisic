@@ -32,6 +32,9 @@ collection and its manifest.
   a stable collection-relative path and its music metadata is persisted.
 - Completed music evidence is owned only by `Collection.musics` and the
   collection manifest. `DownloadTask.leafs` is residual work, not a history log.
+- `DownloadTask.leafs` is keyed by leaf id. A task can hold at most one residual
+  leaf per id; loading and saving task rows must normalize duplicate residual
+  identities before recovery or pipeline execution can observe them.
 - Enqueue persists the complete residual leaf plan after a successful root
   probe. The later task runner must consume that residual plan instead of
   probing the same root URL again.
@@ -240,7 +243,7 @@ Materialized leaf discard + residual leafs remain -> Leaf pipeline:
 
 ```ts
 LeafPipelineWork =
-  | ["pendingPrepare", leaf: PlannedLeaf]
+  | ["pendingPrepare", leaf: DownloadLeaf, planEvidence?: PlannedLeaf]
   | ["probingLeaf", leaf: DownloadLeaf]
   | ["prepared", leaf: DownloadLeaf, probe: LeafProbe]
   | ["existingFinalFileDetected", leaf: DownloadLeaf, relativePath: String]
@@ -254,6 +257,11 @@ LeafPipelineWork =
   | ["completed", leaf: DownloadLeaf]
   | ["failed", leaf: DownloadLeaf, reason: String];
 ```
+
+Task leaf records are the only source that can create pending pipeline work.
+The collection plan can attach probe, title, and group evidence to a matching
+task leaf, but it cannot create an executable work item after task
+normalization.
 
 The pipeline fill order is fixed:
 

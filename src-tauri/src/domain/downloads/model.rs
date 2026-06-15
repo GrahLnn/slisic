@@ -3,6 +3,7 @@ use appdb::{Id, Store};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use specta::Type;
+use std::collections::HashSet;
 use surrealdb_types::{Kind, SurrealValue, ToSql, Value, kind};
 
 macro_rules! impl_string_surreal_enum {
@@ -77,6 +78,7 @@ impl_string_surreal_enum!(DownloadTaskStatus {
     Resolving => "resolving",
     Downloading => "downloading",
     Persisting => "persisting",
+    AwaitingCredentials => "awaiting_credentials",
     Completed => "completed",
     CompletedWithErrors => "completed_with_errors",
     Failed => "failed",
@@ -90,6 +92,7 @@ impl_string_surreal_enum!(DownloadLeafStatus {
     Downloading => "downloading",
     Persisting => "persisting",
     MeasuringLoudness => "measuring_loudness",
+    AwaitingCredentials => "awaiting_credentials",
     Completed => "completed",
     Failed => "failed",
     Cancelled => "cancelled",
@@ -261,6 +264,17 @@ impl DownloadTask {
     }
 
     pub fn refresh_counts(&mut self) {
+        self.normalize_residual_leafs();
+        self.recount_residual_leafs();
+        self.touch();
+    }
+
+    pub fn normalize_loaded_state(&mut self) {
+        self.normalize_residual_leafs();
+        self.recount_residual_leafs();
+    }
+
+    fn recount_residual_leafs(&mut self) {
         self.total_leaves = self.leafs.len() as u32;
         self.failed_leaves = self
             .leafs
@@ -269,7 +283,14 @@ impl DownloadTask {
                 leaf.status.is_terminal() && leaf.status != DownloadLeafStatus::Completed
             })
             .count() as u32;
-        self.touch();
+    }
+
+    pub fn normalize_residual_leafs(&mut self) {
+        let mut seen = HashSet::new();
+        self.leafs.reverse();
+        self.leafs.retain(|leaf| seen.insert(leaf.id.clone()));
+        self.leafs.reverse();
+        self.leafs.sort_by_key(|leaf| leaf.sequence);
     }
 
     pub fn replace_leaf(&mut self, next: DownloadLeaf) {
@@ -281,12 +302,8 @@ impl DownloadTask {
             return;
         }
 
-        if let Some(current) = self.leafs.iter_mut().find(|leaf| leaf.id == next.id) {
-            *current = next;
-        } else {
-            self.leafs.push(next);
-            self.leafs.sort_by_key(|leaf| leaf.sequence);
-        }
+        self.leafs.retain(|leaf| leaf.id != next.id);
+        self.leafs.push(next);
         self.refresh_counts();
     }
 

@@ -15,12 +15,13 @@ import type {
   PlayPlaylistSession,
   SpectrumMusicSourceContext,
 } from "@/src/cmd";
-import type { ConfigDraft } from "./core";
+import { CREATE_COLLECTION_LAYOUT_ID, type ConfigDraft } from "./core";
 import { machine } from "./machine";
 import {
   payloads,
   sig,
   type BootstrapResult,
+  type ConfigChartLoadResult,
   type MusicCreateInput,
   type MusicCreatesResult,
   type MusicDeletesResult,
@@ -29,6 +30,7 @@ import {
   type SpectrumMusicDraftBootstrapInput,
   type SpectrumMusicDraftBootstrapResult,
 } from "./events";
+import type { ConfigChartLoadInput } from "./core";
 import type { MusicDraftDelete } from "./musicTitle";
 
 const spectrumMusicDeleted = payloads["spectrum.music_deleted"];
@@ -216,6 +218,48 @@ function createShallowBootstrapResult(collections: readonly Collection[]): Boots
   };
 }
 
+function createConfigChartResultForCreate(
+  configLibrary: ConfigLibraryView = createConfigLibrary([]),
+): ConfigChartLoadResult {
+  const draft: ConfigDraft = {
+    mode: "create",
+    name: "",
+    collections: [],
+    groups: [],
+    extra: [],
+    createdAt: null,
+  };
+
+  return {
+    configLibrary,
+    draft,
+    draftBaseline: {
+      ...draft,
+      collections: [...draft.collections],
+      groups: [...draft.groups],
+      extra: [...draft.extra],
+    },
+  };
+}
+
+function createConfigChartResultForPlaylist(
+  playlist: PlayList,
+  configLibrary: ConfigLibraryView = createConfigLibrary(playlist.collections),
+): ConfigChartLoadResult {
+  const draft = createConfigDraftFromPlaylist(playlist);
+
+  return {
+    configLibrary,
+    draft,
+    draftBaseline: {
+      ...draft,
+      collections: [...draft.collections],
+      groups: [...draft.groups],
+      extra: [...draft.extra],
+    },
+  };
+}
+
 function createSpectrumMusicSourceContext(
   collection: Collection,
   music: Music,
@@ -280,6 +324,9 @@ describe("appLogic machine", () => {
       machine.provide({
         actors: {
           loadCollections: fromPromise<BootstrapResult>(async () => createBootstrapResult([])),
+          loadConfigChart: fromPromise<ConfigChartLoadResult, ConfigChartLoadInput>(async () =>
+            createConfigChartResultForCreate(createConfigLibrary([shell])),
+          ),
         },
       }),
     );
@@ -289,7 +336,8 @@ describe("appLogic machine", () => {
     await waitForState(actor, "ready");
 
     actor.send(sig.mainx.opencreate);
-    assert.equal(actor.getSnapshot().value, "config");
+    assert.equal(actor.getSnapshot().value, "configLoading");
+    await waitForState(actor, "config");
 
     actor.send(payloads["draft.collection.upserted"].load(shell));
 
@@ -308,8 +356,8 @@ describe("appLogic machine", () => {
           loadCollections: fromPromise<BootstrapResult>(async () =>
             createBootstrapResult([collection]),
           ),
-          loadPlaylistDraft: fromPromise<ConfigDraft, string>(async () =>
-            createConfigDraftFromPlaylist(playlist),
+          loadConfigChart: fromPromise<ConfigChartLoadResult, ConfigChartLoadInput>(async () =>
+            createConfigChartResultForPlaylist(playlist),
           ),
         },
       }),
@@ -344,8 +392,8 @@ describe("appLogic machine", () => {
           loadCollections: fromPromise<BootstrapResult>(async () =>
             createBootstrapResult([collection]),
           ),
-          loadPlaylistDraft: fromPromise<ConfigDraft, string>(
-            () => new Promise<ConfigDraft>(() => undefined),
+          loadConfigChart: fromPromise<ConfigChartLoadResult, ConfigChartLoadInput>(
+            () => new Promise<ConfigChartLoadResult>(() => undefined),
           ),
         },
       }),
@@ -372,6 +420,9 @@ describe("appLogic machine", () => {
       machine.provide({
         actors: {
           loadCollections: fromPromise<BootstrapResult>(async () => createBootstrapResult([])),
+          loadConfigChart: fromPromise<ConfigChartLoadResult, ConfigChartLoadInput>(async () =>
+            createConfigChartResultForCreate(),
+          ),
         },
       }),
     );
@@ -381,6 +432,7 @@ describe("appLogic machine", () => {
     await waitForState(actor, "ready");
 
     actor.send(sig.mainx.opencreate);
+    await waitForState(actor, "config");
     actor.send(payloads["draft.name.changed"].load("PlayList 1"));
     actor.send(sig.mainx.back);
 
@@ -457,6 +509,36 @@ describe("appLogic machine", () => {
     assert.deepEqual(states, ["idle", "loading", "error", "loading", "ready"]);
     assert.equal(loadAttempt, 2);
     assert.equal(actor.getSnapshot().context.error, null);
+  });
+
+  test("enters app ready from playlist surfaces without loading config library", async () => {
+    const collection = createCollection([createMusic()]);
+    const actor = createActor(
+      machine.provide({
+        actors: {
+          loadCollections: fromPromise<BootstrapResult>(async () => ({
+            hasPlayList: true,
+            playlists: [createPlaylistSurface(createPlaylist(collection))],
+            collections: [],
+            configLibrary: createConfigLibrary([]),
+            savePath: "C:/Music",
+          })),
+          loadConfigChart: fromPromise<ConfigChartLoadResult, ConfigChartLoadInput>(
+            () => new Promise<ConfigChartLoadResult>(() => undefined),
+          ),
+        },
+      }),
+    );
+
+    actor.start();
+    actor.send(sig.mainx.run);
+    await waitForState(actor, "ready");
+
+    assert.deepEqual(
+      actor.getSnapshot().context.playlists.map((playlist) => playlist.name),
+      ["Focus Session"],
+    );
+    assert.deepEqual(actor.getSnapshot().context.configLibrary, createConfigLibrary([]));
   });
 
   test("keeps playback intent out of the accepted play state until backend acceptance", async () => {
@@ -695,15 +777,15 @@ describe("appLogic machine", () => {
   test("does not promote pending preview into a stable edit draft baseline", async () => {
     const collection = createCollection([createMusic()]);
     const playlist = createPlaylist(collection);
-    let loadDraftCallCount = 0;
+    let loadConfigCallCount = 0;
     const actor = createActor(
       machine.provide({
         actors: {
           loadCollections: fromPromise<BootstrapResult>(async () => createBootstrapResult([])),
-          loadPlaylistDraft: fromPromise<ConfigDraft, string>(
+          loadConfigChart: fromPromise<ConfigChartLoadResult, ConfigChartLoadInput>(
             () =>
-              new Promise<ConfigDraft>(() => {
-                loadDraftCallCount += 1;
+              new Promise<ConfigChartLoadResult>(() => {
+                loadConfigCallCount += 1;
               }),
           ),
         },
@@ -724,11 +806,51 @@ describe("appLogic machine", () => {
     actor.send(payloads["playlist.open"].load("Focus Session"));
 
     assert.equal(actor.getSnapshot().value, "configLoading");
-    assert.equal(loadDraftCallCount, 1);
+    assert.equal(loadConfigCallCount, 1);
     assert.equal(actor.getSnapshot().context.pendingPlaylistName, "Focus Session");
+    assert.deepEqual(actor.getSnapshot().context.pendingConfigChartLoad, {
+      kind: "edit",
+      playlistName: "Focus Session",
+    });
     assert.equal(actor.getSnapshot().context.draftBaseline, null);
     assert.equal(actor.getSnapshot().context.draft, null);
-    assert.equal(actor.getSnapshot().context.pendingPlaylistPreview?.playlist.name, "Focus Session");
+    assert.equal(
+      actor.getSnapshot().context.pendingPlaylistPreview?.playlist.name,
+      "Focus Session",
+    );
+  });
+
+  test("keeps create config loading on the create title endpoint", async () => {
+    let loadConfigCallCount = 0;
+    const actor = createActor(
+      machine.provide({
+        actors: {
+          loadCollections: fromPromise<BootstrapResult>(async () => createBootstrapResult([])),
+          loadConfigChart: fromPromise<ConfigChartLoadResult, ConfigChartLoadInput>(
+            () =>
+              new Promise<ConfigChartLoadResult>(() => {
+                loadConfigCallCount += 1;
+              }),
+          ),
+        },
+      }),
+    );
+
+    actor.start();
+    actor.send(sig.mainx.run);
+    await waitForState(actor, "ready");
+
+    actor.send(sig.mainx.opencreate);
+
+    assert.equal(actor.getSnapshot().value, "configLoading");
+    assert.equal(loadConfigCallCount, 1);
+    assert.equal(actor.getSnapshot().context.activeLayoutId, CREATE_COLLECTION_LAYOUT_ID);
+    assert.equal(actor.getSnapshot().context.pendingPlaylistName, null);
+    assert.deepEqual(actor.getSnapshot().context.pendingConfigChartLoad, {
+      kind: "create",
+    });
+    assert.equal(actor.getSnapshot().context.draftBaseline, null);
+    assert.equal(actor.getSnapshot().context.draft, null);
   });
 
   test("rejects accepted playback after a missing first-slot result closed its intent", async () => {

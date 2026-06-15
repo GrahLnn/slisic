@@ -67,6 +67,36 @@ fn repeated_completed_leaf_result_does_not_increment_progress_twice() {
 }
 
 #[test]
+fn residual_leaf_normalization_keeps_one_leaf_per_identity() {
+    let mut task = DownloadTask::new(
+        "task-duplicate-residual",
+        "https://example.com/list",
+        DownloadTrigger::Manual,
+    );
+    let queued = DownloadLeaf::new("leaf-duplicate", "https://example.com/a", 0);
+    let mut probing = DownloadLeaf::new("leaf-duplicate", "https://example.com/a", 0);
+    let mut other = DownloadLeaf::new("leaf-other", "https://example.com/b", 1);
+
+    probing.status = DownloadLeafStatus::Probing;
+    probing.title = Some("Latest residual state".to_string());
+    other.status = DownloadLeafStatus::Failed;
+    task.leafs = vec![queued, other, probing];
+
+    task.refresh_counts();
+
+    assert_eq!(task.leafs.len(), 2);
+    assert_eq!(task.total_leaves, 2);
+    assert_eq!(task.failed_leaves, 1);
+    let duplicate = task
+        .leafs
+        .iter()
+        .find(|leaf| leaf.id.to_string() == "leaf-duplicate")
+        .expect("duplicate identity should remain once");
+    assert_eq!(duplicate.status, DownloadLeafStatus::Probing);
+    assert_eq!(duplicate.title.as_deref(), Some("Latest residual state"));
+}
+
+#[test]
 fn mark_interrupted_only_changes_active_states() {
     let mut task = DownloadTask::new(
         "task-2",

@@ -779,6 +779,7 @@ export function ListConfig() {
     configLibrary,
     draft,
     draftBaseline,
+    pendingConfigChartLoad,
     pendingPlaylistPreview,
     pendingPlaylistName,
     playlists,
@@ -803,6 +804,7 @@ export function ListConfig() {
       activeLayoutId,
       draft,
       draftBaseline,
+      pendingConfigChartLoad,
       pendingPlaylistName,
       titleToneHandoff,
       isPresent,
@@ -1095,7 +1097,10 @@ export function ListConfig() {
       }
 
       traceBackAction("list-config-check-resolve-commit-start");
-      const visiblePlaylistsForCommit = resolvePlaylistsWithPreview(playlists, pendingPlaylistPreview);
+      const visiblePlaylistsForCommit = resolvePlaylistsWithPreview(
+        playlists,
+        pendingPlaylistPreview,
+      );
       const localCommit = resolvePlaylistDraftCommit({
         draft: draftForCheck,
         draftBaseline,

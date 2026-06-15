@@ -21,6 +21,7 @@ export type ConfigCandidateItemStatus =
   | "checking"
   | "enqueueing"
   | "task_active"
+  | "awaiting_credentials"
   | "invalid_url"
   | "enqueue_failed";
 
@@ -31,6 +32,7 @@ export interface ConfigCandidateItem {
   displayText: string;
   status: ConfigCandidateItemStatus;
   error: string | null;
+  credentialRequest?: DownloadTaskChangeSignal["credential_request"];
   taskId: string | null;
 }
 
@@ -150,6 +152,7 @@ export function appendCandidateItem(context: Context, rawText: string): Context 
     displayText: toDisplayText(rawText),
     status: "checking",
     error: null,
+    credentialRequest: null,
     taskId: null,
   };
 
@@ -200,6 +203,7 @@ export function applyCandidateUrlResolution(
           displayText: toDisplayText(item.rawText),
           status: "invalid_url",
           error: resolution.error ?? "Clipboard does not contain a valid URL.",
+          credentialRequest: null,
           taskId: null,
         };
       case "new_url": {
@@ -210,6 +214,7 @@ export function applyCandidateUrlResolution(
           displayText: url,
           status: "enqueueing",
           error: null,
+          credentialRequest: null,
           taskId: null,
         };
       }
@@ -226,6 +231,7 @@ export function failCandidateItem(context: Context, id: string, error: string): 
     ...item,
     status: "enqueue_failed",
     error,
+    credentialRequest: null,
   }));
 }
 
@@ -242,8 +248,9 @@ export function acceptCandidateDownloadTask(
     ...item,
     sourceUrl: task.collection_url ?? item.sourceUrl ?? task.url,
     displayText: task.collection_name ?? item.displayText,
-    status: "task_active",
+    status: task.status === "awaiting_credentials" ? "awaiting_credentials" : "task_active",
     error: null,
+    credentialRequest: null,
     taskId: downloadTaskIdText(task),
   }));
 }
@@ -258,6 +265,7 @@ export function acceptCandidateRootTitleEvidence(
     sourceUrl: evidence.url,
     displayText: evidence.title,
     error: null,
+    credentialRequest: null,
   }));
 }
 
@@ -286,6 +294,25 @@ export function applyDownloadTaskChangeSignal(
               ...item,
               status: "enqueue_failed",
               error: signal.last_error ?? DOWNLOAD_TASK_FAILED_ERROR,
+              credentialRequest: null,
+            }
+          : item,
+      ),
+    };
+  }
+
+  if (status === "awaiting_credentials") {
+    return {
+      ...context,
+      items: context.items.map((item) =>
+        item.taskId === signal.task_id
+          ? {
+              ...item,
+              sourceUrl: signal.collection_url ?? item.sourceUrl,
+              displayText: signal.collection_name ?? item.displayText,
+              status: "awaiting_credentials",
+              error: null,
+              credentialRequest: signal.credential_request,
             }
           : item,
       ),
@@ -300,6 +327,8 @@ export function applyDownloadTaskChangeSignal(
             ...item,
             sourceUrl: signal.collection_url ?? item.sourceUrl,
             displayText: signal.collection_name ?? item.displayText,
+            status: item.status === "awaiting_credentials" ? "task_active" : item.status,
+            credentialRequest: null,
           }
         : item,
     ),
@@ -322,6 +351,7 @@ export function failCandidateTask(context: Context, taskId: string, error: strin
             ...item,
             status: "enqueue_failed",
             error,
+            credentialRequest: null,
           }
         : item,
     ),

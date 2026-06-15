@@ -512,6 +512,7 @@ describe("pasteDownload machine", () => {
         collection_name: shellCollection.name,
         status: "resolving",
         last_error: null,
+        credential_request: null,
       }),
     );
 

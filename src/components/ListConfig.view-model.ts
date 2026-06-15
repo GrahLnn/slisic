@@ -3,6 +3,7 @@ import { cn } from "@/lib/utils";
 import type { CollectionGroupMembershipView, Exclude, ExcludeAvailability, Music } from "@/src/cmd";
 import {
   createConfigSidebarItemRef,
+  type ConfigChartLoadInput,
   type CollectionTitleHandoff,
   type CollectionTitleTone,
   type ConfigDraft,
@@ -128,6 +129,7 @@ export function createListConfigTitleSnapshot(args: {
   activeLayoutId: string | null;
   draft: ConfigDraft | null;
   draftBaseline: ConfigDraft | null;
+  pendingConfigChartLoad?: ConfigChartLoadInput | null;
   pendingPlaylistName?: string | null;
 }): ListConfigTitleSnapshot | null {
   if (!args.activeLayoutId) {
@@ -135,6 +137,14 @@ export function createListConfigTitleSnapshot(args: {
   }
 
   if (!args.draft) {
+    if (args.pendingConfigChartLoad?.kind === "create") {
+      return {
+        layoutId: args.activeLayoutId,
+        value: "",
+        placeholder: CREATE_COLLECTION_TITLE,
+      };
+    }
+
     if (!args.pendingPlaylistName) {
       return null;
     }
@@ -160,6 +170,7 @@ export function resolveListConfigTitleViewModel(args: {
   activeLayoutId: string | null;
   draft: ConfigDraft | null;
   draftBaseline: ConfigDraft | null;
+  pendingConfigChartLoad?: ConfigChartLoadInput | null;
   pendingPlaylistName?: string | null;
   titleToneHandoff: CollectionTitleHandoff | null;
 }): ListConfigTitleViewModel {
@@ -167,6 +178,7 @@ export function resolveListConfigTitleViewModel(args: {
     activeLayoutId: args.activeLayoutId,
     draft: args.draft,
     draftBaseline: args.draftBaseline,
+    pendingConfigChartLoad: args.pendingConfigChartLoad,
     pendingPlaylistName: args.pendingPlaylistName,
   });
   const layoutId = snapshot?.layoutId;
@@ -680,6 +692,7 @@ export function resolveListConfigViewModel(args: {
   activeLayoutId: string | null;
   draft: ConfigDraft | null;
   draftBaseline: ConfigDraft | null;
+  pendingConfigChartLoad?: ConfigChartLoadInput | null;
   pendingPlaylistName?: string | null;
   titleToneHandoff: CollectionTitleHandoff | null;
   isPresent: boolean;
@@ -703,6 +716,7 @@ export function resolveListConfigViewModel(args: {
     activeLayoutId: args.activeLayoutId,
     draft: args.draft,
     draftBaseline: args.draftBaseline,
+    pendingConfigChartLoad: args.pendingConfigChartLoad,
     pendingPlaylistName: args.pendingPlaylistName,
     titleToneHandoff: args.titleToneHandoff,
   });

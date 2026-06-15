@@ -34,9 +34,12 @@ import { recordTrace } from "@/src/debug/trace";
 import { documentDir, join } from "@tauri-apps/api/path";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
+  cloneDraft,
+  createDraft,
   createDraftFromPlayListConfig,
   resolveSavedPath,
   type CollectionUpdatesChange,
+  type ConfigChartLoadInput,
   type ConfigSidebarItemRef,
   type ConfigDraft,
   type ExcludeAddedChange,
@@ -54,6 +57,11 @@ interface BootstrapBackend {
   getMetaInfo: typeof crab.getMetaInfo;
   checkList: typeof crab.checkList;
   listPlaylists: typeof crab.listPlaylists;
+  recordPlaylistBootstrapReady?: typeof crab.recordPlaylistBootstrapReady;
+}
+
+interface ConfigChartBackend {
+  getPlaylistConfig: typeof crab.getPlaylistConfig;
   listConfigLibrary: typeof crab.listConfigLibrary;
 }
 
@@ -63,6 +71,12 @@ export interface BootstrapResult {
   collections: Collection[];
   configLibrary: ConfigLibraryView;
   savePath: string;
+}
+
+export interface ConfigChartLoadResult {
+  configLibrary: ConfigLibraryView;
+  draft: ConfigDraft;
+  draftBaseline: ConfigDraft;
 }
 
 function emptyConfigLibrary(): ConfigLibraryView {
@@ -251,29 +265,67 @@ export async function loadCollectionsFromBackend(
     };
   }
 
-  const [playlists, configLibrary] = await Promise.all([
-    backend.listPlaylists(),
-    backend.listConfigLibrary(),
-  ]);
+  const playlists = await backend.listPlaylists();
 
   return playlists.match({
-    Ok: (playlistValues) =>
-      configLibrary.match({
-        Ok: (libraryValues) => ({
-          hasPlayList: true,
-          playlists: playlistValues,
-          collections: [],
-          configLibrary: libraryValues,
-          savePath,
-        }),
-        Err: (error) => {
-          throw new BootstrapLoadError(error, savePath);
-        },
-      }),
+    Ok: (playlistValues) => {
+      void backend.recordPlaylistBootstrapReady?.().catch((error) => {
+        console.error("Failed to record playlist bootstrap ready", error);
+      });
+      return {
+        hasPlayList: true,
+        playlists: playlistValues,
+        collections: [],
+        configLibrary: emptyConfigLibrary(),
+        savePath,
+      };
+    },
     Err: (error) => {
       throw new BootstrapLoadError(error, savePath);
     },
   });
+}
+
+export async function loadConfigChartFromBackend(
+  input: ConfigChartLoadInput,
+  backend: ConfigChartBackend = crab,
+): Promise<ConfigChartLoadResult> {
+  const configLibraryResult = await backend.listConfigLibrary();
+  const configLibrary = configLibraryResult.match({
+    Ok: (library) => library,
+    Err: (error) => {
+      throw new Error(error);
+    },
+  });
+
+  if (input.kind === "create") {
+    const draft = createDraft();
+    return {
+      configLibrary,
+      draft,
+      draftBaseline: cloneDraft(draft),
+    };
+  }
+
+  const playlistResult = await backend.getPlaylistConfig(input.playlistName);
+  const draft = playlistResult.match({
+    Ok: (playlist) => {
+      if (!playlist) {
+        throw new Error(`playlist \`${input.playlistName}\` not found`);
+      }
+
+      return createDraftFromPlayListConfig(playlist);
+    },
+    Err: (error) => {
+      throw new Error(error);
+    },
+  });
+
+  return {
+    configLibrary,
+    draft,
+    draftBaseline: cloneDraft(draft),
+  };
 }
 
 export function resolvePlaylistPlaybackStartResult(
@@ -524,22 +576,8 @@ export const state = allState(ss);
 export const sig = allSignal(ss);
 export const invoker = createActors({
   loadCollections: async (): Promise<BootstrapResult> => loadCollectionsFromBackend(),
-  loadPlaylistDraft: async (playlistName: string): Promise<ConfigDraft> => {
-    const result = await crab.getPlaylistConfig(playlistName);
-
-    return result.match({
-      Ok: (playlist) => {
-        if (!playlist) {
-          throw new Error(`playlist \`${playlistName}\` not found`);
-        }
-
-        return createDraftFromPlayListConfig(playlist);
-      },
-      Err: (error) => {
-        throw new Error(error);
-      },
-    });
-  },
+  loadConfigChart: async (input: ConfigChartLoadInput): Promise<ConfigChartLoadResult> =>
+    loadConfigChartFromBackend(input),
   setCollectionUpdates: async (input: CollectionUpdatesChange): Promise<Collection> => {
     const result = await crab.setCollectionUpdates(input.url, input.enabled);
 

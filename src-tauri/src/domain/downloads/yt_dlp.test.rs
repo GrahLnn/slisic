@@ -217,6 +217,7 @@ fn leaf_audio_download_args_select_audio_only_formats_before_extracting() {
     let args = build_leaf_audio_download_args(
         std::path::Path::new("C:/tools/ffmpeg"),
         "C:/music/%(ext)s",
+        None,
         "https://www.youtube.com/watch?v=leaf1",
     );
 
@@ -233,6 +234,33 @@ fn leaf_audio_download_args_select_audio_only_formats_before_extracting() {
     assert!(
         !args.iter().any(|arg| arg.contains("bestvideo")),
         "audio downloads should never select a video stream"
+    );
+}
+
+#[test]
+fn leaf_audio_download_args_pass_cookie_file_when_available() {
+    let args = build_leaf_audio_download_args(
+        std::path::Path::new("C:/tools/ffmpeg"),
+        "C:/music/%(ext)s",
+        Some(std::path::Path::new(
+            "C:/Users/admin/AppData/Local/slisic/credentials/youtube.cookies.txt",
+        )),
+        "https://www.youtube.com/watch?v=leaf1",
+    );
+
+    let cookies_index = args
+        .iter()
+        .position(|arg| arg == "--cookies")
+        .expect("download args should include cookie file evidence");
+
+    assert_eq!(
+        args.get(cookies_index + 1).map(String::as_str),
+        Some("C:/Users/admin/AppData/Local/slisic/credentials/youtube.cookies.txt")
+    );
+    assert_eq!(
+        args.last().map(String::as_str),
+        Some("https://www.youtube.com/watch?v=leaf1"),
+        "url must remain the final positional yt-dlp argument"
     );
 }
 
@@ -317,6 +345,7 @@ fn leaf_audio_download_args_allow_unicode_file_names() {
     let args = build_leaf_audio_download_args(
         std::path::Path::new("C:/tools/ffmpeg"),
         "C:/music/Ludwig Göransson.%(ext)s",
+        None,
         "https://www.youtube.com/watch?v=leaf1",
     );
 

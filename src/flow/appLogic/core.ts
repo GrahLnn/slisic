@@ -128,6 +128,15 @@ export interface PlaylistPersistenceRequest {
   previousName: string | null;
 }
 
+export type ConfigChartLoadInput =
+  | {
+      kind: "create";
+    }
+  | {
+      kind: "edit";
+      playlistName: string;
+    };
+
 export interface PlaylistDraftCommit {
   titleResolution: DraftCommitTitleResolution;
   draft: ConfigDraft;
@@ -223,6 +232,7 @@ export interface TransactionEpochContext {
   spectrumMusicCommitEpoch: number;
   spectrumMusicCommitNegativeEvidence: SpectrumEditCommitNegativeEvidence | null;
   pendingPlaylistName: string | null;
+  pendingConfigChartLoad: ConfigChartLoadInput | null;
   pendingPlaylistPlaybackName: string | null;
   pendingPlaylistPlaybackRequest: PlaylistPlaybackRequestEvidence | null;
   pendingCollectionUpdatesChange: CollectionUpdatesChange | null;
@@ -859,6 +869,7 @@ export function createInitialContext(): Context {
     activeLayoutId: null,
     titleToneHandoff: null,
     pendingPlaylistName: null,
+    pendingConfigChartLoad: null,
     pendingPlaylistPlaybackName: null,
     pendingPlaylistPlaybackRequest: null,
     pendingCollectionUpdatesChange: null,

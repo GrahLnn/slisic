@@ -15,6 +15,7 @@ import {
   crab,
   type Collection,
   type DownloadRootTitleEvidence,
+  type DownloadTask,
   type DownloadTaskChangeSignal,
   type EnqueuedCollectionDownload,
   type PastedDownloadUrlResolution,
@@ -73,6 +74,19 @@ export const deps = {
   },
   enqueueCollectionDownload: async (url: string): Promise<EnqueuedCollectionDownload> => {
     const result = await crab.enqueueCollectionDownload(url);
+
+    return result.match({
+      Ok: (task) => task,
+      Err: (error) => {
+        throw new Error(error);
+      },
+    });
+  },
+  submitYoutubeCookiesAndResumeDownloadTask: async (
+    taskId: string,
+    cookies: string,
+  ): Promise<DownloadTask> => {
+    const result = await crab.submitYoutubeCookiesAndResumeDownloadTask(taskId, cookies);
 
     return result.match({
       Ok: (task) => task,

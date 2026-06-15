@@ -25,9 +25,8 @@ use super::yt_dlp::{
 #[cfg(not(test))]
 use crate::domain::audio_tail_trim::{self, AudioTailTrimRequest};
 use crate::domain::collection_import;
-use crate::domain::collection_import::CollectionShellPlan;
-#[cfg(not(test))]
-use crate::domain::collection_import::{CollectionSyncPlan, PlannedLeaf};
+use crate::domain::collection_import::PlannedLeaf;
+use crate::domain::collection_import::{CollectionShellPlan, CollectionSyncPlan};
 #[cfg(not(test))]
 use crate::domain::loudness_evidence::{self, LoudnessEvidenceRequest};
 #[cfg(not(test))]
@@ -40,7 +39,6 @@ use crate::utils::binaries::acquire_managed_binary_usage;
 #[cfg(not(test))]
 use crate::utils::binaries::{ManagedBinary, ensure_managed_binary};
 use anyhow::{Context, Result, anyhow, bail};
-#[cfg(not(test))]
 use appdb::Id;
 #[cfg(not(test))]
 use serde::{Deserialize, Serialize};
@@ -56,6 +54,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 #[cfg(not(test))]
 use tauri::AppHandle;
+#[cfg(not(test))]
+use tauri::Manager;
 #[cfg(not(test))]
 use tauri_specta::Event;
 #[cfg(not(test))]
@@ -104,6 +104,7 @@ struct DownloadExecutionDeps {
     #[cfg(not(test))]
     ffmpeg_path: PathBuf,
     save_root: PathBuf,
+    cookies_path: Option<PathBuf>,
 }
 
 #[cfg(not(test))]
@@ -115,12 +116,28 @@ struct LeafDownloadInput {
     url: String,
     target_dir: PathBuf,
     temp_file_stem: String,
+    cookies_path: Option<PathBuf>,
 }
 
 #[cfg(not(test))]
 struct LeafPreparationInput {
-    leaf: DownloadLeaf,
-    planned: PlannedLeaf,
+    work_item: LeafWorkItem,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct LeafWorkItem {
+    pub(crate) leaf: DownloadLeaf,
+    pub(crate) planned: Option<PlannedLeaf>,
+}
+
+#[cfg(not(test))]
+impl LeafWorkItem {
+    fn url(&self) -> &str {
+        self.planned
+            .as_ref()
+            .map(|planned| planned.url.as_str())
+            .unwrap_or(self.leaf.url.as_str())
+    }
 }
 
 #[cfg(not(test))]
@@ -201,23 +218,28 @@ pub(crate) fn leaf_pipeline_has_work(
 pub(crate) fn leaf_pipeline_next_stage(
     active_prepares: usize,
     active_downloads: usize,
+    pending_prepares: usize,
     ready_downloads: usize,
     ready_finalizations: usize,
     download_limit: usize,
 ) -> LeafPipelineStage {
-    if ready_finalizations > 0 {
-        return LeafPipelineStage::Finalize;
-    }
-
     if ready_downloads > 0 && active_downloads < download_limit {
         return LeafPipelineStage::Download;
+    }
+
+    if pending_prepares > 0 {
+        return LeafPipelineStage::Prepare;
+    }
+
+    if ready_finalizations > 0 {
+        return LeafPipelineStage::Finalize;
     }
 
     if active_prepares > 0 || active_downloads > 0 {
         return LeafPipelineStage::WaitForWorker;
     }
 
-    LeafPipelineStage::Prepare
+    LeafPipelineStage::Idle
 }
 
 #[cfg(test)]
@@ -227,13 +249,14 @@ pub(crate) enum LeafPipelineStage {
     Download,
     Prepare,
     WaitForWorker,
+    Idle,
 }
 
 #[cfg(not(test))]
 #[derive(Debug, Default)]
 struct LeafPipelineState {
     workers: JoinSet<LeafPipelineEvent>,
-    pending_prepares: VecDeque<PlannedLeaf>,
+    pending_prepares: VecDeque<LeafWorkItem>,
     ready_downloads: VecDeque<PreparedLeafDownload>,
     ready_finalizations: VecDeque<LeafFinalization>,
     active_prepares: usize,
@@ -244,7 +267,7 @@ struct LeafPipelineState {
 
 #[cfg(not(test))]
 impl LeafPipelineState {
-    fn new(leaves: Vec<PlannedLeaf>, download_window: LeafDownloadWindow) -> Self {
+    fn new(leaves: Vec<LeafWorkItem>, download_window: LeafDownloadWindow) -> Self {
         let prepare_parallelism = download_window.current_limit();
         Self {
             workers: JoinSet::new(),
@@ -399,6 +422,9 @@ pub(crate) fn is_retryable_leaf_download_error(error: &anyhow::Error) -> bool {
     if is_non_retryable_leaf_access_error_message(&message) {
         return false;
     }
+    if is_youtube_cookie_challenge_error_message(&message) {
+        return false;
+    }
 
     ![
         "failed to create ",
@@ -423,6 +449,32 @@ pub(crate) fn is_non_retryable_leaf_access_error_message(message: &str) -> bool 
     .any(|fatal| message.contains(fatal))
 }
 
+pub(crate) fn is_youtube_cookie_challenge_error_message(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    if is_non_retryable_leaf_access_error_message(&message) {
+        return false;
+    }
+
+    message.contains("use --cookies-from-browser")
+        || message.contains("use --cookies ")
+        || message.contains("use --cookies for the authentication")
+        || message.contains("sign in to confirm")
+}
+
+pub(crate) fn normalize_youtube_cookies_text(cookies: &str) -> Result<String> {
+    let normalized = cookies.trim().replace("\r\n", "\n").replace('\r', "\n");
+    if normalized.is_empty() {
+        bail!("YouTube cookies are empty");
+    }
+    if !normalized
+        .lines()
+        .any(|line| line.contains("youtube.com") || line.contains(".youtube.com"))
+    {
+        bail!("YouTube cookies must include youtube.com cookie rows");
+    }
+    Ok(format!("{normalized}\n"))
+}
+
 #[cfg(not(test))]
 type LeafPreparationOutcome = std::result::Result<PreparedLeafDownload, FailedLeafPreparation>;
 
@@ -441,6 +493,14 @@ pub(crate) struct DownloadTaskChangeSignal {
     pub(crate) collection_name: Option<String>,
     pub(crate) status: DownloadTaskStatus,
     pub(crate) last_error: Option<String>,
+    pub(crate) credential_request: Option<DownloadCredentialRequestSignal>,
+}
+
+#[cfg(not(test))]
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub(crate) struct DownloadCredentialRequestSignal {
+    pub(crate) provider: String,
+    pub(crate) reason: String,
 }
 
 #[cfg(not(test))]
@@ -465,12 +525,40 @@ pub async fn enqueue_collection_download(url: String) -> Result<EnqueuedCollecti
 }
 
 pub async fn resume_download_task(task_id: String) -> Result<DownloadTask> {
-    let task = repo::get_task(&task_id).await?;
+    let mut task = repo::get_task(&task_id).await?;
     if task.status == DownloadTaskStatus::Completed {
         bail!("completed download tasks cannot be resumed");
     }
+    if task.status == DownloadTaskStatus::AwaitingCredentials {
+        task.status = DownloadTaskStatus::Queued;
+        task.last_error = None;
+        for leaf in &mut task.leafs {
+            if leaf.status == DownloadLeafStatus::AwaitingCredentials {
+                leaf.status = DownloadLeafStatus::Queued;
+                leaf.last_error = None;
+                leaf.touch();
+            }
+        }
+        task = repo::save_task(task).await?;
+        publish_download_task_change(&task);
+    }
     spawn_task(task.id.to_string(), None)?;
     Ok(task)
+}
+
+pub async fn submit_youtube_cookies_and_resume_download_task(
+    task_id: String,
+    cookies: String,
+    path: PathBuf,
+) -> Result<DownloadTask> {
+    let normalized = normalize_youtube_cookies_text(&cookies)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    std::fs::write(&path, normalized)
+        .with_context(|| format!("failed to write YouTube cookies to {}", path.display()))?;
+    resume_download_task(task_id).await
 }
 
 pub async fn get_download_task(task_id: String) -> Result<DownloadTask> {
@@ -833,6 +921,7 @@ pub(crate) async fn enqueue_collection_download_for_test(
         client,
         ffmpeg_path,
         save_root,
+        cookies_path: None,
     };
     let prepared = prepare_task_enqueue_outcome(url, DownloadTrigger::Manual).await?;
 
@@ -1135,10 +1224,31 @@ async fn run_task_with_deps(
     let client = deps.client;
     let save_root = deps.save_root;
     let plan =
-        resolve_collection_plan_with_root_probe(&task_snapshot, client.clone(), root_probe).await?;
+        match resolve_collection_plan_with_root_probe(&task_snapshot, client.clone(), root_probe)
+            .await
+        {
+            Ok(plan) => plan,
+            Err(error) => {
+                let message = error.to_string();
+                if is_youtube_cookie_challenge_error_message(&message) {
+                    pause_task_for_youtube_cookie_challenge_without_leaf(
+                        &mut task_snapshot,
+                        message,
+                    )
+                    .await?;
+                    return Ok(());
+                }
+                return Err(error);
+            }
+        };
     let mut collection =
         collection_import::load_download_transaction_collection_shell(&plan).await?;
-    collection_import::apply_collection_plan_to_task(&mut task_snapshot, &plan);
+    apply_collection_plan_to_task_with_existing_music_evidence(
+        &mut task_snapshot,
+        &collection,
+        &plan,
+        &save_root,
+    );
     task_snapshot = repo::save_task(task_snapshot.clone()).await?;
     let shell = collection_import::persist_download_collection_shell_from_task(&task_snapshot)
         .await?
@@ -1155,7 +1265,7 @@ async fn run_task_with_deps(
         return Ok(());
     }
 
-    let runnable_leaves = runnable_plan_leaves(&task_snapshot, &plan);
+    let runnable_leaves = runnable_task_leaf_work_items(&task_snapshot, &plan);
     let download_window =
         LeafDownloadWindow::for_collection(plan.source_kind, runnable_leaves.len());
     let parallelism = download_window.current_limit();
@@ -1170,29 +1280,26 @@ async fn run_task_with_deps(
         collection.folder
     );
 
+    task_snapshot.status = DownloadTaskStatus::Downloading;
+    task_snapshot.last_error = None;
+    task_snapshot.touch();
+    task_snapshot = repo::save_task(task_snapshot.clone()).await?;
+    publish_download_task_change(&task_snapshot);
+
+    let mut collection_changed = false;
     let mut pipeline = LeafPipelineState::new(runnable_leaves, download_window);
-    fill_leaf_pipeline(
+    collection_changed |= fill_leaf_pipeline(
         &mut pipeline,
         &mut task_snapshot,
-        &mut collection,
         client.clone(),
         plan.source_kind,
         &save_root,
-        &deps.ffmpeg_path,
+        deps.cookies_path.clone(),
     )
     .await?;
 
     while pipeline.has_work() {
-        drain_ready_leaf_finalizations(
-            &mut pipeline,
-            &mut task_snapshot,
-            &mut collection,
-            plan.source_kind,
-            &save_root,
-            &deps.ffmpeg_path,
-        )
-        .await?;
-        handle_leaf_pipeline_event(
+        collection_changed |= handle_leaf_pipeline_event(
             &mut pipeline,
             &mut task_snapshot,
             &mut collection,
@@ -1201,18 +1308,33 @@ async fn run_task_with_deps(
             plan.source_kind,
             &save_root,
             &deps.ffmpeg_path,
+            deps.cookies_path.clone(),
         )
         .await?;
-        fill_leaf_pipeline(
+        if task_snapshot.status == DownloadTaskStatus::AwaitingCredentials {
+            eprintln!(
+                "[downloads] task {} pipeline paused status=awaiting_credentials",
+                task_snapshot.id
+            );
+            break;
+        }
+        collection_changed |= fill_leaf_pipeline(
             &mut pipeline,
             &mut task_snapshot,
-            &mut collection,
             client.clone(),
             plan.source_kind,
             &save_root,
-            &deps.ffmpeg_path,
+            deps.cookies_path.clone(),
         )
         .await?;
+    }
+
+    if collection_changed {
+        collection_import::notify_downloaded_leaf_collection_committed();
+    }
+
+    if task_snapshot.status == DownloadTaskStatus::AwaitingCredentials {
+        return Ok(());
     }
 
     mark_unresolved_leaves_failed(&mut task_snapshot).await?;
@@ -1237,24 +1359,32 @@ async fn run_task_with_deps(
     Ok(())
 }
 
-#[cfg(not(test))]
-fn runnable_plan_leaves(task: &DownloadTask, plan: &CollectionSyncPlan) -> Vec<PlannedLeaf> {
-    plan.leaves
+fn planned_leaf_evidence_by_id(plan: &CollectionSyncPlan) -> HashMap<Id, PlannedLeaf> {
+    let mut evidence = HashMap::new();
+    for planned in &plan.leaves {
+        evidence
+            .entry(planned.id.clone())
+            .or_insert_with(|| planned.clone());
+    }
+    evidence
+}
+
+pub(crate) fn runnable_task_leaf_work_items(
+    task: &DownloadTask,
+    plan: &CollectionSyncPlan,
+) -> Vec<LeafWorkItem> {
+    let planned_evidence = planned_leaf_evidence_by_id(plan);
+    task.leafs
         .iter()
-        .filter(|planned| {
-            matches!(
-                task.leafs
-                .iter()
-                .find(|leaf| leaf.id == planned.id)
-                    .map(|leaf| leaf.status),
-                Some(status) if !status.is_terminal()
-            )
-        })
+        .filter(|leaf| !leaf.status.is_terminal())
         .cloned()
+        .map(|leaf| {
+            let planned = planned_evidence.get(&leaf.id).cloned();
+            LeafWorkItem { leaf, planned }
+        })
         .collect()
 }
 
-#[cfg(test)]
 pub(crate) fn discard_materialized_planned_leaves(
     task: &mut DownloadTask,
     completions: Vec<collection_import::ExistingPlannedLeafCompletion>,
@@ -1265,6 +1395,19 @@ pub(crate) fn discard_materialized_planned_leaves(
             task.touch();
         }
     }
+}
+
+pub(crate) fn apply_collection_plan_to_task_with_existing_music_evidence(
+    task: &mut DownloadTask,
+    collection: &Collection,
+    plan: &CollectionSyncPlan,
+    save_root: &Path,
+) {
+    collection_import::apply_collection_plan_to_task(task, plan);
+    discard_materialized_planned_leaves(
+        task,
+        collection_import::existing_planned_leaf_completions(collection, plan, save_root),
+    );
 }
 
 async fn mark_unresolved_leaves_failed(task_snapshot: &mut DownloadTask) -> Result<()> {
@@ -1289,30 +1432,22 @@ async fn mark_unresolved_leaves_failed(task_snapshot: &mut DownloadTask) -> Resu
 async fn fill_leaf_pipeline(
     pipeline: &mut LeafPipelineState,
     task_snapshot: &mut DownloadTask,
-    collection: &mut Collection,
     client: Arc<dyn YtDlpClient>,
     source_kind: CollectionSourceKind,
     save_root: &Path,
-    ffmpeg_path: &Path,
-) -> Result<()> {
-    drain_ready_leaf_finalizations(
-        pipeline,
-        task_snapshot,
-        collection,
-        source_kind,
-        save_root,
-        ffmpeg_path,
-    )
-    .await?;
+    cookies_path: Option<PathBuf>,
+) -> Result<bool> {
     spawn_ready_leaf_downloads(
         pipeline,
         task_snapshot,
         source_kind,
         save_root,
         client.clone(),
+        cookies_path,
     )
     .await?;
-    spawn_ready_leaf_preparations(pipeline, task_snapshot, client).await
+    spawn_ready_leaf_preparations(pipeline, task_snapshot, client).await?;
+    Ok(false)
 }
 
 #[cfg(not(test))]
@@ -1324,32 +1459,22 @@ async fn spawn_ready_leaf_preparations(
     while pipeline.active_prepares < pipeline.prepare_parallelism
         && !pipeline.pending_prepares.is_empty()
     {
-        let Some(planned) = pipeline.pending_prepares.pop_front() else {
+        let Some(mut work_item) = pipeline.pending_prepares.pop_front() else {
             break;
         };
-        let mut leaf_snapshot = task_snapshot
-            .leafs
-            .iter()
-            .find(|leaf| leaf.id == planned.id)
-            .cloned()
-            .ok_or_else(|| {
-                anyhow!(
-                    "download leaf `{}` disappeared from task snapshot",
-                    planned.id
-                )
-            })?;
+        let mut leaf_snapshot = work_item.leaf.clone();
         leaf_snapshot.status = DownloadLeafStatus::Probing;
         leaf_snapshot.last_error = None;
+        work_item.leaf = leaf_snapshot.clone();
         task_snapshot.status = DownloadTaskStatus::Downloading;
         task_snapshot.last_error = None;
         task_snapshot.replace_leaf(leaf_snapshot.clone());
-        repo::save_task(task_snapshot.clone()).await?;
 
         eprintln!(
             "[downloads] leaf {} prepare queued sequence={} url={} active_prepares={} active_downloads={} pending={}",
             leaf_snapshot.id,
             leaf_snapshot.sequence,
-            planned.url,
+            work_item.url(),
             pipeline.active_prepares + 1,
             pipeline.active_downloads,
             pipeline.pending_prepares.len()
@@ -1357,10 +1482,7 @@ async fn spawn_ready_leaf_preparations(
 
         pipeline.workers.spawn(prepare_leaf_download_worker(
             client.clone(),
-            LeafPreparationInput {
-                leaf: leaf_snapshot,
-                planned,
-            },
+            LeafPreparationInput { work_item },
         ));
         pipeline.active_prepares += 1;
     }
@@ -1373,21 +1495,31 @@ async fn prepare_leaf_download_worker(
     client: Arc<dyn YtDlpClient>,
     input: LeafPreparationInput,
 ) -> LeafPipelineEvent {
-    let probe = match input.planned.initial_probe.clone() {
+    let leaf = input.work_item.leaf;
+    let planned = input.work_item.planned;
+    let url = planned
+        .as_ref()
+        .map(|planned| planned.url.as_str())
+        .unwrap_or(leaf.url.as_str())
+        .to_string();
+    let probe = match planned
+        .as_ref()
+        .and_then(|planned| planned.initial_probe.clone())
+    {
         Some(probe) => probe,
         None => {
-            let url = input.planned.url.clone();
+            let probe_url = url.clone();
             let usage = acquire_downloads_ytdlp_probe_usage();
             match run_blocking(move || {
                 let _usage = usage;
-                client.probe_leaf(&url)
+                client.probe_leaf(&probe_url)
             })
             .await
             {
                 Ok(probe) => probe,
                 Err(error) => {
                     return LeafPipelineEvent::Prepared(Err(FailedLeafPreparation {
-                        leaf: input.leaf,
+                        leaf,
                         error: error.to_string(),
                     }));
                 }
@@ -1396,16 +1528,20 @@ async fn prepare_leaf_download_worker(
     };
 
     let mut music_probe = probe.clone();
-    if let Some(music_title) = &input.planned.music_title {
+    if let Some(music_title) = planned
+        .as_ref()
+        .and_then(|planned| planned.music_title.as_ref())
+    {
         music_probe.title = music_title.clone();
     }
+    let group = planned.and_then(|planned| planned.group_hint);
 
     LeafPipelineEvent::Prepared(Ok(PreparedLeafDownload {
-        leaf: input.leaf,
+        leaf,
         probe,
         music_probe,
-        group: input.planned.group_hint,
-        url: input.planned.url,
+        group,
+        url,
     }))
 }
 
@@ -1424,6 +1560,7 @@ async fn download_leaf_audio_worker(
         let url = input.url.clone();
         let target_dir = input.target_dir.clone();
         let temp_file_stem = input.temp_file_stem.clone();
+        let cookies_path = input.cookies_path.clone();
         let ytdlp_usage = acquire_downloads_ytdlp_download_usage();
         let ffmpeg_usage = acquire_downloads_ffmpeg_download_usage();
         let download_result = run_blocking(move || {
@@ -1434,6 +1571,7 @@ async fn download_leaf_audio_worker(
                 &url,
                 &target_dir,
                 &temp_file_stem,
+                cookies_path.as_deref(),
                 &mut |progress| {
                     latest_progress = progress;
                 },
@@ -1488,21 +1626,21 @@ async fn handle_leaf_pipeline_event(
     source_kind: CollectionSourceKind,
     save_root: &Path,
     ffmpeg_path: &Path,
-) -> Result<()> {
-    if !pipeline.ready_finalizations.is_empty() {
-        return drain_ready_leaf_finalizations(
-            pipeline,
-            task_snapshot,
-            collection,
-            source_kind,
-            save_root,
-            ffmpeg_path,
-        )
-        .await;
-    }
-
+    cookies_path: Option<PathBuf>,
+) -> Result<bool> {
     if pipeline.active_prepares == 0 && pipeline.active_downloads == 0 {
-        return Ok(());
+        if !pipeline.ready_finalizations.is_empty() {
+            return drain_ready_leaf_finalizations(
+                pipeline,
+                task_snapshot,
+                collection,
+                source_kind,
+                save_root,
+                ffmpeg_path,
+            )
+            .await;
+        }
+        return Ok(false);
     }
 
     let event = pipeline
@@ -1524,12 +1662,26 @@ async fn handle_leaf_pipeline_event(
                 source_kind,
                 save_root,
                 ffmpeg_path,
+                cookies_path,
                 outcome,
             )
-            .await
+            .await?;
+            Ok(false)
         }
         LeafPipelineEvent::Downloaded(outcome) => {
             pipeline.active_downloads = pipeline.active_downloads.saturating_sub(1);
+            if let Err(failed) = &outcome
+                && is_youtube_cookie_challenge_error_message(&failed.error)
+            {
+                pause_task_for_youtube_cookie_challenge(
+                    task_snapshot,
+                    failed.leaf.clone(),
+                    failed.error.clone(),
+                )
+                .await?;
+                return Ok(false);
+            }
+
             match &outcome {
                 Ok(completed) if completed.retry_failures == 0 => {
                     pipeline.download_window.record_success();
@@ -1548,15 +1700,7 @@ async fn handle_leaf_pipeline_event(
             pipeline
                 .ready_finalizations
                 .push_back(LeafFinalization::Downloaded(outcome));
-            drain_ready_leaf_finalizations(
-                pipeline,
-                task_snapshot,
-                collection,
-                source_kind,
-                save_root,
-                ffmpeg_path,
-            )
-            .await
+            Ok(false)
         }
     }
 }
@@ -1569,11 +1713,12 @@ async fn drain_ready_leaf_finalizations(
     source_kind: CollectionSourceKind,
     save_root: &Path,
     ffmpeg_path: &Path,
-) -> Result<()> {
+) -> Result<bool> {
+    let mut collection_changed = false;
     while let Some(outcome) = pipeline.ready_finalizations.pop_front() {
         match outcome {
             LeafFinalization::Downloaded(outcome) => {
-                handle_finished_leaf_download(
+                collection_changed |= handle_finished_leaf_download(
                     task_snapshot,
                     collection,
                     source_kind,
@@ -1583,7 +1728,7 @@ async fn drain_ready_leaf_finalizations(
                 .await?;
             }
             LeafFinalization::ExistingFile(completion) => {
-                handle_existing_leaf_completion(
+                collection_changed |= handle_existing_leaf_completion(
                     task_snapshot,
                     collection,
                     source_kind,
@@ -1596,7 +1741,7 @@ async fn drain_ready_leaf_finalizations(
         }
     }
 
-    Ok(())
+    Ok(collection_changed)
 }
 
 #[cfg(not(test))]
@@ -1609,11 +1754,17 @@ async fn handle_prepared_leaf_download(
     source_kind: CollectionSourceKind,
     save_root: &Path,
     ffmpeg_path: &Path,
+    _cookies_path: Option<PathBuf>,
     outcome: LeafPreparationOutcome,
 ) -> Result<()> {
     let prepared = match outcome {
         Ok(prepared) => prepared,
         Err(failed) => {
+            if is_youtube_cookie_challenge_error_message(&failed.error) {
+                pause_task_for_youtube_cookie_challenge(task_snapshot, failed.leaf, failed.error)
+                    .await?;
+                return Ok(());
+            }
             if is_non_retryable_leaf_access_error_message(&failed.error) {
                 discard_inaccessible_leaf(task_snapshot, failed.leaf, failed.error).await?;
                 return Ok(());
@@ -1753,6 +1904,36 @@ async fn discard_inaccessible_leaf(
     Ok(())
 }
 
+async fn pause_task_for_youtube_cookie_challenge(
+    task_snapshot: &mut DownloadTask,
+    mut leaf: DownloadLeaf,
+    error: String,
+) -> Result<()> {
+    leaf.status = DownloadLeafStatus::AwaitingCredentials;
+    leaf.last_error = Some(error.clone());
+    leaf.touch();
+    task_snapshot.status = DownloadTaskStatus::AwaitingCredentials;
+    task_snapshot.last_error = Some(error);
+    task_snapshot.replace_leaf(leaf);
+    let saved = repo::save_task(task_snapshot.clone()).await?;
+    publish_download_task_change(&saved);
+    *task_snapshot = saved;
+    Ok(())
+}
+
+async fn pause_task_for_youtube_cookie_challenge_without_leaf(
+    task_snapshot: &mut DownloadTask,
+    error: String,
+) -> Result<()> {
+    task_snapshot.status = DownloadTaskStatus::AwaitingCredentials;
+    task_snapshot.last_error = Some(error);
+    task_snapshot.touch();
+    let saved = repo::save_task(task_snapshot.clone()).await?;
+    publish_download_task_change(&saved);
+    *task_snapshot = saved;
+    Ok(())
+}
+
 #[cfg(not(test))]
 async fn spawn_ready_leaf_downloads(
     pipeline: &mut LeafPipelineState,
@@ -1760,6 +1941,7 @@ async fn spawn_ready_leaf_downloads(
     source_kind: CollectionSourceKind,
     save_root: &Path,
     client: Arc<dyn YtDlpClient>,
+    cookies_path: Option<PathBuf>,
 ) -> Result<()> {
     while pipeline.active_downloads < pipeline.download_window.current_limit() {
         let Some(prepared) = pipeline.ready_downloads.pop_front() else {
@@ -1770,7 +1952,6 @@ async fn spawn_ready_leaf_downloads(
         leaf_snapshot.status = DownloadLeafStatus::Downloading;
         leaf_snapshot.touch();
         task_snapshot.replace_leaf(leaf_snapshot.clone());
-        repo::save_task(task_snapshot.clone()).await?;
 
         let file_stem = sanitize_path_component(&prepared.probe.title);
         let target_dir = save_root.join(
@@ -1802,6 +1983,7 @@ async fn spawn_ready_leaf_downloads(
                 url: prepared.url,
                 target_dir,
                 temp_file_stem,
+                cookies_path: cookies_path.clone(),
             },
         ));
         pipeline.active_downloads += 1;
@@ -1911,7 +2093,7 @@ async fn handle_finished_leaf_download(
     source_kind: CollectionSourceKind,
     save_root: &Path,
     outcome: LeafDownloadOutcome,
-) -> Result<()> {
+) -> Result<bool> {
     let completed = match outcome {
         Ok(completed) => completed,
         Err(failed) => {
@@ -1925,7 +2107,7 @@ async fn handle_finished_leaf_download(
                 let last_error = task_snapshot.last_error.clone();
                 update_task_status(task_snapshot, DownloadTaskStatus::Failed, last_error).await?;
             }
-            return Ok(());
+            return Ok(false);
         }
     };
 
@@ -1940,7 +2122,7 @@ async fn handle_finished_leaf_download(
         leaf_snapshot.duration_ms = music_probe.duration_ms;
         leaf_snapshot.duration_seconds = music_probe.duration_seconds;
     }
-    let file_name = match persist_completed_leaf_download(
+    let (file_name, persist_changed) = match persist_completed_leaf_download(
         collection,
         source_kind,
         &completed.probe.webpage_url,
@@ -1952,7 +2134,7 @@ async fn handle_finished_leaf_download(
     )
     .await
     {
-        Ok(file_name) => file_name,
+        Ok(result) => result,
         Err(error) => {
             let error = error.to_string();
             eprintln!(
@@ -1962,7 +2144,7 @@ async fn handle_finished_leaf_download(
                 error
             );
             mark_leaf_failed(task_snapshot, leaf_snapshot, error).await?;
-            return Ok(());
+            return Ok(false);
         }
     };
 
@@ -1985,7 +2167,7 @@ async fn handle_finished_leaf_download(
     request_downloaded_leaf_loudness_evidence(collection, save_root, &file_name);
     request_downloaded_leaf_audio_tail_trim(collection, source_kind, save_root, &file_name);
     eprintln!("[downloads] leaf {} completed file={}", leaf_id, file_name);
-    Ok(())
+    Ok(persist_changed)
 }
 
 #[cfg(not(test))]
@@ -1996,7 +2178,7 @@ async fn handle_existing_leaf_completion(
     save_root: &Path,
     ffmpeg_path: &Path,
     completion: ExistingLeafCompletion,
-) -> Result<()> {
+) -> Result<bool> {
     let mut leaf_snapshot = completion.leaf;
     let relative_path = completion.relative_path;
     let leaf_id = leaf_snapshot.id.to_string();
@@ -2010,7 +2192,7 @@ async fn handle_existing_leaf_completion(
     leaf_snapshot.duration_seconds = music_probe.duration_seconds;
 
     let persist_result = async {
-        collection_import::persist_downloaded_leaf_music(
+        let persist_outcome = collection_import::persist_downloaded_leaf_music(
             collection,
             source_kind,
             &music_probe,
@@ -2025,24 +2207,26 @@ async fn handle_existing_leaf_completion(
             &music_probe,
             &relative_path,
         )?;
-        collection_import::notify_downloaded_leaf_collection_committed();
-        Ok::<_, anyhow::Error>(())
+        Ok::<_, anyhow::Error>(persist_outcome)
     }
     .await;
 
-    if let Err(error) = persist_result {
-        let error = error.to_string();
-        eprintln!(
-            "[downloads] leaf {} existing file persist failed relative_path={} error={}",
-            leaf_snapshot.id, relative_path, error
-        );
-        mark_leaf_failed(task_snapshot, leaf_snapshot, error).await?;
-        if source_kind == CollectionSourceKind::Single {
-            let last_error = task_snapshot.last_error.clone();
-            update_task_status(task_snapshot, DownloadTaskStatus::Failed, last_error).await?;
+    let persist_outcome = match persist_result {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            let error = error.to_string();
+            eprintln!(
+                "[downloads] leaf {} existing file persist failed relative_path={} error={}",
+                leaf_snapshot.id, relative_path, error
+            );
+            mark_leaf_failed(task_snapshot, leaf_snapshot, error).await?;
+            if source_kind == CollectionSourceKind::Single {
+                let last_error = task_snapshot.last_error.clone();
+                update_task_status(task_snapshot, DownloadTaskStatus::Failed, last_error).await?;
+            }
+            return Ok(false);
         }
-        return Ok(());
-    }
+    };
 
     leaf_snapshot.file_name = Some(relative_path.clone());
     leaf_snapshot.relative_path = Some(relative_path.clone());
@@ -2060,7 +2244,7 @@ async fn handle_existing_leaf_completion(
         "[downloads] leaf {} completed existing file={} url={}",
         leaf_id, relative_path, leaf_url
     );
-    Ok(())
+    Ok(persist_outcome.changed)
 }
 
 #[cfg(test)]
@@ -2090,7 +2274,7 @@ async fn handle_finished_leaf_download_for_test(
         leaf_snapshot.duration_ms = music_probe.duration_ms;
         leaf_snapshot.duration_seconds = music_probe.duration_seconds;
     }
-    let file_name = match persist_completed_leaf_download(
+    let (file_name, _persist_changed) = match persist_completed_leaf_download(
         collection,
         source_kind,
         &completed.probe.webpage_url,
@@ -2102,7 +2286,7 @@ async fn handle_finished_leaf_download_for_test(
     )
     .await
     {
-        Ok(file_name) => file_name,
+        Ok(result) => result,
         Err(error) => {
             mark_leaf_failed(task_snapshot, leaf_snapshot, error.to_string()).await?;
             return Ok(());
@@ -2133,7 +2317,7 @@ async fn persist_completed_leaf_download(
     save_root: &Path,
     file_stem: &str,
     downloaded_path: PathBuf,
-) -> Result<String> {
+) -> Result<(String, bool)> {
     eprintln!(
         "[downloads] finalize leaf url={} downloaded_path={} file_stem={} group_url={}",
         leaf_url,
@@ -2153,7 +2337,7 @@ async fn persist_completed_leaf_download(
         "[downloads] persist music leaf url={} relative_path={}",
         leaf_url, file_name
     );
-    collection_import::persist_downloaded_leaf_music(
+    let persist_outcome = collection_import::persist_downloaded_leaf_music(
         collection,
         source_kind,
         music_probe,
@@ -2170,13 +2354,12 @@ async fn persist_completed_leaf_download(
         &file_name,
     )
     .with_context(|| format!("failed to write collection manifest for {leaf_url}"))?;
-    collection_import::notify_downloaded_leaf_collection_committed();
     eprintln!(
         "[downloads] manifest updated collection_folder={} relative_path={}",
         collection.folder, file_name
     );
 
-    Ok(file_name)
+    Ok((file_name, persist_outcome.changed))
 }
 
 async fn mark_leaf_failed(
@@ -2440,6 +2623,18 @@ fn download_task_change_sender() -> &'static broadcast::Sender<DownloadTaskChang
 
 #[cfg(not(test))]
 pub(crate) fn publish_download_task_change(task: &DownloadTask) {
+    let credential_request = if task.status == DownloadTaskStatus::AwaitingCredentials {
+        Some(DownloadCredentialRequestSignal {
+            provider: "youtube".to_string(),
+            reason: task
+                .last_error
+                .as_deref()
+                .map(summarize_youtube_cookie_challenge_reason)
+                .unwrap_or_else(|| "YouTube needs cookies to continue this download.".to_string()),
+        })
+    } else {
+        None
+    };
     let signal = DownloadTaskChangeSignal {
         task_id: task.id.to_string(),
         task_url: task.url.clone(),
@@ -2447,6 +2642,7 @@ pub(crate) fn publish_download_task_change(task: &DownloadTask) {
         collection_name: task.collection_name.clone(),
         status: task.status,
         last_error: task.last_error.clone(),
+        credential_request,
     };
     if let Ok(runtime) = runtime() {
         let _ = signal.emit(&runtime.app);
@@ -2456,6 +2652,17 @@ pub(crate) fn publish_download_task_change(task: &DownloadTask) {
 
 #[cfg(test)]
 fn publish_download_task_change(_task: &DownloadTask) {}
+
+fn summarize_youtube_cookie_challenge_reason(error: &str) -> String {
+    let lower = error.to_ascii_lowercase();
+    if lower.contains("confirm you're not a bot") {
+        return "YouTube wants a bot confirmation before continuing.".to_string();
+    }
+    if lower.contains("confirm your age") {
+        return "YouTube wants age confirmation before continuing.".to_string();
+    }
+    "YouTube needs cookies to continue this download.".to_string()
+}
 
 #[cfg(not(test))]
 fn spawn_recovery(app: AppHandle) {
@@ -2634,6 +2841,15 @@ async fn resolve_execution_deps(app: &AppHandle) -> Result<DownloadExecutionDeps
         client,
         ffmpeg_path,
         save_root: resolve_save_root(app).await?,
+        cookies_path: {
+            let mut path = app
+                .path()
+                .app_local_data_dir()
+                .map_err(|error| anyhow!("failed to resolve app local data directory: {error}"))?;
+            path.push("credentials");
+            path.push("youtube.cookies.txt");
+            path.exists().then_some(path)
+        },
     })
 }
 

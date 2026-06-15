@@ -3,8 +3,6 @@ import {
   CREATE_COLLECTION_LAYOUT_ID,
   createCollectionTitleHandoff,
   createConfigSidebarItemsFromLibrary,
-  createDraft,
-  cloneDraft,
   includeDraftSidebarItem,
   initialContext,
   playlistTitleLayoutId,
@@ -18,6 +16,7 @@ import {
   upsertCollectionIntoConfigLibrary,
   upsertCollectionIntoDraft,
   upsertCollectionIntoCollections,
+  type ConfigChartLoadInput,
   type Context,
   type ContextResetLifecycle,
   type InitialPlaybackTrackEvidence,
@@ -748,8 +747,11 @@ function createPlaylistUpsertedContext(
   };
 }
 
-function createConfigLoadingContext(context: Context, playlistName: string) {
-  const activeLayoutId = playlistTitleLayoutId(playlistName);
+function createConfigLoadingContext(context: Context, input: ConfigChartLoadInput) {
+  const isCreate = input.kind === "create";
+  const activeLayoutId = isCreate
+    ? CREATE_COLLECTION_LAYOUT_ID
+    : playlistTitleLayoutId(input.playlistName);
 
   return resetContextWith(
     {
@@ -773,14 +775,17 @@ function createConfigLoadingContext(context: Context, playlistName: string) {
         titleToneHandoff: createCollectionTitleHandoff(activeLayoutId, "solid"),
       },
       transaction: {
-        pendingPlaylistName: playlistName,
+        pendingPlaylistName: isCreate ? null : input.playlistName,
+        pendingConfigChartLoad: input,
       },
     },
     resetLifecycle({
-      reason: "open config loading chart for playlist draft",
+      reason: isCreate
+        ? "open config loading chart for playlist creation"
+        : "open config loading chart for playlist draft",
       chart: resetLifecycleAction("opened", "playlist-config-loading"),
       lease: resetLifecycleAction("opened", activeLayoutId),
-      transaction: resetLifecycleAction("opened", "playlist-draft-load"),
+      transaction: resetLifecycleAction("opened", "playlist-config-load"),
     }),
   );
 }
@@ -1149,41 +1154,11 @@ export const machine = src.createMachine({
           }),
         },
         opencreate: {
-          target: ss.mainx.State.config,
+          target: ss.mainx.State.configLoading,
           actions: assign(({ context }) =>
-            resetContextWith(
-              {
-                shape: {
-                  hasPlayList: context.hasPlayList,
-                  playlists: context.playlists,
-                  pendingPlaylistPreview: context.pendingPlaylistPreview,
-                  collections: context.collections,
-                  configLibrary: context.configLibrary,
-                  savePath: context.savePath,
-                  draftBaseline: createDraft(),
-                  draft: createDraft(),
-                },
-                runtime: {
-                  playingPlaylistName: null,
-                  nowPlayingTrackName: null,
-                },
-                chart: {
-                  activeLayoutId: CREATE_COLLECTION_LAYOUT_ID,
-                },
-                lease: {
-                  titleToneHandoff: createCollectionTitleHandoff(
-                    CREATE_COLLECTION_LAYOUT_ID,
-                    "solid",
-                  ),
-                },
-              },
-              resetLifecycle({
-                reason: "open create playlist config chart",
-                chart: resetLifecycleAction("opened", "playlist-config"),
-                lease: resetLifecycleAction("opened", CREATE_COLLECTION_LAYOUT_ID),
-                transaction: resetLifecycleAction("closed", "playlist-draft-load"),
-              }),
-            ),
+            createConfigLoadingContext(context, {
+              kind: "create",
+            }),
           ),
         },
         [playPlaylist.evt]: {
@@ -1209,7 +1184,10 @@ export const machine = src.createMachine({
           {
             target: ss.mainx.State.configLoading,
             actions: assign(({ context, event }) =>
-              createConfigLoadingContext(context, event.output),
+              createConfigLoadingContext(context, {
+                kind: "edit",
+                playlistName: event.output,
+              }),
             ),
           },
         ],
@@ -1246,41 +1224,11 @@ export const machine = src.createMachine({
           ),
         },
         opencreate: {
-          target: ss.mainx.State.config,
+          target: ss.mainx.State.configLoading,
           actions: assign(({ context }) =>
-            resetContextWith(
-              {
-                shape: {
-                  hasPlayList: context.hasPlayList,
-                  playlists: context.playlists,
-                  pendingPlaylistPreview: context.pendingPlaylistPreview,
-                  collections: context.collections,
-                  configLibrary: context.configLibrary,
-                  savePath: context.savePath,
-                  draftBaseline: createDraft(),
-                  draft: createDraft(),
-                },
-                runtime: {
-                  playingPlaylistName: null,
-                  nowPlayingTrackName: null,
-                },
-                chart: {
-                  activeLayoutId: CREATE_COLLECTION_LAYOUT_ID,
-                },
-                lease: {
-                  titleToneHandoff: createCollectionTitleHandoff(
-                    CREATE_COLLECTION_LAYOUT_ID,
-                    "solid",
-                  ),
-                },
-              },
-              resetLifecycle({
-                reason: "open create playlist config chart from playback",
-                chart: resetLifecycleAction("opened", "playlist-config"),
-                lease: resetLifecycleAction("opened", CREATE_COLLECTION_LAYOUT_ID),
-                transaction: resetLifecycleAction("closed", "playlist-draft-load"),
-              }),
-            ),
+            createConfigLoadingContext(context, {
+              kind: "create",
+            }),
           ),
         },
         [playPlaylist.evt]: {
@@ -1304,7 +1252,10 @@ export const machine = src.createMachine({
           {
             target: ss.mainx.State.configLoading,
             actions: assign(({ context, event }) =>
-              createConfigLoadingContext(context, event.output),
+              createConfigLoadingContext(context, {
+                kind: "edit",
+                playlistName: event.output,
+              }),
             ),
           },
         ],
@@ -1372,7 +1323,7 @@ export const machine = src.createMachine({
                 },
               },
               resetLifecycle({
-                reason: "stop spectrum chart on draft load failure",
+                reason: "stop spectrum chart on spectrum draft load failure",
                 chart: resetLifecycleAction("closed", "spectrum"),
                 lease: resetLifecycleAction("closed", context.activeLayoutId),
                 transaction: resetLifecycleAction("closed", "spectrum-music-draft-load"),
@@ -1440,14 +1391,14 @@ export const machine = src.createMachine({
     },
     [ss.mainx.State.configLoading]: {
       invoke: {
-        id: invoker.loadPlaylistDraft.id,
-        src: invoker.loadPlaylistDraft.src,
+        id: invoker.loadConfigChart.id,
+        src: invoker.loadConfigChart.src,
         input: ({ context }) => {
-          if (!context.pendingPlaylistName) {
-            throw new Error("missing playlist name for config load");
+          if (!context.pendingConfigChartLoad) {
+            throw new Error("missing config chart input for config load");
           }
 
-          return context.pendingPlaylistName;
+          return context.pendingConfigChartLoad;
         },
         onDone: {
           target: ss.mainx.State.config,
@@ -1459,10 +1410,10 @@ export const machine = src.createMachine({
                   playlists: context.playlists,
                   pendingPlaylistPreview: context.pendingPlaylistPreview,
                   collections: context.collections,
-                  configLibrary: context.configLibrary,
+                  configLibrary: event.output.configLibrary,
                   savePath: context.savePath,
-                  draftBaseline: cloneDraft(event.output),
-                  draft: event.output,
+                  draftBaseline: event.output.draftBaseline,
+                  draft: event.output.draft,
                 },
                 runtime: {
                   playingPlaylistName: null,
@@ -1476,12 +1427,12 @@ export const machine = src.createMachine({
                 },
               },
               resetLifecycle({
-                reason: "accept playlist draft load into config chart",
+                reason: "accept config chart load into config chart",
                 chart: resetLifecycleAction("opened", "playlist-config"),
                 lease: context.activeLayoutId
                   ? resetLifecycleAction("preserved", context.activeLayoutId)
                   : resetLifecycleAction("closed", null),
-                transaction: resetLifecycleAction("closed", "playlist-draft-load"),
+                transaction: resetLifecycleAction("closed", "playlist-config-load"),
               }),
             ),
           ),
@@ -1514,12 +1465,12 @@ export const machine = src.createMachine({
                 },
               },
               resetLifecycle({
-                reason: "close config loading transaction on playlist draft load failure",
+                reason: "close config loading transaction on config chart load failure",
                 chart: resetLifecycleAction("closed", "playlist-config-loading"),
                 lease: context.activeLayoutId
                   ? resetLifecycleAction("preserved", context.activeLayoutId)
                   : resetLifecycleAction("closed", null),
-                transaction: resetLifecycleAction("closed", "playlist-draft-load"),
+                transaction: resetLifecycleAction("closed", "playlist-config-load"),
               }),
             ),
           ),
@@ -1551,12 +1502,12 @@ export const machine = src.createMachine({
                 },
               },
               resetLifecycle({
-                reason: "leave config loading before draft load completes",
+                reason: "leave config loading before config chart load completes",
                 chart: resetLifecycleAction("closed", "playlist-config-loading"),
                 lease: context.activeLayoutId
                   ? resetLifecycleAction("opened", context.activeLayoutId)
                   : resetLifecycleAction("closed", null),
-                transaction: resetLifecycleAction("closed", "playlist-draft-load"),
+                transaction: resetLifecycleAction("closed", "playlist-config-load"),
               }),
             ),
           ),
@@ -1619,47 +1570,21 @@ export const machine = src.createMachine({
           }),
         },
         opencreate: {
+          target: ss.mainx.State.configLoading,
           actions: assign(({ context }) =>
-            resetContextWith(
-              {
-                shape: {
-                  hasPlayList: context.hasPlayList,
-                  playlists: context.playlists,
-                  pendingPlaylistPreview: context.pendingPlaylistPreview,
-                  collections: context.collections,
-                  configLibrary: context.configLibrary,
-                  savePath: context.savePath,
-                  draftBaseline: createDraft(),
-                  draft: createDraft(),
-                },
-                runtime: {
-                  playingPlaylistName: null,
-                  nowPlayingTrackName: null,
-                },
-                chart: {
-                  activeLayoutId: CREATE_COLLECTION_LAYOUT_ID,
-                },
-                lease: {
-                  titleToneHandoff: createCollectionTitleHandoff(
-                    CREATE_COLLECTION_LAYOUT_ID,
-                    resolveTitleShareToneFromDraft(context.draft),
-                  ),
-                },
-              },
-              resetLifecycle({
-                reason: "replace config chart with create playlist chart",
-                chart: resetLifecycleAction("opened", "playlist-config"),
-                lease: resetLifecycleAction("opened", CREATE_COLLECTION_LAYOUT_ID),
-                transaction: resetLifecycleAction("closed", "playlist-draft"),
-              }),
-            ),
+            createConfigLoadingContext(context, {
+              kind: "create",
+            }),
           ),
         },
         [openPlaylist.evt]: [
           {
             target: ss.mainx.State.configLoading,
             actions: assign(({ context, event }) => ({
-              ...createConfigLoadingContext(context, event.output),
+              ...createConfigLoadingContext(context, {
+                kind: "edit",
+                playlistName: event.output,
+              }),
               titleToneHandoff: createCollectionTitleHandoff(
                 playlistTitleLayoutId(event.output),
                 resolveTitleShareToneFromDraft(context.draft),

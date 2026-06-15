@@ -128,11 +128,66 @@ describe("candidate item helpers", () => {
       collection_name: "Slow Playlist",
       status: "resolving",
       last_error: null,
+      credential_request: null,
     });
 
     assert.equal(next.items[0]?.sourceUrl, "https://example.com/root");
     assert.equal(next.items[0]?.displayText, "Slow Playlist");
     assert.equal(next.items[0]?.status, "task_active");
+  });
+
+  test("projects credential requests onto the matching active candidate", () => {
+    const context = acceptCandidateDownloadTask(
+      appendCandidateItem(createInitialContext(), "https://example.com/list"),
+      "candidate:0",
+      {
+        id: { String: "task:list" },
+        url: "https://example.com/list",
+        collection_url: null,
+        collection_name: null,
+        collection_folder: null,
+        source_kind: null,
+        trigger: "manual",
+        status: "downloading",
+        leafs: [],
+        total_leaves: 1,
+        completed_leaves: 0,
+        failed_leaves: 0,
+        last_error: null,
+        created_at: "2026-06-02T00:00:00Z",
+        updated_at: "2026-06-02T00:00:00Z",
+      },
+    );
+
+    const waiting = applyDownloadTaskChangeSignal(context, {
+      task_id: "task:list",
+      task_url: "https://example.com/list",
+      collection_url: "https://example.com/root",
+      collection_name: "Slow Playlist",
+      status: "awaiting_credentials",
+      last_error: "Sign in to confirm you're not a bot.",
+      credential_request: {
+        provider: "youtube",
+        reason: "Sign in to confirm you're not a bot.",
+      },
+    });
+
+    assert.equal(waiting.items[0]?.status, "awaiting_credentials");
+    assert.equal(waiting.items[0]?.credentialRequest?.provider, "youtube");
+    assert.equal(waiting.items[0]?.displayText, "Slow Playlist");
+
+    const resumed = applyDownloadTaskChangeSignal(waiting, {
+      task_id: "task:list",
+      task_url: "https://example.com/list",
+      collection_url: "https://example.com/root",
+      collection_name: "Slow Playlist",
+      status: "downloading",
+      last_error: null,
+      credential_request: null,
+    });
+
+    assert.equal(resumed.items[0]?.status, "task_active");
+    assert.equal(resumed.items[0]?.credentialRequest, null);
   });
 
   test("reflects root title evidence without needing task evidence", () => {

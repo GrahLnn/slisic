@@ -59,7 +59,6 @@ pub(crate) struct PlannedLeaf {
     pub(crate) group_hint: Option<Group>,
 }
 
-#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ExistingPlannedLeafCompletion {
     pub(crate) leaf_id: Id,
@@ -87,7 +86,6 @@ impl LeafGroupIdentity {
         }
     }
 
-    #[cfg(test)]
     fn from_music(music: &Music) -> Self {
         Self {
             url: music.url.clone(),
@@ -360,13 +358,18 @@ pub(crate) async fn persist_empty_collection(collection: &mut Collection) -> Res
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PersistDownloadedLeafMusicOutcome {
+    pub(crate) changed: bool,
+}
+
 pub(crate) async fn persist_downloaded_leaf_music(
     collection: &mut Collection,
     source_kind: CollectionSourceKind,
     probe: &LeafProbe,
     file_name: &str,
     group: Group,
-) -> Result<()> {
+) -> Result<PersistDownloadedLeafMusicOutcome> {
     ensure_committable_download_file_name(file_name)?;
     log::info!(
         target: "downloads",
@@ -383,6 +386,7 @@ pub(crate) async fn persist_downloaded_leaf_music(
     let mut current = collection_repo::get_collection_by_url(&collection.url)
         .await?
         .unwrap_or_else(|| collection.clone());
+    let previous_musics = current.musics.clone();
     inherit_existing_music_lifecycle(&mut materialized, &current.musics);
     if source_kind == CollectionSourceKind::Single {
         current.musics = materialized;
@@ -391,12 +395,40 @@ pub(crate) async fn persist_downloaded_leaf_music(
             .first()
             .map(|music| music.group.url.clone())
             .unwrap_or_default();
-        current.musics.retain(|music| {
-            music.url != probe.webpage_url || music.group.url != replacement_group_url
-        });
-        current.musics.append(&mut materialized);
+        let mut next_musics = Vec::with_capacity(current.musics.len() + materialized.len());
+        let mut inserted_replacement = false;
+        for music in current.musics {
+            let matches_replacement =
+                music.url == probe.webpage_url && music.group.url == replacement_group_url;
+            if matches_replacement {
+                if !inserted_replacement {
+                    next_musics.append(&mut materialized);
+                    inserted_replacement = true;
+                }
+            } else {
+                next_musics.push(music);
+            }
+        }
+        if !inserted_replacement {
+            next_musics.append(&mut materialized);
+        }
+        current.musics = next_musics;
     }
     normalize_music_titles_within_collection(&mut current);
+    if music_collections_are_semantically_equal(&previous_musics, &current.musics) {
+        *collection = current;
+        log::info!(
+            target: "downloads",
+            "downloaded_leaf_music_persist_skipped collection=\"{}\" source_kind={} url=\"{}\" relative_path=\"{}\" materialized={} musics={} reason=unchanged",
+            collection.url,
+            source_kind.as_str(),
+            probe.webpage_url,
+            file_name,
+            materialized_count,
+            collection.musics.len()
+        );
+        return Ok(PersistDownloadedLeafMusicOutcome { changed: false });
+    }
     current.last_updated = now_timestamp();
     let saved = collection_repo::upsert_collection(&current).await?;
     *collection = saved;
@@ -410,12 +442,35 @@ pub(crate) async fn persist_downloaded_leaf_music(
         materialized_count,
         collection.musics.len()
     );
-    Ok(())
+    Ok(PersistDownloadedLeafMusicOutcome { changed: true })
 }
 
 pub(crate) fn notify_downloaded_leaf_collection_committed() {
     notify_audio_style_inputs_changed("downloaded_leaf_collection_committed");
     notify_playlist_playback_library_changed();
+}
+
+fn music_collections_are_semantically_equal(left: &[Music], right: &[Music]) -> bool {
+    left.len() == right.len()
+        && left
+            .iter()
+            .zip(right.iter())
+            .all(|(left, right)| music_entries_are_semantically_equal(left, right))
+}
+
+fn music_entries_are_semantically_equal(left: &Music, right: &Music) -> bool {
+    left.name == right.name
+        && left.alias == right.alias
+        && left.group.name == right.group.name
+        && left.group.url == right.group.url
+        && left.group.folder == right.group.folder
+        && left.canonical_music_id == right.canonical_music_id
+        && left.url == right.url
+        && left.path == right.path
+        && left.start_ms == right.start_ms
+        && left.end_ms == right.end_ms
+        && left.liked == right.liked
+        && left.loudness_profile == right.loudness_profile
 }
 
 pub(crate) async fn import_local_collection_folder(
@@ -929,7 +984,6 @@ pub(crate) fn existing_leaf_identities(
         .unwrap_or_default()
 }
 
-#[cfg(test)]
 pub(crate) fn existing_planned_leaf_completions(
     collection: &Collection,
     plan: &CollectionSyncPlan,

@@ -82,6 +82,51 @@ fn save_and_load_task_round_trips_relation_backed_leafs() {
 }
 
 #[test]
+fn save_and_load_task_normalizes_duplicate_residual_leafs() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let mut task = DownloadTask::new(
+            "task-duplicate-residual",
+            "https://example.com/list",
+            DownloadTrigger::Manual,
+        );
+        task.status = DownloadTaskStatus::Downloading;
+        let mut first = DownloadLeaf::new("leaf-duplicate", "https://example.com/a", 0);
+        let mut latest = DownloadLeaf::new("leaf-duplicate", "https://example.com/a", 0);
+        let mut other = DownloadLeaf::new("leaf-other", "https://example.com/b", 1);
+        first.status = DownloadLeafStatus::Queued;
+        latest.status = DownloadLeafStatus::Probing;
+        latest.title = Some("Latest residual state".to_string());
+        other.status = DownloadLeafStatus::Failed;
+        task.leafs = vec![first, other, latest];
+
+        let saved = save_task(task)
+            .await
+            .expect("duplicate residual leaf task should save");
+        let loaded = get_task(&saved.id.to_string())
+            .await
+            .expect("normalized task should load");
+
+        assert_eq!(saved.leafs.len(), 2);
+        assert_eq!(loaded.leafs.len(), 2);
+        assert_eq!(loaded.total_leaves, 2);
+        assert_eq!(loaded.failed_leaves, 1);
+        let duplicate = loaded
+            .leafs
+            .iter()
+            .find(|leaf| leaf.id.to_string() == "leaf-duplicate")
+            .expect("duplicate identity should remain once");
+        assert_eq!(duplicate.status, DownloadLeafStatus::Probing);
+        assert_eq!(duplicate.title.as_deref(), Some("Latest residual state"));
+
+        reset_db();
+    });
+}
+
+#[test]
 fn list_tasks_treats_missing_table_as_empty() {
     let _guard = acquire_db_test_lock();
 

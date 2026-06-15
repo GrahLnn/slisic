@@ -449,6 +449,24 @@ describe("ListConfig title view model", () => {
     );
   });
 
+  test("keeps the create config loading title endpoint before the draft arrives", () => {
+    assert.deepEqual(
+      createListConfigTitleSnapshot({
+        activeLayoutId: "collection-title:create",
+        draft: null,
+        draftBaseline: null,
+        pendingConfigChartLoad: {
+          kind: "create",
+        },
+      }),
+      {
+        layoutId: "collection-title:create",
+        value: "",
+        placeholder: "Create a List",
+      },
+    );
+  });
+
   test("keeps a named create draft on the config source path until check commits it", () => {
     assert.deepEqual(
       createListConfigTitleSnapshot({
@@ -527,6 +545,37 @@ describe("ListConfig title view model", () => {
         },
       }).titleHoverVisual,
       "retain",
+    );
+  });
+
+  test("retains the title hover visual while create config is still loading", () => {
+    assert.deepEqual(
+      resolveListConfigTitleViewModel({
+        activeLayoutId: "collection-title:create",
+        draft: null,
+        draftBaseline: null,
+        pendingConfigChartLoad: {
+          kind: "create",
+        },
+        titleToneHandoff: {
+          layoutId: "collection-title:create",
+          tone: "solid",
+        },
+      }),
+      {
+        snapshot: {
+          layoutId: "collection-title:create",
+          value: "",
+          placeholder: "Create a List",
+        },
+        autoFocus: false,
+        handoffTone: "solid",
+        layoutId: "collection-title:create",
+        titleHoverVisual: "retain",
+        titleNativeHoverEnabled: false,
+        placeholder: "Create a List",
+        value: "",
+      },
     );
   });
 
