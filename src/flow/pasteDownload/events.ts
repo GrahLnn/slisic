@@ -95,6 +95,16 @@ export const deps = {
       },
     });
   },
+  listDownloadTasks: async (): Promise<DownloadTask[]> => {
+    const result = await crab.listDownloadTasks();
+
+    return result.match({
+      Ok: (tasks) => tasks,
+      Err: (error) => {
+        throw new Error(error);
+      },
+    });
+  },
   probeDownloadRootTitle: async (url: string): Promise<DownloadRootTitleEvidence> => {
     const result = await crab.probeDownloadRootTitle(url);
 

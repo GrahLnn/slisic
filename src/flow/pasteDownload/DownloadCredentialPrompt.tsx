@@ -1,14 +1,25 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { sileo } from "sileo";
-import { hook } from "./api";
-import { deps } from "./events";
+import { deps, listenDownloadTaskChanged } from "./events";
+import {
+  applyCredentialTaskChange,
+  credentialPromptRequestFromDownloadTask,
+  type DownloadCredentialPromptRequest,
+} from "./core";
 
-function YoutubeCookiePromptContent({ onSubmit }: { onSubmit: (value: string) => Promise<void> }) {
+function YoutubeCookiePromptContent({
+  reason,
+  onSubmit,
+}: {
+  reason: string;
+  onSubmit: (value: string) => Promise<void>;
+}) {
   const [value, setValue] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  const submit = async () => {
+  const submit = async (event?: FormEvent<HTMLFormElement>) => {
+    event?.preventDefault();
     if (!value.trim()) {
       setError("Paste YouTube cookies first.");
       return;
@@ -25,54 +36,107 @@ function YoutubeCookiePromptContent({ onSubmit }: { onSubmit: (value: string) =>
   };
 
   return (
-    <div className="flex w-full flex-col gap-2">
-      <p className="text-xs leading-4">
+    <form
+      className="fixed right-5 bottom-5 z-[1000] flex w-[min(520px,calc(100vw-40px))] flex-col gap-3 rounded-lg border border-zinc-700 bg-zinc-950 p-4 text-zinc-100 shadow-2xl"
+      onSubmit={submit}
+    >
+      <div className="flex flex-col gap-1">
+        <h2 className="text-sm font-semibold text-amber-300">YouTube cookies needed</h2>
+        <p className="text-xs leading-4 text-zinc-300">
+          Paste exported YouTube cookies in Netscape cookie format. The download will continue after
+          the cookie file is saved locally.
+        </p>
+      </div>
+      <p className="text-xs leading-4 text-amber-200/90">{reason}</p>
+      <label className="sr-only" htmlFor="youtube-cookies-input">
         Paste exported YouTube cookies in Netscape cookie format. The download will continue after
         the cookie file is saved locally.
-      </p>
+      </label>
       <textarea
+        id="youtube-cookies-input"
         autoComplete="off"
-        className="h-28 w-full resize-none rounded-md border border-black/10 bg-white/80 p-2 font-mono text-xs text-black outline-none dark:border-white/10 dark:bg-black/30 dark:text-white"
+        className="h-28 w-full resize-none rounded-md border border-zinc-600 bg-zinc-950/70 p-2 font-mono text-xs text-zinc-100 outline-none transition placeholder:text-zinc-500 focus:border-amber-400 focus:ring-2 focus:ring-amber-400/25"
+        placeholder="Paste cookies.txt content here"
         spellCheck={false}
         value={value}
         onChange={(event) => {
           setValue(event.currentTarget.value);
         }}
       />
-      {error ? <p className="text-xs leading-4 text-red-500">{error}</p> : null}
+      {error ? <p className="text-xs leading-4 text-red-300">{error}</p> : null}
       <button
-        type="button"
+        type="submit"
         disabled={submitting}
-        className="mt-1 w-fit rounded-full bg-black/10 px-3 py-1 text-xs font-medium text-black transition hover:bg-black/15 disabled:opacity-50 dark:bg-white/10 dark:text-white dark:hover:bg-white/15"
-        onClick={() => {
-          void submit();
-        }}
+        className="mt-1 w-fit rounded-md bg-amber-400 px-3 py-1.5 text-xs font-semibold text-zinc-950 transition hover:bg-amber-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"
       >
-        {submitting ? "Saving" : "Continue"}
+        {submitting ? "Saving" : "Continue Download"}
       </button>
-    </div>
+    </form>
   );
 }
 
 export function DownloadCredentialPrompt() {
-  const { items } = hook.useContext();
+  const [taskRequests, setTaskRequests] = useState<DownloadCredentialPromptRequest[]>([]);
+  const [submittedTaskIds, setSubmittedTaskIds] = useState<Set<string>>(() => new Set());
   const activeToastIdRef = useRef<string | null>(null);
   const activeTaskIdRef = useRef<string | null>(null);
 
-  const credentialItem = useMemo(
-    () =>
-      items.find(
-        (item) =>
-          item.status === "awaiting_credentials" &&
-          item.taskId &&
-          item.credentialRequest?.provider === "youtube",
-      ) ?? null,
-    [items],
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | null = null;
+
+    void deps
+      .listDownloadTasks()
+      .then((tasks) => {
+        if (cancelled) {
+          return;
+        }
+        setTaskRequests(
+          tasks.flatMap((task) => credentialPromptRequestFromDownloadTask(task) ?? []),
+        );
+      })
+      .catch((error) => {
+        console.error("Failed to load download credential requests", error);
+      });
+
+    void listenDownloadTaskChanged((payload) => {
+      setTaskRequests((requests) => applyCredentialTaskChange(requests, payload));
+      if (payload.status === "awaiting_credentials") {
+        setSubmittedTaskIds((taskIds) => {
+          if (!taskIds.has(payload.task_id)) {
+            return taskIds;
+          }
+          const nextTaskIds = new Set(taskIds);
+          nextTaskIds.delete(payload.task_id);
+          return nextTaskIds;
+        });
+      }
+    })
+      .then((unsubscribe) => {
+        if (cancelled) {
+          unsubscribe();
+          return;
+        }
+        unlisten = unsubscribe;
+      })
+      .catch((error) => {
+        console.error("Failed to subscribe to download credential requests", error);
+      });
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+
+  const credentialRequest = useMemo(
+    () => taskRequests.find((request) => !submittedTaskIds.has(request.taskId)) ?? null,
+    [submittedTaskIds, taskRequests],
   );
 
   useEffect(() => {
-    const taskId = credentialItem?.taskId ?? null;
-    if (!credentialItem || !taskId || activeTaskIdRef.current === taskId) {
+    const taskId = credentialRequest?.taskId ?? null;
+    if (!credentialRequest || !taskId || activeTaskIdRef.current === taskId) {
       return;
     }
 
@@ -83,24 +147,13 @@ export function DownloadCredentialPrompt() {
     activeTaskIdRef.current = taskId;
     activeToastIdRef.current = sileo.warning({
       title: "YouTube cookies needed",
-      description: (
-        <YoutubeCookiePromptContent
-          onSubmit={async (cookies) => {
-            await deps.submitYoutubeCookiesAndResumeDownloadTask(taskId, cookies);
-            if (activeToastIdRef.current) {
-              sileo.dismiss(activeToastIdRef.current);
-            }
-            activeToastIdRef.current = null;
-            activeTaskIdRef.current = null;
-          }}
-        />
-      ),
-      duration: null,
+      description: "Paste YouTube cookies in the prompt to continue the download.",
+      duration: 8000,
     });
-  }, [credentialItem]);
+  }, [credentialRequest]);
 
   useEffect(() => {
-    if (credentialItem) {
+    if (credentialRequest) {
       return;
     }
     if (activeToastIdRef.current) {
@@ -108,7 +161,27 @@ export function DownloadCredentialPrompt() {
       activeToastIdRef.current = null;
       activeTaskIdRef.current = null;
     }
-  }, [credentialItem]);
+  }, [credentialRequest]);
 
-  return null;
+  if (!credentialRequest) {
+    return null;
+  }
+
+  return (
+    <YoutubeCookiePromptContent
+      reason={credentialRequest.request.reason}
+      onSubmit={async (cookies) => {
+        await deps.submitYoutubeCookiesAndResumeDownloadTask(credentialRequest.taskId, cookies);
+        setSubmittedTaskIds((taskIds) => new Set(taskIds).add(credentialRequest.taskId));
+        setTaskRequests((requests) =>
+          requests.filter((request) => request.taskId !== credentialRequest.taskId),
+        );
+        if (activeToastIdRef.current) {
+          sileo.dismiss(activeToastIdRef.current);
+        }
+        activeToastIdRef.current = null;
+        activeTaskIdRef.current = null;
+      }}
+    />
+  );
 }

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import {
   applyCandidateUrlResolution,
+  applyCredentialTaskChange,
   applyDownloadTaskChangeSignal,
   appendCandidateItem,
   acceptCandidateRootTitleEvidence,
@@ -9,6 +10,7 @@ import {
   candidateItemIsErrored,
   acceptCandidateDownloadTask,
   createInitialContext,
+  credentialPromptRequestFromDownloadTask,
   deleteCandidateItem,
   downloadTaskIsTerminal,
   parseClipboardDownloadUrl,
@@ -59,6 +61,7 @@ describe("parseClipboardDownloadUrl", () => {
     });
   });
 });
+
 
 describe("candidate item helpers", () => {
   test("prepends new pasted items as independent checking candidates", () => {
@@ -292,3 +295,60 @@ describe("candidate item helpers", () => {
     assert.equal(candidateItemIsErrored("task_active"), false);
   });
 });
+
+describe("download credential prompt projection", () => {
+  test("projects awaiting credential tasks from the authoritative task snapshot", () => {
+    const request = credentialPromptRequestFromDownloadTask({
+      id: { String: "task:youtube" },
+      url: "https://www.youtube.com/playlist?list=abc",
+      collection_url: "https://www.youtube.com/playlist?list=abc",
+      collection_name: "Blocked Playlist",
+      collection_folder: "youtube/blocked-playlist",
+      source_kind: "list",
+      trigger: "manual",
+      status: "awaiting_credentials",
+      leafs: [],
+      total_leaves: 1,
+      completed_leaves: 0,
+      failed_leaves: 0,
+      last_error: "Sign in to confirm you're not a bot.",
+      created_at: "2026-06-16T00:00:00Z",
+      updated_at: "2026-06-16T00:00:00Z",
+    });
+
+    assert.equal(request?.taskId, "task:youtube");
+    assert.equal(request?.request.provider, "youtube");
+    assert.equal(request?.request.reason, "Sign in to confirm you're not a bot.");
+  });
+
+  test("keeps credential prompt requests aligned with global task changes", () => {
+    const waiting = applyCredentialTaskChange([], {
+      task_id: "task:youtube",
+      task_url: "https://www.youtube.com/playlist?list=abc",
+      collection_url: "https://www.youtube.com/playlist?list=abc",
+      collection_name: "Blocked Playlist",
+      status: "awaiting_credentials",
+      last_error: "Sign in to confirm you're not a bot.",
+      credential_request: {
+        provider: "youtube",
+        reason: "YouTube wants a bot confirmation before continuing.",
+      },
+    });
+
+    assert.equal(waiting.length, 1);
+    assert.equal(waiting[0]?.taskId, "task:youtube");
+
+    const resumed = applyCredentialTaskChange(waiting, {
+      task_id: "task:youtube",
+      task_url: "https://www.youtube.com/playlist?list=abc",
+      collection_url: "https://www.youtube.com/playlist?list=abc",
+      collection_name: "Blocked Playlist",
+      status: "downloading",
+      last_error: null,
+      credential_request: null,
+    });
+
+    assert.deepEqual(resumed, []);
+  });
+});
+

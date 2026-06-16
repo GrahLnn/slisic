@@ -1,5 +1,6 @@
 import { type as arkType } from "arktype";
 import type {
+  DownloadCredentialRequestSignal,
   DownloadRootTitleEvidence,
   DownloadTask,
   DownloadTaskChangeSignal,
@@ -41,6 +42,14 @@ export interface Context {
   nextItemSequence: number;
 }
 
+export interface DownloadCredentialPromptRequest {
+  taskId: string;
+  taskUrl: string;
+  collectionUrl: string | null;
+  collectionName: string | null;
+  request: DownloadCredentialRequestSignal;
+}
+
 export type ParsedClipboardDownloadUrl =
   | {
       ok: true;
@@ -50,6 +59,7 @@ export type ParsedClipboardDownloadUrl =
       ok: false;
       error: string;
     };
+
 
 export type ParsedDownloadableClipboardUrl =
   | {
@@ -121,6 +131,7 @@ export function parseClipboardDownloadUrl(text: string): ParsedClipboardDownload
     url: parsed.urlText,
   };
 }
+
 
 export function createInvalidPastedDownloadUrlResolution(
   error: string,
@@ -235,8 +246,54 @@ export function failCandidateItem(context: Context, id: string, error: string): 
   }));
 }
 
-function downloadTaskIdText(task: DownloadTask) {
+export function downloadTaskIdText(task: DownloadTask) {
   return task.id.String ?? String(task.id.Number);
+}
+
+export function credentialPromptRequestFromDownloadTask(
+  task: DownloadTask,
+): DownloadCredentialPromptRequest | null {
+  if (task.status !== "awaiting_credentials") {
+    return null;
+  }
+
+  return {
+    taskId: downloadTaskIdText(task),
+    taskUrl: task.url,
+    collectionUrl: task.collection_url,
+    collectionName: task.collection_name,
+    request: {
+      provider: "youtube",
+      reason: task.last_error ?? "YouTube needs cookies to continue this download.",
+    },
+  };
+}
+
+export function credentialPromptRequestFromTaskChange(
+  signal: DownloadTaskChangeSignal,
+): DownloadCredentialPromptRequest | null {
+  const request = signal.credential_request;
+  if (signal.status !== "awaiting_credentials" || request?.provider !== "youtube") {
+    return null;
+  }
+
+  return {
+    taskId: signal.task_id,
+    taskUrl: signal.task_url,
+    collectionUrl: signal.collection_url,
+    collectionName: signal.collection_name,
+    request,
+  };
+}
+
+export function applyCredentialTaskChange(
+  requests: DownloadCredentialPromptRequest[],
+  signal: DownloadTaskChangeSignal,
+): DownloadCredentialPromptRequest[] {
+  const nextRequest = credentialPromptRequestFromTaskChange(signal);
+  const remaining = requests.filter((request) => request.taskId !== signal.task_id);
+
+  return nextRequest ? [...remaining, nextRequest] : remaining;
 }
 
 export function acceptCandidateDownloadTask(
@@ -376,3 +433,4 @@ export function candidateItemIsErrored(status: ConfigCandidateItemStatus) {
 export function toErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
+
