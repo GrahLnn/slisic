@@ -85,6 +85,10 @@ impl PlayableIndexRefreshReason {
     fn replaces_existing_snapshots(self) -> bool {
         self.invalidates_existing_snapshots()
     }
+
+    fn waits_for_startup_warmup(self) -> bool {
+        matches!(self, Self::Startup | Self::AudioStyleModelAvailable)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -408,6 +412,14 @@ pub(crate) fn queue_global_refresh_for_test(reason: PlayableIndexRefreshReason) 
 }
 
 #[cfg(test)]
+pub(crate) fn defer_global_refresh_for_test(
+    reason: PlayableIndexRefreshReason,
+) -> Result<Option<u64>> {
+    let runtime = try_runtime()?;
+    defer_global_refresh_until_startup_warmup_ready(runtime.as_ref(), reason)
+}
+
+#[cfg(test)]
 pub(crate) fn mark_startup_cache_restore_finished_for_test()
 -> Result<Option<PlayableIndexRefreshReason>> {
     let runtime = try_runtime()?;
@@ -425,7 +437,6 @@ fn queue_global_refresh_before_bootstrap_ready_locked(
     generation
 }
 
-#[cfg(not(test))]
 fn defer_global_refresh_until_startup_warmup_ready(
     runtime: &PlayableIndexRuntime,
     reason: PlayableIndexRefreshReason,
@@ -434,7 +445,9 @@ fn defer_global_refresh_until_startup_warmup_ready(
         .state
         .lock()
         .map_err(|_| anyhow!("playlist playable index lock is poisoned"))?;
-    if state.playlist_bootstrap_ready && state.startup_cache_restore_finished {
+    if !reason.waits_for_startup_warmup()
+        || (state.playlist_bootstrap_ready && state.startup_cache_restore_finished)
+    {
         return Ok(None);
     }
 

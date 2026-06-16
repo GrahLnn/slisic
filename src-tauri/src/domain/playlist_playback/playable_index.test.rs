@@ -2,7 +2,7 @@ use super::playable_index::{
     PlayableIndexRefreshReason, PlaylistPlayableIndexSourceKind, cache_file_json_for_test,
     claim_global_refresh_for_test, claim_playlist_refresh_for_test,
     commit_global_snapshot_for_test, commit_playlist_snapshot_for_test, consume_playlist_source,
-    discard_playlist_source, first_slot_loudness_request_order_for_test,
+    defer_global_refresh_for_test, discard_playlist_source, first_slot_loudness_request_order_for_test,
     initialize_runtime_for_test, mark_playlist_source_kind_for_test,
     mark_startup_cache_restore_finished_for_test, notify_playlist_renamed,
     pending_global_refresh_for_test, playlist_bootstrap_ready_for_test,
@@ -933,6 +933,27 @@ fn playable_index_startup_refresh_waits_for_playlist_bootstrap_ready() {
         pending_global_refresh_for_test().expect("pending refresh should be readable"),
         None,
         "startup refresh is released only after playlist data and cache restore both finish"
+    );
+}
+
+#[test]
+fn playable_index_library_refresh_bypasses_startup_warmup_gate() {
+    let _guard = setup_playable_index_test();
+
+    assert!(!playlist_bootstrap_ready_for_test().expect("bootstrap state should be readable"));
+    assert!(!startup_cache_restore_finished_for_test().expect("cache state should be readable"));
+
+    let deferred = defer_global_refresh_for_test(PlayableIndexRefreshReason::LibraryChanged)
+        .expect("library refresh should be classified");
+
+    assert_eq!(
+        deferred, None,
+        "library changes can unblock a waiting first slot and must not wait for startup warmup"
+    );
+    assert_eq!(
+        pending_global_refresh_for_test().expect("pending refresh should be readable"),
+        None,
+        "user-visible library refresh must not be hidden behind deferred startup work"
     );
 }
 
