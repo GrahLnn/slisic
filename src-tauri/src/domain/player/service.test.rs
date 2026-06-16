@@ -159,6 +159,33 @@ fn loudness_profile_correction_uses_body_loudness_not_only_p95() {
 }
 
 #[test]
+fn loudness_profile_correction_does_not_boost_present_dynamic_chapter() {
+    let hanachirusato = LoudnessProfile {
+        integrated_lufs: -21.490,
+        true_peak_dbtp: Some(-3.160),
+        lra: Some(14.800),
+        short_lufs_p50: Some(-23.200),
+        short_lufs_p80: Some(-20.700),
+        short_lufs_p95: Some(-17.600),
+        short_lufs_max: Some(-15.700),
+        presence_db: Some(-8.371),
+        model_adjustment_db: None,
+    };
+
+    let plan =
+        playback_loudness_plan_for_profile(&hanachirusato).expect("valid profile should plan");
+
+    assert!(
+        plan.presence_correction_db < 0.0,
+        "present foreground energy should not be treated as a reason to boost playback gain"
+    );
+    assert!(
+        plan.final_gain_db < plan.base_gain_db,
+        "a dynamic chapter whose body and presence are already audible should not exceed integrated-only gain"
+    );
+}
+
+#[test]
 fn playback_start_request_registry_accepts_only_the_latest_claim() {
     let registry = PlaybackStartRequestRegistry::default();
 
