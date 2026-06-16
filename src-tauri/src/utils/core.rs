@@ -4,7 +4,6 @@ use super::event::WINDOW_READY;
 use super::window;
 #[cfg(not(test))]
 use appdb::prelude::reset_db_and_remove_path;
-#[cfg(test)]
 use std::fs;
 use std::path::{Path, PathBuf};
 #[cfg(not(test))]
@@ -15,6 +14,7 @@ use std::sync::atomic::Ordering;
 use tauri::{AppHandle, Manager, WebviewWindow};
 
 pub const APP_DB_FILE_NAME: &str = "surreal.db";
+pub const STARTUP_PROJECTION_FILE_NAME: &str = "startup-projection.json";
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -66,6 +66,7 @@ pub async fn reset_dev_database_and_restart(app: AppHandle) -> Result<(), String
 
 pub(super) fn dev_reset_local_data_artifact_paths(local_data_dir: &Path) -> Vec<PathBuf> {
     vec![
+        local_data_dir.join(STARTUP_PROJECTION_FILE_NAME),
         local_data_dir
             .join(crate::domain::playlist_playback::playable_index::FIRST_SLOT_CACHE_FILE_NAME),
         local_data_dir.join(
@@ -77,12 +78,22 @@ pub(super) fn dev_reset_local_data_artifact_paths(local_data_dir: &Path) -> Vec<
 }
 
 #[cfg(not(test))]
+pub(crate) fn cleanup_derived_state_for_blank_database(
+    local_data_dir: &Path,
+    app: &AppHandle,
+) -> Result<(), String> {
+    let mut reset_artifact_paths = Vec::new();
+    reset_artifact_paths.extend(dev_reset_local_data_artifact_paths(local_data_dir));
+    reset_artifact_paths.extend(dev_reset_cache_artifact_paths(app)?);
+    remove_optional_artifacts(&reset_artifact_paths)
+}
+
+#[cfg(not(test))]
 fn dev_reset_cache_artifact_paths(app: &AppHandle) -> Result<Vec<PathBuf>, String> {
     crate::domain::playlist_playback::recommendation::audio_style_model_artifact_paths(app)
         .map_err(|error| error.to_string())
 }
 
-#[cfg(test)]
 fn remove_optional_file(path: &Path) -> Result<(), String> {
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
@@ -91,15 +102,13 @@ fn remove_optional_file(path: &Path) -> Result<(), String> {
     }
 }
 
-#[cfg(test)]
-pub(super) fn remove_optional_artifacts(paths: &[PathBuf]) -> Result<(), String> {
+pub(crate) fn remove_optional_artifacts(paths: &[PathBuf]) -> Result<(), String> {
     for path in paths {
         remove_optional_artifact(path)?;
     }
     Ok(())
 }
 
-#[cfg(test)]
 fn remove_optional_artifact(path: &Path) -> Result<(), String> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.is_dir() => fs::remove_dir_all(path)
@@ -136,7 +145,7 @@ fn spawn_delayed_reset_cleanup(owner_pid: u32, paths: &[PathBuf]) -> Result<(), 
          }} while ((Get-Date) -lt $deadline)"
     );
 
-    Command::new("powershell")
+    Command::new("pwsh")
         .args([
             "-NoProfile",
             "-NonInteractive",

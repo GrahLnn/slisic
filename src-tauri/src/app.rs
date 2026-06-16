@@ -206,6 +206,7 @@ pub fn run() {
                     let local_data_dir = handle.path().app_local_data_dir()?;
                     std::fs::create_dir_all(&local_data_dir)?;
                     let db_path = local_data_dir.join(utils::core::APP_DB_FILE_NAME);
+                    let database_existed_before_startup = db_path.exists();
                     log::info!(
                         target: "app_startup",
                         "database_initialization_started db_path=\"{}\"",
@@ -213,6 +214,33 @@ pub fn run() {
                     );
                     let db_options = InitDbOptions::local_app().changefeed_gc_interval(None);
                     init_db_with_options(db_path, db_options).await?;
+                    let database_has_authoritative_state =
+                        domain::playlists::repo::has_collections().await?
+                            || !domain::downloads::repo::list_tasks().await?.is_empty();
+                    if !database_existed_before_startup || !database_has_authoritative_state {
+                        match utils::core::cleanup_derived_state_for_blank_database(
+                            &local_data_dir,
+                            &handle,
+                        ) {
+                            Ok(()) => {
+                                log::info!(
+                                    target: "app_startup",
+                                    "derived_state_cleanup_finished reason=blank_database_startup db_existed_before_startup={} has_authoritative_state={}",
+                                    database_existed_before_startup,
+                                    database_has_authoritative_state
+                                );
+                            }
+                            Err(error) => {
+                                log::error!(
+                                    target: "app_startup",
+                                    "derived_state_cleanup_failed reason=blank_database_startup db_existed_before_startup={} has_authoritative_state={} error=\"{}\"",
+                                    database_existed_before_startup,
+                                    database_has_authoritative_state,
+                                    error
+                                );
+                            }
+                        }
+                    }
 
                     utils::window::configure_existing_primary_windows(&handle);
                     domain::loudness_evidence::initialize_runtime(handle.clone());

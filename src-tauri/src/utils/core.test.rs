@@ -1,5 +1,6 @@
 use super::core::{
-    APP_DB_FILE_NAME, dev_reset_local_data_artifact_paths, remove_optional_artifacts,
+    APP_DB_FILE_NAME, STARTUP_PROJECTION_FILE_NAME, dev_reset_local_data_artifact_paths,
+    remove_optional_artifacts,
 };
 
 #[test]
@@ -12,6 +13,11 @@ fn dev_reset_local_data_artifacts_include_pending_tasks_and_first_slot_cache() {
         .map(|name| name.to_string_lossy().to_string())
         .collect::<Vec<_>>();
 
+    assert!(
+        names
+            .iter()
+            .any(|name| name == STARTUP_PROJECTION_FILE_NAME)
+    );
     assert!(names.iter().any(|name| name == "first-slot-cache.json"));
     assert!(
         names
