@@ -213,6 +213,19 @@ fn loudness_queue_insert_index_prioritizes_playback_cargo_without_reversing_sour
         loudness_queue_insert_index(
             [
                 LoudnessEvidenceSource::DirectRequest,
+                LoudnessEvidenceSource::DownloadedLeaf,
+                LoudnessEvidenceSource::PendingStore,
+            ],
+            3,
+            LoudnessEvidenceSource::DownloadedLeafForeground,
+        ),
+        1,
+        "foreground downloaded evidence should finish the user-visible path before background downloaded work"
+    );
+    assert_eq!(
+        loudness_queue_insert_index(
+            [
+                LoudnessEvidenceSource::DirectRequest,
                 LoudnessEvidenceSource::PendingStore,
             ],
             2,
@@ -254,6 +267,10 @@ fn all_explicit_loudness_cargo_sources_are_pending_restorable() {
     assert!(
         LoudnessEvidenceSource::DownloadedLeaf.persists_pending(),
         "downloaded leaf cargo must survive queue pressure because no library scan will recreate it"
+    );
+    assert!(
+        LoudnessEvidenceSource::DownloadedLeafForeground.persists_pending(),
+        "foreground downloaded leaf cargo is still explicit download cargo and must survive queue pressure"
     );
     assert!(
         LoudnessEvidenceSource::AudioTailTrim.persists_pending(),

@@ -420,6 +420,13 @@ fn downloaded_leaf_tail_trim_requests_run_before_pending_restore_work() {
         ),
         0
     );
+    assert_eq!(
+        audio_tail_trim_queue_insert_index_for_test(
+            &["playback_current", "downloaded_leaf", "pending_store"],
+            "downloaded_leaf_foreground",
+        ),
+        1
+    );
 }
 
 #[test]
@@ -429,6 +436,9 @@ fn downloaded_leaf_tail_trim_requests_require_active_rerun() {
     ));
     assert!(audio_tail_trim_source_requires_active_rerun_for_test(
         "downloaded_leaf"
+    ));
+    assert!(audio_tail_trim_source_requires_active_rerun_for_test(
+        "downloaded_leaf_foreground"
     ));
     assert!(!audio_tail_trim_source_requires_active_rerun_for_test(
         "pending_store"
@@ -443,6 +453,10 @@ fn playback_current_focus_update_can_replace_queue_tail_after_explicit_task_matc
     );
     assert_eq!(
         audio_tail_trim_queue_overflow_action_for_test("downloaded_leaf"),
+        "defer"
+    );
+    assert_eq!(
+        audio_tail_trim_queue_overflow_action_for_test("downloaded_leaf_foreground"),
         "defer"
     );
 }

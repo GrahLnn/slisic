@@ -8,14 +8,15 @@ use super::planning::{
 use super::repo::{list_tasks, save_task};
 use super::service::{
     CompletedLeafDownload, LeafDownloadRetryPolicy, LeafDownloadWindow, LeafPipelineStage,
-    accept_collection_download_for_test, accept_collection_download_with_root_shell_for_test,
+    LeafReadinessCargo, accept_collection_download_for_test,
+    accept_collection_download_with_root_shell_for_test,
     apply_collection_plan_to_task_with_existing_music_evidence,
     apply_completed_audio_duration_evidence, attach_root_shell_to_task,
     discard_materialized_planned_leaves, handle_finished_leaf_download,
     is_non_retryable_leaf_access_error_message, is_retryable_leaf_download_error,
     is_youtube_cookie_challenge_error_message, leaf_download_parallelism, leaf_pipeline_has_work,
-    leaf_pipeline_next_stage, normalize_youtube_cookies_text, prepare_task_enqueue,
-    probe_download_root_title_with_client, resolve_pasted_download_url,
+    leaf_pipeline_next_stage, leaf_work_item_insert_index, normalize_youtube_cookies_text,
+    prepare_task_enqueue, probe_download_root_title_with_client, resolve_pasted_download_url,
     resolve_residual_temp_downloaded_file, resume_download_task, runnable_task_leaf_work_items,
     should_interrupt_unresumable_active_task_after_restart,
     should_recover_download_task_after_restart, should_resume_download_task_after_restart,
@@ -147,7 +148,7 @@ fn leaf_pipeline_work_includes_ready_finalizations() {
 }
 
 #[test]
-fn leaf_pipeline_starts_available_work_before_batch_finalization() {
+fn leaf_pipeline_fills_available_worker_slots_before_finalizing_ready_work() {
     assert_eq!(
         leaf_pipeline_next_stage(4, 0, 3, 4, 1, 4),
         LeafPipelineStage::Download
@@ -159,6 +160,32 @@ fn leaf_pipeline_starts_available_work_before_batch_finalization() {
     assert_eq!(
         leaf_pipeline_next_stage(0, 0, 0, 0, 1, 4),
         LeafPipelineStage::Finalize
+    );
+}
+
+#[test]
+fn leaf_work_item_foreground_cargo_preempts_background_prepare_work() {
+    assert_eq!(
+        leaf_work_item_insert_index(
+            [
+                LeafReadinessCargo::Background,
+                LeafReadinessCargo::Background,
+            ],
+            2,
+            LeafReadinessCargo::Foreground,
+        ),
+        0
+    );
+    assert_eq!(
+        leaf_work_item_insert_index(
+            [
+                LeafReadinessCargo::Foreground,
+                LeafReadinessCargo::Background,
+            ],
+            2,
+            LeafReadinessCargo::Background,
+        ),
+        2
     );
 }
 
@@ -434,6 +461,7 @@ fn list_download_marks_finalize_failures_on_leaf_without_aborting_task() {
                 },
                 progress: DownloadProgress::default(),
                 retry_failures: 0,
+                readiness: LeafReadinessCargo::Background,
             }),
         )
         .await
@@ -467,6 +495,7 @@ fn list_download_marks_finalize_failures_on_leaf_without_aborting_task() {
                 },
                 progress: DownloadProgress::default(),
                 retry_failures: 0,
+                readiness: LeafReadinessCargo::Background,
             }),
         )
         .await
@@ -650,6 +679,7 @@ fn completed_leaf_download_duration_evidence_overrides_probe_metadata() {
                 },
                 progress: DownloadProgress::default(),
                 retry_failures: 0,
+                readiness: LeafReadinessCargo::Background,
             }),
         )
         .await
@@ -736,6 +766,7 @@ fn single_leaf_download_completion_commits_music_and_manifest() {
                 },
                 progress: DownloadProgress::default(),
                 retry_failures: 0,
+                readiness: LeafReadinessCargo::Background,
             }),
         )
         .await
@@ -2840,6 +2871,7 @@ fn residual_temp_file_completion_moves_file_and_persists_music_once() {
                 },
                 progress: DownloadProgress::default(),
                 retry_failures: 0,
+                readiness: LeafReadinessCargo::Background,
             }),
         )
         .await

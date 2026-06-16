@@ -182,8 +182,9 @@ impl YtDlpClient for CliYtDlpClient {
             .join(format!("{file_stem}.%(ext)s"))
             .to_string_lossy()
             .to_string();
-        eprintln!(
-            "[downloads:yt-dlp] spawn download url={} target_dir={} file_stem={} output_template={}",
+        log::info!(
+            target: "downloads::yt_dlp",
+            "spawn_download url={} target_dir={} file_stem={} output_template={}",
             url,
             target_dir.display(),
             file_stem,
@@ -232,8 +233,9 @@ impl YtDlpClient for CliYtDlpClient {
         let status = child.wait().context("failed waiting for yt-dlp download")?;
         let _ = stdout_handle.join();
         let _ = stderr_handle.join();
-        eprintln!(
-            "[downloads:yt-dlp] process exited url={} status={} after_move={}",
+        log::info!(
+            target: "downloads::yt_dlp",
+            "process_exited url={} status={} after_move={}",
             url,
             status,
             final_path
@@ -261,8 +263,9 @@ impl YtDlpClient for CliYtDlpClient {
                     absolute_path.display()
                 )
             })?;
-        eprintln!(
-            "[downloads:yt-dlp] resolved audio url={} path={}",
+        log::info!(
+            target: "downloads::yt_dlp",
+            "resolved_audio url={} path={}",
             url,
             absolute_path.display()
         );

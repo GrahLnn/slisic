@@ -450,6 +450,10 @@ pub(crate) fn notify_downloaded_leaf_collection_committed() {
     notify_playlist_playback_library_changed();
 }
 
+pub(crate) fn notify_downloaded_leaf_playable_music_committed() {
+    notify_playlist_playback_library_changed();
+}
+
 fn music_collections_are_semantically_equal(left: &[Music], right: &[Music]) -> bool {
     left.len() == right.len()
         && left

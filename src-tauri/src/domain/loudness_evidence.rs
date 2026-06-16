@@ -188,6 +188,26 @@ pub(crate) fn request_downloaded_leaf_loudness_evidence(request: LoudnessEvidenc
 }
 
 #[cfg(not(test))]
+pub(crate) fn request_downloaded_leaf_foreground_loudness_evidence(
+    request: LoudnessEvidenceRequest,
+) {
+    let Some(runtime) = LOUDNESS_EVIDENCE_RUNTIME.get().cloned() else {
+        log::warn!(
+            target: LOUDNESS_EVIDENCE_LOG_TARGET,
+            "loudness_evidence_request_skipped reason=runtime_uninitialized source=downloaded_leaf_foreground canonical_music_id=\"{}\"",
+            request.canonical_music_id
+        );
+        return;
+    };
+
+    enqueue_loudness_measurement(
+        runtime,
+        request,
+        LoudnessEvidenceSource::DownloadedLeafForeground,
+    );
+}
+
+#[cfg(not(test))]
 pub(crate) fn request_audio_tail_trim_loudness_evidence(request: LoudnessEvidenceRequest) {
     let Some(runtime) = LOUDNESS_EVIDENCE_RUNTIME.get().cloned() else {
         log::warn!(
@@ -278,6 +298,15 @@ fn loudness_request_from_playback_track(track: &PlaybackTrack) -> Option<Loudnes
 pub(crate) fn request_track_loudness_evidence(_request: LoudnessEvidenceRequest) {}
 
 #[cfg(test)]
+pub(crate) fn request_downloaded_leaf_loudness_evidence(_request: LoudnessEvidenceRequest) {}
+
+#[cfg(test)]
+pub(crate) fn request_downloaded_leaf_foreground_loudness_evidence(
+    _request: LoudnessEvidenceRequest,
+) {
+}
+
+#[cfg(test)]
 pub(crate) fn request_playback_track_loudness_evidence(
     _track: &super::player::model::PlaybackTrack,
 ) {
@@ -300,6 +329,7 @@ pub(crate) async fn wait_for_playback_track_loudness_profile(
 enum LoudnessEvidenceSource {
     PendingStore,
     DownloadedLeaf,
+    DownloadedLeafForeground,
     AudioTailTrim,
     DirectRequest,
     FirstSlot,
@@ -311,6 +341,7 @@ impl LoudnessEvidenceSource {
         match self {
             Self::PendingStore => "pending_store",
             Self::DownloadedLeaf => "downloaded_leaf",
+            Self::DownloadedLeafForeground => "downloaded_leaf_foreground",
             Self::AudioTailTrim => "audio_tail_trim",
             Self::DirectRequest => "direct_request",
             Self::FirstSlot => "first_slot",
@@ -322,6 +353,7 @@ impl LoudnessEvidenceSource {
             Self::PendingStore => 0,
             Self::DownloadedLeaf => 1,
             Self::AudioTailTrim => 1,
+            Self::DownloadedLeafForeground => 2,
             Self::FirstSlot => 2,
             Self::DirectRequest => 3,
         }
@@ -330,7 +362,11 @@ impl LoudnessEvidenceSource {
     fn persists_pending(self) -> bool {
         matches!(
             self,
-            Self::DownloadedLeaf | Self::AudioTailTrim | Self::DirectRequest | Self::FirstSlot
+            Self::DownloadedLeaf
+                | Self::DownloadedLeafForeground
+                | Self::AudioTailTrim
+                | Self::DirectRequest
+                | Self::FirstSlot
         )
     }
 }
@@ -506,6 +542,7 @@ fn push_loudness_queue(
         match queued.source {
             LoudnessEvidenceSource::PendingStore
             | LoudnessEvidenceSource::DownloadedLeaf
+            | LoudnessEvidenceSource::DownloadedLeafForeground
             | LoudnessEvidenceSource::AudioTailTrim => return false,
             LoudnessEvidenceSource::DirectRequest | LoudnessEvidenceSource::FirstSlot => {
                 queue.pop_back();
