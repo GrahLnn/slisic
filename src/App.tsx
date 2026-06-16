@@ -31,6 +31,7 @@ installTrace({
 });
 
 type PageScrollKey = "list" | "config" | "spectrum";
+type AppSurface = "config" | "playlist" | "spectrum" | "support";
 
 function restorePageViewportScrollPosition(args: {
   node: HTMLElement | null;
@@ -106,10 +107,15 @@ function WindowToaster() {
   return <Toaster position="bottom-right" theme={resolvedTheme === "dark" ? "dark" : "light"} />;
 }
 
-function Base({ children }: PropsWithChildren) {
+function Base({
+  children,
+  surface = "support",
+}: PropsWithChildren<{
+  surface?: AppSurface;
+}>) {
   return (
     <div className="min-h-screen overflow-hidden hide-scrollbar">
-      <TopBar />
+      <TopBar surface={surface} />
       <WindowMainArea>{children}</WindowMainArea>
       <DownloadCredentialPrompt />
       <WindowToaster />
@@ -213,6 +219,7 @@ function MainWindowApp() {
       children: <PlayListPage scrollPositionRef={playListScrollPositionRef} />,
     }),
   });
+  const viewportSurface = viewport.surface as AppSurface;
   const previousViewportTraceRef = useRef<string | null>(null);
   const viewportTracePayload = {
     key: viewport.key,
@@ -233,7 +240,7 @@ function MainWindowApp() {
   }, [viewportTraceKey, viewportTracePayload]);
 
   return (
-    <Base>
+    <Base surface={viewportSurface}>
       <AnimatePresence initial={false}>
         <PageViewport
           key={viewport.key}
@@ -251,7 +258,7 @@ function MainWindowApp() {
 
 function SupportWindowApp() {
   return (
-    <Base>
+    <Base surface="support">
       <SupportWindowContent />
     </Base>
   );

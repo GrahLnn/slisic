@@ -213,6 +213,32 @@ export const icons = {
       </motion.svg>
     );
   },
+  clipboardLines({ size, color, className, ...props }: IconProps) {
+    return (
+      <motion.svg
+        xmlns="http://www.w3.org/2000/svg"
+        width={size || 18}
+        height={size || 18}
+        viewBox="0 0 18 18"
+        className={className}
+        {...props}
+      >
+        <g
+          fill="none"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          strokeWidth="1.5"
+          stroke={color || "currentColor"}
+        >
+          <path d="M6.25 3.75H5.25C4.42157 3.75 3.75 4.42157 3.75 5.25V14.25C3.75 15.0784 4.42157 15.75 5.25 15.75H12.75C13.5784 15.75 14.25 15.0784 14.25 14.25V5.25C14.25 4.42157 13.5784 3.75 12.75 3.75H11.75" />
+          <path d="M6.75 2.25H11.25C11.5261 2.25 11.75 2.47386 11.75 2.75V4.25C11.75 4.52614 11.5261 4.75 11.25 4.75H6.75C6.47386 4.75 6.25 4.52614 6.25 4.25V2.75C6.25 2.47386 6.47386 2.25 6.75 2.25Z" />
+          <path d="M6.5 8H11.5" />
+          <path d="M6.5 10.5H11.5" />
+          <path d="M6.5 13H9.75" />
+        </g>
+      </motion.svg>
+    );
+  },
   /**
    *
    * @preview ![img](data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxOCIgaGVpZ2h0PSIxOCIgdmlld0JveD0iMCAwIDE4IDE4Ij48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSJ3aGl0ZSIvPjx0aXRsZT5taW51czwvdGl0bGU+PGcgZmlsbD0iIzIxMjEyMSI+PHBhdGggZD0iTTE0Ljc1MDEgOS43NUgzLjI1MDEyQzIuODM2MDIgOS43NSAyLjUwMDEyIDkuNDE0MSAyLjUwMDEyIDlDMi41MDAxMiA4LjU4NTkgMi44MzYwMiA4LjI1IDMuMjUwMTIgOC4yNUgxNC43NTAxQzE1LjE2NDIgOC4yNSAxNS41MDAxIDguNTg1OSAxNS41MDAxIDlDMTUuNTAwMSA5LjQxNDEgMTUuMTY0MiA5Ljc1IDE0Ljc1MDEgOS43NVoiPjwvcGF0aD48L2c+PC9zdmc+)

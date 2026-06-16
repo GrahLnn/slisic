@@ -4,6 +4,7 @@ import { AnimatePresence, motion } from "motion/react";
 import type React from "react";
 import { type PropsWithChildren, type ReactNode, memo } from "react";
 import { app as bootstrapApp } from "./flow/bootstrap";
+import { action as pasteDownloadAction } from "./flow/pasteDownload";
 import { useIsBarVisible } from "./flow/barVisible";
 import { useIsWindowFocus } from "./flow/windowFocus";
 import { os } from "@/lib/utils";
@@ -55,9 +56,19 @@ const CtrlButton = memo(function CtrlButtonComp({
   );
 });
 
-export const LeftControls = memo(function LeftControlsComponent() {
+type TopBarSurface = "config" | "playlist" | "spectrum" | "support";
+
+export const LeftControls = memo(function LeftControlsComponent({
+  surface,
+}: {
+  surface: TopBarSurface;
+}) {
   const handleResetDevDatabase = () => {
     bootstrapApp.resetDevDatabaseAndExit();
+  };
+
+  const handleBatchPaste = () => {
+    void pasteDownloadAction.pasteBatchFromClipboard();
   };
 
   return (
@@ -67,13 +78,24 @@ export const LeftControls = memo(function LeftControlsComponent() {
         _: () => null,
       })}
       {import.meta.env.DEV && (
-        <CtrlButton
-          label="Reset DB"
-          icon={<icons.trashXmark size={14} />}
-          onClick={handleResetDevDatabase}
-          className="cursor-pointer hover:text-red-600"
-          o="opacity-30"
-        />
+        <>
+          <CtrlButton
+            label="Reset DB"
+            icon={<icons.trashXmark size={14} />}
+            onClick={handleResetDevDatabase}
+            className="cursor-pointer hover:text-red-600"
+            o="opacity-30"
+          />
+          {surface === "config" && (
+            <CtrlButton
+              label="Batch paste"
+              icon={<icons.clipboardLines size={14} />}
+              onClick={handleBatchPaste}
+              className="cursor-pointer hover:text-sky-600"
+              o="opacity-30"
+            />
+          )}
+        </>
       )}
     </div>
   );
@@ -115,7 +137,11 @@ const MiddleControls = memo(function MiddleControlsComponent() {
   );
 });
 
-const TopBar = memo(function TopBarComponent() {
+const TopBar = memo(function TopBarComponent({
+  surface = "support",
+}: {
+  surface?: TopBarSurface;
+}) {
   const windowFocused = useIsWindowFocus();
   const allowBarInteraction = true;
 
@@ -194,7 +220,7 @@ const TopBar = memo(function TopBarComponent() {
             {allowBarInteraction && (
               <>
                 <div data-tauri-drag-region className={cn(["flex justify-start pl-1"])}>
-                  <LeftControls />
+                  <LeftControls surface={surface} />
                 </div>
                 <div data-tauri-drag-region className={cn(["flex justify-center"])}>
                   <MiddleControls />

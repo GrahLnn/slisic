@@ -13,6 +13,7 @@ import {
   credentialPromptRequestFromDownloadTask,
   deleteCandidateItem,
   downloadTaskIsTerminal,
+  parseBatchClipboardDownloadUrls,
   parseClipboardDownloadUrl,
 } from "./core";
 
@@ -62,6 +63,40 @@ describe("parseClipboardDownloadUrl", () => {
   });
 });
 
+describe("parseBatchClipboardDownloadUrls", () => {
+  test("accepts one downloadable url per non-empty clipboard line", () => {
+    assert.deepEqual(
+      parseBatchClipboardDownloadUrls(
+        "https://example.com/a\n\n  https://www.youtube.com/@C418/releases  \r\nhttps://example.com/c",
+      ),
+      {
+        ok: true,
+        urls: [
+          "https://example.com/a",
+          "https://www.youtube.com/@C418/releases",
+          "https://example.com/c",
+        ],
+      },
+    );
+  });
+
+  test("rejects when any line is not a complete downloadable url", () => {
+    assert.deepEqual(
+      parseBatchClipboardDownloadUrls("https://example.com/a\nhttps://example.com/b nope"),
+      {
+        ok: false,
+        error: "Line 2: Clipboard must contain exactly one URL.",
+      },
+    );
+  });
+
+  test("rejects empty clipboard text", () => {
+    assert.deepEqual(parseBatchClipboardDownloadUrls(" \n\t\r\n "), {
+      ok: false,
+      error: "Clipboard does not contain any URL lines.",
+    });
+  });
+});
 
 describe("candidate item helpers", () => {
   test("prepends new pasted items as independent checking candidates", () => {
@@ -351,4 +386,3 @@ describe("download credential prompt projection", () => {
     assert.deepEqual(resumed, []);
   });
 });
-

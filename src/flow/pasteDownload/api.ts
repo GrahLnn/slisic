@@ -5,6 +5,7 @@ import { createSender } from "@grahlnn/fn/flow";
 import { me } from "@grahlnn/fn";
 import { machine } from "./machine";
 import { listenDownloadTaskChanged, payloads, sig, type MainStateT } from "./events";
+import { parseBatchClipboardDownloadUrls } from "./core";
 
 export const actor = createActor(machine);
 const send = createSender(actor);
@@ -76,6 +77,21 @@ export const action = {
       requestPasteDownload(await readText());
     } catch (error) {
       console.error("Failed to read clipboard for paste download", error);
+    }
+  },
+  pasteBatchFromClipboard: async () => {
+    try {
+      const parsed = parseBatchClipboardDownloadUrls(await readText());
+      if (!parsed.ok) {
+        console.error("Failed to parse batch paste download clipboard", parsed.error);
+        return;
+      }
+
+      for (const url of parsed.urls) {
+        requestPasteDownload(url);
+      }
+    } catch (error) {
+      console.error("Failed to read clipboard for batch paste download", error);
     }
   },
   pasteText: (text: string) => {

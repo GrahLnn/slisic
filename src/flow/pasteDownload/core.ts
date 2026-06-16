@@ -60,6 +60,15 @@ export type ParsedClipboardDownloadUrl =
       error: string;
     };
 
+export type ParsedBatchClipboardDownloadUrls =
+  | {
+      ok: true;
+      urls: string[];
+    }
+  | {
+      ok: false;
+      error: string;
+    };
 
 export type ParsedDownloadableClipboardUrl =
   | {
@@ -132,6 +141,36 @@ export function parseClipboardDownloadUrl(text: string): ParsedClipboardDownload
   };
 }
 
+export function parseBatchClipboardDownloadUrls(text: string): ParsedBatchClipboardDownloadUrls {
+  const lines = text
+    .split(/\r\n|\n|\r/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+
+  if (lines.length === 0) {
+    return {
+      ok: false,
+      error: "Clipboard does not contain any URL lines.",
+    };
+  }
+
+  const urls: string[] = [];
+  for (const [index, line] of lines.entries()) {
+    const parsed = parseClipboardDownloadUrl(line);
+    if (!parsed.ok) {
+      return {
+        ok: false,
+        error: `Line ${index + 1}: ${parsed.error}`,
+      };
+    }
+    urls.push(parsed.url);
+  }
+
+  return {
+    ok: true,
+    urls,
+  };
+}
 
 export function createInvalidPastedDownloadUrlResolution(
   error: string,
@@ -433,4 +472,3 @@ export function candidateItemIsErrored(status: ConfigCandidateItemStatus) {
 export function toErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
-
