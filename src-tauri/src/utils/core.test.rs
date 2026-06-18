@@ -27,6 +27,16 @@ fn dev_reset_local_data_artifacts_include_pending_tasks_and_first_slot_cache() {
     assert!(
         names
             .iter()
+            .any(|name| name == "audio-style-training-invalidations.json")
+    );
+    assert!(
+        names
+            .iter()
+            .any(|name| name == "audio-style-pending-training-inputs.json")
+    );
+    assert!(
+        names
+            .iter()
             .any(|name| name == "loudness-evidence-pending.json")
     );
     assert!(

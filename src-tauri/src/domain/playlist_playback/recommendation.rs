@@ -1,18 +1,14 @@
-#[cfg(not(test))]
-use crate::domain::meta::service as meta_service;
 use crate::domain::player::model::PlaybackTrack;
 #[cfg(not(test))]
 use crate::domain::playlist_playback::playable_index;
+use crate::domain::playlists::model::AudioStyleTrainingTrackInput;
 #[cfg(not(test))]
-use crate::domain::playlists::model::{
-    AudioStyleTrainingTrackInput, CollectionGroupOwner, Group, Music,
-};
+use crate::domain::playlists::model::{CollectionGroupOwner, Group, Music};
 #[cfg(test)]
 use crate::domain::playlists::model::{CollectionGroupOwner, Group, Music};
 use crate::domain::playlists::repo::PlaylistPlaybackTrackSource;
 #[cfg(not(test))]
 use crate::utils::binaries::{ManagedBinary, acquire_managed_binary_usage};
-#[cfg(not(test))]
 use anyhow::{Context, Result, anyhow};
 use appdb::{VectorDistance, VectorIndexType, impl_hnsw_index};
 use burn_ndarray::{NdArray, NdArrayDevice};
@@ -42,8 +38,20 @@ use tauri::{AppHandle, Manager};
 const AUDIO_STYLE_EMBEDDING_VERSION: &str = "audio-style-watermark-transition-v3-measured-flow";
 #[cfg(test)]
 pub(crate) const AUDIO_STYLE_EMBEDDING_VERSION_FOR_TEST: &str = AUDIO_STYLE_EMBEDDING_VERSION;
-const AUDIO_STYLE_MODEL_EVIDENCE_VERSION: &str = "audio-style-model-evidence-v2-measured-flow";
+const AUDIO_STYLE_MODEL_EVIDENCE_VERSION: &str = "audio-style-model-evidence-v3-indexed-sources";
+const AUDIO_STYLE_MODEL_EVIDENCE_LEGACY_V2_VERSION: &str =
+    "audio-style-model-evidence-v2-measured-flow";
 pub(crate) const AUDIO_STYLE_MODEL_EVIDENCE_DIR_NAME: &str = "audio-style-model-evidence";
+const AUDIO_STYLE_TRAINING_INVALIDATION_FILE_VERSION: &str = "audio-style-training-invalidation-v1";
+const AUDIO_STYLE_TRAINING_INVALIDATION_FILE_NAME: &str = "audio-style-training-invalidations.json";
+const AUDIO_STYLE_PENDING_TRAINING_INPUT_FILE_VERSION: &str =
+    "audio-style-pending-training-inputs-v1";
+const AUDIO_STYLE_PENDING_TRAINING_INPUT_FILE_NAME: &str =
+    "audio-style-pending-training-inputs.json";
+pub(crate) const AUDIO_STYLE_TRAINING_INVALIDATION_ARTIFACT_FILE_NAME: &str =
+    AUDIO_STYLE_TRAINING_INVALIDATION_FILE_NAME;
+pub(crate) const AUDIO_STYLE_PENDING_TRAINING_INPUT_ARTIFACT_FILE_NAME: &str =
+    AUDIO_STYLE_PENDING_TRAINING_INPUT_FILE_NAME;
 const AUDIO_STYLE_SAMPLE_RATE: u32 = 16_000;
 const AUDIO_STYLE_INTERVAL_SECONDS: f64 = 8.0;
 const AUDIO_STYLE_INTERVAL_COUNT: usize = 1;
@@ -74,6 +82,22 @@ const AUDIO_STYLE_BIO_ROUTE_FUTURE_OCCUPANCY_STRENGTH: f32 = 1.55;
 const AUDIO_STYLE_BIO_ROUTE_FUTURE_OCCUPANCY_RUN_STRENGTH: f32 = 0.62;
 const AUDIO_STYLE_BIO_ROUTE_BASIN_ESCAPE_STRENGTH: f32 = 0.65;
 const AUDIO_STYLE_BIO_ROUTE_BASIN_ESCAPE_CAP: f32 = 2.10;
+const AUDIO_STYLE_BIO_ROUTE_FRONTIER_RESERVE_STRENGTH: f32 = 0.72;
+const AUDIO_STYLE_BIO_ROUTE_FRONTIER_RESERVE_CAP: f32 = 1.85;
+const AUDIO_STYLE_BIO_ROUTE_FRONTIER_SAME_BASIN_CROWDING: f32 = 0.42;
+const AUDIO_STYLE_BIO_ROUTE_FRONTIER_CONTINUITY_FLOOR: f32 = 0.08;
+const AUDIO_STYLE_BIO_ROUTE_BASIN_MASS_HOMEOSTASIS_STRENGTH: f32 = 1.85;
+const AUDIO_STYLE_BIO_ROUTE_BASIN_MASS_HOMEOSTASIS_RECENT_STRENGTH: f32 = 0.70;
+const AUDIO_STYLE_BIO_ROUTE_BASIN_MASS_HOMEOSTASIS_FLOOR: f32 = 0.42;
+const AUDIO_STYLE_BIO_ROUTE_BASIN_MASS_HOMEOSTASIS_RESERVE_CAP: f32 = 1.45;
+const AUDIO_STYLE_LISTENER_ADAPTATION_DECAY: f32 = 0.82;
+const AUDIO_STYLE_LISTENER_ADAPTATION_STRENGTH: f32 = 0.55;
+const AUDIO_STYLE_LISTENER_OVERLOAD_STRENGTH: f32 = 2.0;
+const AUDIO_STYLE_LISTENER_RECOVERY_STRENGTH: f32 = 0.75;
+const AUDIO_STYLE_LISTENER_UNDERLOAD_STRENGTH: f32 = 0.35;
+const AUDIO_STYLE_LISTENER_COMFORT_STRENGTH: f32 = 0.35;
+const AUDIO_STYLE_LISTENER_SHOCK_STRENGTH: f32 = 0.40;
+const AUDIO_STYLE_LISTENER_SHOCK_DISTANCE: f32 = 1.15;
 const AUDIO_STYLE_DISTRIBUTED_REPEAT_GATE_FLOOR: f32 = 0.08;
 const AUDIO_STYLE_DISTRIBUTED_REGION_FATIGUE_STRENGTH: f32 = 0.55;
 const AUDIO_STYLE_DISTRIBUTED_HOMEOSTASIS_STRENGTH: f32 = 1.55;
@@ -108,6 +132,24 @@ const AUDIO_STYLE_REGION_USAGE_DECAY: f32 = 0.88;
 const AUDIO_STYLE_REGION_USAGE_STRENGTH: f32 = 0.45;
 const AUDIO_STYLE_REGION_RUN_HAZARD_STRENGTH: f32 = 0.50;
 const AUDIO_STYLE_REGION_PRESSURE_CAP: f32 = 0.70;
+const AUDIO_STYLE_LOCAL_NEIGHBORHOOD_FATIGUE_FLOOR: f32 = 0.32;
+const AUDIO_STYLE_LOCAL_NEIGHBORHOOD_FATIGUE_DECAY: f32 = 0.84;
+const AUDIO_STYLE_LOCAL_NEIGHBORHOOD_FATIGUE_STRENGTH: f32 = 1.55;
+const AUDIO_STYLE_LOCAL_NEIGHBORHOOD_FATIGUE_SIMILARITY_FLOOR: f32 = 0.66;
+const AUDIO_STYLE_LOCAL_NEIGHBORHOOD_FATIGUE_CAP: f32 = 4.50;
+const AUDIO_STYLE_BROAD_NEIGHBORHOOD_FATIGUE_STRENGTH: f32 = 1.20;
+const AUDIO_STYLE_BROAD_NEIGHBORHOOD_FATIGUE_SIMILARITY_FLOOR: f32 = 0.18;
+const AUDIO_STYLE_BROAD_NEIGHBORHOOD_FATIGUE_WEIGHT_SCALE: f32 = 4.0;
+const AUDIO_STYLE_TYPED_CHANNEL_TERMINAL_RANGE: std::ops::Range<usize> =
+    0..AUDIO_STYLE_TERMINAL_LATENT_WIDTH;
+const AUDIO_STYLE_TYPED_CHANNEL_FLOW_RANGE: std::ops::Range<usize> =
+    AUDIO_STYLE_TERMINAL_LATENT_WIDTH
+        ..AUDIO_STYLE_TERMINAL_LATENT_WIDTH + AUDIO_STYLE_TERMINAL_BINS * 2;
+const AUDIO_STYLE_TYPED_CHANNEL_TRANSITION_RANGE: std::ops::Range<usize> =
+    AUDIO_STYLE_TERMINAL_LATENT_WIDTH + AUDIO_STYLE_TERMINAL_BINS * 2..AUDIO_STYLE_EMBEDDING_WIDTH;
+const AUDIO_STYLE_TYPED_CHANNEL_CONSENSUS_STRENGTH: f32 = 0.34;
+const AUDIO_STYLE_TYPED_CHANNEL_DISAGREEMENT_STRENGTH: f32 = 0.20;
+const AUDIO_STYLE_TYPED_CHANNEL_TOPOLOGY_FLOOR: f32 = 0.18;
 #[cfg(not(test))]
 const AUDIO_STYLE_COMPLETED_SNAPSHOT_FALLBACK_LIMIT: usize = 2;
 #[cfg(not(test))]
@@ -140,6 +182,7 @@ const AUDIO_STYLE_TENSOR_HARDWARE_MEMORY_BUDGET_DEFAULT_BYTES: usize = 256 * 102
 const AUDIO_STYLE_TENSOR_F32_BYTES: usize = std::mem::size_of::<f32>();
 const AUDIO_STYLE_TENSOR_HARDWARE_OP_COOLDOWN_MS: u64 = 15_000;
 const AUDIO_STYLE_TENSOR_HARDWARE_CLEANUP_SLOW_MS: u128 = 50;
+const AUDIO_STYLE_TENSOR_HARDWARE_SKIP_LOG_WINDOW_MS: u64 = 1_000;
 
 #[allow(dead_code)]
 struct AudioStyleEmbeddingVectorIndex;
@@ -163,8 +206,15 @@ static AUDIO_STYLE_RECOMMENDATION_RUNTIME: OnceLock<Arc<AudioStyleRecommendation
 
 #[cfg(not(test))]
 static AUDIO_STYLE_PENDING_INPUT_CHANGES: AtomicU64 = AtomicU64::new(0);
+#[cfg(not(test))]
+static AUDIO_STYLE_PENDING_TRAINING_INPUTS: OnceLock<Mutex<Vec<AudioStyleTrainingTrackInput>>> =
+    OnceLock::new();
 static AUDIO_STYLE_HARDWARE_OP_ACTIVE: AtomicBool = AtomicBool::new(false);
 static AUDIO_STYLE_HARDWARE_OP_COOLDOWN_UNTIL_MS: AtomicU64 = AtomicU64::new(0);
+static AUDIO_STYLE_HARDWARE_BUSY_SKIP_LOG_UNTIL_MS: AtomicU64 = AtomicU64::new(0);
+static AUDIO_STYLE_HARDWARE_BUSY_SKIP_SUPPRESSED: AtomicU64 = AtomicU64::new(0);
+static AUDIO_STYLE_HARDWARE_COOLDOWN_SKIP_LOG_UNTIL_MS: AtomicU64 = AtomicU64::new(0);
+static AUDIO_STYLE_HARDWARE_COOLDOWN_SKIP_SUPPRESSED: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct PlaybackTrackKey {
@@ -234,12 +284,27 @@ struct AudioStyleBioRouteDecision {
     diagnostics: Vec<Option<AudioStyleBioRouteDiagnostics>>,
 }
 
+struct AudioStylePerceptualChannelDecision {
+    similarities: Vec<Option<f32>>,
+    diagnostics: Vec<Option<AudioStylePerceptualChannelDiagnostics>>,
+    topology_health: Option<AudioStyleTopologyHealthDiagnostics>,
+}
+
 #[derive(Clone)]
 struct AudioStyleRegionPressure<'a> {
     geometry: &'a AudioStyleRegionGeometry,
     current_region: Option<PlaybackTrackKey>,
     current_region_run: usize,
     usage: HashMap<PlaybackTrackKey, f32>,
+}
+
+struct AudioStyleLocalNeighborhoodPressure<'a> {
+    embeddings: &'a AudioStyleEmbeddingMap,
+    mean: &'a [f32],
+    recent_embeddings: Vec<(&'a AudioStyleEmbedding, f32)>,
+    broad_axis: Vec<f32>,
+    broad_axis_norm: f32,
+    broad_axis_weight: f32,
 }
 
 struct AudioStyleRoutePressureCandidate<'a> {
@@ -256,6 +321,8 @@ pub(crate) struct AudioStyleCandidateDiagnostics {
     pub(crate) selected_basin: Option<String>,
     pub(crate) top_candidate_basins: Vec<AudioStyleCandidateBasinDiagnostics>,
     pub(crate) bio_route: Option<AudioStyleBioRouteDiagnostics>,
+    pub(crate) perceptual_channels: Option<AudioStylePerceptualChannelDiagnostics>,
+    pub(crate) topology_health: Option<AudioStyleTopologyHealthDiagnostics>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -276,9 +343,36 @@ pub(crate) struct AudioStyleBioRouteDiagnostics {
     pub(crate) final_weight: f32,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct AudioStylePerceptualChannelDiagnostics {
+    pub(crate) terminal_similarity: f32,
+    pub(crate) flow_similarity: f32,
+    pub(crate) transition_similarity: f32,
+    pub(crate) consensus: f32,
+    pub(crate) disagreement: f32,
+    pub(crate) topology_gate: f32,
+    pub(crate) active_challenger_axis_count: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct AudioStyleTopologyHealthDiagnostics {
+    pub(crate) candidate_projection_neighbor_overlap: f32,
+    pub(crate) candidate_projection_spectral_rank_retention: f32,
+    pub(crate) candidate_projection_mcr2_margin: f32,
+    pub(crate) density_owner_best_vote_count: usize,
+}
+
 impl AudioStyleCandidateDiagnostics {
     fn with_bio_route(mut self, bio_route: Option<AudioStyleBioRouteDiagnostics>) -> Self {
         self.bio_route = bio_route;
+        self
+    }
+
+    fn with_topology_health(
+        mut self,
+        topology_health: Option<AudioStyleTopologyHealthDiagnostics>,
+    ) -> Self {
+        self.topology_health = topology_health;
         self
     }
 }
@@ -295,12 +389,70 @@ struct CachedAudioStyleModelEvidence {
     embedding_version: String,
     generation: u64,
     embeddings: Vec<CachedAudioStyleModelEmbedding>,
+    #[serde(default)]
+    indexed_tracks: Vec<CachedAudioStyleIndexedTrack>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct CachedAudioStyleModelEmbedding {
     key: CachedPlaybackTrackKey,
     values: Vec<f32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CachedAudioStyleIndexedTrack {
+    key: CachedPlaybackTrackKey,
+    track: CachedPlaybackTrack,
+    source: CachedPlaylistPlaybackTrackSource,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CachedPlaybackTrack {
+    playlist_name: String,
+    music_name: String,
+    canonical_music_id: String,
+    music_url: String,
+    file_path: String,
+    start_ms: u32,
+    end_ms: u32,
+    liked: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CachedPlaylistPlaybackTrackSource {
+    collection_folder: String,
+    music: CachedMusic,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CachedMusic {
+    occurrence_id: String,
+    name: String,
+    alias: String,
+    group: CachedGroup,
+    canonical_music_id: String,
+    url: String,
+    path: Option<String>,
+    start_ms: u32,
+    end_ms: u32,
+    liked: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CachedGroup {
+    name: String,
+    url: String,
+    collection: CachedCollectionGroupOwner,
+    folder: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CachedCollectionGroupOwner {
+    name: String,
+    url: String,
+    folder: String,
+    last_updated: String,
+    enable_updates: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -536,12 +688,147 @@ impl From<CachedPlaybackTrackKey> for PlaybackTrackKey {
     }
 }
 
+impl From<&PlaybackTrack> for CachedPlaybackTrack {
+    fn from(track: &PlaybackTrack) -> Self {
+        Self {
+            playlist_name: track.playlist_name.clone(),
+            music_name: track.music_name.clone(),
+            canonical_music_id: track.canonical_music_id.clone(),
+            music_url: track.music_url.clone(),
+            file_path: track.file_path.to_string_lossy().to_string(),
+            start_ms: track.start_ms,
+            end_ms: track.end_ms,
+            liked: track.liked,
+        }
+    }
+}
+
+impl From<CachedPlaybackTrack> for PlaybackTrack {
+    fn from(track: CachedPlaybackTrack) -> Self {
+        Self {
+            playlist_name: track.playlist_name,
+            music_name: track.music_name,
+            canonical_music_id: track.canonical_music_id,
+            music_url: track.music_url,
+            file_path: PathBuf::from(track.file_path),
+            source_music: None,
+            start_ms: track.start_ms,
+            end_ms: track.end_ms,
+            liked: track.liked,
+            loudness_profile: None,
+        }
+    }
+}
+
+impl From<&PlaylistPlaybackTrackSource> for CachedPlaylistPlaybackTrackSource {
+    fn from(source: &PlaylistPlaybackTrackSource) -> Self {
+        Self {
+            collection_folder: source.collection_folder.clone(),
+            music: CachedMusic::from(&source.music),
+        }
+    }
+}
+
+impl From<CachedPlaylistPlaybackTrackSource> for PlaylistPlaybackTrackSource {
+    fn from(source: CachedPlaylistPlaybackTrackSource) -> Self {
+        Self {
+            collection_folder: source.collection_folder,
+            music: Music::from(source.music),
+        }
+    }
+}
+
+impl From<&Music> for CachedMusic {
+    fn from(music: &Music) -> Self {
+        Self {
+            occurrence_id: music.occurrence_id.clone(),
+            name: music.name.clone(),
+            alias: music.alias.clone(),
+            group: CachedGroup::from(&music.group),
+            canonical_music_id: music.canonical_music_id.clone(),
+            url: music.url.clone(),
+            path: music.path.clone(),
+            start_ms: music.start_ms,
+            end_ms: music.end_ms,
+            liked: music.liked,
+        }
+    }
+}
+
+impl From<CachedMusic> for Music {
+    fn from(music: CachedMusic) -> Self {
+        Self {
+            occurrence_id: music.occurrence_id,
+            name: music.name,
+            alias: music.alias,
+            group: Group::from(music.group),
+            canonical_music_id: music.canonical_music_id,
+            url: music.url,
+            path: music.path,
+            start_ms: music.start_ms,
+            end_ms: music.end_ms,
+            liked: music.liked,
+            loudness_profile: None,
+        }
+    }
+}
+
+impl From<&Group> for CachedGroup {
+    fn from(group: &Group) -> Self {
+        Self {
+            name: group.name.clone(),
+            url: group.url.clone(),
+            collection: CachedCollectionGroupOwner::from(&group.collection),
+            folder: group.folder.clone(),
+        }
+    }
+}
+
+impl From<CachedGroup> for Group {
+    fn from(group: CachedGroup) -> Self {
+        Self {
+            name: group.name,
+            url: group.url,
+            collection: CollectionGroupOwner::from(group.collection),
+            folder: group.folder,
+        }
+    }
+}
+
+impl From<&CollectionGroupOwner> for CachedCollectionGroupOwner {
+    fn from(owner: &CollectionGroupOwner) -> Self {
+        Self {
+            name: owner.name.clone(),
+            url: owner.url.clone(),
+            folder: owner.folder.clone(),
+            last_updated: owner.last_updated.clone(),
+            enable_updates: owner.enable_updates,
+        }
+    }
+}
+
+impl From<CachedCollectionGroupOwner> for CollectionGroupOwner {
+    fn from(owner: CachedCollectionGroupOwner) -> Self {
+        Self {
+            name: owner.name,
+            url: owner.url,
+            folder: owner.folder,
+            last_updated: owner.last_updated,
+            enable_updates: owner.enable_updates,
+        }
+    }
+}
+
 #[cfg(not(test))]
 struct AudioStyleRecommendationRuntime {
     app: AppHandle,
     stable_snapshot: RwLock<Option<Arc<AudioStyleModelSnapshot>>>,
     completed_snapshots: RwLock<Vec<Arc<AudioStyleModelSnapshot>>>,
     training: Mutex<AudioStyleTrainingState>,
+    training_invalidation_path: Option<PathBuf>,
+    pending_training_input_path: Option<PathBuf>,
+    training_invalidation_file_lock: Mutex<()>,
+    pending_training_input_file_lock: Mutex<()>,
     next_generation: AtomicU64,
     next_training_run_id: AtomicU64,
 }
@@ -559,8 +846,67 @@ struct AudioStyleTrainingState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AudioStyleStartupTrainingDecision {
     SkipRestoredEvidence,
-    TrainInitialModel,
+    SkipNoTrainingInputs,
     TrainPendingInputChanges,
+}
+
+impl AudioStyleStartupTrainingDecision {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::SkipRestoredEvidence => "skip_restored_evidence",
+            Self::SkipNoTrainingInputs => "skip_no_training_inputs",
+            Self::TrainPendingInputChanges => "train_pending_input_changes",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AudioStyleStartupInputCoverage {
+    Covered,
+    MissingMetadata,
+    Changed,
+    Empty,
+    Unavailable,
+}
+
+impl AudioStyleStartupInputCoverage {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Covered => "covered",
+            Self::MissingMetadata => "missing_metadata",
+            Self::Changed => "changed",
+            Self::Empty => "empty",
+            Self::Unavailable => "unavailable",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub(crate) struct AudioStyleMusicInputIdentity {
+    pub(crate) canonical_music_id: String,
+    pub(crate) music_url: String,
+    pub(crate) path: Option<String>,
+    pub(crate) start_ms: u32,
+    pub(crate) end_ms: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct AudioStyleTrainingInvalidationRecord {
+    pub(crate) reason: String,
+    pub(crate) created_at_ms: u64,
+    pub(crate) music: Option<AudioStyleMusicInputIdentity>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AudioStyleTrainingInvalidationFile {
+    version: String,
+    records: Vec<AudioStyleTrainingInvalidationRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AudioStylePendingTrainingInputFile {
+    version: String,
+    inputs: Vec<AudioStyleTrainingTrackInput>,
 }
 
 #[cfg(not(test))]
@@ -677,26 +1023,20 @@ impl AudioStyleRecommendationRuntime {
 
     async fn train_and_publish(self: &Arc<Self>, reason: &'static str) -> Result<()> {
         let started = Instant::now();
-        let save_root_started = Instant::now();
-        let save_root = meta_service::resolve_save_root(&self.app).await?;
-        log::info!(
-            target: AUDIO_STYLE_LOG_TARGET,
-            "audio_style_training_save_root_ready reason={reason} elapsed_ms={} path=\"{}\"",
-            save_root_started.elapsed().as_millis(),
-            escape_log_value(&save_root.display().to_string())
-        );
         let musics_started = Instant::now();
-        let musics =
-            crate::domain::playlists::repo::load_audio_style_training_musics(&save_root).await?;
+        let musics = self.take_pending_training_inputs(reason);
         let music_count = musics.len();
         log::info!(
             target: AUDIO_STYLE_LOG_TARGET,
-            "audio_style_training_music_inputs_loaded reason={reason} trainable_music={music_count} elapsed_ms={}",
+            "audio_style_training_music_inputs_loaded reason={reason} source=pending_records trainable_music={music_count} elapsed_ms={}",
             musics_started.elapsed().as_millis()
         );
         let resolve_started = Instant::now();
         let resolved = resolve_audio_style_training_tracks(musics);
-        let indexed_tracks = resolved.indexed_tracks;
+        let indexed_tracks = merge_audio_style_indexed_tracks(
+            self.stable_snapshot().as_deref(),
+            resolved.indexed_tracks,
+        );
         let indexed_track_count = indexed_tracks.len();
         log::info!(
             target: AUDIO_STYLE_LOG_TARGET,
@@ -709,6 +1049,7 @@ impl AudioStyleRecommendationRuntime {
             == AudioStyleTrainingInputReadiness::NoIndexableTracks
         {
             self.clear_stable_snapshot_for_empty_inputs(reason);
+            self.clear_training_invalidations_after_success(reason);
             log::info!(
                 target: AUDIO_STYLE_LOG_TARGET,
                 "audio_style_training_snapshot_skipped reason={reason} indexed_tracks=0 elapsed_ms={} reason_detail=\"no_indexable_tracks\"",
@@ -760,6 +1101,8 @@ impl AudioStyleRecommendationRuntime {
         .map_err(|error| anyhow!(error.into_message()))?;
         let final_snapshot = match refresh_outcome {
             AudioStyleModelRefreshOutcome::Unchanged(snapshot) => {
+                self.clear_pending_training_inputs_after_success(reason);
+                self.clear_training_invalidations_after_success(reason);
                 log::info!(
                     target: AUDIO_STYLE_LOG_TARGET,
                     "audio_style_training_snapshot_skipped reason={reason} indexed_tracks={} elapsed_ms={} reason_detail=\"inputs_unchanged\"",
@@ -776,7 +1119,10 @@ impl AudioStyleRecommendationRuntime {
             final_snapshot.generation(),
             build_started.elapsed().as_millis()
         );
-        self.publish_stable_snapshot(final_snapshot);
+        if self.publish_stable_snapshot(final_snapshot) {
+            self.clear_pending_training_inputs_after_success(reason);
+            self.clear_training_invalidations_after_success(reason);
+        }
         log::info!(
             target: AUDIO_STYLE_LOG_TARGET,
             "audio_style_training_publish_complete reason={reason} elapsed_ms={}",
@@ -786,6 +1132,230 @@ impl AudioStyleRecommendationRuntime {
         Ok(())
     }
 
+    fn take_pending_training_inputs(
+        &self,
+        reason: &'static str,
+    ) -> Vec<AudioStyleTrainingTrackInput> {
+        let mut inputs = Vec::new();
+        if let Some(pending) = AUDIO_STYLE_PENDING_TRAINING_INPUTS.get() {
+            match pending.lock() {
+                Ok(pending) => {
+                    inputs.extend(pending.iter().cloned());
+                }
+                Err(_) => {
+                    log::error!(
+                        target: AUDIO_STYLE_LOG_TARGET,
+                        "audio_style_training_inputs_consume_failed reason={reason} source=memory error=\"lock_poisoned\""
+                    );
+                }
+            }
+        }
+        inputs.extend(self.take_persisted_pending_training_inputs(reason));
+        let inputs = deduplicate_audio_style_training_inputs(inputs);
+        log::info!(
+            target: AUDIO_STYLE_LOG_TARGET,
+            "audio_style_training_inputs_consumed reason={reason} count={}",
+            inputs.len()
+        );
+        inputs
+    }
+
+    fn take_persisted_pending_training_inputs(
+        &self,
+        reason: &'static str,
+    ) -> Vec<AudioStyleTrainingTrackInput> {
+        let Some(path) = self.pending_training_input_path.as_ref() else {
+            return Vec::new();
+        };
+        let Ok(_guard) = self.pending_training_input_file_lock.lock() else {
+            log::error!(
+                target: AUDIO_STYLE_LOG_TARGET,
+                "audio_style_pending_training_inputs_consume_failed reason={reason} error=\"lock_poisoned\""
+            );
+            return Vec::new();
+        };
+        match read_audio_style_pending_training_input_file(path) {
+            Ok(inputs) => inputs,
+            Err(error) => {
+                log::error!(
+                    target: AUDIO_STYLE_LOG_TARGET,
+                    "audio_style_pending_training_inputs_consume_failed reason={reason} error=\"{}\"",
+                    escape_log_value(&error.to_string())
+                );
+                Vec::new()
+            }
+        }
+    }
+
+    fn clear_pending_training_inputs_after_success(&self, reason: &'static str) {
+        if let Some(pending) = AUDIO_STYLE_PENDING_TRAINING_INPUTS.get() {
+            match pending.lock() {
+                Ok(mut pending) => pending.clear(),
+                Err(_) => {
+                    log::error!(
+                        target: AUDIO_STYLE_LOG_TARGET,
+                        "audio_style_pending_training_inputs_memory_clear_failed reason={reason} error=\"lock_poisoned\""
+                    );
+                }
+            }
+        }
+        let Some(path) = self.pending_training_input_path.as_ref() else {
+            return;
+        };
+        let Ok(_guard) = self.pending_training_input_file_lock.lock() else {
+            log::error!(
+                target: AUDIO_STYLE_LOG_TARGET,
+                "audio_style_pending_training_inputs_clear_failed reason={reason} error=\"lock_poisoned\""
+            );
+            return;
+        };
+        match read_audio_style_pending_training_input_file(path) {
+            Ok(inputs) => {
+                let count = inputs.len();
+                if count == 0 {
+                    return;
+                }
+                match write_audio_style_pending_training_input_file(path, &[]) {
+                    Ok(()) => {
+                        log::info!(
+                            target: AUDIO_STYLE_LOG_TARGET,
+                            "audio_style_pending_training_inputs_cleared reason={reason} count={count}"
+                        );
+                    }
+                    Err(error) => {
+                        log::error!(
+                            target: AUDIO_STYLE_LOG_TARGET,
+                            "audio_style_pending_training_inputs_clear_failed reason={reason} error=\"{}\"",
+                            escape_log_value(&error.to_string())
+                        );
+                    }
+                }
+            }
+            Err(error) => {
+                log::error!(
+                    target: AUDIO_STYLE_LOG_TARGET,
+                    "audio_style_pending_training_inputs_clear_failed reason={reason} error=\"{}\"",
+                    escape_log_value(&error.to_string())
+                );
+            }
+        }
+    }
+
+    fn persist_pending_training_inputs(
+        &self,
+        reason: &'static str,
+        inputs: &[AudioStyleTrainingTrackInput],
+    ) {
+        let Some(path) = self.pending_training_input_path.as_ref() else {
+            return;
+        };
+        let Ok(_guard) = self.pending_training_input_file_lock.lock() else {
+            log::error!(
+                target: AUDIO_STYLE_LOG_TARGET,
+                "audio_style_pending_training_inputs_record_failed reason={reason} error=\"lock_poisoned\""
+            );
+            return;
+        };
+        match upsert_audio_style_pending_training_input_file(path, inputs) {
+            Ok(count) => {
+                log::info!(
+                    target: AUDIO_STYLE_LOG_TARGET,
+                    "audio_style_pending_training_inputs_recorded reason={reason} added={} pending={count}",
+                    inputs.len()
+                );
+            }
+            Err(error) => {
+                log::error!(
+                    target: AUDIO_STYLE_LOG_TARGET,
+                    "audio_style_pending_training_inputs_record_failed reason={reason} error=\"{}\"",
+                    escape_log_value(&error.to_string())
+                );
+            }
+        }
+    }
+
+    fn restore_persisted_pending_training_inputs_to_memory(&self) -> usize {
+        let Some(path) = self.pending_training_input_path.as_ref() else {
+            return 0;
+        };
+        let Ok(_guard) = self.pending_training_input_file_lock.lock() else {
+            log::error!(
+                target: AUDIO_STYLE_LOG_TARGET,
+                "audio_style_pending_training_inputs_restore_failed error=\"lock_poisoned\""
+            );
+            return 0;
+        };
+        let inputs = match read_audio_style_pending_training_input_file(path) {
+            Ok(inputs) => inputs,
+            Err(error) => {
+                log::error!(
+                    target: AUDIO_STYLE_LOG_TARGET,
+                    "audio_style_pending_training_inputs_restore_failed error=\"{}\"",
+                    escape_log_value(&error.to_string())
+                );
+                return 0;
+            }
+        };
+        let count = inputs.len();
+        if count == 0 {
+            log::info!(
+                target: AUDIO_STYLE_LOG_TARGET,
+                "audio_style_pending_training_inputs_restored count=0"
+            );
+            return 0;
+        }
+        match AUDIO_STYLE_PENDING_TRAINING_INPUTS
+            .get_or_init(|| Mutex::new(Vec::new()))
+            .lock()
+        {
+            Ok(mut pending) => {
+                pending.extend(inputs);
+                log::info!(
+                    target: AUDIO_STYLE_LOG_TARGET,
+                    "audio_style_pending_training_inputs_restored count={count} memory_pending={}",
+                    pending.len()
+                );
+            }
+            Err(_) => {
+                log::error!(
+                    target: AUDIO_STYLE_LOG_TARGET,
+                    "audio_style_pending_training_inputs_restore_failed error=\"memory_lock_poisoned\""
+                );
+                return 0;
+            }
+        }
+        count
+    }
+
+    fn clear_training_invalidations_after_success(&self, reason: &'static str) {
+        let Some(path) = self.training_invalidation_path.as_ref() else {
+            return;
+        };
+        let Ok(_guard) = self.training_invalidation_file_lock.lock() else {
+            log::error!(
+                target: AUDIO_STYLE_LOG_TARGET,
+                "audio_style_training_invalidations_clear_failed reason={reason} error=\"lock_poisoned\""
+            );
+            return;
+        };
+        match clear_audio_style_training_invalidation_file(path) {
+            Ok(removed_count) if removed_count > 0 => {
+                log::info!(
+                    target: AUDIO_STYLE_LOG_TARGET,
+                    "audio_style_training_invalidations_cleared reason={reason} count={removed_count}"
+                );
+            }
+            Ok(_) => {}
+            Err(error) => {
+                log::error!(
+                    target: AUDIO_STYLE_LOG_TARGET,
+                    "audio_style_training_invalidations_clear_failed reason={reason} error=\"{}\"",
+                    escape_log_value(&error.to_string())
+                );
+            }
+        }
+    }
+
     fn stable_snapshot(&self) -> Option<Arc<AudioStyleModelSnapshot>> {
         self.stable_snapshot
             .read()
@@ -793,14 +1363,14 @@ impl AudioStyleRecommendationRuntime {
             .and_then(|snapshot| snapshot.clone())
     }
 
-    fn publish_stable_snapshot(&self, snapshot: AudioStyleModelSnapshot) {
+    fn publish_stable_snapshot(&self, snapshot: AudioStyleModelSnapshot) -> bool {
         let snapshot = Arc::new(snapshot);
         let generation = snapshot.generation();
         match self.stable_snapshot.write() {
             Ok(mut stable) => {
                 let stable_existed = stable.is_some();
                 if !should_replace_stable_snapshot(stable.as_deref(), snapshot.as_ref()) {
-                    return;
+                    return false;
                 }
                 *stable = Some(Arc::clone(&snapshot));
                 let reason = StableSnapshotPublicationReason::TrainingComplete;
@@ -828,11 +1398,12 @@ impl AudioStyleRecommendationRuntime {
                     target: AUDIO_STYLE_LOG_TARGET,
                     "audio_style_snapshot_publish_failed stage=stable reason=training_complete generation={generation} error=\"lock_poisoned\""
                 );
-                return;
+                return false;
             }
         }
 
         self.remember_completed_snapshot(snapshot);
+        true
     }
 
     fn clear_stable_snapshot_for_empty_inputs(&self, reason: &'static str) {
@@ -917,6 +1488,43 @@ impl AudioStyleRecommendationRuntime {
 
         choose_audio_style_model_snapshots_for_anchor(track, snapshots)
     }
+
+    fn persist_training_invalidation(
+        &self,
+        reason: &'static str,
+        music: Option<AudioStyleMusicInputIdentity>,
+    ) {
+        let Some(path) = self.training_invalidation_path.as_ref() else {
+            return;
+        };
+        let Ok(_guard) = self.training_invalidation_file_lock.lock() else {
+            log::error!(
+                target: AUDIO_STYLE_LOG_TARGET,
+                "audio_style_training_invalidation_record_failed reason={reason} error=\"lock_poisoned\""
+            );
+            return;
+        };
+        let record = AudioStyleTrainingInvalidationRecord {
+            reason: reason.to_owned(),
+            created_at_ms: current_time_millis(),
+            music,
+        };
+        match upsert_audio_style_training_invalidation_file(path, record) {
+            Ok(count) => {
+                log::info!(
+                    target: AUDIO_STYLE_LOG_TARGET,
+                    "audio_style_training_invalidation_recorded reason={reason} pending={count}"
+                );
+            }
+            Err(error) => {
+                log::error!(
+                    target: AUDIO_STYLE_LOG_TARGET,
+                    "audio_style_training_invalidation_record_failed reason={reason} error=\"{}\"",
+                    escape_log_value(&error.to_string())
+                );
+            }
+        }
+    }
 }
 
 #[cfg(not(test))]
@@ -927,6 +1535,30 @@ pub(crate) fn initialize_audio_style_recommendation_runtime(app: AppHandle) {
             stable_snapshot: RwLock::new(None),
             completed_snapshots: RwLock::new(Vec::new()),
             training: Mutex::new(AudioStyleTrainingState::default()),
+            training_invalidation_path: match audio_style_training_invalidation_path(&app) {
+                Ok(path) => Some(path),
+                Err(error) => {
+                    log::warn!(
+                        target: AUDIO_STYLE_LOG_TARGET,
+                        "audio_style_training_invalidation_store_unavailable error=\"{}\"",
+                        escape_log_value(&error.to_string())
+                    );
+                    None
+                }
+            },
+            pending_training_input_path: match audio_style_pending_training_input_path(&app) {
+                Ok(path) => Some(path),
+                Err(error) => {
+                    log::warn!(
+                        target: AUDIO_STYLE_LOG_TARGET,
+                        "audio_style_pending_training_input_store_unavailable error=\"{}\"",
+                        escape_log_value(&error.to_string())
+                    );
+                    None
+                }
+            },
+            training_invalidation_file_lock: Mutex::new(()),
+            pending_training_input_file_lock: Mutex::new(()),
             next_generation: AtomicU64::new(0),
             next_training_run_id: AtomicU64::new(0),
         })
@@ -941,15 +1573,36 @@ fn apply_audio_style_startup_training_decision(
     runtime: &Arc<AudioStyleRecommendationRuntime>,
     restored_evidence: bool,
     pending_input_changes: u64,
+    restored_pending_training_inputs: usize,
+    persisted_invalidations: u64,
+    input_coverage: AudioStyleStartupInputCoverage,
 ) {
-    match audio_style_startup_training_decision(restored_evidence, pending_input_changes) {
+    let decision = audio_style_startup_training_decision(
+        restored_evidence,
+        pending_input_changes,
+        restored_pending_training_inputs,
+        persisted_invalidations,
+        input_coverage,
+    );
+    log::info!(
+        target: AUDIO_STYLE_LOG_TARGET,
+        "audio_style_training_startup_decision restored_evidence={restored_evidence} pending_input_changes={pending_input_changes} restored_pending_training_inputs={restored_pending_training_inputs} persisted_invalidations={persisted_invalidations} input_coverage={} decision={}",
+        input_coverage.as_str(),
+        decision.as_str()
+    );
+    match decision {
         AudioStyleStartupTrainingDecision::SkipRestoredEvidence => {
             log::info!(
                 target: AUDIO_STYLE_LOG_TARGET,
                 "audio_style_training_startup_skipped reason=restored_evidence"
             );
         }
-        AudioStyleStartupTrainingDecision::TrainInitialModel => runtime.request_training("startup"),
+        AudioStyleStartupTrainingDecision::SkipNoTrainingInputs => {
+            log::info!(
+                target: AUDIO_STYLE_LOG_TARGET,
+                "audio_style_training_startup_skipped reason=no_training_inputs"
+            );
+        }
         AudioStyleStartupTrainingDecision::TrainPendingInputChanges => {
             runtime.request_training("startup_pending_input_changes")
         }
@@ -958,6 +1611,57 @@ fn apply_audio_style_startup_training_decision(
 
 #[cfg(not(test))]
 pub(crate) fn notify_audio_style_library_inputs_changed(reason: &'static str) {
+    notify_audio_style_library_inputs_invalidated(reason, None);
+}
+
+#[cfg(not(test))]
+pub(crate) fn notify_audio_style_music_input_changed(reason: &'static str, music: &Music) {
+    notify_audio_style_library_inputs_invalidated(
+        reason,
+        Some(AudioStyleMusicInputIdentity::from(music)),
+    );
+}
+
+#[cfg(not(test))]
+pub(crate) fn notify_audio_style_training_inputs_ready(
+    reason: &'static str,
+    inputs: Vec<AudioStyleTrainingTrackInput>,
+) {
+    if inputs.is_empty() {
+        return;
+    }
+    let input_count = inputs.len();
+    if let Some(runtime) = AUDIO_STYLE_RECOMMENDATION_RUNTIME.get() {
+        runtime.persist_pending_training_inputs(reason, &inputs);
+    }
+    match AUDIO_STYLE_PENDING_TRAINING_INPUTS
+        .get_or_init(|| Mutex::new(Vec::new()))
+        .lock()
+    {
+        Ok(mut pending) => {
+            pending.extend(inputs);
+            log::info!(
+                target: AUDIO_STYLE_LOG_TARGET,
+                "audio_style_training_inputs_recorded reason={reason} added={input_count} pending={}",
+                pending.len()
+            );
+        }
+        Err(_) => {
+            log::error!(
+                target: AUDIO_STYLE_LOG_TARGET,
+                "audio_style_training_inputs_record_failed reason={reason} added={input_count} error=\"lock_poisoned\""
+            );
+            return;
+        }
+    }
+    notify_audio_style_library_inputs_invalidated(reason, None);
+}
+
+#[cfg(not(test))]
+fn notify_audio_style_library_inputs_invalidated(
+    reason: &'static str,
+    music: Option<AudioStyleMusicInputIdentity>,
+) {
     let Some(runtime) = AUDIO_STYLE_RECOMMENDATION_RUNTIME.get() else {
         let pending_changes = AUDIO_STYLE_PENDING_INPUT_CHANGES.fetch_add(1, Ordering::SeqCst) + 1;
         log::warn!(
@@ -967,6 +1671,7 @@ pub(crate) fn notify_audio_style_library_inputs_changed(reason: &'static str) {
         return;
     };
 
+    runtime.persist_training_invalidation(reason, music);
     runtime.request_training_after_input_change_debounce(reason);
 }
 
@@ -1026,15 +1731,58 @@ impl AudioStyleRecommendationRuntime {
         let runtime = Arc::clone(self);
         tauri::async_runtime::spawn(async move {
             let restored_evidence = runtime.restore_model_evidence_on_startup().await;
+            let restored_pending_training_inputs =
+                runtime.restore_persisted_pending_training_inputs_to_memory();
+            let input_coverage =
+                runtime.startup_pending_record_coverage(restored_evidence.as_ref());
+            let persisted_invalidations = runtime.restored_training_invalidation_count();
             apply_audio_style_startup_training_decision(
                 &runtime,
-                restored_evidence,
+                restored_evidence.is_some(),
                 pending_input_changes,
+                restored_pending_training_inputs,
+                persisted_invalidations,
+                input_coverage,
             );
         });
     }
 
-    async fn restore_model_evidence_on_startup(self: &Arc<Self>) -> bool {
+    fn restored_training_invalidation_count(&self) -> u64 {
+        let Some(path) = self.training_invalidation_path.as_ref() else {
+            return 0;
+        };
+        let Ok(_guard) = self.training_invalidation_file_lock.lock() else {
+            log::error!(
+                target: AUDIO_STYLE_LOG_TARGET,
+                "audio_style_training_invalidations_restore_failed error=\"lock_poisoned\""
+            );
+            return 0;
+        };
+        match read_audio_style_training_invalidation_file(path) {
+            Ok(records) => {
+                let count = records.len() as u64;
+                if count > 0 {
+                    log::info!(
+                        target: AUDIO_STYLE_LOG_TARGET,
+                        "audio_style_training_invalidations_restored count={count}"
+                    );
+                }
+                count
+            }
+            Err(error) => {
+                log::error!(
+                    target: AUDIO_STYLE_LOG_TARGET,
+                    "audio_style_training_invalidations_restore_failed error=\"{}\"",
+                    escape_log_value(&error.to_string())
+                );
+                0
+            }
+        }
+    }
+
+    async fn restore_model_evidence_on_startup(
+        self: &Arc<Self>,
+    ) -> Option<Arc<AudioStyleModelSnapshot>> {
         let started = Instant::now();
         let cache_path = match audio_style_model_evidence_cache_path(&self.app) {
             Ok(cache_path) => cache_path,
@@ -1044,7 +1792,7 @@ impl AudioStyleRecommendationRuntime {
                     "audio_style_model_evidence_restore_skipped reason=startup error=\"{}\"",
                     escape_log_value(&error.to_string())
                 );
-                return false;
+                return None;
             }
         };
         let restore_result = tauri::async_runtime::spawn_blocking(move || {
@@ -1060,7 +1808,7 @@ impl AudioStyleRecommendationRuntime {
                     started.elapsed().as_millis(),
                     escape_log_value(&error)
                 );
-                return false;
+                return None;
             }
             Err(error) => {
                 log::warn!(
@@ -1069,28 +1817,54 @@ impl AudioStyleRecommendationRuntime {
                     started.elapsed().as_millis(),
                     escape_log_value(&error.to_string())
                 );
-                return false;
+                return None;
             }
         };
         let generation = snapshot.generation();
         self.next_generation.fetch_max(generation, Ordering::SeqCst);
-        self.publish_restored_stable_snapshot(snapshot);
+        let snapshot = self.publish_restored_stable_snapshot(snapshot);
         log::info!(
             target: AUDIO_STYLE_LOG_TARGET,
             "audio_style_model_evidence_restored reason=startup generation={generation} elapsed_ms={}",
             started.elapsed().as_millis()
         );
-        true
+        Some(snapshot)
     }
 
-    fn publish_restored_stable_snapshot(&self, snapshot: AudioStyleModelSnapshot) {
+    fn startup_pending_record_coverage(
+        &self,
+        restored_evidence: Option<&Arc<AudioStyleModelSnapshot>>,
+    ) -> AudioStyleStartupInputCoverage {
+        let pending_records = AUDIO_STYLE_PENDING_TRAINING_INPUTS
+            .get()
+            .and_then(|pending| pending.lock().ok().map(|pending| pending.len()))
+            .unwrap_or(0);
+        let coverage = if pending_records > 0 {
+            AudioStyleStartupInputCoverage::Changed
+        } else if restored_evidence.is_some() {
+            AudioStyleStartupInputCoverage::Covered
+        } else {
+            AudioStyleStartupInputCoverage::Unavailable
+        };
+        log::info!(
+            target: AUDIO_STYLE_LOG_TARGET,
+            "audio_style_training_startup_input_coverage status={} source=pending_records pending_records={pending_records}",
+            coverage.as_str()
+        );
+        coverage
+    }
+
+    fn publish_restored_stable_snapshot(
+        &self,
+        snapshot: AudioStyleModelSnapshot,
+    ) -> Arc<AudioStyleModelSnapshot> {
         let snapshot = Arc::new(snapshot);
         let generation = snapshot.generation();
         match self.stable_snapshot.write() {
             Ok(mut stable) => {
                 let stable_existed = stable.is_some();
                 if !should_replace_stable_snapshot(stable.as_deref(), snapshot.as_ref()) {
-                    return;
+                    return snapshot;
                 }
                 *stable = Some(Arc::clone(&snapshot));
                 log::info!(
@@ -1109,11 +1883,12 @@ impl AudioStyleRecommendationRuntime {
                     target: AUDIO_STYLE_LOG_TARGET,
                     "audio_style_snapshot_publish_failed stage=stable reason=startup_evidence generation={generation} error=\"lock_poisoned\""
                 );
-                return;
+                return snapshot;
             }
         }
 
-        self.remember_completed_snapshot(snapshot);
+        self.remember_completed_snapshot(Arc::clone(&snapshot));
+        snapshot
     }
 
     fn request_training_after_input_change_debounce(self: &Arc<Self>, reason: &'static str) {
@@ -1400,52 +2175,6 @@ impl AudioStyleTensorRuntime {
         true
     }
 
-    fn centered_similarity_to_many(
-        &self,
-        anchor: &AudioStyleEmbedding,
-        candidates: &[&AudioStyleEmbedding],
-        mean: &[f32],
-    ) -> Vec<Option<f32>> {
-        if candidates.is_empty()
-            || anchor.values.len() != AUDIO_STYLE_EMBEDDING_WIDTH
-            || mean.len() != AUDIO_STYLE_EMBEDDING_WIDTH
-            || candidates
-                .iter()
-                .any(|candidate| candidate.values.len() != AUDIO_STYLE_EMBEDDING_WIDTH)
-        {
-            return vec![None; candidates.len()];
-        }
-
-        let values =
-            match self {
-                Self::Hardware(pool) => if audio_style_hardware_similarity_grid_budget_allows(
-                    1,
-                    candidates.len(),
-                    pool.memory_budget_bytes(),
-                ) {
-                    pool.centered_similarity_to_many(anchor, candidates, mean)
-                } else {
-                    pool.centered_similarity_grid_tiled(&[anchor], candidates, mean)
-                }
-                .or_else(|| {
-                    Self::centered_similarity_to_many_on::<AudioStyleCpuTensorBackend>(
-                        anchor,
-                        candidates,
-                        mean,
-                        &NdArrayDevice::Cpu,
-                    )
-                }),
-                Self::Cpu(runtime) => Self::centered_similarity_to_many_on::<
-                    AudioStyleCpuTensorBackend,
-                >(anchor, candidates, mean, &runtime.device),
-            }
-            .unwrap_or_default();
-        if values.len() != candidates.len() {
-            return vec![None; candidates.len()];
-        }
-        values.into_iter().map(Some).collect()
-    }
-
     fn softmin_weights(
         &self,
         _liked_flags: &[bool],
@@ -1600,46 +2329,6 @@ impl AudioStyleTensorRuntime {
         run_audio_style_tensor_op(|| {
             Self::matrix_tensor::<B>(matrix, device)
                 .mean_dim(0)
-                .into_data()
-                .into_vec::<f32>()
-                .ok()
-        })
-        .flatten()
-    }
-
-    fn centered_similarity_to_many_on<B: Backend>(
-        anchor: &AudioStyleEmbedding,
-        candidates: &[&AudioStyleEmbedding],
-        mean: &[f32],
-        device: &B::Device,
-    ) -> Option<Vec<f32>> {
-        run_audio_style_tensor_op(|| {
-            let candidate_matrix = Self::embedding_refs_tensor::<B>(candidates, device);
-            let mean_row = Self::vector_tensor::<B>(mean, device)?.unsqueeze_dim::<2>(0);
-            let centered_candidates = candidate_matrix
-                - mean_row
-                    .clone()
-                    .expand([candidates.len(), AUDIO_STYLE_EMBEDDING_WIDTH]);
-            let centered_anchor =
-                Self::vector_tensor::<B>(&anchor.values, device)? - mean_row.squeeze_dim::<1>(0);
-
-            let candidate_norms = centered_candidates
-                .clone()
-                .square()
-                .sum_dim(1)
-                .sqrt()
-                .clamp_min(1.0e-6);
-            let anchor_norm = centered_anchor
-                .clone()
-                .square()
-                .sum()
-                .sqrt()
-                .clamp_min(1.0e-6);
-            let dots = centered_candidates
-                .matmul(centered_anchor.reshape([AUDIO_STYLE_EMBEDDING_WIDTH, 1]));
-            let anchor_norm = anchor_norm.reshape([1, 1]).expand([candidates.len(), 1]);
-            (dots / (candidate_norms * anchor_norm).clamp_min(1.0e-6))
-                .clamp(-1.0, 1.0)
                 .into_data()
                 .into_vec::<f32>()
                 .ok()
@@ -1955,19 +2644,6 @@ impl AudioStyleTensorDevicePool {
         true
     }
 
-    fn centered_similarity_to_many(
-        &self,
-        anchor: &AudioStyleEmbedding,
-        candidates: &[&AudioStyleEmbedding],
-        mean: &[f32],
-    ) -> Option<Vec<f32>> {
-        self.try_hardware_then_refresh("centered_similarity_to_many", |device| {
-            AudioStyleTensorRuntime::centered_similarity_to_many_on::<AudioStyleHardwareTensorBackend>(
-                anchor, candidates, mean, device,
-            )
-        })
-    }
-
     fn softmin_weights(
         &self,
         similarity_values: Vec<f32>,
@@ -2050,10 +2726,10 @@ impl AudioStyleHardwareOpPermit {
         let now_ms = current_time_millis();
         let cooldown_until = AUDIO_STYLE_HARDWARE_OP_COOLDOWN_UNTIL_MS.load(Ordering::SeqCst);
         if now_ms < cooldown_until {
-            log::info!(
-                target: AUDIO_STYLE_LOG_TARGET,
-                "audio_style_tensor_hardware_op_skipped operation={operation} reason=cooldown active=false cooldown_remaining_ms={} action=cpu_fallback_for_this_call",
-                cooldown_until.saturating_sub(now_ms)
+            log_audio_style_hardware_op_skip_throttled(
+                operation,
+                "cooldown",
+                Some(cooldown_until.saturating_sub(now_ms)),
             );
             return None;
         }
@@ -2062,15 +2738,63 @@ impl AudioStyleHardwareOpPermit {
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_err()
         {
-            log::info!(
-                target: AUDIO_STYLE_LOG_TARGET,
-                "audio_style_tensor_hardware_op_skipped operation={operation} reason=busy action=cpu_fallback_for_this_call"
-            );
+            log_audio_style_hardware_op_skip_throttled(operation, "busy", None);
             return None;
         }
 
         Some(Self)
     }
+}
+
+fn log_audio_style_hardware_op_skip_throttled(
+    operation: &'static str,
+    reason: &'static str,
+    cooldown_remaining_ms: Option<u64>,
+) -> bool {
+    let now_ms = current_time_millis();
+    let (window_until, suppressed) = match reason {
+        "busy" => (
+            &AUDIO_STYLE_HARDWARE_BUSY_SKIP_LOG_UNTIL_MS,
+            &AUDIO_STYLE_HARDWARE_BUSY_SKIP_SUPPRESSED,
+        ),
+        "cooldown" => (
+            &AUDIO_STYLE_HARDWARE_COOLDOWN_SKIP_LOG_UNTIL_MS,
+            &AUDIO_STYLE_HARDWARE_COOLDOWN_SKIP_SUPPRESSED,
+        ),
+        _ => return false,
+    };
+    let current_until = window_until.load(Ordering::SeqCst);
+    if now_ms < current_until {
+        suppressed.fetch_add(1, Ordering::SeqCst);
+        return false;
+    }
+
+    let next_until = now_ms.saturating_add(AUDIO_STYLE_TENSOR_HARDWARE_SKIP_LOG_WINDOW_MS);
+    if window_until
+        .compare_exchange(
+            current_until,
+            next_until,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        )
+        .is_err()
+    {
+        suppressed.fetch_add(1, Ordering::SeqCst);
+        return false;
+    }
+
+    let suppressed_count = suppressed.swap(0, Ordering::SeqCst);
+    match cooldown_remaining_ms {
+        Some(cooldown_remaining_ms) => log::info!(
+            target: AUDIO_STYLE_LOG_TARGET,
+            "audio_style_tensor_hardware_op_skipped operation={operation} reason={reason} active=false cooldown_remaining_ms={cooldown_remaining_ms} suppressed={suppressed_count} action=cpu_fallback_for_this_call",
+        ),
+        None => log::info!(
+            target: AUDIO_STYLE_LOG_TARGET,
+            "audio_style_tensor_hardware_op_skipped operation={operation} reason={reason} suppressed={suppressed_count} action=cpu_fallback_for_this_call",
+        ),
+    }
+    true
 }
 
 impl Drop for AudioStyleHardwareOpPermit {
@@ -2141,6 +2865,10 @@ fn current_time_millis() -> u64 {
 pub(crate) fn reset_audio_style_hardware_op_gate_for_test() {
     AUDIO_STYLE_HARDWARE_OP_ACTIVE.store(false, Ordering::SeqCst);
     AUDIO_STYLE_HARDWARE_OP_COOLDOWN_UNTIL_MS.store(0, Ordering::SeqCst);
+    AUDIO_STYLE_HARDWARE_BUSY_SKIP_LOG_UNTIL_MS.store(0, Ordering::SeqCst);
+    AUDIO_STYLE_HARDWARE_BUSY_SKIP_SUPPRESSED.store(0, Ordering::SeqCst);
+    AUDIO_STYLE_HARDWARE_COOLDOWN_SKIP_LOG_UNTIL_MS.store(0, Ordering::SeqCst);
+    AUDIO_STYLE_HARDWARE_COOLDOWN_SKIP_SUPPRESSED.store(0, Ordering::SeqCst);
 }
 
 #[cfg(test)]
@@ -2156,6 +2884,16 @@ pub(crate) fn hold_audio_style_hardware_op_for_test() -> Option<Box<dyn Send>> {
 #[cfg(test)]
 pub(crate) fn enter_audio_style_hardware_op_cooldown_for_test() {
     audio_style_hardware_op_enter_cooldown();
+}
+
+#[cfg(test)]
+pub(crate) fn log_audio_style_hardware_busy_skip_for_test() -> bool {
+    log_audio_style_hardware_op_skip_throttled("test", "busy", None)
+}
+
+#[cfg(test)]
+pub(crate) fn audio_style_hardware_busy_skip_suppressed_for_test() -> u64 {
+    AUDIO_STYLE_HARDWARE_BUSY_SKIP_SUPPRESSED.load(Ordering::SeqCst)
 }
 
 fn audio_style_wgpu_hardware_device_candidates() -> Vec<WgpuDevice> {
@@ -2671,6 +3409,148 @@ impl<'a> AudioStyleRegionPressure<'a> {
     }
 }
 
+impl<'a> AudioStyleLocalNeighborhoodPressure<'a> {
+    fn from_recent_history(
+        geometry: &'a AudioStyleSamplingGeometry,
+        embeddings: &'a AudioStyleEmbeddingMap,
+        recently_played_tracks: &[PlaybackTrack],
+    ) -> Self {
+        let mut recent_embeddings = Vec::new();
+        let mut decay = 1.0_f32;
+        for track in recently_played_tracks.iter().rev() {
+            let key = PlaybackTrackKey::from_track(track);
+            if let Some(embedding) = embeddings.get(&key) {
+                recent_embeddings.push((embedding.as_ref(), decay));
+                decay *= AUDIO_STYLE_LOCAL_NEIGHBORHOOD_FATIGUE_DECAY;
+            }
+        }
+        recent_embeddings.truncate(AUDIO_STYLE_ROUTE_RECENT_WINDOW);
+        let (broad_axis, broad_axis_norm, broad_axis_weight) =
+            broad_audio_style_neighborhood_axis(&recent_embeddings, &geometry.mean);
+
+        Self {
+            embeddings,
+            mean: &geometry.mean,
+            recent_embeddings,
+            broad_axis,
+            broad_axis_norm,
+            broad_axis_weight,
+        }
+    }
+
+    fn fatigue_for_track(&self, track: &PlaybackTrack) -> f32 {
+        if self.recent_embeddings.is_empty() {
+            return 0.0;
+        }
+        let key = PlaybackTrackKey::from_track(track);
+        let Some(candidate_embedding) = self.embeddings.get(&key) else {
+            return 0.0;
+        };
+        let mut fatigue = 0.0_f32;
+        for (recent_embedding, decay) in &self.recent_embeddings {
+            let Some(similarity) =
+                centered_cosine(candidate_embedding.as_ref(), recent_embedding, self.mean)
+            else {
+                continue;
+            };
+            let local_overlap = ((similarity
+                - AUDIO_STYLE_LOCAL_NEIGHBORHOOD_FATIGUE_SIMILARITY_FLOOR)
+                / (1.0 - AUDIO_STYLE_LOCAL_NEIGHBORHOOD_FATIGUE_SIMILARITY_FLOOR))
+                .clamp(0.0, 1.0);
+            fatigue += decay * local_overlap * local_overlap;
+        }
+
+        (fatigue * AUDIO_STYLE_LOCAL_NEIGHBORHOOD_FATIGUE_STRENGTH
+            + self
+                .broad_fatigue_for_embedding(candidate_embedding.as_ref())
+                .max(0.0))
+        .max(0.0)
+        .min(AUDIO_STYLE_LOCAL_NEIGHBORHOOD_FATIGUE_CAP)
+    }
+
+    fn broad_fatigue_for_embedding(&self, candidate_embedding: &AudioStyleEmbedding) -> f32 {
+        if self.broad_axis_norm <= 1.0e-6
+            || self.broad_axis.len() != AUDIO_STYLE_EMBEDDING_WIDTH
+            || self.mean.len() != AUDIO_STYLE_EMBEDDING_WIDTH
+        {
+            return 0.0;
+        }
+
+        let mut dot = 0.0_f32;
+        let mut candidate_norm = 0.0_f32;
+        for ((candidate_value, mean), axis_value) in candidate_embedding
+            .values
+            .iter()
+            .zip(self.mean.iter())
+            .zip(self.broad_axis.iter())
+        {
+            let centered = candidate_value - mean;
+            dot += centered * axis_value;
+            candidate_norm += centered * centered;
+        }
+        let denom = candidate_norm.sqrt() * self.broad_axis_norm;
+        if denom <= 1.0e-6 {
+            return 0.0;
+        }
+
+        let similarity = (dot / denom).clamp(-1.0, 1.0);
+        let broad_overlap = ((similarity
+            - AUDIO_STYLE_BROAD_NEIGHBORHOOD_FATIGUE_SIMILARITY_FLOOR)
+            / (1.0 - AUDIO_STYLE_BROAD_NEIGHBORHOOD_FATIGUE_SIMILARITY_FLOOR))
+            .max(0.0)
+            .min(1.0);
+        let memory_weight = (self.broad_axis_weight
+            / (self.broad_axis_weight + AUDIO_STYLE_BROAD_NEIGHBORHOOD_FATIGUE_WEIGHT_SCALE))
+            .clamp(0.0, 1.0);
+
+        broad_overlap
+            * broad_overlap
+            * memory_weight
+            * AUDIO_STYLE_BROAD_NEIGHBORHOOD_FATIGUE_STRENGTH
+    }
+}
+
+fn broad_audio_style_neighborhood_axis(
+    recent_embeddings: &[(&AudioStyleEmbedding, f32)],
+    mean: &[f32],
+) -> (Vec<f32>, f32, f32) {
+    if recent_embeddings.is_empty() || mean.len() != AUDIO_STYLE_EMBEDDING_WIDTH {
+        return (Vec::new(), 0.0, 0.0);
+    }
+
+    let mut axis = vec![0.0_f32; AUDIO_STYLE_EMBEDDING_WIDTH];
+    let mut total_weight = 0.0_f32;
+    for (embedding, decay) in recent_embeddings {
+        if embedding.values.len() != AUDIO_STYLE_EMBEDDING_WIDTH || !decay.is_finite() {
+            continue;
+        }
+        let weight = decay.max(0.0);
+        if weight <= 0.0 {
+            continue;
+        }
+        total_weight += weight;
+        for ((axis_value, embedding_value), mean_value) in axis
+            .iter_mut()
+            .zip(embedding.values.iter())
+            .zip(mean.iter())
+        {
+            *axis_value += (embedding_value - mean_value) * weight;
+        }
+    }
+    if total_weight <= 0.0 {
+        return (Vec::new(), 0.0, 0.0);
+    }
+    for value in &mut axis {
+        *value /= total_weight;
+    }
+    let norm = axis.iter().map(|value| value * value).sum::<f32>().sqrt();
+    if norm <= 1.0e-6 || !norm.is_finite() {
+        return (Vec::new(), 0.0, 0.0);
+    }
+
+    (axis, norm, total_weight)
+}
+
 fn decay_audio_style_region_map(map: &mut HashMap<PlaybackTrackKey, f32>, decay: f32) {
     map.retain(|_, value| {
         *value *= decay;
@@ -2694,6 +3574,77 @@ fn audio_style_model_inputs_match_snapshot(
     }
 
     previous.indexed_tracks.len() == seen.len()
+}
+
+fn audio_style_startup_input_coverage(
+    previous: &AudioStyleModelState,
+    indexed_tracks: &[AudioStyleIndexedTrack],
+) -> AudioStyleStartupInputCoverage {
+    if indexed_tracks.is_empty() {
+        return AudioStyleStartupInputCoverage::Empty;
+    }
+    if previous.indexed_tracks.is_empty() {
+        return AudioStyleStartupInputCoverage::MissingMetadata;
+    }
+    if audio_style_model_inputs_match_snapshot(previous, indexed_tracks) {
+        AudioStyleStartupInputCoverage::Covered
+    } else {
+        AudioStyleStartupInputCoverage::Changed
+    }
+}
+
+fn merge_audio_style_indexed_tracks(
+    previous: Option<&AudioStyleModelSnapshot>,
+    pending_tracks: Vec<AudioStyleIndexedTrack>,
+) -> Vec<AudioStyleIndexedTrack> {
+    let mut merged = previous
+        .map(|snapshot| {
+            snapshot
+                .state
+                .indexed_tracks
+                .values()
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let mut index_by_key = merged
+        .iter()
+        .enumerate()
+        .map(|(index, indexed)| (PlaybackTrackKey::from_track(&indexed.track), index))
+        .collect::<HashMap<_, _>>();
+    for indexed in pending_tracks {
+        let key = PlaybackTrackKey::from_track(&indexed.track);
+        match index_by_key.get(&key).copied() {
+            Some(index) => merged[index] = indexed,
+            None => {
+                index_by_key.insert(key, merged.len());
+                merged.push(indexed);
+            }
+        }
+    }
+    merged
+}
+
+#[cfg(test)]
+pub(crate) fn audio_style_startup_input_coverage_for_test(
+    snapshot: &AudioStyleModelSnapshot,
+    tracks: Vec<PlaybackTrack>,
+) -> AudioStyleStartupInputCoverage {
+    let indexed_tracks = tracks
+        .into_iter()
+        .map(|track| AudioStyleIndexedTrack {
+            source: PlaylistPlaybackTrackSource {
+                collection_folder: String::new(),
+                music: track
+                    .source_music
+                    .as_deref()
+                    .cloned()
+                    .unwrap_or_else(|| playback_track_source_music_from_track(&track)),
+            },
+            track,
+        })
+        .collect::<Vec<_>>();
+    audio_style_startup_input_coverage(snapshot.state.as_ref(), &indexed_tracks)
 }
 
 impl AudioStyleModelState {
@@ -3818,11 +4769,7 @@ fn centered_cosine(
     right: &AudioStyleEmbedding,
     mean: &[f32],
 ) -> Option<f32> {
-    AudioStyleTensorRuntime::new()
-        .centered_similarity_to_many(left, &[right], mean)
-        .into_iter()
-        .next()
-        .flatten()
+    centered_cosine_cpu(left, right, mean)
 }
 
 fn centered_cosine_cpu(
@@ -4620,6 +5567,7 @@ impl AudioStyleModelSnapshot {
     fn from_model_evidence(
         generation: u64,
         embeddings: AudioStyleEmbeddingMap,
+        indexed_tracks: HashMap<PlaybackTrackKey, AudioStyleIndexedTrack>,
     ) -> Result<Self, String> {
         if embeddings.is_empty() {
             return Err("audio style model evidence has no embeddings".to_string());
@@ -4627,7 +5575,7 @@ impl AudioStyleModelSnapshot {
         let state = Arc::new(AudioStyleModelState::from_embeddings(
             None,
             embeddings,
-            HashMap::new(),
+            indexed_tracks,
             &HashSet::new(),
         ));
         Ok(Self::from_state(generation, state))
@@ -4759,13 +5707,266 @@ pub(crate) fn stable_snapshot_publication_requests_first_slot_refresh(
 pub(crate) fn audio_style_startup_training_decision(
     restored_model_evidence: bool,
     pending_input_changes: u64,
+    restored_pending_training_inputs: usize,
+    persisted_invalidations: u64,
+    input_coverage: AudioStyleStartupInputCoverage,
 ) -> AudioStyleStartupTrainingDecision {
-    if pending_input_changes > 0 {
+    if pending_input_changes > 0
+        || restored_pending_training_inputs > 0
+        || persisted_invalidations > 0
+    {
         AudioStyleStartupTrainingDecision::TrainPendingInputChanges
-    } else if restored_model_evidence {
+    } else if restored_model_evidence && input_coverage == AudioStyleStartupInputCoverage::Covered {
         AudioStyleStartupTrainingDecision::SkipRestoredEvidence
+    } else if !restored_model_evidence {
+        AudioStyleStartupTrainingDecision::SkipNoTrainingInputs
+    } else if input_coverage == AudioStyleStartupInputCoverage::Empty {
+        AudioStyleStartupTrainingDecision::SkipNoTrainingInputs
     } else {
-        AudioStyleStartupTrainingDecision::TrainInitialModel
+        AudioStyleStartupTrainingDecision::TrainPendingInputChanges
+    }
+}
+
+impl From<&Music> for AudioStyleMusicInputIdentity {
+    fn from(music: &Music) -> Self {
+        Self {
+            canonical_music_id: music.canonical_music_id.clone(),
+            music_url: music.url.clone(),
+            path: music.path.clone(),
+            start_ms: music.start_ms,
+            end_ms: music.end_ms,
+        }
+    }
+}
+
+pub(crate) fn read_audio_style_training_invalidation_file(
+    path: &Path,
+) -> Result<Vec<AudioStyleTrainingInvalidationRecord>> {
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(anyhow!(
+                "failed to read audio style training invalidation file `{}`: {error}",
+                path.display()
+            ));
+        }
+    };
+    let file: AudioStyleTrainingInvalidationFile =
+        serde_json::from_slice(&bytes).with_context(|| {
+            format!(
+                "failed to parse audio style training invalidation file `{}`",
+                path.display()
+            )
+        })?;
+    if file.version != AUDIO_STYLE_TRAINING_INVALIDATION_FILE_VERSION {
+        return Err(anyhow!(
+            "unsupported audio style training invalidation file version `{}` in `{}`",
+            file.version,
+            path.display()
+        ));
+    }
+    Ok(deduplicate_audio_style_training_invalidations(file.records))
+}
+
+pub(crate) fn upsert_audio_style_training_invalidation_file(
+    path: &Path,
+    record: AudioStyleTrainingInvalidationRecord,
+) -> Result<usize> {
+    let mut records = read_audio_style_training_invalidation_file(path)?;
+    let key = audio_style_training_invalidation_key(&record);
+    records.retain(|existing| audio_style_training_invalidation_key(existing) != key);
+    records.push(record);
+    let count = records.len();
+    write_audio_style_training_invalidation_file(path, &records)?;
+    Ok(count)
+}
+
+pub(crate) fn clear_audio_style_training_invalidation_file(path: &Path) -> Result<usize> {
+    let records = read_audio_style_training_invalidation_file(path)?;
+    let count = records.len();
+    write_audio_style_training_invalidation_file(path, &[])?;
+    Ok(count)
+}
+
+fn read_audio_style_pending_training_input_file(
+    path: &Path,
+) -> Result<Vec<AudioStyleTrainingTrackInput>> {
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(anyhow!(
+                "failed to read audio style pending training input file `{}`: {error}",
+                path.display()
+            ));
+        }
+    };
+    let file: AudioStylePendingTrainingInputFile =
+        serde_json::from_slice(&bytes).with_context(|| {
+            format!(
+                "failed to parse audio style pending training input file `{}`",
+                path.display()
+            )
+        })?;
+    if file.version != AUDIO_STYLE_PENDING_TRAINING_INPUT_FILE_VERSION {
+        return Err(anyhow!(
+            "unsupported audio style pending training input file version `{}` in `{}`",
+            file.version,
+            path.display()
+        ));
+    }
+    Ok(deduplicate_audio_style_training_inputs(file.inputs))
+}
+
+fn upsert_audio_style_pending_training_input_file(
+    path: &Path,
+    inputs: &[AudioStyleTrainingTrackInput],
+) -> Result<usize> {
+    let mut records = read_audio_style_pending_training_input_file(path)?;
+    records.extend(inputs.iter().cloned());
+    let records = deduplicate_audio_style_training_inputs(records);
+    let count = records.len();
+    write_audio_style_pending_training_input_file(path, &records)?;
+    Ok(count)
+}
+
+#[cfg(test)]
+pub(crate) fn read_audio_style_pending_training_input_file_for_test(
+    path: &Path,
+) -> Result<Vec<AudioStyleTrainingTrackInput>> {
+    read_audio_style_pending_training_input_file(path)
+}
+
+#[cfg(test)]
+pub(crate) fn upsert_audio_style_pending_training_input_file_for_test(
+    path: &Path,
+    inputs: &[AudioStyleTrainingTrackInput],
+) -> Result<usize> {
+    upsert_audio_style_pending_training_input_file(path, inputs)
+}
+
+fn write_audio_style_pending_training_input_file(
+    path: &Path,
+    inputs: &[AudioStyleTrainingTrackInput],
+) -> Result<()> {
+    if inputs.is_empty() {
+        match fs::remove_file(path) {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => {
+                return Err(anyhow!(
+                    "failed to remove audio style pending training input file `{}`: {error}",
+                    path.display()
+                ));
+            }
+        }
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create audio style pending training input directory `{}`",
+                parent.display()
+            )
+        })?;
+    }
+    let file = AudioStylePendingTrainingInputFile {
+        version: AUDIO_STYLE_PENDING_TRAINING_INPUT_FILE_VERSION.to_string(),
+        inputs: inputs.to_vec(),
+    };
+    let bytes = serde_json::to_vec(&file)
+        .context("failed to encode audio style pending training input file")?;
+    fs::write(path, bytes).with_context(|| {
+        format!(
+            "failed to write audio style pending training input file `{}`",
+            path.display()
+        )
+    })
+}
+
+fn deduplicate_audio_style_training_inputs(
+    inputs: Vec<AudioStyleTrainingTrackInput>,
+) -> Vec<AudioStyleTrainingTrackInput> {
+    let mut seen = HashSet::new();
+    let mut result = Vec::new();
+    for input in inputs {
+        let key = (
+            input.canonical_music_id.clone(),
+            input.url.clone(),
+            input.absolute_path.clone(),
+            input.start_ms,
+            input.end_ms,
+        );
+        if seen.insert(key) {
+            result.push(input);
+        }
+    }
+    result
+}
+
+fn write_audio_style_training_invalidation_file(
+    path: &Path,
+    records: &[AudioStyleTrainingInvalidationRecord],
+) -> Result<()> {
+    if records.is_empty() {
+        match fs::remove_file(path) {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => {
+                return Err(anyhow!(
+                    "failed to remove audio style training invalidation file `{}`: {error}",
+                    path.display()
+                ));
+            }
+        }
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create audio style training invalidation directory `{}`",
+                parent.display()
+            )
+        })?;
+    }
+    let file = AudioStyleTrainingInvalidationFile {
+        version: AUDIO_STYLE_TRAINING_INVALIDATION_FILE_VERSION.to_owned(),
+        records: records.to_vec(),
+    };
+    let bytes = serde_json::to_vec_pretty(&file)
+        .context("failed to encode audio style training invalidation file")?;
+    fs::write(path, bytes).with_context(|| {
+        format!(
+            "failed to write audio style training invalidation file `{}`",
+            path.display()
+        )
+    })
+}
+
+fn deduplicate_audio_style_training_invalidations(
+    records: Vec<AudioStyleTrainingInvalidationRecord>,
+) -> Vec<AudioStyleTrainingInvalidationRecord> {
+    let mut seen = HashSet::new();
+    let mut deduplicated = Vec::new();
+    for record in records.into_iter().rev() {
+        if seen.insert(audio_style_training_invalidation_key(&record)) {
+            deduplicated.push(record);
+        }
+    }
+    deduplicated.reverse();
+    deduplicated
+}
+
+fn audio_style_training_invalidation_key(record: &AudioStyleTrainingInvalidationRecord) -> String {
+    match record.music.as_ref() {
+        Some(music) => format!(
+            "music\0{}\0{}\0{}\0{}\0{}",
+            music.canonical_music_id,
+            music.music_url,
+            music.path.as_deref().unwrap_or_default(),
+            music.start_ms,
+            music.end_ms
+        ),
+        None => format!("library\0{}", record.reason),
     }
 }
 
@@ -5095,6 +6296,8 @@ fn audio_style_candidate_diagnostics(
             .map(|basin| basin.value),
         top_candidate_basins,
         bio_route: None,
+        perceptual_channels: None,
+        topology_health: None,
     }
 }
 
@@ -5292,6 +6495,334 @@ fn audio_style_hcr_bin(value: f32, thresholds: &[f32]) -> u8 {
         .unwrap_or(thresholds.len()) as u8
 }
 
+impl AudioStylePerceptualChannelDecision {
+    fn from_candidates(
+        candidates: &[PlaybackTrack],
+        anchor_key: &PlaybackTrackKey,
+        embeddings: &AudioStyleEmbeddingMap,
+        geometry: &AudioStyleSamplingGeometry,
+        basin_resolver: AudioStyleBasinResolver<'_>,
+    ) -> Self {
+        let Some(anchor_embedding) = embeddings.get(anchor_key) else {
+            return Self {
+                similarities: vec![None; candidates.len()],
+                diagnostics: vec![None; candidates.len()],
+                topology_health: None,
+            };
+        };
+        let topology_health =
+            audio_style_candidate_projection_topology_health(candidates, embeddings, geometry);
+        let candidate_basin_target_share =
+            audio_style_candidate_basin_target_share(candidates, basin_resolver);
+        let mut similarities = Vec::with_capacity(candidates.len());
+        let mut diagnostics = Vec::with_capacity(candidates.len());
+        for candidate in candidates {
+            let key = PlaybackTrackKey::from_track(candidate);
+            let Some(candidate_embedding) = embeddings.get(&key) else {
+                similarities.push(None);
+                diagnostics.push(None);
+                continue;
+            };
+            let terminal_similarity = audio_style_channel_cosine(
+                anchor_embedding,
+                candidate_embedding,
+                &geometry.mean,
+                AUDIO_STYLE_TYPED_CHANNEL_TERMINAL_RANGE,
+            )
+            .unwrap_or(-1.0);
+            let flow_similarity = audio_style_channel_cosine(
+                anchor_embedding,
+                candidate_embedding,
+                &geometry.mean,
+                AUDIO_STYLE_TYPED_CHANNEL_FLOW_RANGE,
+            )
+            .unwrap_or(-1.0);
+            let transition_similarity = audio_style_channel_cosine(
+                anchor_embedding,
+                candidate_embedding,
+                &geometry.mean,
+                AUDIO_STYLE_TYPED_CHANNEL_TRANSITION_RANGE,
+            )
+            .unwrap_or(-1.0);
+            let values = [terminal_similarity, flow_similarity, transition_similarity];
+            let consensus = values
+                .iter()
+                .copied()
+                .fold(f32::INFINITY, f32::min)
+                .clamp(-1.0, 1.0);
+            let mean = values.iter().copied().sum::<f32>() / values.len() as f32;
+            let disagreement =
+                values.iter().map(|value| (value - mean).abs()).sum::<f32>() / values.len() as f32;
+            let active_challenger_axis_count = values
+                .iter()
+                .filter(|value| value.is_finite() && **value >= mean + 0.05)
+                .count();
+            let candidate_similarity = geometry
+                .corrected_similarity(embeddings, anchor_key, &key)
+                .filter(|similarity| similarity.is_finite())
+                .unwrap_or(-1.0);
+            let topology_support = basin_resolver
+                .basin_for_track(candidate)
+                .and_then(|basin| candidate_basin_target_share.get(&basin).copied())
+                .map(|share| (share * candidates.len() as f32).sqrt().clamp(0.0, 1.0))
+                .unwrap_or(0.5);
+            let topology_gate = (1.0
+                + AUDIO_STYLE_TYPED_CHANNEL_CONSENSUS_STRENGTH * consensus.max(0.0)
+                + 0.18 * topology_support
+                - AUDIO_STYLE_TYPED_CHANNEL_DISAGREEMENT_STRENGTH * disagreement.max(0.0))
+            .clamp(AUDIO_STYLE_TYPED_CHANNEL_TOPOLOGY_FLOOR, 1.85);
+            let similarity = candidate_similarity.clamp(-1.0, 1.0);
+            similarities.push(Some(similarity));
+            diagnostics.push(Some(AudioStylePerceptualChannelDiagnostics {
+                terminal_similarity,
+                flow_similarity,
+                transition_similarity,
+                consensus,
+                disagreement,
+                topology_gate,
+                active_challenger_axis_count,
+            }));
+        }
+
+        Self {
+            similarities,
+            diagnostics,
+            topology_health,
+        }
+    }
+
+    fn diagnostics_for_index(
+        &self,
+        index: usize,
+    ) -> Option<AudioStylePerceptualChannelDiagnostics> {
+        self.diagnostics.get(index).copied().flatten()
+    }
+}
+
+fn audio_style_channel_cosine(
+    left: &AudioStyleEmbedding,
+    right: &AudioStyleEmbedding,
+    mean: &[f32],
+    range: std::ops::Range<usize>,
+) -> Option<f32> {
+    if left.values.len() != AUDIO_STYLE_EMBEDDING_WIDTH
+        || right.values.len() != AUDIO_STYLE_EMBEDDING_WIDTH
+        || mean.len() != AUDIO_STYLE_EMBEDDING_WIDTH
+        || range.end > AUDIO_STYLE_EMBEDDING_WIDTH
+        || range.start >= range.end
+    {
+        return None;
+    }
+
+    let mut dot = 0.0_f32;
+    let mut left_norm = 0.0_f32;
+    let mut right_norm = 0.0_f32;
+    for index in range {
+        let centered_left = left.values[index] - mean[index];
+        let centered_right = right.values[index] - mean[index];
+        dot += centered_left * centered_right;
+        left_norm += centered_left * centered_left;
+        right_norm += centered_right * centered_right;
+    }
+    let denom = left_norm.sqrt() * right_norm.sqrt();
+    if denom <= 1.0e-6 {
+        return None;
+    }
+    Some((dot / denom).clamp(-1.0, 1.0))
+}
+
+fn audio_style_candidate_projection_topology_health(
+    candidates: &[PlaybackTrack],
+    embeddings: &AudioStyleEmbeddingMap,
+    geometry: &AudioStyleSamplingGeometry,
+) -> Option<AudioStyleTopologyHealthDiagnostics> {
+    let embedded = candidates
+        .iter()
+        .filter_map(|candidate| {
+            let key = PlaybackTrackKey::from_track(candidate);
+            embeddings
+                .get(&key)
+                .map(|embedding| (key, embedding.as_ref()))
+        })
+        .collect::<Vec<_>>();
+    if embedded.len() < 2 {
+        return None;
+    }
+
+    let mut pairs = Vec::<(usize, usize, f32)>::new();
+    for left_index in 0..embedded.len() {
+        for right_index in (left_index + 1)..embedded.len() {
+            let (_, left_embedding) = &embedded[left_index];
+            let (_, right_embedding) = &embedded[right_index];
+            let Some(similarity) = centered_cosine(left_embedding, right_embedding, &geometry.mean)
+            else {
+                continue;
+            };
+            let positive = ((similarity + 1.0) * 0.5).clamp(0.0, 1.0);
+            pairs.push((left_index, right_index, positive));
+        }
+    }
+    if pairs.is_empty() {
+        return None;
+    }
+    let mut sorted_pairs = pairs.clone();
+    sorted_pairs.sort_by(|left, right| right.2.total_cmp(&left.2));
+    let retained_edges = embedded.len().saturating_sub(1).max(1);
+    let top_edges = sorted_pairs
+        .iter()
+        .take(retained_edges)
+        .map(|(left, right, _)| (*left, *right))
+        .collect::<HashSet<_>>();
+    let mut nearest_hits = 0usize;
+    for index in 0..embedded.len() {
+        let best = pairs
+            .iter()
+            .filter(|(left, right, _)| *left == index || *right == index)
+            .max_by(|left, right| left.2.total_cmp(&right.2));
+        if best.is_some_and(|(left, right, _)| top_edges.contains(&(*left, *right))) {
+            nearest_hits += 1;
+        }
+    }
+    let full_rank = audio_style_effective_rank(
+        embedded.iter().map(|(_, embedding)| *embedding),
+        &geometry.mean,
+    )
+    .unwrap_or(1.0);
+    let candidate_projection_rank =
+        audio_style_pair_support_effective_rank(pairs.iter().map(|(_, _, value)| *value));
+    let mut same_basin_sum = 0.0_f32;
+    let mut same_basin_count = 0usize;
+    let mut other_basin_sum = 0.0_f32;
+    let mut other_basin_count = 0usize;
+    for (left_index, right_index, positive) in pairs.iter().copied() {
+        let (left_key, _) = &embedded[left_index];
+        let (right_key, _) = &embedded[right_index];
+        if geometry.self_supervised_basins.get(left_key)
+            == geometry.self_supervised_basins.get(right_key)
+        {
+            same_basin_sum += positive;
+            same_basin_count += 1;
+        } else {
+            other_basin_sum += positive;
+            other_basin_count += 1;
+        }
+    }
+    let neighbor_overlap = nearest_hits as f32 / embedded.len() as f32;
+    let spectral_rank_retention =
+        (candidate_projection_rank / full_rank.max(1.0e-6)).clamp(0.0, 1.0);
+    let same_mean = if same_basin_count > 0 {
+        same_basin_sum / same_basin_count as f32
+    } else {
+        0.0
+    };
+    let other_mean = if other_basin_count > 0 {
+        other_basin_sum / other_basin_count as f32
+    } else {
+        0.0
+    };
+    Some(AudioStyleTopologyHealthDiagnostics {
+        candidate_projection_neighbor_overlap: neighbor_overlap,
+        candidate_projection_spectral_rank_retention: spectral_rank_retention,
+        candidate_projection_mcr2_margin: (same_mean - other_mean).max(0.0),
+        density_owner_best_vote_count: audio_style_density_owner_best_vote_count(
+            candidates, embeddings, geometry,
+        ),
+    })
+}
+
+fn audio_style_pair_support_effective_rank(values: impl Iterator<Item = f32>) -> f32 {
+    let mut sum = 0.0_f32;
+    let mut sq_sum = 0.0_f32;
+    for value in values {
+        if !value.is_finite() {
+            continue;
+        }
+        let value = value.max(0.0);
+        sum += value;
+        sq_sum += value * value;
+    }
+    if sq_sum > 1.0e-6 {
+        (sum * sum / sq_sum).max(1.0)
+    } else {
+        1.0
+    }
+}
+
+fn audio_style_effective_rank<'a>(
+    embeddings: impl Iterator<Item = &'a AudioStyleEmbedding>,
+    mean: &[f32],
+) -> Option<f32> {
+    if mean.len() != AUDIO_STYLE_EMBEDDING_WIDTH {
+        return None;
+    }
+    let mut energy_by_axis = vec![0.0_f32; AUDIO_STYLE_EMBEDDING_WIDTH];
+    let mut rows = 0usize;
+    for embedding in embeddings {
+        if embedding.values.len() != AUDIO_STYLE_EMBEDDING_WIDTH {
+            continue;
+        }
+        rows += 1;
+        for (index, value) in embedding.values.iter().enumerate() {
+            let centered = *value - mean[index];
+            energy_by_axis[index] += centered * centered;
+        }
+    }
+    if rows < 2 {
+        return None;
+    }
+    Some(audio_style_pair_support_effective_rank(
+        energy_by_axis.into_iter(),
+    ))
+}
+
+fn audio_style_density_owner_best_vote_count(
+    candidates: &[PlaybackTrack],
+    embeddings: &AudioStyleEmbeddingMap,
+    geometry: &AudioStyleSamplingGeometry,
+) -> usize {
+    let mut best_density = f32::NEG_INFINITY;
+    let mut best_count = 0usize;
+    for candidate in candidates {
+        let key = PlaybackTrackKey::from_track(candidate);
+        if !embeddings.contains_key(&key) {
+            continue;
+        }
+        let density = geometry.local_density.get(&key).copied().unwrap_or(0.0);
+        match density.total_cmp(&best_density) {
+            std::cmp::Ordering::Greater => {
+                best_density = density;
+                best_count = 1;
+            }
+            std::cmp::Ordering::Equal => {
+                best_count += 1;
+            }
+            std::cmp::Ordering::Less => {}
+        }
+    }
+    best_count
+}
+
+fn audio_style_candidate_basin_target_share(
+    candidates: &[PlaybackTrack],
+    basin_resolver: AudioStyleBasinResolver<'_>,
+) -> HashMap<PlaybackAttractorBasinKey, f32> {
+    let mut counts = HashMap::<PlaybackAttractorBasinKey, usize>::new();
+    for candidate in candidates {
+        let Some(basin) = basin_resolver.basin_for_track(candidate) else {
+            continue;
+        };
+        *counts.entry(basin).or_insert(0) += 1;
+    }
+    let total = counts.values().map(|count| *count as f32).sum::<f32>();
+    if total <= 0.0 || !total.is_finite() {
+        return HashMap::new();
+    }
+    counts
+        .into_iter()
+        .map(|(basin, count)| (basin, count as f32 / total))
+        .collect()
+}
+
 impl AudioStyleBioRouteDecision {
     fn diagnostics_for_index(&self, index: usize) -> Option<AudioStyleBioRouteDiagnostics> {
         self.diagnostics.get(index).copied().flatten()
@@ -5300,9 +6831,12 @@ impl AudioStyleBioRouteDecision {
     fn from_decision(
         candidates: &[PlaybackTrack],
         similarities: &[Option<f32>],
+        perceptual_channels: &AudioStylePerceptualChannelDecision,
         basin_pressure: &PlaybackAttractorBasinPressure,
         route_pressure: &AudioStyleReadOnlyRoutePressure,
         region_pressure: Option<&AudioStyleRegionPressure<'_>>,
+        local_neighborhood_pressure: &AudioStyleLocalNeighborhoodPressure<'_>,
+        embeddings: &AudioStyleEmbeddingMap,
         recently_played_tracks: &[PlaybackTrack],
         basin_resolver: AudioStyleBasinResolver<'_>,
     ) -> Self {
@@ -5314,6 +6848,11 @@ impl AudioStyleBioRouteDecision {
                     .unwrap_or(-1.0)
                     .clamp(-1.0, 1.0)
             })
+            .collect::<Vec<_>>();
+        let perceptual_topology_gate = perceptual_channels
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.map(|value| value.topology_gate).unwrap_or(1.0))
             .collect::<Vec<_>>();
         let route_drive = candidates
             .iter()
@@ -5346,6 +6885,8 @@ impl AudioStyleBioRouteDecision {
             recently_played_tracks,
             basin_resolver,
         );
+        let local_neighborhood_fatigue =
+            audio_style_local_neighborhood_fatigue(candidates, local_neighborhood_pressure);
         let damping = (0..candidates.len())
             .map(|index| {
                 basin_pressure.penalty_for_track(&candidates[index], basin_resolver)
@@ -5403,16 +6944,32 @@ impl AudioStyleBioRouteDecision {
             let route_drive_value = route_drive.get(index).copied().unwrap_or(0.0);
             let hcr_drive_value = hcr_drive.get(index).copied().unwrap_or(1.0);
             let ibnn_state_value = ibnn_state.get(index).copied().unwrap_or(0.0);
-            let damping_value = damping.get(index).copied().unwrap_or(0.0);
+            let damping_value = damping.get(index).copied().unwrap_or(0.0)
+                + local_neighborhood_fatigue
+                    .get(index)
+                    .copied()
+                    .unwrap_or(0.0);
             let local_gate_value = local_gate.get(index).copied().unwrap_or(1.0);
+            let topology_gate_value = perceptual_topology_gate
+                .get(index)
+                .copied()
+                .unwrap_or(1.0)
+                .clamp(AUDIO_STYLE_TYPED_CHANNEL_TOPOLOGY_FLOOR, 1.85);
             let value = distance_base
                 * (1.0 + order)
                 * local_gate_value
+                * topology_gate_value
                 * hcr_drive_value
                 * (1.0 + 0.18 * ibnn_state_value.max(0.0))
                 * repeat_gate.get(index).copied().unwrap_or(1.0)
                 * region_homeostasis.get(index).copied().unwrap_or(1.0)
                 * region_fatigue.get(index).copied().unwrap_or(1.0)
+                * local_neighborhood_fatigue_gate(
+                    local_neighborhood_fatigue
+                        .get(index)
+                        .copied()
+                        .unwrap_or(0.0),
+                )
                 * region_run_hazard.get(index).copied().unwrap_or(1.0)
                 * basin_escape.get(index).copied().unwrap_or(1.0)
                 / (1.0 + 0.25 * AUDIO_STYLE_BIO_ROUTE_DAMPING_STRENGTH * damping_value.max(0.0));
@@ -5435,6 +6992,34 @@ impl AudioStyleBioRouteDecision {
         let future_occupancy =
             audio_style_future_occupancy_gate(candidates, &base, basin_pressure, basin_resolver);
         for (value, gate) in base.iter_mut().zip(future_occupancy.iter().copied()) {
+            *value *= gate;
+        }
+        let frontier_reserve = audio_style_frontier_reserve_gate(
+            candidates,
+            &base,
+            &anchor_similarities,
+            &local_reference,
+            basin_pressure,
+            basin_resolver,
+        );
+        for (value, gate) in base.iter_mut().zip(frontier_reserve.iter().copied()) {
+            *value *= gate;
+        }
+        let listener_recovery = audio_style_listener_recovery_gate(
+            candidates,
+            embeddings,
+            recently_played_tracks,
+            basin_pressure,
+        );
+        for (value, gate) in base.iter_mut().zip(listener_recovery.iter().copied()) {
+            *value *= gate;
+        }
+        let basin_mass_homeostasis =
+            audio_style_basin_mass_homeostasis_gate(candidates, &base, basin_pressure, basin_resolver);
+        for (value, gate) in base
+            .iter_mut()
+            .zip(basin_mass_homeostasis.iter().copied())
+        {
             *value *= gate;
         }
         let base = audio_style_relaxed_distributed_candidate_field(base);
@@ -5558,14 +7143,14 @@ fn select_next_audio_style_candidate(
         );
     };
 
-    let mut similarities = Vec::with_capacity(candidates.len());
-    for candidate in candidates {
-        let key = PlaybackTrackKey::from_track(candidate);
-        let similarity = geometry
-            .corrected_similarity(embeddings, anchor_key, &key)
-            .filter(|similarity| similarity.is_finite());
-        similarities.push(similarity);
-    }
+    let perceptual_channels = AudioStylePerceptualChannelDecision::from_candidates(
+        candidates,
+        anchor_key,
+        embeddings,
+        geometry,
+        basin_resolver,
+    );
+    let similarities = perceptual_channels.similarities.clone();
 
     let basin_pressure = PlaybackAttractorBasinPressure::from_recent_history_and_candidates(
         recently_played_tracks,
@@ -5583,12 +7168,20 @@ fn select_next_audio_style_candidate(
     let region_pressure = region_geometry.map(|geometry| {
         AudioStyleRegionPressure::from_recent_history(geometry, recently_played_tracks)
     });
+    let local_neighborhood_pressure = AudioStyleLocalNeighborhoodPressure::from_recent_history(
+        geometry,
+        embeddings,
+        recently_played_tracks,
+    );
     let route_decision = AudioStyleBioRouteDecision::from_decision(
         candidates,
         &similarities,
+        &perceptual_channels,
         &basin_pressure,
         &route_pressure,
         region_pressure.as_ref(),
+        &local_neighborhood_pressure,
+        embeddings,
         recently_played_tracks,
         basin_resolver,
     );
@@ -5626,8 +7219,12 @@ fn select_next_audio_style_candidate(
                 Some(index),
                 basin_resolver,
             );
-            let candidate_diagnostics =
+            let mut candidate_diagnostics =
                 candidate_diagnostics.with_bio_route(route_decision.diagnostics_for_index(index));
+            candidate_diagnostics.perceptual_channels =
+                perceptual_channels.diagnostics_for_index(index);
+            candidate_diagnostics =
+                candidate_diagnostics.with_topology_health(perceptual_channels.topology_health);
             return AudioStyleCandidateSelection {
                 index,
                 probability: weight / total,
@@ -5655,8 +7252,11 @@ fn select_next_audio_style_candidate(
         Some(index),
         basin_resolver,
     );
-    let candidate_diagnostics =
+    let mut candidate_diagnostics =
         candidate_diagnostics.with_bio_route(route_decision.diagnostics_for_index(index));
+    candidate_diagnostics.perceptual_channels = perceptual_channels.diagnostics_for_index(index);
+    candidate_diagnostics =
+        candidate_diagnostics.with_topology_health(perceptual_channels.topology_health);
     AudioStyleCandidateSelection {
         index,
         probability: weights.get(index).copied().unwrap_or(0.0) / total,
@@ -5736,6 +7336,8 @@ fn select_centerless_audio_style_candidate(
     };
 
     let similarities = audio_style_centerless_candidate_scores(candidates, embeddings, geometry);
+    let topology_health =
+        audio_style_candidate_projection_topology_health(candidates, embeddings, geometry);
     if similarities.iter().all(Option::is_none) {
         return random_fallback_selection_from_diagnostics(
             candidates.len(),
@@ -5748,7 +7350,8 @@ fn select_centerless_audio_style_candidate(
                 &similarities,
                 Some(random_fallback_index(candidates.len(), draw_unit)),
                 basin_resolver,
-            ),
+            )
+            .with_topology_health(topology_health),
         );
     }
     let weights = audio_style_distance_softmin_weights(candidates, &similarities, &[]);
@@ -5781,6 +7384,7 @@ fn select_centerless_audio_style_candidate(
                 candidates,
                 embeddings,
                 sampling_geometry,
+                topology_health,
                 &similarities,
                 index,
                 weight,
@@ -5796,6 +7400,7 @@ fn select_centerless_audio_style_candidate(
         candidates,
         embeddings,
         sampling_geometry,
+        topology_health,
         &similarities,
         index,
         weights[index],
@@ -5825,6 +7430,7 @@ fn audio_style_candidate_selection_from_centerless_weight(
     candidates: &[PlaybackTrack],
     embeddings: &AudioStyleEmbeddingMap,
     sampling_geometry: Option<&AudioStyleSamplingGeometry>,
+    topology_health: Option<AudioStyleTopologyHealthDiagnostics>,
     similarities: &[Option<f32>],
     index: usize,
     weight: f32,
@@ -5851,7 +7457,8 @@ fn audio_style_candidate_selection_from_centerless_weight(
             similarities,
             Some(index),
             AudioStyleBasinResolver::new(sampling_geometry),
-        ),
+        )
+        .with_topology_health(topology_health),
     }
 }
 
@@ -5926,6 +7533,23 @@ fn audio_style_distributed_region_fatigue(
             1.0 / (1.0 + AUDIO_STYLE_DISTRIBUTED_REGION_FATIGUE_STRENGTH * recent_same)
         })
         .collect()
+}
+
+fn audio_style_local_neighborhood_fatigue(
+    candidates: &[PlaybackTrack],
+    pressure: &AudioStyleLocalNeighborhoodPressure<'_>,
+) -> Vec<f32> {
+    candidates
+        .iter()
+        .map(|candidate| pressure.fatigue_for_track(candidate))
+        .collect()
+}
+
+fn local_neighborhood_fatigue_gate(fatigue: f32) -> f32 {
+    if fatigue <= 0.0 || !fatigue.is_finite() {
+        return 1.0;
+    }
+    (1.0 / (1.0 + fatigue * 1.35)).clamp(AUDIO_STYLE_LOCAL_NEIGHBORHOOD_FATIGUE_FLOOR, 1.0)
 }
 
 fn audio_style_distributed_region_run_hazard(
@@ -6020,6 +7644,381 @@ fn audio_style_future_occupancy_gate(
                 + run_hazard)
         })
         .collect()
+}
+
+fn audio_style_frontier_reserve_gate(
+    candidates: &[PlaybackTrack],
+    base: &[f32],
+    anchor_similarities: &[f32],
+    local_reference: &[f32],
+    basin_pressure: &PlaybackAttractorBasinPressure,
+    basin_resolver: AudioStyleBasinResolver<'_>,
+) -> Vec<f32> {
+    if candidates.len() <= 1 || basin_pressure.current_basin_run < 3 {
+        return vec![1.0; candidates.len()];
+    }
+    let normalized = normalize_positive_weights(base.to_vec());
+    if normalized.iter().all(|weight| *weight <= 0.0) {
+        return vec![1.0; candidates.len()];
+    }
+    let Some(current_basin) = basin_pressure.current_basin.as_ref() else {
+        return vec![1.0; candidates.len()];
+    };
+
+    let mut basin_mass = HashMap::<PlaybackAttractorBasinKey, f32>::new();
+    let mut basin_count = HashMap::<PlaybackAttractorBasinKey, usize>::new();
+    for (candidate, weight) in candidates.iter().zip(normalized.iter().copied()) {
+        let Some(basin) = basin_resolver.basin_for_track(candidate) else {
+            continue;
+        };
+        *basin_mass.entry(basin.clone()).or_insert(0.0) += weight.max(0.0);
+        *basin_count.entry(basin).or_insert(0) += 1;
+    }
+    let current_mass = basin_mass.get(current_basin).copied().unwrap_or(0.0);
+    if current_mass <= 0.0 {
+        return vec![1.0; candidates.len()];
+    }
+
+    let run_drive = (basin_pressure.current_basin_run.saturating_sub(2) as f32)
+        .ln_1p()
+        .max(0.0);
+    candidates
+        .iter()
+        .enumerate()
+        .map(|(index, candidate)| {
+            let Some(candidate_basin) = basin_resolver.basin_for_track(candidate) else {
+                return 1.0;
+            };
+            let similarity = anchor_similarities
+                .get(index)
+                .copied()
+                .unwrap_or(-1.0)
+                .clamp(-1.0, 1.0);
+            let local_floor = local_reference
+                .get(index)
+                .copied()
+                .unwrap_or(0.0)
+                .max(AUDIO_STYLE_BIO_ROUTE_FRONTIER_CONTINUITY_FLOOR);
+            let continuity =
+                ((similarity - local_floor) / (1.0 - local_floor).max(1.0e-6)).clamp(0.0, 1.0);
+            if &candidate_basin == current_basin {
+                let count = basin_count.get(&candidate_basin).copied().unwrap_or(0);
+                if count < 2 {
+                    return 1.0;
+                }
+                let crowding = current_mass * run_drive;
+                return 1.0 / (1.0 + AUDIO_STYLE_BIO_ROUTE_FRONTIER_SAME_BASIN_CROWDING * crowding);
+            }
+            let candidate_mass = basin_mass.get(&candidate_basin).copied().unwrap_or(0.0);
+            let frontier_deficit = (current_mass - candidate_mass).max(0.0);
+            let reserve =
+                AUDIO_STYLE_BIO_ROUTE_FRONTIER_RESERVE_STRENGTH * run_drive * frontier_deficit;
+            (1.0 + reserve * continuity).min(AUDIO_STYLE_BIO_ROUTE_FRONTIER_RESERVE_CAP)
+        })
+        .collect()
+}
+
+fn audio_style_listener_recovery_gate(
+    candidates: &[PlaybackTrack],
+    embeddings: &AudioStyleEmbeddingMap,
+    recently_played_tracks: &[PlaybackTrack],
+    basin_pressure: &PlaybackAttractorBasinPressure,
+) -> Vec<f32> {
+    if candidates.len() <= 1 || recently_played_tracks.len() < 3 {
+        return vec![1.0; candidates.len()];
+    }
+    let Some(listener_state) =
+        audio_style_listener_state_from_recent_history(recently_played_tracks, embeddings)
+    else {
+        return vec![1.0; candidates.len()];
+    };
+    let run_drive = (basin_pressure.current_basin_run.saturating_sub(1) as f32)
+        .ln_1p()
+        .max(0.0);
+    let activity_drive = (recently_played_tracks
+        .len()
+        .min(AUDIO_STYLE_ROUTE_RECENT_WINDOW) as f32)
+        / AUDIO_STYLE_ROUTE_RECENT_WINDOW as f32;
+    let gate_drive = run_drive.max(activity_drive);
+    if gate_drive <= 0.0 {
+        return vec![1.0; candidates.len()];
+    }
+    candidates
+        .iter()
+        .map(|candidate| {
+            let key = PlaybackTrackKey::from_track(candidate);
+            let Some(load) = embeddings
+                .get(&key)
+                .map(|embedding| audio_style_listener_load_from_embedding(embedding.as_ref()))
+            else {
+                return 1.0;
+            };
+            audio_style_listener_recovery_gate_for_load(&listener_state, &load, gate_drive)
+        })
+        .collect()
+}
+
+fn audio_style_basin_mass_homeostasis_gate(
+    candidates: &[PlaybackTrack],
+    base: &[f32],
+    basin_pressure: &PlaybackAttractorBasinPressure,
+    basin_resolver: AudioStyleBasinResolver<'_>,
+) -> Vec<f32> {
+    if candidates.len() <= 1 {
+        return vec![1.0; candidates.len()];
+    }
+    let normalized = normalize_positive_weights(base.to_vec());
+    if normalized.iter().all(|weight| *weight <= 0.0) {
+        return vec![1.0; candidates.len()];
+    }
+
+    let mut basin_mass = HashMap::<PlaybackAttractorBasinKey, f32>::new();
+    let mut basin_count = HashMap::<PlaybackAttractorBasinKey, usize>::new();
+    for (candidate, weight) in candidates.iter().zip(normalized.iter().copied()) {
+        let Some(basin) = basin_resolver.basin_for_track(candidate) else {
+            continue;
+        };
+        *basin_mass.entry(basin.clone()).or_insert(0.0) += weight.max(0.0);
+        *basin_count.entry(basin).or_insert(0) += 1;
+    }
+    if basin_mass.len() <= 1 {
+        return vec![1.0; candidates.len()];
+    }
+
+    let capacity_total = basin_count
+        .values()
+        .map(|count| (*count as f32).sqrt())
+        .sum::<f32>();
+    if capacity_total <= 0.0 || !capacity_total.is_finite() {
+        return vec![1.0; candidates.len()];
+    }
+
+    candidates
+        .iter()
+        .map(|candidate| {
+            let Some(basin) = basin_resolver.basin_for_track(candidate) else {
+                return 1.0;
+            };
+            let count = basin_count.get(&basin).copied().unwrap_or(0);
+            if count == 0 {
+                return 1.0;
+            }
+            let target = (count as f32).sqrt() / capacity_total;
+            let mass = basin_mass.get(&basin).copied().unwrap_or(0.0);
+            let excess = (mass - target).max(0.0);
+            let deficit = (target - mass).max(0.0);
+            let recent_excess = (basin_pressure.usage_share(&basin) - target).max(0.0);
+            let reserve =
+                (1.0 + deficit).min(AUDIO_STYLE_BIO_ROUTE_BASIN_MASS_HOMEOSTASIS_RESERVE_CAP);
+            let damping = 1.0
+                + AUDIO_STYLE_BIO_ROUTE_BASIN_MASS_HOMEOSTASIS_STRENGTH * excess
+                + AUDIO_STYLE_BIO_ROUTE_BASIN_MASS_HOMEOSTASIS_RECENT_STRENGTH * recent_excess;
+            (reserve / damping).clamp(
+                AUDIO_STYLE_BIO_ROUTE_BASIN_MASS_HOMEOSTASIS_FLOOR,
+                AUDIO_STYLE_BIO_ROUTE_BASIN_MASS_HOMEOSTASIS_RESERVE_CAP,
+            )
+        })
+        .collect()
+}
+
+#[cfg(test)]
+pub(crate) fn audio_style_basin_mass_homeostasis_gate_for_test(
+    candidates: &[PlaybackTrack],
+    base: &[f32],
+    recently_played_tracks: &[PlaybackTrack],
+) -> Vec<f32> {
+    let basin_resolver = AudioStyleBasinResolver::new(None);
+    let pressure = PlaybackAttractorBasinPressure::from_recent_history_and_candidates(
+        recently_played_tracks,
+        candidates,
+        basin_resolver,
+    );
+    audio_style_basin_mass_homeostasis_gate(candidates, base, &pressure, basin_resolver)
+}
+
+fn audio_style_listener_state_from_recent_history(
+    recently_played_tracks: &[PlaybackTrack],
+    embeddings: &AudioStyleEmbeddingMap,
+) -> Option<[f32; 6]> {
+    let mut state = [0.0_f32; 6];
+    let mut initialized = false;
+    for track in recently_played_tracks
+        .iter()
+        .rev()
+        .take(AUDIO_STYLE_ROUTE_RECENT_WINDOW)
+        .rev()
+    {
+        let key = PlaybackTrackKey::from_track(track);
+        let Some(embedding) = embeddings.get(&key) else {
+            continue;
+        };
+        let load = audio_style_listener_load_from_embedding(embedding);
+        if !initialized {
+            state = load;
+            initialized = true;
+            continue;
+        }
+        for (state_value, load_value) in state.iter_mut().zip(load.iter().copied()) {
+            *state_value = AUDIO_STYLE_LISTENER_ADAPTATION_DECAY * *state_value
+                + (1.0 - AUDIO_STYLE_LISTENER_ADAPTATION_DECAY) * load_value;
+        }
+    }
+    initialized.then_some(state)
+}
+
+fn audio_style_listener_recovery_gate_for_load(
+    listener_state: &[f32; 6],
+    candidate_load: &[f32; 6],
+    gate_drive: f32,
+) -> f32 {
+    const COMFORT_LOW: [f32; 6] = [0.18, 0.18, 0.16, 0.16, 0.14, 0.18];
+    const COMFORT_HIGH: [f32; 6] = [0.72, 0.72, 0.68, 0.68, 0.62, 0.72];
+    let mut adaptation_match = 0.0_f32;
+    let mut overload_match = 0.0_f32;
+    let mut recovery_match = 0.0_f32;
+    let mut underload_match = 0.0_f32;
+    let mut comfort_distance_sq = 0.0_f32;
+    let mut load_distance_sq = 0.0_f32;
+    for index in 0..candidate_load.len() {
+        let state = listener_state[index].clamp(0.0, 1.0);
+        let candidate = candidate_load[index].clamp(0.0, 1.0);
+        let overload = (state - COMFORT_HIGH[index]).max(0.0);
+        let underload = (COMFORT_LOW[index] - state).max(0.0);
+        let comfort_target = (COMFORT_LOW[index] + COMFORT_HIGH[index]) * 0.5;
+        adaptation_match += candidate * state;
+        overload_match += candidate * overload;
+        recovery_match += (1.0 - candidate) * overload;
+        underload_match += candidate * underload;
+        comfort_distance_sq += (candidate - comfort_target).powi(2);
+        load_distance_sq += (candidate - state).powi(2);
+    }
+    let comfort_distance = comfort_distance_sq.sqrt();
+    let load_distance = load_distance_sq.sqrt();
+    let log_gate = gate_drive
+        * (-AUDIO_STYLE_LISTENER_ADAPTATION_STRENGTH * adaptation_match
+            - AUDIO_STYLE_LISTENER_OVERLOAD_STRENGTH * overload_match
+            + AUDIO_STYLE_LISTENER_RECOVERY_STRENGTH * recovery_match
+            + AUDIO_STYLE_LISTENER_UNDERLOAD_STRENGTH * underload_match
+            - AUDIO_STYLE_LISTENER_COMFORT_STRENGTH * comfort_distance
+            - AUDIO_STYLE_LISTENER_SHOCK_STRENGTH
+                * (load_distance - AUDIO_STYLE_LISTENER_SHOCK_DISTANCE).max(0.0));
+    log_gate.exp().clamp(0.35, 1.85)
+}
+
+fn audio_style_listener_load_from_embedding(embedding: &AudioStyleEmbedding) -> [f32; 6] {
+    if embedding.values.len() != AUDIO_STYLE_EMBEDDING_WIDTH {
+        return [0.0; 6];
+    }
+    let terminal = &embedding.values[..AUDIO_STYLE_TERMINAL_BINS];
+    let delta = &embedding.values[AUDIO_STYLE_TERMINAL_BINS..AUDIO_STYLE_TERMINAL_LATENT_WIDTH];
+    let flow = &embedding.values
+        [AUDIO_STYLE_TYPED_CHANNEL_FLOW_RANGE.start..AUDIO_STYLE_TYPED_CHANNEL_FLOW_RANGE.end];
+    let flow_outgoing = &flow[..AUDIO_STYLE_TERMINAL_BINS];
+    let flow_incoming = &flow[AUDIO_STYLE_TERMINAL_BINS..AUDIO_STYLE_TERMINAL_BINS * 2];
+    let transition = &embedding.values[AUDIO_STYLE_TYPED_CHANNEL_TRANSITION_RANGE.start
+        ..AUDIO_STYLE_TYPED_CHANNEL_TRANSITION_RANGE.end];
+
+    let terminal_total = terminal
+        .iter()
+        .map(|value| value.abs())
+        .sum::<f32>()
+        .max(1.0e-6);
+    let delta_total = delta
+        .iter()
+        .map(|value| value.abs())
+        .sum::<f32>()
+        .max(1.0e-6);
+    let outgoing_total = flow_outgoing
+        .iter()
+        .map(|value| value.abs())
+        .sum::<f32>()
+        .max(1.0e-6);
+    let incoming_total = flow_incoming
+        .iter()
+        .map(|value| value.abs())
+        .sum::<f32>()
+        .max(1.0e-6);
+    let transition_total = transition
+        .iter()
+        .map(|value| value.abs())
+        .sum::<f32>()
+        .max(1.0e-6);
+
+    let mut brightness = 0.0_f32;
+    let mut energy = 0.0_f32;
+    let mut motion = 0.0_f32;
+    for (index, value) in terminal.iter().enumerate() {
+        let mass = value.abs() / terminal_total;
+        let pitch = (index / 4) as f32 / 15.0;
+        let motion_code = if index % 4 > 0 { 1.0 } else { 0.0 };
+        let energy_code = (index % 4) as f32 / 3.0;
+        brightness += mass * pitch;
+        energy += mass * energy_code;
+        motion += mass * motion_code;
+    }
+
+    let mut delta_motion = 0.0_f32;
+    for (index, value) in delta.iter().enumerate() {
+        delta_motion += value.abs() / delta_total * (index as f32 / 63.0);
+    }
+
+    let mut pulse = 0.0_f32;
+    for index in 0..AUDIO_STYLE_TERMINAL_BINS {
+        pulse += (flow_outgoing[index].abs() / outgoing_total)
+            * (flow_incoming[index].abs() / incoming_total);
+    }
+    pulse = pulse.sqrt();
+
+    let transition_mean = transition_total / AUDIO_STYLE_TRANSITION_WIDTH as f32;
+    let active_transition_share = transition
+        .iter()
+        .filter(|value| value.abs() > transition_mean)
+        .count() as f32
+        / AUDIO_STYLE_TRANSITION_WIDTH as f32;
+    let row_entropy = audio_style_transition_row_entropy(transition);
+    let complexity = 0.5 * active_transition_share + 0.5 * row_entropy;
+
+    [
+        brightness.clamp(0.0, 1.0),
+        energy.clamp(0.0, 1.0),
+        motion.clamp(0.0, 1.0),
+        delta_motion.clamp(0.0, 1.0),
+        pulse.clamp(0.0, 1.0),
+        complexity.clamp(0.0, 1.0),
+    ]
+}
+
+fn audio_style_transition_row_entropy(transition: &[f32]) -> f32 {
+    if transition.len() != AUDIO_STYLE_TRANSITION_WIDTH {
+        return 0.0;
+    }
+    let mut entropy_sum = 0.0_f32;
+    for row in 0..AUDIO_STYLE_TERMINAL_BINS {
+        let start = row * AUDIO_STYLE_TERMINAL_BINS;
+        let end = start + AUDIO_STYLE_TERMINAL_BINS;
+        let row_values = &transition[start..end];
+        let total = row_values
+            .iter()
+            .map(|value| value.abs())
+            .sum::<f32>()
+            .max(1.0e-6);
+        let mut entropy = 0.0_f32;
+        for value in row_values {
+            let probability = (value.abs() / total).max(1.0e-9);
+            entropy -= probability * probability.ln();
+        }
+        entropy_sum += entropy / (AUDIO_STYLE_TERMINAL_BINS as f32).ln();
+    }
+    entropy_sum / AUDIO_STYLE_TERMINAL_BINS as f32
+}
+
+#[cfg(test)]
+pub(crate) fn audio_style_listener_recovery_gate_for_load_for_test(
+    listener_state: &[f32; 6],
+    candidate_load: &[f32; 6],
+    gate_drive: f32,
+) -> f32 {
+    audio_style_listener_recovery_gate_for_load(listener_state, candidate_load, gate_drive)
 }
 
 fn audio_style_relaxed_distributed_candidate_field(values: Vec<f32>) -> Vec<f32> {
@@ -6963,6 +8962,16 @@ fn cached_audio_style_model_evidence_from_snapshot(
                 values: embedding.values.clone(),
             })
             .collect(),
+        indexed_tracks: snapshot
+            .state
+            .indexed_tracks
+            .iter()
+            .map(|(key, indexed)| CachedAudioStyleIndexedTrack {
+                key: CachedPlaybackTrackKey::from(key),
+                track: CachedPlaybackTrack::from(&indexed.track),
+                source: CachedPlaylistPlaybackTrackSource::from(&indexed.source),
+            })
+            .collect(),
     }
 }
 
@@ -6970,7 +8979,8 @@ fn snapshot_from_cached_audio_style_model_evidence(
     cached: CachedAudioStyleModelEvidence,
     path: &Path,
 ) -> Result<AudioStyleModelSnapshot, String> {
-    if cached.version != AUDIO_STYLE_MODEL_EVIDENCE_VERSION {
+    let legacy_v2 = cached.version == AUDIO_STYLE_MODEL_EVIDENCE_LEGACY_V2_VERSION;
+    if cached.version != AUDIO_STYLE_MODEL_EVIDENCE_VERSION && !legacy_v2 {
         return Err(format!(
             "audio style model evidence `{}` has unsupported version `{}`",
             path.display(),
@@ -6998,7 +9008,24 @@ fn snapshot_from_cached_audio_style_model_evidence(
         embeddings.insert(key, Arc::new(embedding));
     }
 
-    AudioStyleModelSnapshot::from_model_evidence(cached.generation, embeddings)
+    let mut indexed_tracks = HashMap::new();
+    if !legacy_v2 {
+        for cached_indexed in cached.indexed_tracks {
+            let key = PlaybackTrackKey::from(cached_indexed.key);
+            if !embeddings.contains_key(&key) {
+                continue;
+            }
+            indexed_tracks.insert(
+                key,
+                AudioStyleIndexedTrack {
+                    track: PlaybackTrack::from(cached_indexed.track),
+                    source: PlaylistPlaybackTrackSource::from(cached_indexed.source),
+                },
+            );
+        }
+    }
+
+    AudioStyleModelSnapshot::from_model_evidence(cached.generation, embeddings, indexed_tracks)
 }
 
 fn read_cached_audio_style_model_evidence(path: &Path) -> Result<AudioStyleModelSnapshot, String> {
@@ -7101,6 +9128,8 @@ pub(crate) fn audio_style_model_artifact_paths(app: &AppHandle) -> Result<Vec<Pa
             .parent()
             .ok_or_else(|| anyhow!("audio style model evidence path has no parent directory"))?
             .to_path_buf(),
+        audio_style_training_invalidation_path(app)?,
+        audio_style_pending_training_input_path(app)?,
     ])
 }
 
@@ -7112,6 +9141,24 @@ fn audio_style_model_evidence_cache_path(app: &AppHandle) -> Result<PathBuf> {
         .context("failed to resolve app cache directory")?
         .join(AUDIO_STYLE_MODEL_EVIDENCE_DIR_NAME)
         .join("stable.json"))
+}
+
+#[cfg(not(test))]
+fn audio_style_training_invalidation_path(app: &AppHandle) -> Result<PathBuf> {
+    Ok(app
+        .path()
+        .app_local_data_dir()
+        .context("failed to resolve app local data directory")?
+        .join(AUDIO_STYLE_TRAINING_INVALIDATION_FILE_NAME))
+}
+
+#[cfg(not(test))]
+fn audio_style_pending_training_input_path(app: &AppHandle) -> Result<PathBuf> {
+    Ok(app
+        .path()
+        .app_local_data_dir()
+        .context("failed to resolve app local data directory")?
+        .join(AUDIO_STYLE_PENDING_TRAINING_INPUT_FILE_NAME))
 }
 
 #[cfg(not(test))]

@@ -549,50 +549,7 @@ pub struct PlaylistRecordPlayableTrackView {
     pub loudness_profile: Option<LoudnessProfile>,
 }
 
-#[derive(Debug, Clone)]
-pub struct AudioStyleTrainingMusicViewParams {}
-
-impl ViewParams for AudioStyleTrainingMusicViewParams {
-    fn bind_view_params(self, stmt: RawSqlStmt) -> anyhow::Result<RawSqlStmt> {
-        Ok(stmt.bind("music_table", Table::from(Music::table_name())))
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone, SurrealValue, View)]
-#[view(
-    sql = r#"
-        SELECT
-            id AS music_record,
-            occurrence_id,
-            alias,
-            canonical_music_id,
-            url,
-            path,
-            start_ms,
-            end_ms,
-            liked,
-            loudness_profile
-        FROM $music_table
-        WHERE path IS NOT NONE
-            AND path != '';
-    "#,
-    params = AudioStyleTrainingMusicViewParams
-)]
-pub struct AudioStyleTrainingMusicView {
-    pub music_record: RecordId,
-    pub occurrence_id: String,
-    pub alias: String,
-    pub canonical_music_id: String,
-    pub url: String,
-    pub path: String,
-    pub start_ms: u32,
-    pub end_ms: u32,
-    pub liked: bool,
-    #[serde(default)]
-    pub loudness_profile: Option<LoudnessProfile>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AudioStyleTrainingTrackInput {
     pub occurrence_id: String,
     pub alias: String,

@@ -14,7 +14,10 @@ use crate::domain::playlist_playback::recommendation::{
 #[cfg(not(test))]
 use crate::domain::playlist_playback::service as playlist_playback_service;
 #[cfg(not(test))]
-use crate::domain::playlist_playback::service::format_audio_style_candidate_basins_for_log;
+use crate::domain::playlist_playback::service::{
+    format_audio_style_candidate_basins_for_log, format_audio_style_perceptual_channels,
+    format_audio_style_topology_health,
+};
 use crate::domain::playlists::model::LoudnessProfile;
 #[cfg(not(test))]
 use crate::domain::playlists::repo as playlist_repo;
@@ -97,7 +100,6 @@ pub(crate) struct PlaylistPlayableIndexSnapshot {
     pub(crate) generation: u64,
     pub(crate) source: Option<PlaylistPlaybackTrackSource>,
     pub(crate) track: Option<PlaybackTrack>,
-    #[cfg(test)]
     pub(crate) source_kind: Option<PlaylistPlayableIndexSourceKind>,
     credential_id: Option<u64>,
 }
@@ -827,7 +829,6 @@ pub(crate) fn read_playlist_source(
         generation: credential.generation,
         source: Some(credential.source.clone()),
         track: Some(credential.track.clone()),
-        #[cfg(test)]
         source_kind: Some(credential.source_kind),
         credential_id: Some(credential.credential_id),
     }))
@@ -1218,8 +1219,7 @@ fn playlist_source_key(source: &PlaylistPlaybackTrackSource) -> String {
     )
 }
 
-#[cfg(not(test))]
-fn source_kind_as_str(source_kind: PlaylistPlayableIndexSourceKind) -> &'static str {
+pub(crate) fn source_kind_as_str(source_kind: PlaylistPlayableIndexSourceKind) -> &'static str {
     match source_kind {
         PlaylistPlayableIndexSourceKind::AudioStyle => "audio_style",
         PlaylistPlayableIndexSourceKind::RandomFallback => "random_fallback",
@@ -2334,9 +2334,14 @@ async fn prepare_playlist_source(
             let candidate_basin_top = format_audio_style_candidate_basins_for_log(
                 &selection_trace.diagnostics.top_candidate_basins,
             );
+            let perceptual_channels = format_audio_style_perceptual_channels(
+                selection_trace.diagnostics.perceptual_channels,
+            );
+            let topology_health =
+                format_audio_style_topology_health(selection_trace.diagnostics.topology_health);
             log::info!(
                 target: PLAYABLE_INDEX_LOG_TARGET,
-                "first_slot_source_prepared playlist=\"{}\" source={} selection_reason={} probability={:.6} candidates={} model_generation={} title=\"{}\" collection=\"{}\" selected_basin=\"{}\" candidate_basin_top=\"{}\"",
+                "first_slot_source_prepared playlist=\"{}\" source={} selection_reason={} probability={:.6} candidates={} model_generation={} title=\"{}\" collection=\"{}\" selected_basin=\"{}\" candidate_basin_top=\"{}\" perceptual_channels=\"{}\" topology_health=\"{}\"",
                 escape_log_value(&selection.playlist_name),
                 selection_trace.source.as_str(),
                 selection_trace.reason.unwrap_or("none"),
@@ -2349,7 +2354,9 @@ async fn prepare_playlist_source(
                 escape_log_value(&track.music_name),
                 escape_log_value(&source.collection_folder),
                 selected_basin,
-                candidate_basin_top
+                candidate_basin_top,
+                perceptual_channels,
+                topology_health
             );
             Ok(Some(PreparedPlaylistSource {
                 source,

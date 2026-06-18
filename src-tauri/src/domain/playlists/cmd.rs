@@ -162,7 +162,7 @@ pub async fn update_music(
             .map_err(|error| error.to_string())?;
 
     if let Some(music) = updated.as_ref() {
-        playlist_playback_service::notify_music_library_inputs_changed("music_identity_update");
+        playlist_playback_service::notify_music_input_changed("music_identity_update", music);
         playlist_playback_service::notify_playable_library_changed();
         request_current_session_track_identity_update(PlaybackTrackIdentityUpdate {
             music_name: music.alias.clone(),
@@ -211,7 +211,7 @@ pub async fn create_music(source_collection_url: String, music: Music) -> Result
     let created = super::repo::create_music(&source_collection_url, &music)
         .await
         .map_err(|error| error.to_string())?;
-    playlist_playback_service::notify_music_library_inputs_changed("music_create");
+    playlist_playback_service::notify_music_input_changed("music_create", &created);
     playlist_playback_service::notify_playable_library_changed();
     Ok(created)
 }

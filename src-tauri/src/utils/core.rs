@@ -72,6 +72,12 @@ pub(super) fn dev_reset_local_data_artifact_paths(local_data_dir: &Path) -> Vec<
         local_data_dir.join(
             crate::domain::playlist_playback::recommendation::AUDIO_STYLE_MODEL_EVIDENCE_DIR_NAME,
         ),
+        local_data_dir.join(
+            crate::domain::playlist_playback::recommendation::AUDIO_STYLE_TRAINING_INVALIDATION_ARTIFACT_FILE_NAME,
+        ),
+        local_data_dir.join(
+            crate::domain::playlist_playback::recommendation::AUDIO_STYLE_PENDING_TRAINING_INPUT_ARTIFACT_FILE_NAME,
+        ),
         local_data_dir.join(crate::domain::loudness_evidence::LOUDNESS_PENDING_TASK_FILE_NAME),
         local_data_dir.join(crate::domain::audio_tail_trim::AUDIO_TAIL_TRIM_PENDING_TASK_FILE_NAME),
     ]

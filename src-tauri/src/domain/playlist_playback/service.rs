@@ -27,7 +27,8 @@ use crate::domain::playlist_playback::recommendation::recommendation_candidate_a
 #[cfg(not(test))]
 use crate::domain::playlist_playback::recommendation::{
     AudioStyleCandidateSelection, initialize_audio_style_recommendation_runtime,
-    notify_audio_style_library_inputs_changed, published_audio_style_model_snapshot,
+    notify_audio_style_library_inputs_changed, notify_audio_style_music_input_changed,
+    notify_audio_style_training_inputs_ready, published_audio_style_model_snapshot,
     published_audio_style_model_snapshots_for_anchor,
 };
 use crate::domain::playlist_playback::recommendation::{
@@ -36,6 +37,8 @@ use crate::domain::playlist_playback::recommendation::{
 };
 #[cfg(not(test))]
 use crate::domain::playlists::model::Music;
+#[cfg(not(test))]
+use crate::domain::playlists::model::AudioStyleTrainingTrackInput;
 #[cfg(not(test))]
 use crate::domain::playlists::repo as playlist_repo;
 use crate::domain::playlists::repo::{PlaylistPlaybackSelection, PlaylistPlaybackTrackSource};
@@ -110,6 +113,19 @@ pub fn initialize_runtime(app: AppHandle) {
 #[cfg(not(test))]
 pub(crate) fn notify_music_library_inputs_changed(reason: &'static str) {
     notify_audio_style_library_inputs_changed(reason);
+}
+
+#[cfg(not(test))]
+pub(crate) fn notify_music_input_changed(reason: &'static str, music: &Music) {
+    notify_audio_style_music_input_changed(reason, music);
+}
+
+#[cfg(not(test))]
+pub(crate) fn notify_music_training_inputs_ready(
+    reason: &'static str,
+    inputs: Vec<AudioStyleTrainingTrackInput>,
+) {
+    notify_audio_style_training_inputs_ready(reason, inputs);
 }
 
 #[cfg(not(test))]
@@ -792,24 +808,28 @@ async fn build_playlist_playback_material(
     let trace_start = Instant::now();
     if let Some(initial) = resolve_prepared_playlist_initial_track(app, playlist_name).await? {
         let release = PlaylistInitialTrackRelease::DirectFirstSlot;
-        debug_assert!(!initial_track_release_requires_loudness_gate(
+        let initial_track = wait_for_initial_track_loudness_evidence(
+            app,
+            playlist_name,
             release,
-            &initial.track,
-        ));
-        let tracks = create_start_anchor_playback_queue(initial.track.clone());
+            initial.track,
+            trace_start,
+        )
+        .await?;
+        let tracks = create_start_anchor_playback_queue(initial_track.clone());
         ensure_playlist_playback_request_current(request)?;
         emit_playlist_playback_trace(
             "playlist-play-material-prepared-initial-track-ok",
             PlaylistPlaybackTrace::new(app)
                 .playlist_name(playlist_name)
-                .track(&initial.track)
+                .track(&initial_track)
                 .elapsed(trace_start)
                 .queue_count(tracks.len()),
         );
         return Ok(Some(PlaylistPlaybackMaterial {
             playlist_name: playlist_name.to_string(),
             initial_prepared_source: Some(initial.prepared_source),
-            initial_track: initial.track,
+            initial_track,
             tracks,
         }));
     }
@@ -939,6 +959,12 @@ fn seed_playlist_session_next_from_prepared_pool(
         recently_played_tracks,
     )?
     else {
+        log::info!(
+            target: PLAYLIST_PLAYBACK_LOG_TARGET,
+            "next track seed skipped source=prepared_first_slot_pool reason=pool_empty playlist=\"{}\" anchor_title=\"{}\"",
+            escape_log_value(playlist_name),
+            escape_log_value(&anchor.music_name)
+        );
         emit_playlist_playback_trace(
             "playlist-playback-prepared-next-miss",
             PlaylistPlaybackTrace::new(app)
@@ -953,7 +979,29 @@ fn seed_playlist_session_next_from_prepared_pool(
     let updated =
         player_service::update_session_tracks_for_anchor(session, anchor, tracks.clone())?;
     if updated {
+        let generation = snapshot.generation;
+        let source_kind = snapshot
+            .source_kind
+            .map(playable_index::source_kind_as_str)
+            .unwrap_or("unknown");
         consume_playlist_initial_prepared_source(&Some(snapshot));
+        log::info!(
+            target: PLAYLIST_PLAYBACK_LOG_TARGET,
+            "next track seeded source=prepared_first_slot_pool prepared_source={} mode=keep_current playlist=\"{}\" anchor_title=\"{}\" title=\"{}\" generation={}",
+            source_kind,
+            escape_log_value(playlist_name),
+            escape_log_value(&anchor.music_name),
+            escape_log_value(&next.music_name),
+            generation
+        );
+    } else {
+        log::warn!(
+            target: PLAYLIST_PLAYBACK_LOG_TARGET,
+            "next track seed skipped source=prepared_first_slot_pool reason=stale_session playlist=\"{}\" anchor_title=\"{}\" title=\"{}\"",
+            escape_log_value(playlist_name),
+            escape_log_value(&anchor.music_name),
+            escape_log_value(&next.music_name)
+        );
     }
     emit_playlist_playback_trace(
         "playlist-playback-prepared-next-session-update",
@@ -1022,6 +1070,13 @@ fn spawn_playlist_track_queue_fill(
 ) {
     let task_playlist_name = playlist_name.clone();
     tauri::async_runtime::spawn(async move {
+        log::info!(
+            target: PLAYLIST_PLAYBACK_LOG_TARGET,
+            "next queue fill worker started playlist=\"{}\" initial_title=\"{}\" session_generation={}",
+            escape_log_value(&playlist_name),
+            escape_log_value(&initial_track.music_name),
+            session.session_generation
+        );
         if let Err(error) = fill_playlist_track_queue(
             app,
             playlist_name,
@@ -1234,11 +1289,10 @@ pub(crate) enum PlaylistInitialTrackRelease {
 }
 
 pub(crate) fn initial_track_release_requires_loudness_gate(
-    release: PlaylistInitialTrackRelease,
+    _release: PlaylistInitialTrackRelease,
     track: &PlaybackTrack,
 ) -> bool {
-    matches!(release, PlaylistInitialTrackRelease::PreparingFirstSlot)
-        && playlist_track_needs_loudness_evidence(track)
+    playlist_track_needs_loudness_evidence(track)
 }
 
 #[cfg(not(test))]
@@ -1282,6 +1336,12 @@ async fn fill_playlist_track_queue(
     let mut current_anchor: Option<PlaybackTrack> = None;
     loop {
         if !player_service::is_session_current(&session)? {
+            log::info!(
+                target: PLAYLIST_PLAYBACK_LOG_TARGET,
+                "next queue fill worker stopped playlist=\"{}\" reason=stale_session session_generation={}",
+                escape_log_value(&playlist_name),
+                session.session_generation
+            );
             return Ok(());
         }
 
@@ -1289,17 +1349,30 @@ async fn fill_playlist_track_queue(
         let recent_history_snapshot =
             observe_playlist_playback_recent_history(&recent_history, active_track.clone())?;
         let queue_has_next = current_session_queue_contains_next(&session, &active_track)?;
+        let queue_count = player_service::current_session_tracks_snapshot()?.len();
         if should_refresh_playlist_queue_for_anchor_after_startup(
             current_anchor.as_ref(),
             &active_track,
             queue_has_next,
         ) {
+            log::info!(
+                target: PLAYLIST_PLAYBACK_LOG_TARGET,
+                "next queue fill refresh started playlist=\"{}\" anchor_title=\"{}\" reason={} queue_count={}",
+                escape_log_value(&playlist_name),
+                escape_log_value(&active_track.music_name),
+                if queue_has_next {
+                    "anchor_changed"
+                } else {
+                    "missing_next"
+                },
+                queue_count
+            );
             emit_playlist_playback_trace(
                 "playlist-playback-queue-fill-refresh-start",
                 PlaylistPlaybackTrace::new(&app)
                     .playlist_name(&playlist_name)
                     .track(&active_track)
-                    .queue_count(player_service::current_session_tracks_snapshot()?.len())
+                    .queue_count(queue_count)
                     .status(if queue_has_next {
                         "anchor_changed"
                     } else {
@@ -1308,20 +1381,12 @@ async fn fill_playlist_track_queue(
             );
             let _guard = queue_refresh_gate.lock().await;
             if current_session_queue_contains_next(&session, &active_track)? {
-                current_anchor = Some(active_track);
-                tokio::time::sleep(std::time::Duration::from_millis(
-                    PLAYLIST_PLAYBACK_QUEUE_REFRESH_INTERVAL_MS,
-                ))
-                .await;
-                continue;
-            }
-            if seed_playlist_session_next_from_prepared_pool(
-                &app,
-                &playlist_name,
-                &session,
-                &active_track,
-                &recent_history_snapshot,
-            )? {
+                log::info!(
+                    target: PLAYLIST_PLAYBACK_LOG_TARGET,
+                    "next queue fill refresh skipped playlist=\"{}\" anchor_title=\"{}\" reason=next_ready_after_gate",
+                    escape_log_value(&playlist_name),
+                    escape_log_value(&active_track.music_name)
+                );
                 current_anchor = Some(active_track);
                 tokio::time::sleep(std::time::Duration::from_millis(
                     PLAYLIST_PLAYBACK_QUEUE_REFRESH_INTERVAL_MS,
@@ -1337,7 +1402,37 @@ async fn fill_playlist_track_queue(
                 &recent_history_snapshot,
                 true,
             )
-            .await?;
+                .await?;
+            if should_seed_playlist_next_from_prepared_pool(
+                current_session_queue_contains_next(&session, &active_track)?,
+            )
+                && seed_playlist_session_next_from_prepared_pool(
+                    &app,
+                    &playlist_name,
+                    &session,
+                    &active_track,
+                    &recent_history_snapshot,
+                )?
+            {
+                current_anchor = Some(active_track);
+                tokio::time::sleep(std::time::Duration::from_millis(
+                    PLAYLIST_PLAYBACK_QUEUE_REFRESH_INTERVAL_MS,
+                ))
+                .await;
+                continue;
+            }
+            log::info!(
+                target: PLAYLIST_PLAYBACK_LOG_TARGET,
+                "next queue fill refresh finished playlist=\"{}\" anchor_title=\"{}\" status={} queue_count={}",
+                escape_log_value(&playlist_name),
+                escape_log_value(&active_track.music_name),
+                if current_session_queue_contains_next(&session, &active_track)? {
+                    "next_ready"
+                } else {
+                    "next_missing"
+                },
+                player_service::current_session_tracks_snapshot()?.len()
+            );
             emit_playlist_playback_trace(
                 "playlist-playback-queue-fill-refresh-finished",
                 PlaylistPlaybackTrace::new(&app)
@@ -1352,13 +1447,44 @@ async fn fill_playlist_track_queue(
                         },
                     ),
             );
-            current_anchor = Some(active_track);
+            current_anchor = Some(active_track.clone());
         }
 
-        tokio::time::sleep(std::time::Duration::from_millis(
-            PLAYLIST_PLAYBACK_QUEUE_REFRESH_INTERVAL_MS,
-        ))
-        .await;
+        if current_session_queue_contains_next(&session, &active_track)? {
+            wait_for_playlist_queue_fill_demand(&playlist_name, &session).await?;
+        } else {
+            tokio::time::sleep(std::time::Duration::from_millis(
+                PLAYLIST_PLAYBACK_QUEUE_REFRESH_INTERVAL_MS,
+            ))
+            .await;
+        }
+    }
+}
+
+pub(crate) fn should_seed_playlist_next_from_prepared_pool(queue_has_next: bool) -> bool {
+    !queue_has_next
+}
+
+#[cfg(not(test))]
+async fn wait_for_playlist_queue_fill_demand(
+    playlist_name: &str,
+    session: &player_service::PlaybackSessionHandle,
+) -> Result<()> {
+    let Some(mut track_revision) = player_service::subscribe_session_track_revision(session)?
+    else {
+        return Ok(());
+    };
+    match track_revision.changed().await {
+        Ok(()) => Ok(()),
+        Err(_) => {
+            log::info!(
+                target: PLAYLIST_PLAYBACK_LOG_TARGET,
+                "next queue fill worker revision wait ended playlist=\"{}\" reason=track_revision_closed session_generation={}",
+                escape_log_value(playlist_name),
+                session.session_generation
+            );
+            Ok(())
+        }
     }
 }
 
@@ -1525,6 +1651,18 @@ async fn refresh_playlist_track_queue_for_anchor(
         PlaylistPlaybackRecommendationMode::KeepCurrent,
         &tracks,
     ) {
+        log::warn!(
+            target: PLAYLIST_PLAYBACK_LOG_TARGET,
+            "next track proposal skipped reason=missing_next playlist=\"{}\" anchor_title=\"{}\" queue_source={} tracks={}",
+            escape_log_value(playlist_name),
+            escape_log_value(&current_track.music_name),
+            if readiness.is_ready() {
+                "audio_style"
+            } else {
+                "random_unavailable_audio_style"
+            },
+            tracks.len()
+        );
         emit_playlist_playback_trace(
             "playlist-playback-next-slot-not-ready",
             PlaylistPlaybackTrace::new(app)
@@ -1535,7 +1673,28 @@ async fn refresh_playlist_track_queue_for_anchor(
         );
         return Ok(true);
     }
-    player_service::update_session_tracks_for_anchor(session, &current_track, tracks)
+    let next_title = next_track_for_recommendation_mode(
+        PlaylistPlaybackRecommendationMode::KeepCurrent,
+        &tracks,
+    )
+    .map(|track| escape_log_value(&track.music_name))
+    .unwrap_or_else(|| "none".to_string());
+    let queue_source = if readiness.is_ready() {
+        "audio_style"
+    } else {
+        "random_unavailable_audio_style"
+    };
+    let updated = player_service::update_session_tracks_for_anchor(session, &current_track, tracks)?;
+    log::info!(
+        target: PLAYLIST_PLAYBACK_LOG_TARGET,
+        "next track queued source=proposal queue_source={} mode=keep_current playlist=\"{}\" anchor_title=\"{}\" title=\"{}\" updated={}",
+        queue_source,
+        escape_log_value(playlist_name),
+        escape_log_value(&current_track.music_name),
+        next_title,
+        updated
+    );
+    Ok(updated)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2034,6 +2193,8 @@ fn propose_random_playlist_playback_queue_with_trace(
             selected_basin: None,
             top_candidate_basins: "none".to_string(),
             bio_route: "none".to_string(),
+            perceptual_channels: "none".to_string(),
+            topology_health: "none".to_string(),
         }
     });
     PlaylistPlaybackQueueProposal { tracks, selection }
@@ -2063,6 +2224,8 @@ struct PlaylistPlaybackSelectionTrace {
     selected_basin: Option<String>,
     top_candidate_basins: String,
     bio_route: String,
+    perceptual_channels: String,
+    topology_health: String,
 }
 
 #[cfg(not(test))]
@@ -2087,6 +2250,12 @@ impl From<&AudioStyleCandidateSelection> for PlaylistPlaybackSelectionTrace {
                 &selection.diagnostics.top_candidate_basins,
             ),
             bio_route: format_audio_style_bio_route(selection.diagnostics.bio_route),
+            perceptual_channels: format_audio_style_perceptual_channels(
+                selection.diagnostics.perceptual_channels,
+            ),
+            topology_health: format_audio_style_topology_health(
+                selection.diagnostics.topology_health,
+            ),
         }
     }
 }
@@ -2106,6 +2275,43 @@ fn format_audio_style_bio_route(
                 diagnostics.damping,
                 diagnostics.local_gate,
                 diagnostics.final_weight
+            )
+        })
+        .unwrap_or_else(|| "none".to_string())
+}
+
+#[cfg(not(test))]
+pub(crate) fn format_audio_style_perceptual_channels(
+    diagnostics: Option<super::recommendation::AudioStylePerceptualChannelDiagnostics>,
+) -> String {
+    diagnostics
+        .map(|diagnostics| {
+            format!(
+                "terminal:{:.3},flow:{:.3},transition:{:.3},consensus:{:.3},disagreement:{:.3},topology_gate:{:.3},active_challenger_axis_count:{}",
+                diagnostics.terminal_similarity,
+                diagnostics.flow_similarity,
+                diagnostics.transition_similarity,
+                diagnostics.consensus,
+                diagnostics.disagreement,
+                diagnostics.topology_gate,
+                diagnostics.active_challenger_axis_count
+            )
+        })
+        .unwrap_or_else(|| "none".to_string())
+}
+
+#[cfg(not(test))]
+pub(crate) fn format_audio_style_topology_health(
+    diagnostics: Option<super::recommendation::AudioStyleTopologyHealthDiagnostics>,
+) -> String {
+    diagnostics
+        .map(|diagnostics| {
+            format!(
+                "neighbor_overlap:{:.3},spectral_rank_retention:{:.3},mcr2_margin:{:.3},density_owner_best_vote_count:{}",
+                diagnostics.candidate_projection_neighbor_overlap,
+                diagnostics.candidate_projection_spectral_rank_retention,
+                diagnostics.candidate_projection_mcr2_margin,
+                diagnostics.density_owner_best_vote_count
             )
         })
         .unwrap_or_else(|| "none".to_string())
@@ -2214,10 +2420,18 @@ fn log_playlist_playback_next_track_selection(
         .as_ref()
         .map(|trace| trace.bio_route.as_str())
         .unwrap_or("none");
+    let perceptual_channels = trace
+        .as_ref()
+        .map(|trace| trace.perceptual_channels.as_str())
+        .unwrap_or("none");
+    let topology_health = trace
+        .as_ref()
+        .map(|trace| trace.topology_health.as_str())
+        .unwrap_or("none");
 
     log::info!(
         target: PLAYLIST_PLAYBACK_LOG_TARGET,
-        "next track proposed source={source} requested_source={requested_source} mode={} model_generation={model_generation} probability={probability:.6} uniform_probability={uniform_probability:.6} similarity={similarity} best_similarity={best_similarity} local_rank_fraction={local_rank_fraction} draw={draw} candidates={candidate_count} anchor_embedded={anchor_embedded} embedded_candidates={embedded_candidate_count} valid_similarities={valid_similarity_count} selected_basin=\"{selected_basin}\" candidate_basin_top=\"{candidate_basin_top}\" bio_route=\"{bio_route}\" reason={reason} playlist=\"{}\" title=\"{}\" integrated_lufs={}",
+        "next track proposed source={source} requested_source={requested_source} mode={} model_generation={model_generation} probability={probability:.6} uniform_probability={uniform_probability:.6} similarity={similarity} best_similarity={best_similarity} local_rank_fraction={local_rank_fraction} draw={draw} candidates={candidate_count} anchor_embedded={anchor_embedded} embedded_candidates={embedded_candidate_count} valid_similarities={valid_similarity_count} selected_basin=\"{selected_basin}\" candidate_basin_top=\"{candidate_basin_top}\" bio_route=\"{bio_route}\" perceptual_channels=\"{perceptual_channels}\" topology_health=\"{topology_health}\" reason={reason} playlist=\"{}\" title=\"{}\" integrated_lufs={}",
         mode.as_str(),
         escape_log_value(&next_track.playlist_name),
         escape_log_value(&next_track.music_name),

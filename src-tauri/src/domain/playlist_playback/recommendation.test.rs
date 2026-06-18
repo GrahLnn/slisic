@@ -1,16 +1,21 @@
 use super::recommendation::{
     AUDIO_STYLE_EMBEDDING_VERSION_FOR_TEST, AudioStyleEmbeddingCache, AudioStyleModelSnapshot,
-    AudioStylePlaylistPlaybackRecommender, audio_style_training_path_is_transient_for_test,
-    audio_style_transition_fingerprint_for_test, choose_audio_style_model_snapshots_for_anchor,
+    AudioStylePlaylistPlaybackRecommender, audio_style_startup_input_coverage_for_test,
+    audio_style_training_path_is_transient_for_test, audio_style_transition_fingerprint_for_test,
+    choose_audio_style_model_snapshots_for_anchor,
     choose_centerless_audio_style_candidate_for_test, choose_next_audio_style_candidate_for_test,
     choose_next_audio_style_candidate_with_generation_for_test,
     choose_next_audio_style_candidate_with_recent_history_for_test,
     filter_recently_played_recommendation_candidates,
+    read_audio_style_pending_training_input_file_for_test,
     read_cached_audio_style_model_evidence_for_test,
+    upsert_audio_style_pending_training_input_file_for_test,
     write_cached_audio_style_model_evidence_for_test,
 };
 use crate::domain::player::model::PlaybackTrack;
-use crate::domain::playlists::model::{CollectionGroupOwner, Group, LoudnessProfile, Music};
+use crate::domain::playlists::model::{
+    AudioStyleTrainingTrackInput, CollectionGroupOwner, Group, LoudnessProfile, Music,
+};
 use crate::domain::playlists::repo::PlaylistPlaybackTrackSource;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -143,6 +148,52 @@ fn nearby_open_basin_embedding() -> Vec<f32> {
 
 fn basin_neighbor_embedding() -> Vec<f32> {
     dense_embedding(&[(2, 0.995), (129, 0.099_874_92)])
+}
+
+fn listener_load_embedding(
+    terminal_bin: usize,
+    delta_bin: usize,
+    flow_bin: usize,
+    transition: (usize, usize),
+    support: f32,
+) -> Vec<f32> {
+    let terminal_offset = terminal_bin.min(63);
+    let delta_offset = 64 + delta_bin.min(63);
+    let flow_outgoing_offset = 128 + flow_bin.min(63);
+    let flow_incoming_offset = 128 + 64 + flow_bin.min(63);
+    let transition_offset = 256 + transition.0.min(63) * 64 + transition.1.min(63);
+    dense_embedding(&[
+        (terminal_offset, 0.60),
+        (delta_offset, 0.32),
+        (flow_outgoing_offset, 0.34),
+        (flow_incoming_offset, 0.34),
+        (transition_offset, support),
+    ])
+}
+
+fn audio_style_selection_share(
+    current: &PlaybackTrack,
+    candidates: &[PlaybackTrack],
+    recommender: &AudioStylePlaylistPlaybackRecommender,
+    recently_played_tracks: &[PlaybackTrack],
+    selected_index: usize,
+) -> f32 {
+    let samples = 200usize;
+    let hits = (0..samples)
+        .filter(|draw_index| {
+            let draw = (*draw_index as f32 + 0.5) / samples as f32;
+            choose_next_audio_style_candidate_with_recent_history_for_test(
+                current,
+                candidates,
+                recommender,
+                recently_played_tracks,
+                draw,
+            )
+            .index
+                == selected_index
+        })
+        .count();
+    hits as f32 / samples as f32
 }
 
 fn sine_wave(hz: f32, seconds: f32) -> Vec<f32> {
@@ -652,11 +703,11 @@ fn audio_style_region_pressure_reduces_repeated_model_region_without_changing_ba
     embeddings.extend([
         (
             same_region.clone(),
-            dense_embedding(&[(0, 0.98), (1, 0.20)]),
+            dense_embedding(&[(0, 0.98), (2, 0.20)]),
         ),
         (
             open_region.clone(),
-            dense_embedding(&[(0, 0.97), (2, 0.243)]),
+            dense_embedding(&[(0, 0.80), (3, 0.60)]),
         ),
     ]);
     let recommender = AudioStylePlaylistPlaybackRecommender::from_test_embeddings(embeddings);
@@ -666,7 +717,7 @@ fn audio_style_region_pressure_reduces_repeated_model_region_without_changing_ba
         &[same_region.clone(), open_region.clone()],
         &recommender,
         &[],
-        0.0,
+        0.01,
     );
     let with_region_history = choose_next_audio_style_candidate_with_recent_history_for_test(
         &current,
@@ -728,6 +779,109 @@ fn audio_style_readonly_route_pressure_moves_out_of_recent_style_macro_basin() {
     assert_eq!(with_history_same_style.index, 0);
     assert!(with_history_same_style.probability < without_history_same_style.probability);
     assert!(with_history_same_style.probability > 0.0);
+}
+
+#[test]
+fn audio_style_local_region_fatigue_moves_out_of_repeated_audio_neighborhood() {
+    let current = track_in_basin("Current", "current");
+    let recent = (0..9)
+        .map(|index| track_in_basin(&format!("Recent {index}"), &format!("recent_{index}")))
+        .collect::<Vec<_>>();
+    let sticky_local = track_in_basin("Fresh Local", "sticky_local");
+    let open_local = track_in_basin("Fresh Open", "open_local");
+    let mut embeddings = vec![(current.clone(), dense_embedding(&[(0, 1.0)]))];
+    embeddings.extend(
+        recent
+            .iter()
+            .cloned()
+            .map(|track| (track, dense_embedding(&[(0, 0.92), (1, 0.391_918)]))),
+    );
+    embeddings.extend([
+        (
+            sticky_local.clone(),
+            dense_embedding(&[(0, 0.92), (1, 0.391_918)]),
+        ),
+        (
+            open_local.clone(),
+            dense_embedding(&[(0, 0.90), (2, 0.435_89)]),
+        ),
+    ]);
+    let recommender = AudioStylePlaylistPlaybackRecommender::from_test_embeddings(embeddings);
+
+    let without_history = choose_next_audio_style_candidate_with_recent_history_for_test(
+        &current,
+        &[sticky_local.clone(), open_local.clone()],
+        &recommender,
+        &[],
+        0.0,
+    );
+    let with_history = choose_next_audio_style_candidate_with_recent_history_for_test(
+        &current,
+        &[sticky_local.clone(), open_local.clone()],
+        &recommender,
+        &recent,
+        0.01,
+    );
+
+    assert_eq!(without_history.index, 0);
+    assert_eq!(with_history.index, 1);
+    assert!(with_history.probability > with_history.uniform_probability);
+}
+
+#[test]
+fn audio_style_broad_region_fatigue_reduces_weak_attractor_domain_without_single_neighbor_match() {
+    let current = track_in_basin("Current", "current");
+    let recent = (0..10)
+        .map(|index| track_in_basin(&format!("Recent {index}"), &format!("recent_{index}")))
+        .collect::<Vec<_>>();
+    let broad_domain = track_in_basin("Fresh Broad Domain", "broad_domain");
+    let open_domain = track_in_basin("Fresh Open Domain", "open_domain");
+    let mut embeddings = vec![(current.clone(), dense_embedding(&[(0, 1.0)]))];
+    embeddings.extend(recent.iter().enumerate().map(|(index, track)| {
+        let scatter_axis = 32 + index;
+        (
+            track.clone(),
+            dense_embedding(&[(0, 0.80), (1, 0.28), (scatter_axis, 0.53)]),
+        )
+    }));
+    embeddings.extend([
+        (
+            broad_domain.clone(),
+            dense_embedding(&[(0, 0.80), (1, 0.28), (80, 0.53)]),
+        ),
+        (
+            open_domain.clone(),
+            dense_embedding(&[(0, 0.78), (2, 0.32), (90, 0.54)]),
+        ),
+    ]);
+    let recommender = AudioStylePlaylistPlaybackRecommender::from_test_embeddings(embeddings);
+
+    let without_history = choose_next_audio_style_candidate_with_recent_history_for_test(
+        &current,
+        &[broad_domain.clone(), open_domain.clone()],
+        &recommender,
+        &[],
+        0.0,
+    );
+    let with_history = choose_next_audio_style_candidate_with_recent_history_for_test(
+        &current,
+        &[broad_domain.clone(), open_domain.clone()],
+        &recommender,
+        &recent,
+        0.0,
+    );
+
+    assert_eq!(without_history.index, 0);
+    assert_eq!(with_history.index, 0);
+    assert!(with_history.probability < without_history.probability);
+    assert!(with_history.probability > 0.0);
+    assert!(
+        with_history
+            .diagnostics
+            .bio_route
+            .is_some_and(|route| route.damping > 0.0),
+        "broad local-field fatigue should be visible even without one strong recent-neighbor match"
+    );
 }
 
 #[test]
@@ -1027,6 +1181,319 @@ fn audio_style_bio_route_hcr_dendrite_prefers_open_basin_without_replacing_dista
     assert!(open_selection.probability > 0.50);
     assert_eq!(distance_selection.index, 1);
     assert!(distance_selection.probability > 0.0);
+}
+
+#[test]
+fn audio_style_selection_keeps_typed_perceptual_channels_until_candidate_topology() {
+    let current = track_in_basin("Current", "current");
+    let same_scalar = track_in_basin("Current", "same_scalar");
+    let open_transition = track_in_basin("Open", "open_transition");
+    let open_neighbor = track_in_basin("Open", "open_neighbor");
+    let recommender = AudioStylePlaylistPlaybackRecommender::from_test_embeddings([
+        (
+            current.clone(),
+            dense_embedding(&[(0, 0.62), (128, 0.30), (256, 0.72)]),
+        ),
+        (
+            same_scalar.clone(),
+            dense_embedding(&[(0, 0.64), (128, 0.29), (320, 0.70)]),
+        ),
+        (
+            open_transition.clone(),
+            dense_embedding(&[(1, 0.58), (129, 0.31), (256, 0.74)]),
+        ),
+        (
+            open_neighbor,
+            dense_embedding(&[(1, 0.57), (129, 0.32), (256, 0.73)]),
+        ),
+    ]);
+
+    let selection = choose_next_audio_style_candidate_with_recent_history_for_test(
+        &current,
+        &[same_scalar.clone(), open_transition.clone()],
+        &recommender,
+        &[],
+        0.99,
+    );
+
+    assert!(
+        selection.diagnostics.perceptual_channels.is_some(),
+        "candidate selection must preserve typed perceptual channels instead of reporting only a scalar style score"
+    );
+    let channels = selection
+        .diagnostics
+        .perceptual_channels
+        .expect("typed channel diagnostics should exist");
+    assert!(channels.transition_similarity.is_finite());
+    assert!(channels.topology_gate >= 0.18);
+    assert!(channels.active_challenger_axis_count <= 3);
+    let topology = selection
+        .diagnostics
+        .topology_health
+        .expect("candidate projection topology telemetry should exist");
+    assert!(topology.candidate_projection_spectral_rank_retention >= 0.0);
+    assert!(topology.candidate_projection_neighbor_overlap >= 0.0);
+    assert!(topology.density_owner_best_vote_count >= 1);
+}
+
+#[test]
+fn audio_style_typed_channels_keep_transition_neighbor_sampleable_under_scalar_stickiness() {
+    let current = track_in_basin("Current", "current");
+    let recent = (0..8)
+        .map(|index| track_in_basin("Current", &format!("recent_{index}")))
+        .collect::<Vec<_>>();
+    let repeated = track_in_basin("Current", "repeated");
+    let open_transition = track_in_basin("Open", "open_transition");
+    let open_neighbor = track_in_basin("Open", "open_neighbor");
+    let mut embeddings = vec![
+        (
+            current.clone(),
+            dense_embedding(&[(0, 0.72), (128, 0.28), (260, 0.63)]),
+        ),
+        (
+            repeated.clone(),
+            dense_embedding(&[(0, 0.74), (128, 0.27), (400, 0.62)]),
+        ),
+        (
+            open_transition.clone(),
+            dense_embedding(&[(6, 0.62), (135, 0.30), (260, 0.70)]),
+        ),
+        (
+            open_neighbor,
+            dense_embedding(&[(6, 0.61), (135, 0.31), (260, 0.69)]),
+        ),
+    ];
+    embeddings.extend(recent.iter().cloned().map(|track| {
+        (
+            track,
+            dense_embedding(&[(0, 0.72), (128, 0.28), (401, 0.62)]),
+        )
+    }));
+    let recommender = AudioStylePlaylistPlaybackRecommender::from_test_embeddings(embeddings);
+
+    let selection = choose_next_audio_style_candidate_with_recent_history_for_test(
+        &current,
+        &[repeated.clone(), open_transition.clone()],
+        &recommender,
+        &recent,
+        0.40,
+    );
+
+    assert_eq!(selection.index, 1);
+    assert!(selection.probability > selection.uniform_probability);
+    assert!(
+        selection
+            .diagnostics
+            .perceptual_channels
+            .is_some_and(|channels| channels.transition_similarity > channels.terminal_similarity),
+        "transition channel evidence should survive until candidate topology"
+    );
+}
+
+#[test]
+fn audio_style_frontier_reserve_keeps_boundary_basin_flowing_in_narrow_candidate_pool() {
+    let current = track_in_basin("Current", "current");
+    let recent = (0..12)
+        .map(|index| track_in_basin("Current", &format!("recent_{index}")))
+        .collect::<Vec<_>>();
+    let same_a = track_in_basin("Current", "same_a");
+    let same_b = track_in_basin("Current", "same_b");
+    let boundary = track_in_basin("Boundary", "boundary");
+    let boundary_neighbor = track_in_basin("Boundary", "boundary_neighbor");
+    let far = track_in_basin("Far", "far");
+    let mut embeddings = vec![
+        (current.clone(), dense_embedding(&[(0, 1.0)])),
+        (same_a.clone(), dense_embedding(&[(0, 0.95), (3, 0.31)])),
+        (same_b.clone(), dense_embedding(&[(0, 0.95), (3, 0.31)])),
+        (boundary.clone(), dense_embedding(&[(0, 0.72), (10, 0.69)])),
+        (boundary_neighbor, dense_embedding(&[(0, 0.71), (10, 0.70)])),
+        (far.clone(), dense_embedding(&[(48, 1.0)])),
+    ];
+    embeddings.extend(
+        recent
+            .iter()
+            .cloned()
+            .map(|track| (track, dense_embedding(&[(0, 0.95), (3, 0.31)]))),
+    );
+    let recommender = AudioStylePlaylistPlaybackRecommender::from_test_embeddings(embeddings);
+
+    let without_history = choose_next_audio_style_candidate_with_recent_history_for_test(
+        &current,
+        &[
+            same_a.clone(),
+            same_b.clone(),
+            boundary.clone(),
+            far.clone(),
+        ],
+        &recommender,
+        &[],
+        0.68,
+    );
+    let with_history = choose_next_audio_style_candidate_with_recent_history_for_test(
+        &current,
+        &[
+            same_a.clone(),
+            same_b.clone(),
+            boundary.clone(),
+            far.clone(),
+        ],
+        &recommender,
+        &recent,
+        0.68,
+    );
+
+    assert_ne!(without_history.index, 3);
+    assert_eq!(with_history.index, 2);
+    assert!(with_history.probability > without_history.probability);
+    assert!(
+        with_history
+            .diagnostics
+            .bio_route
+            .is_some_and(|route| route.final_weight > 0.0),
+        "frontier reserve should preserve an existing boundary candidate without turning far jumps into exits"
+    );
+}
+
+#[test]
+fn audio_style_listener_recovery_gate_favors_short_term_perceptual_recovery() {
+    let listener_state = [0.82, 0.78, 0.74, 0.70, 0.68, 0.76];
+    let repeated_load = [0.86, 0.82, 0.78, 0.74, 0.70, 0.80];
+    let recovery_load = [0.32, 0.30, 0.28, 0.26, 0.24, 0.30];
+    let shock_load = [0.0, 0.0, 0.0, 1.0, 1.0, 0.0];
+
+    let repeated_gate = super::recommendation::audio_style_listener_recovery_gate_for_load_for_test(
+        &listener_state,
+        &repeated_load,
+        0.8,
+    );
+    let recovery_gate = super::recommendation::audio_style_listener_recovery_gate_for_load_for_test(
+        &listener_state,
+        &recovery_load,
+        0.8,
+    );
+    let shock_gate = super::recommendation::audio_style_listener_recovery_gate_for_load_for_test(
+        &listener_state,
+        &shock_load,
+        0.8,
+    );
+
+    assert!(repeated_gate < 1.0);
+    assert!(recovery_gate > repeated_gate * 1.35);
+    assert!(shock_gate < recovery_gate);
+}
+
+#[test]
+fn audio_style_listener_recovery_keeps_bio_route_weight_positive() {
+    let current = track_in_basin("Current", "current");
+    let recent = (0..10)
+        .map(|index| track_in_basin("Current", &format!("recent_load_{index}")))
+        .collect::<Vec<_>>();
+    let repeated_load = track_in_basin("Current", "repeated_load");
+    let recovery = track_in_basin("Open", "recovery");
+    let recovery_neighbor = track_in_basin("Open", "recovery_neighbor");
+    let far = track_in_basin("Far", "far");
+    let high_load = listener_load_embedding(60, 58, 58, (58, 58), 0.52);
+    let recovery_load = listener_load_embedding(24, 12, 14, (14, 18), 0.30);
+    let far_load = dense_embedding(&[
+        (60, -0.60),
+        (64 + 58, -0.32),
+        (128 + 58, -0.34),
+        (128 + 64 + 58, -0.34),
+        (256 + 58 * 64 + 58, -0.52),
+    ]);
+    let mut embeddings = vec![
+        (
+            current.clone(),
+            listener_load_embedding(58, 56, 56, (56, 56), 0.52),
+        ),
+        (repeated_load.clone(), high_load.clone()),
+        (recovery.clone(), recovery_load.clone()),
+        (recovery_neighbor, recovery_load),
+        (far.clone(), far_load),
+    ];
+    embeddings.extend(
+        recent
+            .iter()
+            .cloned()
+            .map(|track| (track, high_load.clone())),
+    );
+    let recommender = AudioStylePlaylistPlaybackRecommender::from_test_embeddings(embeddings);
+
+    let without_history = choose_next_audio_style_candidate_with_recent_history_for_test(
+        &current,
+        &[repeated_load.clone(), recovery.clone(), far.clone()],
+        &recommender,
+        &[],
+        0.0,
+    );
+    let with_history_low_draw = choose_next_audio_style_candidate_with_recent_history_for_test(
+        &current,
+        &[repeated_load.clone(), recovery.clone(), far.clone()],
+        &recommender,
+        &recent,
+        0.0,
+    );
+    assert_eq!(without_history.index, 0);
+    assert_eq!(with_history_low_draw.index, 0);
+    assert!(
+        with_history_low_draw
+            .diagnostics
+            .bio_route
+            .is_some_and(|route| route.final_weight > 0.0),
+        "listener recovery should reshape candidate readout without deleting the topology flow"
+    );
+}
+
+#[test]
+fn audio_style_basin_mass_homeostasis_flattens_weak_attractor_family() {
+    let dominant_recent = (0..8)
+        .map(|index| track_in_basin("Dominant", &format!("recent_{index}")))
+        .collect::<Vec<_>>();
+    let dominant = (0..4)
+        .map(|index| track_in_basin("Dominant", &format!("candidate_{index}")))
+        .collect::<Vec<_>>();
+    let open_a = track_in_basin("Open A", "candidate");
+    let open_b = track_in_basin("Open B", "candidate");
+    let candidates = [
+        dominant[0].clone(),
+        dominant[1].clone(),
+        dominant[2].clone(),
+        dominant[3].clone(),
+        open_a,
+        open_b,
+    ];
+    let base = [0.24, 0.22, 0.20, 0.18, 0.08, 0.08];
+
+    let gate = super::recommendation::audio_style_basin_mass_homeostasis_gate_for_test(
+        &candidates,
+        &base,
+        &dominant_recent,
+    );
+
+    assert!(gate[0] < 0.85);
+    assert!(gate[1] < 0.85);
+    assert!(gate[4] > gate[0]);
+    assert!(gate[5] > gate[1]);
+    assert!(gate[4] >= 0.95);
+    assert!(gate[5] >= 0.95);
+}
+
+#[test]
+fn audio_style_basin_mass_homeostasis_preserves_balanced_candidate_field() {
+    let candidates = [
+        track_in_basin("Dominant", "candidate_0"),
+        track_in_basin("Dominant", "candidate_1"),
+        track_in_basin("Dominant", "candidate_2"),
+        track_in_basin("Dominant", "candidate_3"),
+        track_in_basin("Open A", "candidate"),
+        track_in_basin("Open B", "candidate"),
+    ];
+    let base = [0.125, 0.125, 0.125, 0.125, 0.25, 0.25];
+
+    let gate =
+        super::recommendation::audio_style_basin_mass_homeostasis_gate_for_test(&candidates, &base, &[]);
+
+    assert!(gate.iter().all(|value| *value >= 0.95));
 }
 
 #[test]
@@ -1359,8 +1826,8 @@ fn audio_style_centerless_source_ignores_scoped_tracks_without_embeddings() {
 }
 
 #[test]
-fn restored_audio_style_model_evidence_does_not_restore_indexed_sources() {
-    let root = temp_cache_root("model-evidence-no-source");
+fn restored_audio_style_model_evidence_restores_indexed_sources() {
+    let root = temp_cache_root("model-evidence-source");
     std::fs::create_dir_all(&root).expect("cache test root should be created");
     let path = root.join("stable.json");
     let old_source = "source:old".to_string();
@@ -1386,13 +1853,12 @@ fn restored_audio_style_model_evidence_does_not_restore_indexed_sources() {
 
     assert_eq!(restored.generation(), 11);
     assert!(restored.recommender().has_embedding_for(&old_track));
-    assert!(
-        restored
-            .recommender()
-            .propose_centerless_source(|_| true)
-            .is_none(),
-        "restored model evidence must not manufacture playlist sources"
-    );
+    let (after_source, after_selection) = restored
+        .recommender()
+        .propose_centerless_source(|source| source.collection_folder == old_source)
+        .expect("v3 model evidence should restore indexed source evidence");
+    assert_eq!(after_source.collection_folder, old_source);
+    assert_eq!(after_selection.candidate_count, 1);
 }
 
 #[test]
@@ -1617,6 +2083,52 @@ fn audio_style_model_refresh_keeps_previous_snapshot_when_inputs_are_unchanged()
     assert!(refreshed.recommender().has_embedding_for(&other));
 
     let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn audio_style_startup_input_coverage_distinguishes_restored_evidence_from_current_inputs() {
+    use super::recommendation::AudioStyleStartupInputCoverage;
+
+    let current = track("current");
+    let other = track("other");
+    let added = track("added");
+    let legacy_restored = AudioStyleModelSnapshot::from_test_embeddings(
+        5,
+        [
+            (current.clone(), embedding(2)),
+            (other.clone(), embedding(3)),
+        ],
+    );
+    let indexed_restored = AudioStyleModelSnapshot::from_test_indexed_embeddings(
+        6,
+        [
+            (current.clone(), embedding(2), "album".to_string()),
+            (other.clone(), embedding(3), "album".to_string()),
+        ],
+    );
+
+    assert_eq!(
+        audio_style_startup_input_coverage_for_test(
+            &legacy_restored,
+            vec![current.clone(), other.clone()],
+        ),
+        AudioStyleStartupInputCoverage::MissingMetadata
+    );
+    assert_eq!(
+        audio_style_startup_input_coverage_for_test(
+            &indexed_restored,
+            vec![current.clone(), other.clone()],
+        ),
+        AudioStyleStartupInputCoverage::Covered
+    );
+    assert_eq!(
+        audio_style_startup_input_coverage_for_test(&indexed_restored, vec![current, other, added]),
+        AudioStyleStartupInputCoverage::Changed
+    );
+    assert_eq!(
+        audio_style_startup_input_coverage_for_test(&indexed_restored, vec![]),
+        AudioStyleStartupInputCoverage::Empty
+    );
 }
 
 #[test]
@@ -2173,24 +2685,248 @@ fn stable_audio_style_snapshot_publication_refreshes_first_slot_only_on_availabi
 #[test]
 fn audio_style_startup_skips_training_when_model_evidence_restores_without_input_changes() {
     use super::recommendation::{
-        AudioStyleStartupTrainingDecision, audio_style_startup_training_decision,
+        AudioStyleStartupInputCoverage, AudioStyleStartupTrainingDecision,
+        audio_style_startup_training_decision,
     };
 
     assert_eq!(
-        audio_style_startup_training_decision(true, 0),
+        audio_style_startup_training_decision(
+            true,
+            0,
+            0,
+            0,
+            AudioStyleStartupInputCoverage::Covered,
+        ),
         AudioStyleStartupTrainingDecision::SkipRestoredEvidence
     );
     assert_eq!(
-        audio_style_startup_training_decision(false, 0),
-        AudioStyleStartupTrainingDecision::TrainInitialModel
+        audio_style_startup_training_decision(
+            false,
+            0,
+            0,
+            0,
+            AudioStyleStartupInputCoverage::Covered,
+        ),
+        AudioStyleStartupTrainingDecision::SkipNoTrainingInputs
     );
     assert_eq!(
-        audio_style_startup_training_decision(true, 2),
+        audio_style_startup_training_decision(
+            true,
+            2,
+            0,
+            0,
+            AudioStyleStartupInputCoverage::Covered,
+        ),
         AudioStyleStartupTrainingDecision::TrainPendingInputChanges
     );
     assert_eq!(
-        audio_style_startup_training_decision(false, 2),
+        audio_style_startup_training_decision(
+            false,
+            2,
+            0,
+            0,
+            AudioStyleStartupInputCoverage::Covered,
+        ),
         AudioStyleStartupTrainingDecision::TrainPendingInputChanges
+    );
+    assert_eq!(
+        audio_style_startup_training_decision(
+            false,
+            0,
+            2,
+            0,
+            AudioStyleStartupInputCoverage::Covered,
+        ),
+        AudioStyleStartupTrainingDecision::TrainPendingInputChanges
+    );
+    assert_eq!(
+        audio_style_startup_training_decision(
+            true,
+            0,
+            2,
+            0,
+            AudioStyleStartupInputCoverage::Covered,
+        ),
+        AudioStyleStartupTrainingDecision::TrainPendingInputChanges
+    );
+    assert_eq!(
+        audio_style_startup_training_decision(
+            true,
+            0,
+            0,
+            1,
+            AudioStyleStartupInputCoverage::Covered,
+        ),
+        AudioStyleStartupTrainingDecision::TrainPendingInputChanges
+    );
+    assert_eq!(
+        audio_style_startup_training_decision(
+            false,
+            0,
+            0,
+            1,
+            AudioStyleStartupInputCoverage::Covered,
+        ),
+        AudioStyleStartupTrainingDecision::TrainPendingInputChanges
+    );
+    assert_eq!(
+        audio_style_startup_training_decision(
+            true,
+            0,
+            0,
+            0,
+            AudioStyleStartupInputCoverage::MissingMetadata,
+        ),
+        AudioStyleStartupTrainingDecision::TrainPendingInputChanges
+    );
+    assert_eq!(
+        audio_style_startup_training_decision(
+            true,
+            0,
+            0,
+            0,
+            AudioStyleStartupInputCoverage::Changed,
+        ),
+        AudioStyleStartupTrainingDecision::TrainPendingInputChanges
+    );
+    assert_eq!(
+        audio_style_startup_training_decision(
+            true,
+            0,
+            0,
+            0,
+            AudioStyleStartupInputCoverage::Empty,
+        ),
+        AudioStyleStartupTrainingDecision::SkipNoTrainingInputs
+    );
+}
+
+#[test]
+fn audio_style_training_invalidations_dedupe_by_music_identity() {
+    use super::recommendation::{
+        AudioStyleMusicInputIdentity, AudioStyleTrainingInvalidationRecord,
+        read_audio_style_training_invalidation_file, upsert_audio_style_training_invalidation_file,
+    };
+
+    let root = temp_cache_root("audio-style-training-invalidations");
+    std::fs::create_dir_all(&root).expect("invalidation test root should be created");
+    let path = root.join("invalidations.json");
+    let music = AudioStyleMusicInputIdentity {
+        canonical_music_id: "canonical-a".to_owned(),
+        music_url: "https://example.test/a".to_owned(),
+        path: Some("A.m4a".to_owned()),
+        start_ms: 0,
+        end_ms: 100,
+    };
+
+    let first_count = upsert_audio_style_training_invalidation_file(
+        &path,
+        AudioStyleTrainingInvalidationRecord {
+            reason: "music_create".to_owned(),
+            created_at_ms: 1,
+            music: Some(music.clone()),
+        },
+    )
+    .expect("first invalidation should write");
+    let second_count = upsert_audio_style_training_invalidation_file(
+        &path,
+        AudioStyleTrainingInvalidationRecord {
+            reason: "music_identity_update".to_owned(),
+            created_at_ms: 2,
+            music: Some(music),
+        },
+    )
+    .expect("second invalidation should replace same music identity");
+
+    let records =
+        read_audio_style_training_invalidation_file(&path).expect("records should read back");
+    assert_eq!(first_count, 1);
+    assert_eq!(second_count, 1);
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].reason, "music_identity_update");
+    assert_eq!(records[0].created_at_ms, 2);
+}
+
+#[test]
+fn audio_style_training_invalidations_clear_after_successful_training() {
+    use super::recommendation::{
+        AudioStyleTrainingInvalidationRecord, clear_audio_style_training_invalidation_file,
+        read_audio_style_training_invalidation_file, upsert_audio_style_training_invalidation_file,
+    };
+
+    let root = temp_cache_root("audio-style-training-invalidation-clear");
+    std::fs::create_dir_all(&root).expect("invalidation clear root should be created");
+    let path = root.join("invalidations.json");
+
+    upsert_audio_style_training_invalidation_file(
+        &path,
+        AudioStyleTrainingInvalidationRecord {
+            reason: "local_collection_imported".to_owned(),
+            created_at_ms: 1,
+            music: None,
+        },
+    )
+    .expect("library invalidation should write");
+
+    let removed =
+        clear_audio_style_training_invalidation_file(&path).expect("clear should succeed");
+    let records =
+        read_audio_style_training_invalidation_file(&path).expect("empty records should read");
+    assert_eq!(removed, 1);
+    assert!(records.is_empty());
+    assert!(!path.exists());
+}
+
+#[test]
+fn audio_style_pending_training_inputs_are_durable_and_deduplicated_by_track_identity() {
+    let root = temp_cache_root("audio-style-pending-training-inputs");
+    std::fs::create_dir_all(&root).expect("pending input test root should be created");
+    let path = root.join("pending-inputs.json");
+    let first = AudioStyleTrainingTrackInput {
+        occurrence_id: "occ-a".to_string(),
+        alias: "Track A".to_string(),
+        canonical_music_id: "canonical-a".to_string(),
+        url: "https://example.test/a".to_string(),
+        absolute_path: "C:/music/a.m4a".to_string(),
+        start_ms: 0,
+        end_ms: 100,
+        liked: false,
+        loudness_profile: None,
+    };
+    let duplicate = AudioStyleTrainingTrackInput {
+        alias: "Track A renamed".to_string(),
+        ..first.clone()
+    };
+    let second = AudioStyleTrainingTrackInput {
+        canonical_music_id: "canonical-b".to_string(),
+        url: "https://example.test/b".to_string(),
+        absolute_path: "C:/music/b.m4a".to_string(),
+        ..first.clone()
+    };
+
+    let first_count =
+        upsert_audio_style_pending_training_input_file_for_test(&path, &[first.clone(), duplicate])
+            .expect("first pending input write should succeed");
+    let second_count = upsert_audio_style_pending_training_input_file_for_test(
+        &path,
+        std::slice::from_ref(&second),
+    )
+    .expect("second pending input write should succeed");
+    let inputs = read_audio_style_pending_training_input_file_for_test(&path)
+        .expect("pending inputs should read");
+
+    assert_eq!(first_count, 1);
+    assert_eq!(second_count, 2);
+    assert_eq!(inputs.len(), 2);
+    assert!(
+        inputs
+            .iter()
+            .any(|input| input.canonical_music_id == "canonical-a")
+    );
+    assert!(
+        inputs
+            .iter()
+            .any(|input| input.canonical_music_id == "canonical-b")
     );
 }
 
@@ -2270,6 +3006,20 @@ fn audio_style_hardware_budget_tiles_large_similarity_grids_before_cpu_fallback(
 #[test]
 fn audio_style_hardware_op_gate_falls_back_when_busy_or_cooling_down() {
     super::recommendation::reset_audio_style_hardware_op_gate_for_test();
+    assert!(
+        super::recommendation::log_audio_style_hardware_busy_skip_for_test(),
+        "the first busy skip should remain observable"
+    );
+    assert!(
+        !super::recommendation::log_audio_style_hardware_busy_skip_for_test(),
+        "repeated busy skips in the same window should be aggregated"
+    );
+    assert_eq!(
+        super::recommendation::audio_style_hardware_busy_skip_suppressed_for_test(),
+        1
+    );
+    super::recommendation::reset_audio_style_hardware_op_gate_for_test();
+
     let held = super::recommendation::hold_audio_style_hardware_op_for_test()
         .expect("first hardware operation should acquire the gate");
 

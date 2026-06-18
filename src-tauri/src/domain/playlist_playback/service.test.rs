@@ -18,7 +18,8 @@ use super::service::{
     propose_playlist_playback_queue_without_audio_style_model, propose_random_queue_after_exclude,
     resolve_playlist_playback_continuation_mode, resolve_playlist_playback_source_resolution,
     should_commit_playlist_queue_refresh, should_refresh_playlist_queue_for_anchor_after_startup,
-    should_refresh_playlist_queue_for_same_anchor, shuffle_playback_tracks,
+    should_refresh_playlist_queue_for_same_anchor, should_seed_playlist_next_from_prepared_pool,
+    shuffle_playback_tracks,
 };
 use crate::domain::downloads::model::{
     DownloadLeaf, DownloadLeafStatus, DownloadTask, DownloadTaskStatus, DownloadTrigger,
@@ -1025,6 +1026,12 @@ fn playlist_queue_refresh_for_same_anchor_only_runs_when_next_is_missing() {
 }
 
 #[test]
+fn playlist_queue_fill_uses_prepared_first_slot_only_after_proposal_misses_next() {
+    assert!(should_seed_playlist_next_from_prepared_pool(false));
+    assert!(!should_seed_playlist_next_from_prepared_pool(true));
+}
+
+#[test]
 fn playlist_track_loudness_warmup_requires_missing_evidence_and_real_file() {
     let root = temp_root();
     std::fs::create_dir_all(&root).expect("temp root should be created");
@@ -1051,7 +1058,7 @@ fn playlist_track_loudness_warmup_requires_missing_evidence_and_real_file() {
 }
 
 #[test]
-fn direct_first_slot_release_does_not_wait_for_loudness_evidence() {
+fn initial_first_slot_release_waits_for_loudness_evidence() {
     let root = temp_root();
     std::fs::create_dir_all(&root).expect("temp root should be created");
     let file_path = root.join("direct-first.m4a");
@@ -1061,11 +1068,11 @@ fn direct_first_slot_release_does_not_wait_for_loudness_evidence() {
 
     assert!(playlist_track_needs_loudness_evidence(&track));
     assert!(
-        !initial_track_release_requires_loudness_gate(
+        initial_track_release_requires_loudness_gate(
             PlaylistInitialTrackRelease::DirectFirstSlot,
             &track,
         ),
-        "an already prepared FirstSlot is playable cargo; missing LUFS only starts warmup"
+        "prepared FirstSlot cargo is not playable until its normalization evidence is ready"
     );
     assert!(
         initial_track_release_requires_loudness_gate(
