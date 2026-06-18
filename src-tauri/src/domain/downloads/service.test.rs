@@ -12,11 +12,12 @@ use super::service::{
     accept_collection_download_with_root_shell_for_test,
     apply_collection_plan_to_task_with_existing_music_evidence,
     apply_completed_audio_duration_evidence, attach_root_shell_to_task,
-    discard_materialized_planned_leaves, handle_finished_leaf_download,
-    is_non_retryable_leaf_access_error_message, is_retryable_leaf_download_error,
-    is_youtube_cookie_challenge_error_message, leaf_download_parallelism, leaf_pipeline_has_work,
-    leaf_pipeline_next_stage, leaf_work_item_insert_index, normalize_youtube_cookies_text,
-    prepare_task_enqueue, probe_download_root_title_with_client, resolve_pasted_download_url,
+    discard_materialized_planned_leaves, existing_file_completions_from_task_leaves,
+    handle_finished_leaf_download, is_non_retryable_leaf_access_error_message,
+    is_retryable_leaf_download_error, is_youtube_cookie_challenge_error_message,
+    leaf_download_parallelism, leaf_pipeline_has_work, leaf_pipeline_next_stage,
+    leaf_work_item_insert_index, normalize_youtube_cookies_text, prepare_task_enqueue,
+    probe_download_root_title_with_client, resolve_pasted_download_url,
     resolve_residual_temp_downloaded_file, resume_download_task, runnable_task_leaf_work_items,
     should_interrupt_unresumable_active_task_after_restart,
     should_recover_download_task_after_restart, should_resume_download_task_after_restart,
@@ -31,12 +32,14 @@ use super::yt_dlp::{
 /// dependencies so `cargo test` only exercises pure download-domain contracts.
 /// Manual end-to-end download checks belong in `examples/manual_download_chain.rs`.
 use crate::domain::collection_import::{
-    CollectionSyncPlan, ExistingPlannedLeafCompletion, PlannedLeaf, apply_collection_plan_to_task,
-    create_collection_shell, existing_leaf_identities, existing_planned_leaf_completions,
-    filter_new_planned_leaves, load_collection_shell_with_local_duration_probe,
-    load_download_transaction_collection_shell, materialize_music_entries,
-    normalize_music_titles_within_collection, persist_download_collection_shell_from_task,
-    persist_downloaded_leaf_music, persist_enqueued_collection_plan, resolve_existing_leaf_file,
+    CollectionSyncPlan, DownloadedLeafMusicMaterialization, ExistingPlannedLeafCompletion,
+    PlannedLeaf, apply_collection_plan_to_task, create_collection_shell, existing_leaf_identities,
+    existing_planned_leaf_completions, filter_new_planned_leaves,
+    load_collection_shell_with_local_duration_probe, load_download_transaction_collection_shell,
+    materialize_music_entries, normalize_music_titles_within_collection,
+    persist_download_collection_shell_from_task, persist_downloaded_leaf_music,
+    persist_downloaded_leaf_music_batch, persist_enqueued_collection_plan,
+    resolve_existing_leaf_file,
 };
 use crate::domain::downloads::model::{
     DownloadLeaf, DownloadLeafStatus, DownloadTask, DownloadTaskStatus, DownloadTrigger,
@@ -936,16 +939,126 @@ fn persist_downloaded_leaf_music_replaces_only_the_matching_group_copy() {
             duration_seconds: Some(10),
             chapters: vec![],
         };
+        let save_root = temp_test_dir();
 
         persist_downloaded_leaf_music(
             &mut collection,
             CollectionSourceKind::List,
+            &save_root,
             &probe,
             "Disc 1/replacement.m4a",
             first_group,
         )
         .await
         .expect("same video in one group should not remove another group copy");
+
+        let by_group = collection
+            .musics
+            .iter()
+            .map(|music| {
+                (
+                    music.group.url.as_str(),
+                    music.path.as_deref(),
+                    music.alias.as_str(),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(by_group.len(), 2);
+        assert!(by_group.contains(&(
+            "https://example.com/disc-1",
+            Some("Disc 1/replacement.m4a"),
+            "Pinned First"
+        )));
+        assert!(by_group.contains(&(
+            "https://example.com/disc-2",
+            Some("Disc 2/original.m4a"),
+            "Pinned Second"
+        )));
+
+        reset_db();
+    });
+}
+
+#[test]
+fn persist_downloaded_leaf_music_batch_replaces_only_matching_group_copies() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let first_group = collection_group("Disc 1", "https://example.com/disc-1", "Disc 1");
+        let second_group = collection_group("Disc 2", "https://example.com/disc-2", "Disc 2");
+        let mut collection = Collection {
+            name: "Demo".to_string(),
+            url: "https://example.com/root-batch".to_string(),
+            folder: "youtube/demo-batch".to_string(),
+            musics: vec![
+                Music {
+                    occurrence_id: String::new(),
+                    name: "Original First".to_string(),
+                    alias: "Pinned First".to_string(),
+                    group: first_group.clone(),
+                    url: "https://example.com/watch?v=same".to_string(),
+                    canonical_music_id: canonical_music_id_for_source(
+                        "https://example.com/watch?v=same",
+                        0,
+                        180_000,
+                    ),
+                    path: Some("Disc 1/original.m4a".to_string()),
+                    start_ms: 0,
+                    end_ms: 10_000,
+                    liked: false,
+                    loudness_profile: None,
+                },
+                Music {
+                    occurrence_id: String::new(),
+                    name: "Original Second".to_string(),
+                    alias: "Pinned Second".to_string(),
+                    group: second_group.clone(),
+                    url: "https://example.com/watch?v=same".to_string(),
+                    canonical_music_id: canonical_music_id_for_source(
+                        "https://example.com/watch?v=same",
+                        0,
+                        180_000,
+                    ),
+                    path: Some("Disc 2/original.m4a".to_string()),
+                    start_ms: 0,
+                    end_ms: 10_000,
+                    liked: false,
+                    loudness_profile: None,
+                },
+            ],
+            last_updated: "2026-04-12T00:00:00+00:00".to_string(),
+            enable_updates: Some(false),
+        };
+        upsert_collection(&collection)
+            .await
+            .expect("test collection should save before batch persist");
+
+        let probe = LeafProbe {
+            title: "Replacement First".to_string(),
+            webpage_url: "https://example.com/watch?v=same".to_string(),
+            extractor_key: Some("Youtube".to_string()),
+            album: None,
+            duration_ms: Some(10_000),
+            duration_seconds: Some(10),
+            chapters: vec![],
+        };
+        let save_root = temp_test_dir();
+
+        persist_downloaded_leaf_music_batch(
+            &mut collection,
+            CollectionSourceKind::List,
+            &save_root,
+            &[DownloadedLeafMusicMaterialization {
+                probe,
+                file_name: "Disc 1/replacement.m4a".to_string(),
+                group: first_group,
+            }],
+        )
+        .await
+        .expect("batch materialization should replace only matching group copy");
 
         let by_group = collection
             .musics
@@ -1016,10 +1129,12 @@ fn persist_downloaded_leaf_music_reports_unchanged_for_repeated_leaf_materializa
             duration_seconds: Some(10),
             chapters: vec![],
         };
+        let save_root = temp_test_dir();
 
         let first = persist_downloaded_leaf_music(
             &mut collection,
             CollectionSourceKind::List,
+            &save_root,
             &probe,
             "Disc 1/Repeated Leaf.m4a",
             group.clone(),
@@ -1054,6 +1169,7 @@ fn persist_downloaded_leaf_music_reports_unchanged_for_repeated_leaf_materializa
         let second = persist_downloaded_leaf_music(
             &mut collection,
             CollectionSourceKind::List,
+            &save_root,
             &probe,
             "Disc 1/Repeated Leaf.m4a",
             group,
@@ -1137,10 +1253,12 @@ fn persist_downloaded_leaf_music_preserves_current_leaf_lifecycle_facts() {
             duration_seconds: Some(raw_end_ms / 1_000),
             chapters: vec![],
         };
+        let save_root = temp_test_dir();
 
         persist_downloaded_leaf_music(
             &mut stale_download_snapshot,
             CollectionSourceKind::List,
+            &save_root,
             &probe,
             "Disc 1/replacement.m4a",
             group,
@@ -1192,10 +1310,12 @@ fn persist_downloaded_leaf_music_rejects_partial_download_paths() {
             duration_seconds: Some(10),
             chapters: vec![],
         };
+        let save_root = temp_test_dir();
 
         let error = persist_downloaded_leaf_music(
             &mut collection,
             CollectionSourceKind::List,
+            &save_root,
             &probe,
             "Disc 1/Partial.m4a.part",
             group,
@@ -1878,7 +1998,7 @@ fn resolve_pasted_download_url_keeps_youtube_mix_watch_urls_as_single_identity()
 }
 
 #[test]
-fn resolve_pasted_download_url_returns_existing_collection_for_known_url() {
+fn resolve_pasted_download_url_returns_new_url_for_empty_collection_shell() {
     let _guard = acquire_db_test_lock();
 
     run_async(async {
@@ -1889,6 +2009,54 @@ fn resolve_pasted_download_url_returns_existing_collection_for_known_url() {
             url: "https://example.com/known".to_string(),
             folder: "example/known".to_string(),
             musics: vec![],
+            last_updated: "2026-04-24T00:00:00+00:00".to_string(),
+            enable_updates: None,
+        };
+        upsert_collection(&collection)
+            .await
+            .expect("known collection should be saved");
+
+        let resolution = resolve_pasted_download_url(collection.url.clone())
+            .await
+            .expect("empty collection shell pasted url should resolve");
+
+        assert_eq!(resolution.status, PastedDownloadUrlResolutionStatus::NewUrl);
+        assert_eq!(resolution.url.as_deref(), Some(collection.url.as_str()));
+        assert!(resolution.error.is_none());
+        assert!(resolution.collection.is_none());
+
+        reset_db();
+    });
+}
+
+#[test]
+fn resolve_pasted_download_url_returns_existing_collection_for_materialized_known_url() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let collection = Collection {
+            name: "Known".to_string(),
+            url: "https://example.com/known".to_string(),
+            folder: "example/known".to_string(),
+            musics: vec![Music {
+                occurrence_id: String::new(),
+                name: "Known Track".to_string(),
+                alias: "Known Track".to_string(),
+                group: collection_group("Known", "https://example.com/known", "example/known"),
+                url: "https://example.com/watch".to_string(),
+                canonical_music_id: canonical_music_id_for_source(
+                    "https://example.com/watch",
+                    0,
+                    180_000,
+                ),
+                path: Some("Known Track.m4a".to_string()),
+                start_ms: 0,
+                end_ms: 180_000,
+                liked: false,
+                loudness_profile: None,
+            }],
             last_updated: "2026-04-24T00:00:00+00:00".to_string(),
             enable_updates: None,
         };
@@ -2159,6 +2327,7 @@ fn existing_planned_leaf_completions_match_manifest_identity_with_group_context(
         collection_url: collection.url.clone(),
         collection_folder: collection.folder.clone(),
         enable_updates: Some(false),
+        partial_reason: None,
         leaves: vec![
             PlannedLeaf {
                 id: Id::from("leaf-first"),
@@ -2301,6 +2470,7 @@ fn apply_collection_plan_to_task_consumes_existing_music_before_pipeline_schedul
         collection_url: collection.url.clone(),
         collection_folder: collection.folder.clone(),
         enable_updates: Some(false),
+        partial_reason: None,
         leaves: vec![PlannedLeaf {
             id: Id::from("leaf-existing"),
             url: "https://example.com/watch?v=existing".to_string(),
@@ -2330,6 +2500,101 @@ fn apply_collection_plan_to_task_consumes_existing_music_before_pipeline_schedul
 }
 
 #[test]
+fn existing_file_completions_derive_from_task_leafs_not_plan_leafs() {
+    let root = temp_test_dir();
+    let collection_folder = "youtube/existing-file-batch";
+    let group = collection_group("Album", "https://example.com/album", "Album");
+    let existing_path = root
+        .join(collection_folder)
+        .join(&group.folder)
+        .join("Task Track.m4a");
+    std::fs::create_dir_all(
+        existing_path
+            .parent()
+            .expect("existing test file should have a parent"),
+    )
+    .expect("existing test folder should be created");
+    std::fs::write(&existing_path, b"ok").expect("existing audio file should exist");
+
+    let collection = Collection {
+        name: "Existing File Batch".to_string(),
+        url: "https://example.com/root".to_string(),
+        folder: collection_folder.to_string(),
+        musics: vec![],
+        last_updated: "2026-04-12T00:00:00+00:00".to_string(),
+        enable_updates: Some(false),
+    };
+    let task_leaf_id = Id::from("leaf-task");
+    let plan_only_id = Id::from("leaf-plan-only");
+    let plan = CollectionSyncPlan {
+        source_kind: CollectionSourceKind::List,
+        collection_name: collection.name.clone(),
+        collection_url: collection.url.clone(),
+        collection_folder: collection.folder.clone(),
+        enable_updates: Some(false),
+        partial_reason: None,
+        leaves: vec![
+            PlannedLeaf {
+                id: task_leaf_id.clone(),
+                url: "https://example.com/watch?v=task".to_string(),
+                sequence: 0,
+                initial_probe: Some(LeafProbe {
+                    title: "Task Track".to_string(),
+                    webpage_url: "https://example.com/watch?v=task".to_string(),
+                    extractor_key: Some("Youtube".to_string()),
+                    album: None,
+                    duration_ms: Some(180_000),
+                    duration_seconds: Some(180),
+                    chapters: vec![],
+                }),
+                music_title: Some("Task Track".to_string()),
+                group_hint: Some(group.clone()),
+            },
+            PlannedLeaf {
+                id: plan_only_id,
+                url: "https://example.com/watch?v=plan-only".to_string(),
+                sequence: 1,
+                initial_probe: Some(LeafProbe {
+                    title: "Task Track".to_string(),
+                    webpage_url: "https://example.com/watch?v=plan-only".to_string(),
+                    extractor_key: Some("Youtube".to_string()),
+                    album: None,
+                    duration_ms: Some(180_000),
+                    duration_seconds: Some(180),
+                    chapters: vec![],
+                }),
+                music_title: Some("Task Track".to_string()),
+                group_hint: Some(group),
+            },
+        ],
+    };
+    let mut task = DownloadTask::new(
+        "task-existing-file-batch",
+        &collection.url,
+        DownloadTrigger::Manual,
+    );
+    task.replace_leaf(DownloadLeaf::new(
+        task_leaf_id,
+        "https://example.com/watch?v=task",
+        0,
+    ));
+    let runnable = runnable_task_leaf_work_items(&task, &plan);
+    let group_catalog = super::service::GroupCatalog::seed(&collection);
+
+    let completions =
+        existing_file_completions_from_task_leaves(&collection, &group_catalog, &runnable, &root);
+
+    assert_eq!(completions.len(), 1);
+    assert_eq!(completions[0].leaf.url, "https://example.com/watch?v=task");
+    assert_eq!(
+        completions[0].music_probe.webpage_url,
+        "https://example.com/watch?v=task"
+    );
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn runnable_task_leaf_work_items_derive_execution_from_task_leafs_only() {
     let duplicate_id = Id::from("leaf-duplicate");
     let mut task = DownloadTask::new(
@@ -2348,6 +2613,7 @@ fn runnable_task_leaf_work_items_derive_execution_from_task_leafs_only() {
         collection_url: "https://example.com/root".to_string(),
         collection_folder: "youtube/duplicate-leaves".to_string(),
         enable_updates: Some(false),
+        partial_reason: None,
         leaves: vec![
             PlannedLeaf {
                 id: duplicate_id.clone(),
@@ -2468,6 +2734,7 @@ fn resolve_collection_plan_rejects_empty_lists() {
                 title: "Empty List".to_string(),
                 webpage_url: url.to_string(),
                 extractor_key: Some("Generic".to_string()),
+                expected_entry_count: None,
                 entries: vec![],
             }),
         )])));
@@ -2480,6 +2747,53 @@ fn resolve_collection_plan_rejects_empty_lists() {
             error
                 .to_string()
                 .contains("download resource does not contain any downloadable entries")
+        );
+
+        reset_db();
+    });
+}
+
+#[test]
+fn resolve_collection_plan_marks_partial_playlist_without_blocking_discovered_leaves() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let url = "https://example.com/partial-list";
+        let task = DownloadTask::new("task-partial-list", url, DownloadTrigger::Manual);
+        let client = Arc::new(FakeYtDlpClient::with_roots(HashMap::from([(
+            url.to_string(),
+            RootProbe::List(PlaylistRoot {
+                title: "Partial List".to_string(),
+                webpage_url: url.to_string(),
+                extractor_key: Some("Generic".to_string()),
+                expected_entry_count: Some(3),
+                entries: vec![
+                    LeafReference {
+                        url: "https://www.youtube.com/watch?v=leaf-one".to_string(),
+                        title: Some("Leaf One".to_string()),
+                        sequence: 0,
+                    },
+                    LeafReference {
+                        url: "https://www.youtube.com/watch?v=leaf-two".to_string(),
+                        title: Some("Leaf Two".to_string()),
+                        sequence: 1,
+                    },
+                ],
+            }),
+        )])));
+
+        let plan = resolve_collection_plan(&task, client)
+            .await
+            .expect("partial provider lists should still expose discovered foreground leaves");
+
+        assert_eq!(plan.leaves.len(), 2);
+        assert_eq!(plan.leaves[0].url, "https://www.youtube.com/watch?v=leaf-one");
+        assert!(
+            plan.partial_reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("provider returned 2/3 playlist entries"))
         );
 
         reset_db();
@@ -2543,7 +2857,8 @@ fn resolve_collection_plan_can_consume_manual_enqueue_root_probe_once() {
             title: "Root".to_string(),
             webpage_url: root_url.to_string(),
             extractor_key: Some("Generic".to_string()),
-            entries: vec![LeafReference {
+            expected_entry_count: None,
+                entries: vec![LeafReference {
                 url: nested_url.to_string(),
                 title: Some("Album".to_string()),
                 sequence: 0,
@@ -2555,6 +2870,7 @@ fn resolve_collection_plan_can_consume_manual_enqueue_root_probe_once() {
                 title: "Album".to_string(),
                 webpage_url: nested_url.to_string(),
                 extractor_key: Some("Generic".to_string()),
+                expected_entry_count: None,
                 entries: vec![LeafReference {
                     url: "https://www.youtube.com/watch?v=leaf".to_string(),
                     title: Some("Leaf".to_string()),
@@ -2623,6 +2939,7 @@ fn probe_root_with_limit_bounds_parallel_provider_processes() {
                 title: "Limited Root".to_string(),
                 webpage_url: "https://example.com/limited-root".to_string(),
                 extractor_key: Some("Generic".to_string()),
+                expected_entry_count: None,
                 entries: vec![LeafReference {
                     url: "https://example.com/watch?v=limited".to_string(),
                     title: Some("Limited Leaf".to_string()),
@@ -3049,6 +3366,38 @@ fn prepare_task_enqueue_deduplicates_equivalent_single_video_aliases() {
         );
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].url, canonical);
+
+        reset_db();
+    });
+}
+
+#[test]
+fn prepare_task_enqueue_reuses_completed_same_url_task() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let url = "https://example.com/list";
+        let mut first = prepare_task_enqueue(url.to_string(), DownloadTrigger::Manual)
+            .await
+            .expect("initial enqueue should succeed");
+        first.status = DownloadTaskStatus::Completed;
+        let first = save_task(first)
+            .await
+            .expect("completed task should persist");
+
+        let second = prepare_task_enqueue(url.to_string(), DownloadTrigger::Manual)
+            .await
+            .expect("repeat enqueue should succeed");
+        let tasks = list_tasks().await.expect("task listing should succeed");
+
+        assert_eq!(
+            first.id, second.id,
+            "same normalized url should keep one stable task identity after completion"
+        );
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].status, DownloadTaskStatus::Completed);
 
         reset_db();
     });
@@ -3491,6 +3840,7 @@ fn expand_root_entries_to_planned_leafs_flattens_nested_playlists_into_grouped_l
                 title: "Album One".to_string(),
                 webpage_url: nested_url.to_string(),
                 extractor_key: Some("YoutubeTab".to_string()),
+                expected_entry_count: None,
                 entries: vec![
                     LeafReference {
                         url: "https://www.youtube.com/watch?v=track1".to_string(),
@@ -4017,7 +4367,8 @@ fn expand_root_entries_to_planned_leafs_keeps_same_video_distinct_across_groups(
                     title: "First Album".to_string(),
                     webpage_url: first_url.to_string(),
                     extractor_key: Some("YoutubeTab".to_string()),
-                    entries: vec![LeafReference {
+                    expected_entry_count: None,
+                entries: vec![LeafReference {
                         url: repeated_video_url.to_string(),
                         title: Some("Shared Track".to_string()),
                         sequence: 0,
@@ -4030,7 +4381,8 @@ fn expand_root_entries_to_planned_leafs_keeps_same_video_distinct_across_groups(
                     title: "Second Album".to_string(),
                     webpage_url: second_url.to_string(),
                     extractor_key: Some("YoutubeTab".to_string()),
-                    entries: vec![LeafReference {
+                    expected_entry_count: None,
+                entries: vec![LeafReference {
                         url: repeated_video_url.to_string(),
                         title: Some("Shared Track".to_string()),
                         sequence: 0,
@@ -4107,6 +4459,7 @@ fn create_collection_shell_reuses_existing_music_and_updates_collection_metadata
         collection_url: existing.url.clone(),
         collection_folder: "youtube/renamed-list".to_string(),
         enable_updates: Some(true),
+        partial_reason: None,
         leaves: vec![],
     };
 
@@ -4181,7 +4534,8 @@ liked = false
             collection_url: "https://example.com/root".to_string(),
             collection_folder: collection_folder.to_string(),
             enable_updates: Some(false),
-            leaves: vec![PlannedLeaf {
+            partial_reason: None,
+        leaves: vec![PlannedLeaf {
                 id: Id::from("leaf-one"),
                 url: "https://example.com/watch?v=one".to_string(),
                 sequence: 0,
@@ -4270,7 +4624,8 @@ liked = false
             collection_url: "https://example.com/root".to_string(),
             collection_folder: collection_folder.to_string(),
             enable_updates: Some(false),
-            leaves: vec![PlannedLeaf {
+            partial_reason: None,
+        leaves: vec![PlannedLeaf {
                 id: Id::from("leaf-what-now"),
                 url: "https://www.youtube.com/watch?v=Gv1CBp5NABw".to_string(),
                 sequence: 0,
@@ -4382,7 +4737,8 @@ liked = false
             collection_url: "https://example.com/root".to_string(),
             collection_folder: collection_folder.to_string(),
             enable_updates: Some(false),
-            leaves: vec![PlannedLeaf {
+            partial_reason: None,
+        leaves: vec![PlannedLeaf {
                 id: Id::from("leaf-what-now"),
                 url: "https://www.youtube.com/watch?v=Gv1CBp5NABw".to_string(),
                 sequence: 0,
@@ -4473,7 +4829,8 @@ liked = false
             collection_url: "https://www.youtube.com/playlist?list=PLtenet".to_string(),
             collection_folder: collection_folder.to_string(),
             enable_updates: Some(false),
-            leaves: vec![PlannedLeaf {
+            partial_reason: None,
+        leaves: vec![PlannedLeaf {
                 id: Id::from("leaf-inverted"),
                 url: "https://www.youtube.com/watch?v=inverted".to_string(),
                 sequence: 0,
@@ -4537,6 +4894,7 @@ fn apply_collection_plan_to_task_populates_collection_metadata_and_leaf_queue() 
         collection_url: "https://example.com/list".to_string(),
         collection_folder: "youtube/bootstrapped-list".to_string(),
         enable_updates: Some(false),
+        partial_reason: None,
         leaves: vec![PlannedLeaf {
             id: Id::from("leaf-bootstrap"),
             url: "https://example.com/watch?v=leaf".to_string(),
@@ -4585,6 +4943,7 @@ fn apply_collection_plan_to_task_discards_completed_leaf_evidence_when_plan_is_p
         collection_url: "https://example.com/list".to_string(),
         collection_folder: "youtube/partial-list".to_string(),
         enable_updates: Some(false),
+        partial_reason: None,
         leaves: vec![PlannedLeaf {
             id: Id::from("leaf-new"),
             url: "https://example.com/watch?v=new".to_string(),
@@ -4621,7 +4980,8 @@ fn persist_enqueued_collection_plan_saves_residual_leaves_for_single_probe_start
             collection_url: "https://example.com/playlist".to_string(),
             collection_folder: "example/probe-once-playlist".to_string(),
             enable_updates: Some(false),
-            leaves: vec![
+            partial_reason: None,
+        leaves: vec![
                 PlannedLeaf {
                     id: Id::from("leaf-one"),
                     url: "https://example.com/watch?v=one".to_string(),
@@ -4682,3 +5042,4 @@ fn persist_enqueued_collection_plan_saves_residual_leaves_for_single_probe_start
         reset_db();
     });
 }
+

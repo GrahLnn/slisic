@@ -265,7 +265,7 @@ fn leaf_audio_download_args_pass_cookie_file_when_available() {
 }
 
 #[test]
-fn rejects_partial_playlist_root_when_provider_reports_more_entries() {
+fn parses_partial_playlist_root_with_expected_entry_count() {
     let value = json!({
         "_type": "playlist",
         "title": "Large Playlist",
@@ -282,10 +282,14 @@ fn rejects_partial_playlist_root_when_provider_reports_more_entries() {
             .collect::<Vec<_>>()
     });
 
-    let error = parse_root_probe(value, "https://www.youtube.com/playlist?list=PLlarge")
-        .expect_err("partial playlist probes should fail explicitly");
+    let parsed = parse_root_probe(value, "https://www.youtube.com/playlist?list=PLlarge")
+        .expect("partial playlist roots should keep provider completeness evidence");
 
-    assert!(error.to_string().contains("100/116 playlist entries"));
+    let RootProbe::List(root) = parsed else {
+        panic!("partial playlist probe should remain a list");
+    };
+    assert_eq!(root.entries.len(), 100);
+    assert_eq!(root.expected_entry_count, Some(116));
 }
 
 #[test]
@@ -311,12 +315,12 @@ fn root_playlist_shell_probe_args_request_metadata_without_entries() {
     let args =
         build_root_playlist_shell_probe_args("https://www.youtube.com/playlist?list=PLPfHaI9XqTn");
 
-    assert!(!args.iter().any(|arg| arg == "--flat-playlist"));
+    assert!(args.iter().any(|arg| arg == "--flat-playlist"));
     let playlist_items = args
         .windows(2)
         .find_map(|window| (window[0] == "--playlist-items").then_some(window[1].as_str()))
-        .expect("shell probe should explicitly suppress playlist item expansion");
-    assert_eq!(playlist_items, "0");
+        .expect("shell probe should request a bounded playlist window");
+    assert_eq!(playlist_items, "1:3");
 }
 
 #[test]

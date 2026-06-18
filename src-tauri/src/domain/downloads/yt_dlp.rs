@@ -25,6 +25,7 @@ pub struct PlaylistRoot {
     pub webpage_url: String,
     pub extractor_key: Option<String>,
     pub entries: Vec<LeafReference>,
+    pub expected_entry_count: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -351,7 +352,14 @@ pub(crate) fn build_root_playlist_probe_args(url: &str) -> Vec<String> {
 
 pub(crate) fn build_root_playlist_shell_probe_args(url: &str) -> Vec<String> {
     let mut args = build_root_playlist_base_probe_args(url);
-    args.splice(3..3, ["--playlist-items".to_string(), "0".to_string()]);
+    args.splice(
+        3..3,
+        [
+            "--playlist-items".to_string(),
+            "1:3".to_string(),
+            "--flat-playlist".to_string(),
+        ],
+    );
     args
 }
 
@@ -500,24 +508,17 @@ pub fn parse_root_probe(value: Value, input_url: &str) -> Result<RootProbe> {
         });
     }
 
-    if let Some(expected_count) = value
+    let expected_entry_count = value
         .get("playlist_count")
         .and_then(parse_number_like)
-        .map(|value| value as usize)
-        && expected_count > leafs.len()
-    {
-        bail!(
-            "yt-dlp returned {}/{} playlist entries; refusing to complete a partial playlist probe",
-            leafs.len(),
-            expected_count
-        );
-    }
+        .map(|value| value as usize);
 
     Ok(RootProbe::List(PlaylistRoot {
         title,
         webpage_url,
         extractor_key,
         entries: leafs,
+        expected_entry_count,
     }))
 }
 

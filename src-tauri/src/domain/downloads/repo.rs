@@ -39,6 +39,38 @@ pub async fn get_task(id: &str) -> Result<DownloadTask> {
     Ok(task)
 }
 
+pub async fn try_get_task(id: &str) -> Result<Option<DownloadTask>> {
+    let db = get_db()?;
+    let record = RecordId::new(DownloadTask::table_name(), id.to_string());
+    let mut result = match db
+        .query("SELECT VALUE id FROM $record LIMIT 1;")
+        .bind(("record", record))
+        .await
+    {
+        Ok(result) => match result.check() {
+            Ok(result) => result,
+            Err(error) => match DBError::from(error) {
+                DBError::MissingTable(_) | DBError::NotFound => return Ok(None),
+                other => return Err(other.into()),
+            },
+        }
+        Err(error) => match classify_db_error(&error.into()) {
+            DBError::MissingTable(_) | DBError::NotFound => return Ok(None),
+            other => return Err(other.into()),
+        },
+    };
+
+    let task_ids: Vec<RecordId> = result.take(0)?;
+    match task_ids.into_iter().next() {
+        Some(record) => {
+            let mut task = DownloadTask::get_record(record).await?;
+            task.normalize_loaded_state();
+            Ok(Some(task))
+        }
+        None => Ok(None),
+    }
+}
+
 pub async fn list_tasks() -> Result<Vec<DownloadTask>> {
     match DownloadTask::list().await {
         Ok(mut tasks) => {

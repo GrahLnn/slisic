@@ -18,7 +18,8 @@ use crate::domain::downloads::yt_dlp::{
 #[cfg(not(test))]
 use crate::domain::playlist_playback::service as playlist_playback_service;
 use crate::domain::playlists::model::{
-    Collection, CollectionGroupOwner, Group, Music, canonical_music_id_for_source,
+    AudioStyleTrainingTrackInput, Collection, CollectionGroupOwner, Group, Music,
+    canonical_music_id_for_source,
 };
 use crate::domain::playlists::repo as collection_repo;
 #[cfg(not(test))]
@@ -46,6 +47,7 @@ pub(crate) struct CollectionSyncPlan {
     pub(crate) collection_url: String,
     pub(crate) collection_folder: String,
     pub(crate) enable_updates: Option<bool>,
+    pub(crate) partial_reason: Option<String>,
     pub(crate) leaves: Vec<PlannedLeaf>,
 }
 
@@ -157,11 +159,14 @@ pub(crate) async fn resolve_pasted_download_url(
     normalized_url: String,
 ) -> Result<PastedDownloadUrlResolution> {
     match collection_repo::get_collection_by_url(&normalized_url).await? {
-        Some(collection) => Ok(PastedDownloadUrlResolution::existing_collection(
-            normalized_url,
-            collection,
-        )),
+        Some(collection) if !collection.musics.is_empty() => {
+            Ok(PastedDownloadUrlResolution::existing_collection(
+                normalized_url,
+                collection,
+            ))
+        }
         None => Ok(PastedDownloadUrlResolution::new_url(normalized_url)),
+        Some(_) => Ok(PastedDownloadUrlResolution::new_url(normalized_url)),
     }
 }
 
@@ -251,7 +256,12 @@ pub(crate) async fn load_collection_shell_with_local_duration_probe(
 
     if restore_download_manifest_evidence(&mut collection, save_root, &local_duration_probe)? {
         let saved = collection_repo::upsert_collection(&collection).await?;
-        notify_audio_style_inputs_changed("download_manifest_evidence_restored");
+        let training_inputs =
+            audio_style_training_inputs_from_musics(save_root, &saved, &saved.musics);
+        notify_audio_style_training_inputs_ready(
+            "download_manifest_evidence_restored",
+            training_inputs,
+        );
         notify_playlist_playback_library_changed();
         collection = saved;
     }
@@ -345,7 +355,7 @@ pub(crate) async fn persist_enqueued_collection_plan(
     let collection =
         collection_repo::upsert_collection(&create_collection_shell(plan, existing)).await?;
     apply_collection_plan_to_task(&mut task, plan);
-    task.last_error = None;
+    task.last_error = plan.partial_reason.clone();
     let task = download_repo::save_task(task).await?;
     Ok((task, collection))
 }
@@ -363,9 +373,17 @@ pub(crate) struct PersistDownloadedLeafMusicOutcome {
     pub(crate) changed: bool,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct DownloadedLeafMusicMaterialization {
+    pub(crate) probe: LeafProbe,
+    pub(crate) file_name: String,
+    pub(crate) group: Group,
+}
+
 pub(crate) async fn persist_downloaded_leaf_music(
     collection: &mut Collection,
     source_kind: CollectionSourceKind,
+    save_root: &Path,
     probe: &LeafProbe,
     file_name: &str,
     group: Group,
@@ -416,6 +434,8 @@ pub(crate) async fn persist_downloaded_leaf_music(
     }
     normalize_music_titles_within_collection(&mut current);
     if music_collections_are_semantically_equal(&previous_musics, &current.musics) {
+        let training_inputs =
+            audio_style_training_inputs_from_musics(save_root, &current, &current.musics);
         *collection = current;
         log::info!(
             target: "downloads",
@@ -427,11 +447,21 @@ pub(crate) async fn persist_downloaded_leaf_music(
             materialized_count,
             collection.musics.len()
         );
+        notify_audio_style_training_inputs_ready(
+            "downloaded_leaf_music_reused",
+            training_inputs,
+        );
         return Ok(PersistDownloadedLeafMusicOutcome { changed: false });
     }
     current.last_updated = now_timestamp();
     let saved = collection_repo::upsert_collection(&current).await?;
+    let training_inputs =
+        audio_style_training_inputs_from_musics(save_root, &saved, &saved.musics);
     *collection = saved;
+    notify_audio_style_training_inputs_ready(
+        "downloaded_leaf_music_persisted",
+        training_inputs,
+    );
     log::info!(
         target: "downloads",
         "downloaded_leaf_music_persist_finished collection=\"{}\" source_kind={} url=\"{}\" relative_path=\"{}\" materialized={} musics={}",
@@ -445,12 +475,127 @@ pub(crate) async fn persist_downloaded_leaf_music(
     Ok(PersistDownloadedLeafMusicOutcome { changed: true })
 }
 
+pub(crate) async fn persist_downloaded_leaf_music_batch(
+    collection: &mut Collection,
+    source_kind: CollectionSourceKind,
+    save_root: &Path,
+    leaves: &[DownloadedLeafMusicMaterialization],
+) -> Result<PersistDownloadedLeafMusicOutcome> {
+    if leaves.is_empty() {
+        return Ok(PersistDownloadedLeafMusicOutcome { changed: false });
+    }
+
+    for leaf in leaves {
+        ensure_committable_download_file_name(&leaf.file_name)?;
+    }
+
+    log::info!(
+        target: "downloads",
+        "downloaded_leaf_music_batch_persist_started collection=\"{}\" source_kind={} leaves={}",
+        collection.url,
+        source_kind.as_str(),
+        leaves.len()
+    );
+
+    let _collection_write = collection_repo::acquire_collection_write_composition_lock().await;
+    let mut current = collection_repo::get_collection_by_url(&collection.url)
+        .await?
+        .unwrap_or_else(|| collection.clone());
+    let previous_musics = current.musics.clone();
+    let mut replacements = leaves
+        .iter()
+        .map(|leaf| {
+            let mut materialized =
+                materialize_music_entries(&leaf.probe, &leaf.file_name, leaf.group.clone());
+            inherit_existing_music_lifecycle(&mut materialized, &current.musics);
+            let group_url = materialized
+                .first()
+                .map(|music| music.group.url.clone())
+                .unwrap_or_else(|| leaf.group.url.clone());
+            (leaf.probe.webpage_url.clone(), group_url, materialized)
+        })
+        .collect::<Vec<_>>();
+    let materialized_count = replacements
+        .iter()
+        .map(|(_, _, musics)| musics.len())
+        .sum::<usize>();
+
+    if source_kind == CollectionSourceKind::Single {
+        current.musics = replacements
+            .into_iter()
+            .flat_map(|(_, _, musics)| musics)
+            .collect();
+    } else {
+        let mut inserted_replacements = HashSet::<usize>::new();
+        let mut next_musics = Vec::with_capacity(current.musics.len() + materialized_count);
+        for music in current.musics {
+            let replacement_index = replacements
+                .iter()
+                .position(|(url, group_url, _)| music.url == *url && music.group.url == *group_url);
+            match replacement_index {
+                Some(index) if inserted_replacements.insert(index) => {
+                    next_musics.append(&mut replacements[index].2);
+                }
+                Some(_) => {}
+                None => next_musics.push(music),
+            }
+        }
+        for (index, (_, _, musics)) in replacements.into_iter().enumerate() {
+            if !inserted_replacements.contains(&index) {
+                next_musics.extend(musics);
+            }
+        }
+        current.musics = next_musics;
+    }
+
+    normalize_music_titles_within_collection(&mut current);
+    if music_collections_are_semantically_equal(&previous_musics, &current.musics) {
+        let training_inputs =
+            audio_style_training_inputs_from_musics(save_root, &current, &current.musics);
+        *collection = current;
+        log::info!(
+            target: "downloads",
+            "downloaded_leaf_music_batch_persist_skipped collection=\"{}\" source_kind={} leaves={} materialized={} musics={} reason=unchanged",
+            collection.url,
+            source_kind.as_str(),
+            leaves.len(),
+            materialized_count,
+            collection.musics.len()
+        );
+        notify_audio_style_training_inputs_ready(
+            "downloaded_leaf_music_batch_reused",
+            training_inputs,
+        );
+        return Ok(PersistDownloadedLeafMusicOutcome { changed: false });
+    }
+
+    current.last_updated = now_timestamp();
+    let saved = collection_repo::upsert_collection(&current).await?;
+    let training_inputs =
+        audio_style_training_inputs_from_musics(save_root, &saved, &saved.musics);
+    *collection = saved;
+    notify_audio_style_training_inputs_ready(
+        "downloaded_leaf_music_batch_persisted",
+        training_inputs,
+    );
+    log::info!(
+        target: "downloads",
+        "downloaded_leaf_music_batch_persist_finished collection=\"{}\" source_kind={} leaves={} materialized={} musics={}",
+        collection.url,
+        source_kind.as_str(),
+        leaves.len(),
+        materialized_count,
+        collection.musics.len()
+    );
+    Ok(PersistDownloadedLeafMusicOutcome { changed: true })
+}
+
 pub(crate) fn notify_downloaded_leaf_collection_committed() {
     notify_audio_style_inputs_changed("downloaded_leaf_collection_committed");
     notify_playlist_playback_library_changed();
 }
 
-pub(crate) fn notify_downloaded_leaf_playable_music_committed() {
+pub(crate) fn notify_downloaded_leaf_foreground_playable_committed() {
     notify_playlist_playback_library_changed();
 }
 
@@ -712,6 +857,20 @@ pub(crate) fn write_raw_leaf_manifest_evidence(
     write_raw_leaf_manifest_file(collection_root, &manifest)
 }
 
+pub(crate) fn write_raw_leaf_manifest_evidence_batch(
+    collection_root: &Path,
+    collection: &Collection,
+    source_kind: CollectionSourceKind,
+    leaves: &[DownloadedLeafMusicMaterialization],
+) -> Result<()> {
+    if leaves.is_empty() {
+        return Ok(());
+    }
+
+    let manifest = manifest_from_raw_leaf_evidence_batch(collection, source_kind, leaves);
+    write_raw_leaf_manifest_file(collection_root, &manifest)
+}
+
 #[cfg(not(test))]
 #[tauri::command]
 #[specta::specta]
@@ -763,11 +922,7 @@ pub(crate) async fn get_collection_by_name(name: &str) -> Result<Option<Collecti
 
 #[cfg(not(test))]
 pub(crate) async fn list_auto_update_collection_urls() -> Result<Vec<String>> {
-    Ok(collection_repo::list_auto_update_collections()
-        .await?
-        .into_iter()
-        .map(|collection| collection.url)
-        .collect())
+    collection_repo::list_auto_update_collection_urls().await
 }
 
 pub(crate) async fn resolve_collection_folder(
@@ -2355,8 +2510,13 @@ pub(crate) async fn repair_stale_single_source_collections(save_root: &Path) -> 
 
             collection.musics = restored;
             collection.last_updated = now_timestamp();
-            let _ = collection_repo::upsert_collection(&collection).await?;
-            notify_audio_style_inputs_changed("download_recovery_music_restored");
+            let saved = collection_repo::upsert_collection(&collection).await?;
+            let training_inputs =
+                audio_style_training_inputs_from_musics(save_root, &saved, &saved.musics);
+            notify_audio_style_training_inputs_ready(
+                "download_recovery_music_restored",
+                training_inputs,
+            );
             notify_playlist_playback_library_changed();
             repaired += 1;
             break;
@@ -2446,6 +2606,54 @@ fn recover_single_source_leaf_relative_path(
 fn notify_audio_style_inputs_changed(_reason: &'static str) {
     #[cfg(not(test))]
     playlist_playback_service::notify_music_library_inputs_changed(_reason);
+}
+
+fn notify_audio_style_training_inputs_ready(
+    _reason: &'static str,
+    _inputs: Vec<AudioStyleTrainingTrackInput>,
+) {
+    #[cfg(not(test))]
+    playlist_playback_service::notify_music_training_inputs_ready(_reason, _inputs);
+}
+
+fn audio_style_training_inputs_from_musics(
+    save_root: &Path,
+    collection: &Collection,
+    musics: &[Music],
+) -> Vec<AudioStyleTrainingTrackInput> {
+    musics
+        .iter()
+        .filter_map(|music| audio_style_training_input_from_music(save_root, collection, music))
+        .collect()
+}
+
+fn audio_style_training_input_from_music(
+    save_root: &Path,
+    collection: &Collection,
+    music: &Music,
+) -> Option<AudioStyleTrainingTrackInput> {
+    if music.start_ms >= music.end_ms {
+        return None;
+    }
+    let relative_path = music.path.as_deref()?.trim();
+    if relative_path.is_empty() {
+        return None;
+    }
+    Some(AudioStyleTrainingTrackInput {
+        occurrence_id: music.occurrence_id.clone(),
+        alias: music.alias.clone(),
+        canonical_music_id: music.canonical_music_id.clone(),
+        url: music.url.clone(),
+        absolute_path: save_root
+            .join(&collection.folder)
+            .join(relative_path)
+            .to_string_lossy()
+            .to_string(),
+        start_ms: music.start_ms,
+        end_ms: music.end_ms,
+        liked: music.liked,
+        loudness_profile: music.loudness_profile,
+    })
 }
 
 fn notify_playlist_playback_library_changed() {
@@ -2842,6 +3050,45 @@ fn manifest_from_raw_leaf_evidence(
         })
         .into_iter()
         .collect();
+
+    CollectionManifest {
+        version: 1,
+        collection: CollectionManifestCollection {
+            name: collection.name.clone(),
+            url: collection.url.clone(),
+            folder: collection.folder.clone(),
+            source_kind: Some(source_kind),
+            enable_updates: collection.enable_updates,
+            last_updated: Some(collection.last_updated.clone()),
+        },
+        groups,
+        musics,
+    }
+}
+
+fn manifest_from_raw_leaf_evidence_batch(
+    collection: &Collection,
+    source_kind: CollectionSourceKind,
+    leaves: &[DownloadedLeafMusicMaterialization],
+) -> CollectionManifest {
+    let mut group_urls = HashSet::new();
+    let mut groups = Vec::new();
+    let mut musics = Vec::new();
+
+    for leaf in leaves {
+        musics.extend(
+            materialize_music_entries(&leaf.probe, &leaf.file_name, leaf.group.clone())
+                .into_iter()
+                .map(collection_manifest_music_from_music),
+        );
+        if leaf.group.url != collection.url && group_urls.insert(leaf.group.url.clone()) {
+            groups.push(CollectionManifestGroup {
+                name: leaf.group.name.clone(),
+                url: leaf.group.url.clone(),
+                folder: leaf.group.folder.clone(),
+            });
+        }
+    }
 
     CollectionManifest {
         version: 1,

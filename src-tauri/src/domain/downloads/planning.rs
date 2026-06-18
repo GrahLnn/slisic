@@ -103,6 +103,7 @@ async fn resolve_collection_plan_from_root_probe(
                 )
                 .await?,
                 enable_updates: None,
+                partial_reason: None,
                 leaves: vec![PlannedLeaf {
                     id: leaf_id_for(&task.id, &collection_url, None),
                     url: collection_url,
@@ -147,6 +148,9 @@ async fn resolve_collection_plan_from_root_probe(
                     .and_then(|collection| collection.enable_updates)
                     .or(Some(false)),
             };
+            let discovered_leaf_count = list.entries.len();
+            let partial_reason =
+                playlist_partial_reason(discovered_leaf_count, list.expected_entry_count);
             let leaves = collection_import::deduplicate_planned_leaves(
                 &collection_url,
                 expand_root_entries_to_planned_leafs(
@@ -169,10 +173,23 @@ async fn resolve_collection_plan_from_root_probe(
                         .and_then(|collection| collection.enable_updates)
                         .unwrap_or(false),
                 ),
+                partial_reason,
                 leaves,
             })
         }
     }
+}
+
+fn playlist_partial_reason(
+    discovered_leaf_count: usize,
+    expected_entry_count: Option<usize>,
+) -> Option<String> {
+    let expected = expected_entry_count?;
+    (expected > discovered_leaf_count).then(|| {
+        format!(
+            "provider returned {discovered_leaf_count}/{expected} playlist entries; queued discovered foreground entries and left collection discovery incomplete"
+        )
+    })
 }
 
 pub(crate) async fn resolve_existing_collection_for_download_identity(
@@ -208,6 +225,11 @@ pub(crate) fn residual_collection_plan(task: &DownloadTask) -> Option<Collection
         collection_url: task.collection_url.clone()?,
         collection_folder: task.collection_folder.clone()?,
         enable_updates: None,
+        partial_reason: task.last_error.clone().and_then(|error| {
+            error
+                .starts_with("provider returned ")
+                .then_some(error)
+        }),
         leaves: task
             .leafs
             .iter()
@@ -528,7 +550,7 @@ pub(crate) fn task_id_for(url: &str, trigger: DownloadTrigger) -> String {
             DownloadTrigger::LocalImport => "local",
             DownloadTrigger::AutoUpdate => "auto",
         },
-        stable_id(&format!("{url}|{}", now_timestamp()))
+        stable_id(url)
     )
 }
 
