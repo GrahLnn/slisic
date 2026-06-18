@@ -77,10 +77,11 @@ describe("playItem", () => {
     );
   });
 
-  test("centers playback icons from text width without using the play item x position", () => {
+  test("centers playback icons from the current title anchor", () => {
     assert.deepEqual(
       resolvePlaybackIconLayerBox({
         anchorBottom: 120,
+        anchorCenterX: 250,
         textWidth: 180.2,
         viewportWidth: 500,
       }),
@@ -93,6 +94,7 @@ describe("playItem", () => {
     assert.deepEqual(
       resolvePlaybackIconLayerBox({
         anchorBottom: 120,
+        anchorCenterX: 250,
         textWidth: 24,
         viewportWidth: 500,
       }),
@@ -105,6 +107,7 @@ describe("playItem", () => {
     assert.deepEqual(
       resolvePlaybackIconLayerBox({
         anchorBottom: 120,
+        anchorCenterX: 250,
         textWidth: 720,
         viewportWidth: 500,
       }),
@@ -116,13 +119,82 @@ describe("playItem", () => {
     );
   });
 
-  test("hides playback icons while Torph is preparing the text transition", () => {
+  test("rejects playback icon boxes without usable text, viewport, or anchor coordinates", () => {
+    assert.equal(
+      resolvePlaybackIconLayerBox({
+        anchorBottom: 120,
+        anchorCenterX: 250,
+        textWidth: 0,
+        viewportWidth: 500,
+      }),
+      undefined,
+    );
+    assert.equal(
+      resolvePlaybackIconLayerBox({
+        anchorBottom: 120,
+        anchorCenterX: 250,
+        textWidth: 180,
+        viewportWidth: 0,
+      }),
+      undefined,
+    );
+    assert.equal(
+      resolvePlaybackIconLayerBox({
+        anchorBottom: Number.NaN,
+        anchorCenterX: 250,
+        textWidth: 180,
+        viewportWidth: 500,
+      }),
+      undefined,
+    );
+  });
+
+  test("hides playback icons only while Torph is preparing the text transition", () => {
     assert.equal(
       shouldShowPlaybackIconLayer({
         hasLayerBox: true,
         isWindowPointerInside: true,
         showPlaybackIcons: true,
         torphStage: "prepare",
+      }),
+      false,
+    );
+    assert.equal(
+      shouldShowPlaybackIconLayer({
+        hasLayerBox: true,
+        isWindowPointerInside: true,
+        showPlaybackIcons: true,
+        torphStage: "animate",
+      }),
+      true,
+    );
+    assert.equal(
+      shouldShowPlaybackIconLayer({
+        hasLayerBox: true,
+        isWindowPointerInside: true,
+        showPlaybackIcons: true,
+        torphStage: "idle",
+      }),
+      true,
+    );
+  });
+
+  test("keeps the hover window as the only playback icon visibility owner", () => {
+    assert.equal(
+      shouldShowPlaybackIconLayer({
+        hasLayerBox: true,
+        isWindowPointerInside: false,
+        showPlaybackIcons: true,
+        torphStage: "animate",
+      }),
+      false,
+    );
+    assert.equal(
+      shouldShowPlaybackIconLayer({
+        hasLayerBox: true,
+        isWindowPointerInside: true,
+        showPlaybackIcons: false,
+        torphStage: "animate",
       }),
       false,
     );

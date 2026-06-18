@@ -49,7 +49,6 @@ type PlayItemFrameProps = Omit<HTMLMotionProps<"div">, "children"> & {
 type PlayItemTextProps = Pick<
   PlayItemBaseProps,
   | "handoffTone"
-  | "isPlaybackPreparing"
   | "isLiked"
   | "layoutId"
   | "onClick"
@@ -214,10 +213,16 @@ function measurePlayItemTextWidthWithPretext(args: { source: HTMLElement; text: 
 
 export function resolvePlaybackIconLayerBox(args: {
   anchorBottom: number;
+  anchorCenterX: number;
   textWidth: number;
   viewportWidth: number;
 }) {
-  if (args.textWidth <= 0 || args.viewportWidth <= 0) {
+  if (
+    args.textWidth <= 0 ||
+    args.viewportWidth <= 0 ||
+    !Number.isFinite(args.anchorBottom) ||
+    !Number.isFinite(args.anchorCenterX)
+  ) {
     return undefined;
   }
 
@@ -226,7 +231,7 @@ export function resolvePlaybackIconLayerBox(args: {
     args.viewportWidth,
   );
   return {
-    left: Math.max(0, (args.viewportWidth - width) / 2),
+    left: Math.min(Math.max(0, args.anchorCenterX - width / 2), Math.max(0, args.viewportWidth - width)),
     top: args.anchorBottom + PLAYBACK_ICON_LAYER_VERTICAL_GAP,
     width,
   } satisfies PlaybackIconLayerBox;
@@ -365,7 +370,6 @@ function PlayItemFn({
 
 function PlayItemText({
   handoffTone = null,
-  isPlaybackPreparing = false,
   isLiked = false,
   onClick,
   onExcludeCurrentMusic,
@@ -449,8 +453,10 @@ function PlayItemText({
 
       const textWidth = latestMeasuredTextWidthRef.current;
       if (textWidth !== undefined) {
+        const rect = node.getBoundingClientRect();
         const next = resolvePlaybackIconLayerBox({
-          anchorBottom: node.getBoundingClientRect().bottom,
+          anchorBottom: rect.bottom,
+          anchorCenterX: rect.left + rect.width / 2,
           textWidth,
           viewportWidth: window.innerWidth,
         });
@@ -460,28 +466,42 @@ function PlayItemText({
           );
         }
       }
+    };
+    const stopTracking = () => {
+      if (animationFrame !== null) {
+        window.cancelAnimationFrame(animationFrame);
+        animationFrame = null;
+      }
+    };
+    const trackLayerBox = () => {
+      if (cancelled) {
+        animationFrame = null;
+        return;
+      }
 
-      animationFrame = requestAnimationFrame(updateLayerBox);
+      updateLayerBox();
+      animationFrame = window.requestAnimationFrame(trackLayerBox);
     };
     const handleResize = () => {
       measureTextWidth();
+      updateLayerBox();
     };
 
     measureTextWidth();
     updateLayerBox();
+    animationFrame = window.requestAnimationFrame(trackLayerBox);
     document.fonts?.ready.then(() => {
       if (!cancelled) {
         measureTextWidth();
+        updateLayerBox();
       }
     });
     window.addEventListener("resize", handleResize);
 
     return () => {
       cancelled = true;
+      stopTracking();
       window.removeEventListener("resize", handleResize);
-      if (animationFrame !== null) {
-        cancelAnimationFrame(animationFrame);
-      }
     };
   }, [playbackIconWidthText, scope, showPlaybackIcons]);
 
@@ -511,7 +531,7 @@ function PlayItemText({
       {portalHost &&
         createPortal(
           <AnimatePresence>
-            {shouldRenderPlaybackIconLayer && playbackIconLayerBox && !isPlaybackPreparing && (
+            {shouldRenderPlaybackIconLayer && playbackIconLayerBox && (
               <motion.div
                 aria-label="Playback actions"
                 role="toolbar"
@@ -576,7 +596,7 @@ export function PlayItem({
   layoutId,
   tone = "solid",
   handoffTone = null,
-  isPlaybackPreparing = false,
+  isPlaybackPreparing: _isPlaybackPreparing = false,
   isLiked = false,
   text,
   textClassName,
@@ -598,7 +618,6 @@ export function PlayItem({
     >
       <PlayItemText
         handoffTone={handoffTone}
-        isPlaybackPreparing={isPlaybackPreparing}
         isLiked={isLiked}
         onClick={onClick}
         onExcludeCurrentMusic={onExcludeCurrentMusic}

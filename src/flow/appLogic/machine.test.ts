@@ -1255,6 +1255,48 @@ describe("appLogic machine", () => {
     assert.equal(actor.getSnapshot().context.nowPlayingTrackUrl, music.url);
   });
 
+  test("does not let late preparing status overwrite accepted now playing evidence", async () => {
+    const music = createMusic();
+    const collection = createCollection([music]);
+    const actor = createActor(
+      machine.provide({
+        actors: {
+          loadCollections: fromPromise<BootstrapResult>(async () =>
+            createBootstrapResult([collection]),
+          ),
+        },
+      }),
+    );
+
+    actor.start();
+    actor.send(sig.mainx.run);
+    await waitForState(actor, "ready");
+
+    actor.send(payloads["playlist.play"].load({ playlistName: "Focus Session", requestId: 1 }));
+    actor.send(
+      payloads["playlist.playback.accepted"].load({
+        playlistName: "Focus Session",
+        requestId: 1,
+        session: createStartedPlaybackSession(1),
+      }),
+    );
+    actor.send(
+      payloads["player.now_playing_track.changed"].load(
+        createNowPlayingTrackChangedEvent(music, 1),
+      ),
+    );
+
+    assert.equal(actor.getSnapshot().context.playbackSurfaceStatus, null);
+    assert.equal(actor.getSnapshot().context.nowPlayingTrackName, music.alias);
+    assert.equal(actor.getSnapshot().context.nowPlayingTrackUrl, music.url);
+
+    actor.send(playbackSurfaceStatusChanged.load(createPlaybackSurfaceStatusChangedEvent(1)));
+
+    assert.equal(actor.getSnapshot().context.playbackSurfaceStatus, null);
+    assert.equal(actor.getSnapshot().context.nowPlayingTrackName, music.alias);
+    assert.equal(actor.getSnapshot().context.nowPlayingTrackUrl, music.url);
+  });
+
   test("keeps early preparing evidence pending until backend playback acceptance", async () => {
     const music = createMusic();
     const collection = createCollection([music]);

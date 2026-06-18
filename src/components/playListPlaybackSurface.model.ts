@@ -47,6 +47,50 @@ export const INACTIVE_PLAYBACK_SURFACE: PlayListPlaybackSurfaceState = {
   displayedTrackIsPlayable: false,
 };
 
+export type PlaybackSurfaceCenterRequest =
+  | {
+      shouldRequest: true;
+      target: string;
+      nextRequestedTarget: string;
+      reason: "new_playing_target";
+    }
+  | {
+      shouldRequest: false;
+      target: null;
+      nextRequestedTarget: string | null;
+      reason: "already_requested_target" | "not_playing_surface";
+    };
+
+export function resolvePlaybackSurfaceCenterRequest(args: {
+  lastRequestedTarget: string | null;
+  playbackSurface: PlayListPlaybackSurfaceState;
+}): PlaybackSurfaceCenterRequest {
+  if (args.playbackSurface.phase !== "playing" || args.playbackSurface.playlistName === null) {
+    return {
+      shouldRequest: false,
+      target: null,
+      nextRequestedTarget: null,
+      reason: "not_playing_surface",
+    };
+  }
+
+  if (args.lastRequestedTarget === args.playbackSurface.playlistName) {
+    return {
+      shouldRequest: false,
+      target: null,
+      nextRequestedTarget: args.lastRequestedTarget,
+      reason: "already_requested_target",
+    };
+  }
+
+  return {
+    shouldRequest: true,
+    target: args.playbackSurface.playlistName,
+    nextRequestedTarget: args.playbackSurface.playlistName,
+    reason: "new_playing_target",
+  };
+}
+
 export function resolveMachinePlaybackTarget(args: {
   pageState: MainStateT;
   playingPlaylistName: string | null;

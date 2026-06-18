@@ -33,6 +33,8 @@ import {
 import type { PlayListPlaybackSurfaceSnapshot } from "./playListPlaybackSurface.model";
 import type { PlayListTitleReturnSurfaceSnapshot } from "./playListTitleReturnSurface.model";
 
+const PREPARING_PLAYBACK_SURFACE_TEXT = "Preparing...";
+
 const contentFadeProps = {
   initial: { opacity: 0 },
   animate: { opacity: 1 },
@@ -266,6 +268,9 @@ function resolvePlayListPageVisibleItems(args: {
     !!displayLockPlaylistName &&
     args.visiblePlaylists.some((playlist) => playlist.name === displayLockPlaylistName);
   const pendingPlaybackPlaylistName = resolvePendingPlaybackPlaylistName(args);
+  const isPendingFirstTrackPreparing =
+    pendingPlaybackPlaylistName !== null &&
+    args.pendingPlaylistPlaybackRequest?.reason === "pending_first_track";
   const shouldStartHiddenItemsInPlay = args.displayLock?.kind === "return-handoff";
   const openingPlaybackTitleHandoffTargetName =
     args.pageState === "play" &&
@@ -284,6 +289,8 @@ function resolvePlayListPageVisibleItems(args: {
       const itemLayoutId = playlistTitleLayoutId(playlist.name);
       const isPlaybackTarget = hasPlaybackTarget && playlist.name === playbackSurfacePlaylistName;
       const isPendingPlaybackTarget = playlist.name === pendingPlaybackPlaylistName;
+      const isPendingPlaybackPreparingTarget =
+        isPendingFirstTrackPreparing && playlist.name === pendingPlaybackPlaylistName;
       const hasPlaybackSurfaceTrackText =
         hasPlaybackTarget &&
         playlist.name === playbackSurfacePlaylistName &&
@@ -291,9 +298,18 @@ function resolvePlayListPageVisibleItems(args: {
           playlistName: playlist.name,
           trackName: playbackSurfaceTrackName,
         });
+      const shouldShowPendingPreparing =
+        isPendingPlaybackPreparingTarget &&
+        (!isPlaybackSurfacePlaying ||
+          !hasPlaybackTarget ||
+          playlist.name !== playbackSurfacePlaylistName ||
+          playbackSurfaceTrackName === undefined ||
+          playbackSurfaceTrackName === playlist.name);
       return createPlayListPageItemViewModel({
         playlist,
-        text: hasPlaybackTarget && playlist.name === playbackSurfacePlaylistName
+        text: shouldShowPendingPreparing
+          ? PREPARING_PLAYBACK_SURFACE_TEXT
+          : hasPlaybackTarget && playlist.name === playbackSurfacePlaylistName
             ? playbackSurfaceTrackName || playlist.name
             : playlist.name,
         titleShareEnabled: args.titleShareEnabled,
@@ -312,11 +328,12 @@ function resolvePlayListPageVisibleItems(args: {
           playlist.name === playbackSurfacePlaylistName &&
           playbackSurfaceTrackLiked === true,
         isPlaybackPreparing:
-          isPlaybackSurfacePlaying &&
-          hasPlaybackTarget &&
-          playlist.name === playbackSurfacePlaylistName &&
-          hasPlaybackSurfaceTrackText &&
-          !playbackSurfaceTrackIsPlayable,
+          shouldShowPendingPreparing ||
+          (isPlaybackSurfacePlaying &&
+            hasPlaybackTarget &&
+            playlist.name === playbackSurfacePlaylistName &&
+            hasPlaybackSurfaceTrackText &&
+            !playbackSurfaceTrackIsPlayable),
         isPlaybackTitleHandoffTarget: playlist.name === playbackTitleHandoffTargetName,
         titleHandoffPlan: args.titleHandoffPlan,
         titleHandoffInstruction: resolvePlayListTitleHandoffInstruction({

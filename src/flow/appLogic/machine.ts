@@ -1012,6 +1012,12 @@ export const machine = src.createMachine({
           return {};
         }
 
+        if (context.nowPlayingTrackUrl !== null && event.output.status === "preparing") {
+          return {
+            pendingPlaybackSurfaceStatusEvidence: null,
+          };
+        }
+
         return {
           nowPlayingTrackName: null,
           nowPlayingTrackUrl: null,

@@ -4,6 +4,7 @@ import {
   INACTIVE_PLAYBACK_SURFACE,
   resolveMachinePlaybackTarget,
   resolvePlaybackSurfaceAfterTorphStage,
+  resolvePlaybackSurfaceCenterRequest,
   syncPlaybackSurfaceState,
   toPlayListPlaybackSurfaceSnapshot,
 } from "./playListPlaybackSurface.model";
@@ -328,6 +329,71 @@ describe("playListPlaybackSurface model", () => {
         displayedTrackName: null,
         displayedTrackLiked: null,
         displayedTrackIsPlayable: false,
+      },
+    );
+  });
+
+  test("requests one center sync for each new playing target", () => {
+    assert.deepEqual(
+      resolvePlaybackSurfaceCenterRequest({
+        lastRequestedTarget: null,
+        playbackSurface: {
+          phase: "playing",
+          playlistName: "Quiet Morning",
+          sessionGeneration: 1,
+          displayedTrackName: null,
+          displayedTrackLiked: null,
+          displayedTrackIsPlayable: false,
+        },
+      }),
+      {
+        shouldRequest: true,
+        target: "Quiet Morning",
+        nextRequestedTarget: "Quiet Morning",
+        reason: "new_playing_target",
+      },
+    );
+
+    assert.deepEqual(
+      resolvePlaybackSurfaceCenterRequest({
+        lastRequestedTarget: "Quiet Morning",
+        playbackSurface: {
+          phase: "playing",
+          playlistName: "Quiet Morning",
+          sessionGeneration: 1,
+          displayedTrackName: "Track A",
+          displayedTrackLiked: null,
+          displayedTrackIsPlayable: true,
+        },
+      }),
+      {
+        shouldRequest: false,
+        target: null,
+        nextRequestedTarget: "Quiet Morning",
+        reason: "already_requested_target",
+      },
+    );
+  });
+
+  test("clears center sync ownership when playback surface leaves playing", () => {
+    assert.deepEqual(
+      resolvePlaybackSurfaceCenterRequest({
+        lastRequestedTarget: "Quiet Morning",
+        playbackSurface: {
+          phase: "restoring",
+          playlistName: "Quiet Morning",
+          sessionGeneration: 1,
+          displayedTrackName: null,
+          displayedTrackLiked: null,
+          displayedTrackIsPlayable: false,
+          restoreTransitionStarted: false,
+        },
+      }),
+      {
+        shouldRequest: false,
+        target: null,
+        nextRequestedTarget: null,
+        reason: "not_playing_surface",
       },
     );
   });

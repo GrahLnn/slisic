@@ -7,19 +7,11 @@ import {
   INACTIVE_PLAYBACK_SURFACE,
   resolveMachinePlaybackTarget,
   resolvePlaybackSurfaceAfterTorphStage,
+  resolvePlaybackSurfaceCenterRequest,
   syncPlaybackSurfaceState,
   toPlayListPlaybackSurfaceSnapshot,
   type PlayListPlaybackSurfaceState,
 } from "./playListPlaybackSurface.model";
-
-function isPlaybackItemCentered(container: HTMLElement, item: HTMLElement, tolerancePx = 1.5) {
-  const containerRect = container.getBoundingClientRect();
-  const itemRect = item.getBoundingClientRect();
-  const containerCenterY = containerRect.top + containerRect.height / 2;
-  const itemCenterY = itemRect.top + itemRect.height / 2;
-
-  return Math.abs(itemCenterY - containerCenterY) <= tolerancePx;
-}
 
 function tracePlaybackSurfaceState(state: PlayListPlaybackSurfaceState) {
   return {
@@ -151,27 +143,26 @@ export function usePlayListPlaybackSurface({
   ]);
 
   useLayoutEffect(() => {
-    if (playbackSurface.phase !== "playing" || playbackSurface.playlistName === null) {
+    const centerRequest = resolvePlaybackSurfaceCenterRequest({
+      lastRequestedTarget: lastCenteredTargetRef.current,
+      playbackSurface,
+    });
+
+    if (!centerRequest.shouldRequest) {
+      lastCenteredTargetRef.current = centerRequest.nextRequestedTarget;
       recordTrace("playlist-surface-center-skipped", {
-        reason: "not_playing_surface",
+        reason: centerRequest.reason,
         playbackSurface: tracePlaybackSurfaceState(playbackSurface),
       });
       return;
     }
 
-    const key = playbackSurface.playlistName;
-    if (lastCenteredTargetRef.current === key) {
-      recordTrace("playlist-surface-center-skipped", {
-        reason: "already_centered_target",
-        key,
-        playbackSurface: tracePlaybackSurfaceState(playbackSurface),
-      });
-      return;
-    }
-
+    lastCenteredTargetRef.current = centerRequest.nextRequestedTarget;
+    const key = centerRequest.target;
     const item = itemRefs.current[key];
     const container = containerRef.current;
     if (!item || !container) {
+      lastCenteredTargetRef.current = null;
       recordTrace("playlist-surface-center-skipped", {
         reason: !item ? "missing_item_ref" : "missing_container_ref",
         key,
@@ -180,71 +171,15 @@ export function usePlayListPlaybackSurface({
       return;
     }
 
-    lastCenteredTargetRef.current = key;
-    recordTrace("playlist-surface-center-start", {
+    item.scrollIntoView({
+      block: "center",
+      behavior: "auto",
+    });
+    recordTrace("playlist-surface-center-scroll-requested", {
       key,
       playbackSurface: tracePlaybackSurfaceState(playbackSurface),
     });
-
-    let cancelled = false;
-    let settleFrame: number | null = null;
-
-    const waitForCenter = () => {
-      if (cancelled) {
-        return;
-      }
-
-      const currentItem = itemRefs.current[key];
-      const currentContainer = containerRef.current;
-      if (!currentItem || !currentContainer) {
-        return;
-      }
-
-      if (isPlaybackItemCentered(currentContainer, currentItem)) {
-        recordTrace("playlist-surface-center-settled", {
-          key,
-          playbackSurface: tracePlaybackSurfaceState(playbackSurface),
-        });
-        return;
-      }
-
-      settleFrame = requestAnimationFrame(waitForCenter);
-    };
-
-    const frame = requestAnimationFrame(() => {
-      item.scrollIntoView({
-        block: "center",
-        behavior: "smooth",
-      });
-      recordTrace("playlist-surface-center-scroll-requested", {
-        key,
-        playbackSurface: tracePlaybackSurfaceState(playbackSurface),
-      });
-      settleFrame = requestAnimationFrame(waitForCenter);
-    });
-
-    return () => {
-      cancelled = true;
-      recordTrace("playlist-surface-center-cancelled", {
-        key,
-        playbackSurface: tracePlaybackSurfaceState(playbackSurface),
-      });
-      cancelAnimationFrame(frame);
-      if (settleFrame !== null) {
-        cancelAnimationFrame(settleFrame);
-      }
-    };
   }, [playbackSurface.phase, playbackSurface.playlistName]);
-
-  useLayoutEffect(() => {
-    if (playbackSurface.phase === "inactive" || playbackSurface.phase === "restoring") {
-      recordTrace("playlist-surface-center-target-reset", {
-        playbackSurface: tracePlaybackSurfaceState(playbackSurface),
-        previousTarget: lastCenteredTargetRef.current,
-      });
-      lastCenteredTargetRef.current = null;
-    }
-  }, [playbackSurface.phase]);
 
   useLayoutEffect(() => {
     if (playbackSurface.phase !== "restoring" || playbackSurface.playlistName === null) {
