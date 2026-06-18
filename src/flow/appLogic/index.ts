@@ -84,6 +84,7 @@ import {
   type PlaybackModeEffect,
 } from "./playbackMode";
 import { recordTrace } from "@/src/debug/trace";
+import { clearAudioVisualizationFrame } from "@/src/flow/audioVisualization/store";
 export { actor } from "./runtime";
 
 type ActorSnapshot = ReturnType<(typeof actor)["getSnapshot"]>;
@@ -250,6 +251,7 @@ export function attachDebugLogger() {
 
 function requestPlaybackStop() {
   playlistPlaybackStartEpoch += 1;
+  clearAudioVisualizationFrame();
   void stopPlayback()
     .then(() => undefined)
     .catch((error) => {

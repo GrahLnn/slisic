@@ -137,6 +137,7 @@ pub fn run() {
             utils::hardware_wheel::HardwareHorizontalWheelEvent,
             domain::player::event::NowPlayingTrackChangedEvent,
             domain::player::event::NowPlayingTrackLikedChangedEvent,
+            domain::player::event::PlaybackAudioVisualizationFrameEvent,
             domain::player::event::PlaybackSurfaceStatusChangedEvent,
             domain::player::event::PlaybackExcludeCommittedEvent,
             domain::player::event::PlaybackDiagnosticTraceEvent,

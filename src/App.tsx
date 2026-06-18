@@ -13,6 +13,7 @@ import { PlayListPage } from "./components/PlayListPage";
 import { ListConfig } from "./components/ListConfig";
 import { SpectrumPage } from "./components/spectrum/SpectrumPage";
 import { DownloadCredentialPrompt } from "./flow/pasteDownload/DownloadCredentialPrompt";
+import { AudioShaderBackground } from "./components/audioShader/AudioShaderBackground";
 
 import { hook as appLogicHook } from "./flow/appLogic";
 import { useAppBootstrap } from "./flow/bootstrap";
@@ -24,7 +25,11 @@ import {
 } from "./components/scrollPosition";
 import { PageViewportScrollElementProvider } from "./components/pageViewportScroll";
 
-const enabledTraceProbes = ["config-title-check-flow", "title-handoff-flow"] satisfies TraceProbe[];
+const enabledTraceProbes = [
+  "config-title-check-flow",
+  "playback-diagnostics",
+  "title-handoff-flow",
+] satisfies TraceProbe[];
 
 installTrace({
   enabledProbes: enabledTraceProbes,
@@ -44,7 +49,10 @@ function WindowMainArea({ children }: PropsWithChildren) {
   return (
     <motion.main
       layoutRoot
-      className={cn("fixed top-0 left-0 h-screen w-full overflow-hidden", "flex-1 hide-scrollbar")}
+      className={cn(
+        "fixed top-0 left-0 z-10 h-screen w-full overflow-hidden",
+        "flex-1 hide-scrollbar",
+      )}
     >
       {children}
     </motion.main>
@@ -114,7 +122,8 @@ function Base({
   surface?: AppSurface;
 }>) {
   return (
-    <div className="min-h-screen overflow-hidden hide-scrollbar">
+    <div className="relative min-h-screen overflow-hidden hide-scrollbar">
+      {surface === "support" ? null : <AudioShaderBackground />}
       <TopBar surface={surface} />
       <WindowMainArea>{children}</WindowMainArea>
       <DownloadCredentialPrompt />

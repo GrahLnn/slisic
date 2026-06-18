@@ -1,6 +1,7 @@
 #[cfg(not(test))]
 use super::event::{
-    NowPlayingTrackChangedEvent, NowPlayingTrackLikedChangedEvent, PlaybackDiagnosticTraceDetail,
+    NowPlayingTrackChangedEvent, NowPlayingTrackLikedChangedEvent,
+    PlaybackAudioVisualizationFrameEvent, PlaybackDiagnosticTraceDetail,
     PlaybackDiagnosticTraceEvent, PlaybackSurfaceStatus, PlaybackSurfaceStatusChangedEvent,
 };
 pub(crate) use super::model::ActivePlaybackRange;
@@ -51,6 +52,8 @@ static PLAYER_RUNTIME: OnceLock<Arc<PlayerRuntime>> = OnceLock::new();
 const PLAYBACK_SESSION_STATUS_POLL_MS: u64 = 250;
 #[cfg(not(test))]
 const SPECTRUM_LOOP_SIGNAL_STATUS_POLL_MS: u64 = 16;
+#[cfg(not(test))]
+const PLAYBACK_AUDIO_VISUALIZATION_FRAME_MIN_INTERVAL_MS: u64 = 250;
 pub(crate) const BACKEND_PLAYBACK_TARGET_LUFS: f32 = -18.0;
 const PLAYBACK_LOUDNESS_SHORT_TERM_REFERENCE_LUFS: f32 = -18.0;
 const PLAYBACK_LOUDNESS_SHORT_TERM_CORRECTION_SLOPE: f32 = -0.5;
@@ -339,6 +342,35 @@ fn trace_range(range: Option<ActivePlaybackRange>) -> String {
 }
 
 #[cfg(not(test))]
+fn emit_playback_audio_visualization_frame(
+    app: &AppHandle,
+    generation: u64,
+    track: &PlaybackTrack,
+    current_position_ms: u32,
+    active_range: ActivePlaybackRange,
+    playing: bool,
+    paused: bool,
+) {
+    let event = PlaybackAudioVisualizationFrameEvent::from_session_track(
+        generation,
+        track,
+        current_position_ms,
+        active_range,
+        playing,
+        paused,
+    );
+    if let Err(error) = event.emit(app) {
+        log::warn!(
+            target: "player",
+            "failed to emit playback audio visualization frame playlist=\"{}\" title=\"{}\" error=\"{}\"",
+            track.playlist_name,
+            track.music_name,
+            error
+        );
+    }
+}
+
+#[cfg(not(test))]
 pub(crate) async fn play_tracks_from_initial_track_for_request_with_queue_mode(
     request: &PlaybackStartRequestHandle,
     playlist_name: String,
@@ -440,13 +472,19 @@ async fn play_tracks_with_initial_track(
         );
     } else {
         if let Some(track) = previous_active_track.as_ref() {
-            log_player_stop_done(
+            let active_range = previous_active_range.unwrap_or(ActivePlaybackRange {
+                start_ms: track.start_ms,
+                end_ms: track.end_ms,
+            });
+            log_player_stop_done(track, active_range, "session_restart");
+            emit_playback_audio_visualization_frame(
+                &runtime.app,
+                playback_run_generation,
                 track,
-                previous_active_range.unwrap_or(ActivePlaybackRange {
-                    start_ms: track.start_ms,
-                    end_ms: track.end_ms,
-                }),
-                "session_restart",
+                active_range.end_ms,
+                active_range,
+                false,
+                false,
             );
         }
         emit_player_trace(
@@ -598,6 +636,13 @@ pub(crate) fn update_current_session_tracks(tracks: Vec<PlaybackTrack>) -> Resul
 #[cfg(not(test))]
 pub(crate) fn current_session_tracks_snapshot() -> Result<Vec<PlaybackTrack>> {
     runtime()?.current_session_tracks_snapshot()
+}
+
+#[cfg(not(test))]
+pub(crate) fn subscribe_session_track_revision(
+    handle: &PlaybackSessionHandle,
+) -> Result<Option<SharedPlaybackTrackRevisionReceiver>> {
+    runtime()?.subscribe_session_track_revision(handle)
 }
 
 #[cfg(not(test))]
@@ -1698,6 +1743,26 @@ impl PlayerRuntime {
             .map_err(|_| anyhow!("player runtime session tracks lock is poisoned"))
     }
 
+    fn subscribe_session_track_revision(
+        &self,
+        handle: &PlaybackSessionHandle,
+    ) -> Result<Option<SharedPlaybackTrackRevisionReceiver>> {
+        let session = self
+            .session
+            .lock()
+            .map_err(|_| anyhow!("player runtime session lock is poisoned"))?;
+        let Some(active) = session.as_ref() else {
+            return Ok(None);
+        };
+        if active.session_generation != handle.session_generation
+            || active.playlist_name != handle.playlist_name
+        {
+            return Ok(None);
+        }
+
+        Ok(Some(active.track_revision.subscribe()))
+    }
+
     fn active_session_snapshot(&self) -> Result<Option<ActivePlaybackSessionSnapshot>> {
         let session = self
             .session
@@ -2173,18 +2238,19 @@ async fn run_playback_session(
                     "strategy"
                 }),
         );
-        runtime.set_active_request_track(track.clone())?;
-        NowPlayingTrackChangedEvent::from_session_track(
+        emit_playback_surface_status(
+            &runtime,
             session.session_generation,
-            track.to_payload(),
-        )
-        .emit(&runtime.app)?;
+            &session.playlist_name,
+            PlaybackSurfaceStatus::Preparing,
+        )?;
         emit_player_trace(
-            "player-run-now-playing-emitted",
+            "player-run-track-playback-preparing",
             PlayerTrace::new(&runtime.app)
                 .playlist_name(&session.playlist_name)
                 .track(Some(&track))
-                .elapsed(trace_start),
+                .elapsed(trace_start)
+                .details(vec![trace_detail("generation", generation)]),
         );
         let repeated_loop_signal = resolve_spectrum_loop_playback_range(
             runtime.spectrum_playback_scope_snapshot()?,
@@ -2219,19 +2285,40 @@ async fn run_playback_session(
         );
         match playback.play_request(request).await {
             Ok(_) => {
+                runtime.set_active_request_track(track.clone())?;
+                runtime.set_active_playback_range(Some(active_range))?;
+                NowPlayingTrackChangedEvent::from_session_track(
+                    session.session_generation,
+                    track.to_payload(),
+                )
+                .emit(&runtime.app)?;
+                emit_player_trace(
+                    "player-run-now-playing-emitted",
+                    PlayerTrace::new(&runtime.app)
+                        .playlist_name(&session.playlist_name)
+                        .track(Some(&track))
+                        .elapsed(trace_start),
+                );
                 if let Some(replaced_track) = replaced_track
                     .as_ref()
                     .filter(|previous| !are_playback_tracks_equal(previous, &track))
                 {
-                    log_player_stop_done(
+                    let active_range = replaced_range.unwrap_or(ActivePlaybackRange {
+                        start_ms: replaced_track.start_ms,
+                        end_ms: replaced_track.end_ms,
+                    });
+                    log_player_stop_done(replaced_track, active_range, "track_replaced");
+                    emit_playback_audio_visualization_frame(
+                        &runtime.app,
+                        session.session_generation,
                         replaced_track,
-                        replaced_range.unwrap_or(ActivePlaybackRange {
-                            start_ms: replaced_track.start_ms,
-                            end_ms: replaced_track.end_ms,
-                        }),
-                        "track_replaced",
+                        active_range.end_ms,
+                        active_range,
+                        false,
+                        false,
                     );
                 }
+                notify_playback_track_revision(&session.track_revision);
                 log::info!(
                     target: "player",
                     "[now play] playlist=\"{}\" title=\"{}\" integrated={} base_gain={} final_gain={} target_lufs={} true_peak={} lra={} short_p50={} short_p80={} short_p95={} short_max={} presence={} correction={} reason={} normalization={} range={}..{} range_duration_ms={}",
@@ -2318,7 +2405,6 @@ async fn run_playback_session(
                 .map_err(|_| anyhow!("player runtime playback strategy lock is poisoned"))?
                 .commit_current_track(&track);
         }
-        runtime.set_active_playback_range(Some(active_range))?;
         emit_player_trace(
             "player-run-active-range-set",
             PlayerTrace::new(&runtime.app)
@@ -2345,6 +2431,17 @@ async fn run_playback_session(
                 )
             })?;
         }
+        emit_playback_audio_visualization_frame(
+            &runtime.app,
+            generation,
+            &track,
+            active_range.start_ms,
+            active_range,
+            true,
+            initial_request
+                .as_ref()
+                .is_some_and(|request| request.pause_after_start),
+        );
         wait_until_track_finishes(&runtime, &playback, generation, &track.file_path).await?;
     }
 }
@@ -2389,6 +2486,15 @@ async fn resolve_next_session_track(
                 ]),
         );
     } else if let Some(track) = track.as_ref() {
+        log::info!(
+            target: "player",
+            "[next selected] playlist=\"{}\" title=\"{}\" source=session_queue mode={:?} queue_mode={:?} queue_count={}",
+            session.playlist_name,
+            track.music_name,
+            mode,
+            session.queue_mode,
+            tracks.len()
+        );
         emit_player_trace(
             "player-run-next-resolution-selected",
             PlayerTrace::new(&runtime.app)
@@ -3181,6 +3287,7 @@ async fn wait_until_track_finishes(
     let mut clock_anchor_position_ms: Option<u32> = None;
     let mut clock_anchor_at = Instant::now();
     let mut clock_running = true;
+    let mut last_visualization_frame_at: Option<Instant> = None;
     loop {
         if runtime.playback_run_generation.load(Ordering::SeqCst) != generation {
             emit_player_trace(
@@ -3278,6 +3385,17 @@ async fn wait_until_track_finishes(
                             trace_detail("activeScopeId", trace_scope_id(active_scope)),
                         ]),
                 );
+                if let Some(track) = active_track.as_ref() {
+                    emit_playback_audio_visualization_frame(
+                        &runtime.app,
+                        generation,
+                        track,
+                        clock_position_ms,
+                        active_range,
+                        false,
+                        false,
+                    );
+                }
                 stop_completed_playback_range(
                     runtime,
                     playback,
@@ -3319,6 +3437,17 @@ async fn wait_until_track_finishes(
                                     trace_detail("activeScopeId", trace_scope_id(active_scope)),
                                 ]),
                         );
+                        if let Some(track) = active_track.as_ref() {
+                            emit_playback_audio_visualization_frame(
+                                &runtime.app,
+                                generation,
+                                track,
+                                active_range.end_ms,
+                                active_range,
+                                false,
+                                false,
+                            );
+                        }
                         stop_completed_playback_range(
                             runtime,
                             playback,
@@ -3386,6 +3515,23 @@ async fn wait_until_track_finishes(
         clock_anchor_position_ms = Some(current_position_ms);
         clock_anchor_at = Instant::now();
         clock_running = status.playing && !status.paused;
+        if last_visualization_frame_at.is_none_or(|last_frame_at| {
+            last_frame_at.elapsed()
+                >= Duration::from_millis(PLAYBACK_AUDIO_VISUALIZATION_FRAME_MIN_INTERVAL_MS)
+        }) {
+            if let Some(track) = active_track.as_ref() {
+                emit_playback_audio_visualization_frame(
+                    &runtime.app,
+                    generation,
+                    track,
+                    current_position_ms,
+                    active_range,
+                    status.playing,
+                    status.paused,
+                );
+                last_visualization_frame_at = Some(Instant::now());
+            }
+        }
 
         match completion {
             PlaybackRangeCompletion::Continue => {
@@ -3444,6 +3590,17 @@ async fn wait_until_track_finishes(
                             trace_detail("activeScopeId", trace_scope_id(active_scope)),
                         ]),
                 );
+                if let Some(track) = active_track.as_ref() {
+                    emit_playback_audio_visualization_frame(
+                        &runtime.app,
+                        generation,
+                        track,
+                        current_position_ms,
+                        active_range,
+                        false,
+                        status.paused,
+                    );
+                }
                 if resolve_playback_completion_playback_action(completion)
                     == PlaybackRangeCompletionPlaybackAction::StopCompletedRange
                 {
@@ -3485,6 +3642,18 @@ async fn wait_until_track_finishes(
                     .await
                     .map_err(|error| anyhow!("failed to repeat spectrum loop: {error}"))?;
                 runtime.set_active_playback_range(Some(loop_range))?;
+                if let Some(track) = active_track.as_ref() {
+                    emit_playback_audio_visualization_frame(
+                        &runtime.app,
+                        generation,
+                        track,
+                        loop_range.start_ms,
+                        loop_range,
+                        true,
+                        false,
+                    );
+                    last_visualization_frame_at = Some(Instant::now());
+                }
                 continue;
             }
         }
