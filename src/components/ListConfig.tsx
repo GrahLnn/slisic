@@ -999,6 +999,7 @@ export function ListConfig() {
       }
 
       if (pasteTarget?.kind === "arc-track-push") {
+        appLogicAction.includeDraftItem(pasteTarget.ref);
         const didPush =
           arcTrackProgrammaticPushControllerRef.current?.pushItemByLayoutId(pasteTarget.layoutId) ??
           false;

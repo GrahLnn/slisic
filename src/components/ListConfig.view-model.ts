@@ -107,6 +107,7 @@ export type ListConfigPasteTarget =
   | {
       kind: "arc-track-push";
       layoutId: string;
+      ref: ConfigSidebarItemRef;
     };
 
 export function resolveListConfigTitlePlaceholder(args: {
@@ -341,10 +342,12 @@ export function resolveListConfigPasteTarget(args: {
   if (!arcTrackItem) {
     return null;
   }
+  const ref = createConfigSidebarItemRef(arcTrackItem);
 
   return {
     kind: "arc-track-push",
-    layoutId: createListConfigToolLabelLayoutId(createConfigSidebarItemRef(arcTrackItem)),
+    layoutId: createListConfigToolLabelLayoutId(ref),
+    ref,
   };
 }
 

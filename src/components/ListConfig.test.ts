@@ -1075,6 +1075,10 @@ describe("ListConfig title view model", () => {
       {
         kind: "arc-track-push",
         layoutId: "playlist:collection:https://example.com/late-night-tape",
+        ref: {
+          kind: "collection",
+          url: "https://example.com/late-night-tape",
+        },
       },
     );
     assert.deepEqual(
@@ -1094,6 +1098,10 @@ describe("ListConfig title view model", () => {
       {
         kind: "arc-track-push",
         layoutId: "playlist:group:https://example.com/late-night-tape#disc-1",
+        ref: {
+          kind: "group",
+          url: "https://example.com/late-night-tape#disc-1",
+        },
       },
     );
   });
