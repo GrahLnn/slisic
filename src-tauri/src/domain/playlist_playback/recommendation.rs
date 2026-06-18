@@ -86,6 +86,10 @@ const AUDIO_STYLE_BIO_ROUTE_FRONTIER_RESERVE_STRENGTH: f32 = 0.72;
 const AUDIO_STYLE_BIO_ROUTE_FRONTIER_RESERVE_CAP: f32 = 1.85;
 const AUDIO_STYLE_BIO_ROUTE_FRONTIER_SAME_BASIN_CROWDING: f32 = 0.42;
 const AUDIO_STYLE_BIO_ROUTE_FRONTIER_CONTINUITY_FLOOR: f32 = 0.08;
+const AUDIO_STYLE_BIO_ROUTE_TOPOLOGY_TOP_FATIGUE_STRENGTH: f32 = 0.75;
+const AUDIO_STYLE_BIO_ROUTE_TOPOLOGY_TOP_FATIGUE_CAP: f32 = 1.75;
+const AUDIO_STYLE_BIO_ROUTE_TOPOLOGY_FRONTIER_RESERVE_STRENGTH: f32 = 0.45;
+const AUDIO_STYLE_BIO_ROUTE_TOPOLOGY_FRONTIER_RESERVE_CAP: f32 = 1.55;
 const AUDIO_STYLE_BIO_ROUTE_BASIN_MASS_HOMEOSTASIS_STRENGTH: f32 = 1.85;
 const AUDIO_STYLE_BIO_ROUTE_BASIN_MASS_HOMEOSTASIS_RECENT_STRENGTH: f32 = 0.70;
 const AUDIO_STYLE_BIO_ROUTE_BASIN_MASS_HOMEOSTASIS_FLOOR: f32 = 0.42;
@@ -252,6 +256,7 @@ struct PlaybackAttractorBasinPressure {
     current_basin_run: usize,
     fatigue: HashMap<PlaybackAttractorBasinKey, f32>,
     usage: HashMap<PlaybackAttractorBasinKey, f32>,
+    candidate_top_pressure: HashMap<PlaybackAttractorBasinKey, f32>,
     target_share: HashMap<PlaybackAttractorBasinKey, f32>,
 }
 
@@ -6112,6 +6117,11 @@ impl PlaybackAttractorBasinPressure {
             current_basin_run: 0,
             fatigue: HashMap::new(),
             usage: HashMap::new(),
+            candidate_top_pressure: candidate_topology_pressure(
+                candidates,
+                basin_resolver,
+                &target_share,
+            ),
             target_share,
         };
 
@@ -6157,8 +6167,14 @@ impl PlaybackAttractorBasinPressure {
         } else {
             0.0
         };
+        let topology_top_fatigue = self
+            .candidate_top_pressure
+            .get(&basin)
+            .copied()
+            .unwrap_or(0.0)
+            * AUDIO_STYLE_BIO_ROUTE_TOPOLOGY_TOP_FATIGUE_STRENGTH;
 
-        (fatigue + homeostatic + run_hazard)
+        (fatigue + homeostatic + run_hazard + topology_top_fatigue)
             .max(0.0)
             .min(AUDIO_STYLE_BASIN_PENALTY_CAP)
     }
@@ -6188,6 +6204,41 @@ impl PlaybackAttractorBasinPressure {
         }
         self.usage.get(basin).copied().unwrap_or(0.0).max(0.0) / total
     }
+}
+
+fn candidate_topology_pressure(
+    candidates: &[PlaybackTrack],
+    basin_resolver: AudioStyleBasinResolver<'_>,
+    target_share: &HashMap<PlaybackAttractorBasinKey, f32>,
+) -> HashMap<PlaybackAttractorBasinKey, f32> {
+    let mut counts = HashMap::<PlaybackAttractorBasinKey, usize>::new();
+    for candidate in candidates {
+        let Some(basin) = basin_resolver.basin_for_track(candidate) else {
+            continue;
+        };
+        *counts.entry(basin).or_insert(0) += 1;
+    }
+    let total = counts.values().map(|count| *count as f32).sum::<f32>();
+    if total <= 0.0 || !total.is_finite() {
+        return HashMap::new();
+    }
+
+    counts
+        .into_iter()
+        .filter_map(|(basin, count)| {
+            let share = count as f32 / total;
+            let target = target_share.get(&basin).copied().unwrap_or(0.0);
+            let excess = (share - target).max(0.0);
+            if excess <= 0.0 || !excess.is_finite() {
+                return None;
+            }
+            Some((
+                basin,
+                (excess * AUDIO_STYLE_BIO_ROUTE_TOPOLOGY_TOP_FATIGUE_CAP * 3.0)
+                    .min(AUDIO_STYLE_BIO_ROUTE_TOPOLOGY_TOP_FATIGUE_CAP),
+            ))
+        })
+        .collect()
 }
 
 fn decay_attractor_basin_map(map: &mut HashMap<PlaybackAttractorBasinKey, f32>, decay: f32) {
@@ -7005,6 +7056,17 @@ impl AudioStyleBioRouteDecision {
         for (value, gate) in base.iter_mut().zip(frontier_reserve.iter().copied()) {
             *value *= gate;
         }
+        let topology_frontier = audio_style_topology_frontier_reserve_gate(
+            candidates,
+            &base,
+            &anchor_similarities,
+            &local_reference,
+            basin_pressure,
+            basin_resolver,
+        );
+        for (value, gate) in base.iter_mut().zip(topology_frontier.iter().copied()) {
+            *value *= gate;
+        }
         let listener_recovery = audio_style_listener_recovery_gate(
             candidates,
             embeddings,
@@ -7718,6 +7780,67 @@ fn audio_style_frontier_reserve_gate(
         .collect()
 }
 
+fn audio_style_topology_frontier_reserve_gate(
+    candidates: &[PlaybackTrack],
+    base: &[f32],
+    anchor_similarities: &[f32],
+    local_reference: &[f32],
+    basin_pressure: &PlaybackAttractorBasinPressure,
+    basin_resolver: AudioStyleBasinResolver<'_>,
+) -> Vec<f32> {
+    if candidates.len() <= 1 || basin_pressure.candidate_top_pressure.is_empty() {
+        return vec![1.0; candidates.len()];
+    }
+    let normalized = normalize_positive_weights(base.to_vec());
+    if normalized.iter().all(|weight| *weight <= 0.0) {
+        return vec![1.0; candidates.len()];
+    }
+    let max_pressure = basin_pressure
+        .candidate_top_pressure
+        .values()
+        .copied()
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .fold(0.0_f32, f32::max);
+    if max_pressure <= 0.0 {
+        return vec![1.0; candidates.len()];
+    }
+
+    candidates
+        .iter()
+        .enumerate()
+        .map(|(index, candidate)| {
+            let Some(candidate_basin) = basin_resolver.basin_for_track(candidate) else {
+                return 1.0;
+            };
+            let pressure = basin_pressure
+                .candidate_top_pressure
+                .get(&candidate_basin)
+                .copied()
+                .unwrap_or(0.0)
+                .max(0.0);
+            let similarity = anchor_similarities
+                .get(index)
+                .copied()
+                .unwrap_or(-1.0)
+                .clamp(-1.0, 1.0);
+            let local_floor = local_reference
+                .get(index)
+                .copied()
+                .unwrap_or(0.0)
+                .max(AUDIO_STYLE_BIO_ROUTE_FRONTIER_CONTINUITY_FLOOR);
+            let continuity =
+                ((similarity - local_floor) / (1.0 - local_floor).max(1.0e-6)).clamp(0.0, 1.0);
+            let damping =
+                1.0 / (1.0 + AUDIO_STYLE_BIO_ROUTE_TOPOLOGY_TOP_FATIGUE_STRENGTH * pressure);
+            let reserve = (max_pressure - pressure).max(0.0)
+                * AUDIO_STYLE_BIO_ROUTE_TOPOLOGY_FRONTIER_RESERVE_STRENGTH
+                * continuity;
+            (damping * (1.0 + reserve))
+                .clamp(0.35, AUDIO_STYLE_BIO_ROUTE_TOPOLOGY_FRONTIER_RESERVE_CAP)
+        })
+        .collect()
+}
+
 fn audio_style_listener_recovery_gate(
     candidates: &[PlaybackTrack],
     embeddings: &AudioStyleEmbeddingMap,
@@ -7834,6 +7957,30 @@ pub(crate) fn audio_style_basin_mass_homeostasis_gate_for_test(
         basin_resolver,
     );
     audio_style_basin_mass_homeostasis_gate(candidates, base, &pressure, basin_resolver)
+}
+
+#[cfg(test)]
+pub(crate) fn audio_style_topology_frontier_reserve_gate_for_test(
+    candidates: &[PlaybackTrack],
+    base: &[f32],
+    anchor_similarities: &[f32],
+    local_reference: &[f32],
+    recently_played_tracks: &[PlaybackTrack],
+) -> Vec<f32> {
+    let basin_resolver = AudioStyleBasinResolver::new(None);
+    let pressure = PlaybackAttractorBasinPressure::from_recent_history_and_candidates(
+        recently_played_tracks,
+        candidates,
+        basin_resolver,
+    );
+    audio_style_topology_frontier_reserve_gate(
+        candidates,
+        base,
+        anchor_similarities,
+        local_reference,
+        &pressure,
+        basin_resolver,
+    )
 }
 
 fn audio_style_listener_state_from_recent_history(

@@ -1497,6 +1497,70 @@ fn audio_style_basin_mass_homeostasis_preserves_balanced_candidate_field() {
 }
 
 #[test]
+fn audio_style_topology_frontier_reserve_damps_candidate_top_attractor() {
+    let dominant = (0..8)
+        .map(|index| track_in_basin("Dominant", &format!("candidate_{index}")))
+        .collect::<Vec<_>>();
+    let open_a = track_in_basin("Open A", "candidate");
+    let open_b = track_in_basin("Open B", "candidate");
+    let candidates = [
+        dominant[0].clone(),
+        dominant[1].clone(),
+        dominant[2].clone(),
+        dominant[3].clone(),
+        dominant[4].clone(),
+        dominant[5].clone(),
+        dominant[6].clone(),
+        dominant[7].clone(),
+        open_a,
+        open_b,
+    ];
+    let base = [0.16, 0.15, 0.14, 0.13, 0.12, 0.11, 0.10, 0.09, 0.05, 0.05];
+    let anchor_similarities = [0.42, 0.40, 0.39, 0.38, 0.36, 0.35, 0.33, 0.32, 0.37, 0.36];
+    let local_reference = [0.20; 10];
+
+    let gate = super::recommendation::audio_style_topology_frontier_reserve_gate_for_test(
+        &candidates,
+        &base,
+        &anchor_similarities,
+        &local_reference,
+        &[],
+    );
+
+    assert!(gate[0] < 0.85);
+    assert!(gate[3] < 0.85);
+    assert!(gate[8] > gate[0]);
+    assert!(gate[9] > gate[3]);
+    assert!(gate[8] >= 0.95);
+    assert!(gate[9] >= 0.95);
+}
+
+#[test]
+fn audio_style_topology_frontier_reserve_preserves_balanced_candidate_topology() {
+    let candidates = [
+        track_in_basin("A", "candidate_0"),
+        track_in_basin("A", "candidate_1"),
+        track_in_basin("B", "candidate_0"),
+        track_in_basin("B", "candidate_1"),
+        track_in_basin("C", "candidate_0"),
+        track_in_basin("C", "candidate_1"),
+    ];
+    let base = [0.17; 6];
+    let anchor_similarities = [0.35; 6];
+    let local_reference = [0.20; 6];
+
+    let gate = super::recommendation::audio_style_topology_frontier_reserve_gate_for_test(
+        &candidates,
+        &base,
+        &anchor_similarities,
+        &local_reference,
+        &[],
+    );
+
+    assert!(gate.iter().all(|value| (*value - 1.0).abs() < 0.001));
+}
+
+#[test]
 fn audio_style_distributed_field_reduces_recent_region_without_breaking_style_continuity() {
     let current = track_in_basin("Current", "current");
     let recent = (0..10)
