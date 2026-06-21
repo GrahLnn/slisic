@@ -29,12 +29,16 @@ use appdb::Id;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
+use std::sync::LazyLock;
 #[cfg(not(test))]
 use tokio::sync::broadcast;
 use walkdir::WalkDir;
 const COLLECTION_MANIFEST_FILE_NAME: &str = ".slisic.collection.toml";
 const TEMP_DOWNLOAD_MARKER: &str = ".__slisic_tmp__";
 const LOCAL_AUDIO_PRECISE_DURATION_BOUNDARY_TOLERANCE_MS: u32 = 100;
+
+static RAW_LEAF_MANIFEST_EVIDENCE_LOCK: LazyLock<std::sync::Mutex<()>> =
+    LazyLock::new(|| std::sync::Mutex::new(()));
 
 #[cfg(test)]
 #[path = "collection_import.test.rs"]
@@ -159,12 +163,9 @@ pub(crate) async fn resolve_pasted_download_url(
     normalized_url: String,
 ) -> Result<PastedDownloadUrlResolution> {
     match collection_repo::get_collection_by_url(&normalized_url).await? {
-        Some(collection) if !collection.musics.is_empty() => {
-            Ok(PastedDownloadUrlResolution::existing_collection(
-                normalized_url,
-                collection,
-            ))
-        }
+        Some(collection) if !collection.musics.is_empty() => Ok(
+            PastedDownloadUrlResolution::existing_collection(normalized_url, collection),
+        ),
         None => Ok(PastedDownloadUrlResolution::new_url(normalized_url)),
         Some(_) => Ok(PastedDownloadUrlResolution::new_url(normalized_url)),
     }
@@ -400,79 +401,80 @@ pub(crate) async fn persist_downloaded_leaf_music(
     );
     let mut materialized = materialize_music_entries(probe, file_name, group);
     let materialized_count = materialized.len();
-    let _collection_write = collection_repo::acquire_collection_write_composition_lock().await;
-    let mut current = collection_repo::get_collection_by_url(&collection.url)
-        .await?
-        .unwrap_or_else(|| collection.clone());
-    let previous_musics = current.musics.clone();
-    inherit_existing_music_lifecycle(&mut materialized, &current.musics);
-    if source_kind == CollectionSourceKind::Single {
-        current.musics = materialized;
-    } else {
-        let replacement_group_url = materialized
-            .first()
-            .map(|music| music.group.url.clone())
-            .unwrap_or_default();
-        let mut next_musics = Vec::with_capacity(current.musics.len() + materialized.len());
-        let mut inserted_replacement = false;
-        for music in current.musics {
-            let matches_replacement =
-                music.url == probe.webpage_url && music.group.url == replacement_group_url;
-            if matches_replacement {
-                if !inserted_replacement {
-                    next_musics.append(&mut materialized);
-                    inserted_replacement = true;
+    let training_scope = materialized_training_scope(&materialized);
+    let (training_reason, training_inputs, changed) = {
+        let _collection_write = collection_repo::acquire_collection_write_composition_lock().await;
+        let mut current = collection_repo::get_collection_by_url(&collection.url)
+            .await?
+            .unwrap_or_else(|| collection.clone());
+        let previous_musics = current.musics.clone();
+        inherit_existing_music_lifecycle(&mut materialized, &current.musics);
+        if source_kind == CollectionSourceKind::Single {
+            current.musics = materialized;
+        } else {
+            let replacement_group_url = materialized
+                .first()
+                .map(|music| music.group.url.clone())
+                .unwrap_or_default();
+            let mut next_musics = Vec::with_capacity(current.musics.len() + materialized.len());
+            let mut inserted_replacement = false;
+            for music in current.musics {
+                let matches_replacement =
+                    music.url == probe.webpage_url && music.group.url == replacement_group_url;
+                if matches_replacement {
+                    if !inserted_replacement {
+                        next_musics.append(&mut materialized);
+                        inserted_replacement = true;
+                    }
+                } else {
+                    next_musics.push(music);
                 }
-            } else {
-                next_musics.push(music);
             }
+            if !inserted_replacement {
+                next_musics.append(&mut materialized);
+            }
+            current.musics = next_musics;
         }
-        if !inserted_replacement {
-            next_musics.append(&mut materialized);
+
+        normalize_music_titles_within_collection(&mut current);
+        if music_collections_are_semantically_equal(&previous_musics, &current.musics) {
+            *collection = current;
+            let training_inputs =
+                audio_style_training_inputs_from_scope(save_root, collection, &training_scope);
+            log::info!(
+                target: "downloads",
+                "downloaded_leaf_music_persist_skipped collection=\"{}\" source_kind={} url=\"{}\" relative_path=\"{}\" materialized={} training_inputs={} musics={} reason=unchanged",
+                collection.url,
+                source_kind.as_str(),
+                probe.webpage_url,
+                file_name,
+                materialized_count,
+                training_inputs.len(),
+                collection.musics.len()
+            );
+            ("downloaded_leaf_music_reused", training_inputs, false)
+        } else {
+            current.last_updated = now_timestamp();
+            let saved = collection_repo::upsert_collection(&current).await?;
+            *collection = saved;
+            let training_inputs =
+                audio_style_training_inputs_from_scope(save_root, collection, &training_scope);
+            log::info!(
+                target: "downloads",
+                "downloaded_leaf_music_persist_finished collection=\"{}\" source_kind={} url=\"{}\" relative_path=\"{}\" materialized={} training_inputs={} musics={}",
+                collection.url,
+                source_kind.as_str(),
+                probe.webpage_url,
+                file_name,
+                materialized_count,
+                training_inputs.len(),
+                collection.musics.len()
+            );
+            ("downloaded_leaf_music_persisted", training_inputs, true)
         }
-        current.musics = next_musics;
-    }
-    normalize_music_titles_within_collection(&mut current);
-    if music_collections_are_semantically_equal(&previous_musics, &current.musics) {
-        let training_inputs =
-            audio_style_training_inputs_from_musics(save_root, &current, &current.musics);
-        *collection = current;
-        log::info!(
-            target: "downloads",
-            "downloaded_leaf_music_persist_skipped collection=\"{}\" source_kind={} url=\"{}\" relative_path=\"{}\" materialized={} musics={} reason=unchanged",
-            collection.url,
-            source_kind.as_str(),
-            probe.webpage_url,
-            file_name,
-            materialized_count,
-            collection.musics.len()
-        );
-        notify_audio_style_training_inputs_ready(
-            "downloaded_leaf_music_reused",
-            training_inputs,
-        );
-        return Ok(PersistDownloadedLeafMusicOutcome { changed: false });
-    }
-    current.last_updated = now_timestamp();
-    let saved = collection_repo::upsert_collection(&current).await?;
-    let training_inputs =
-        audio_style_training_inputs_from_musics(save_root, &saved, &saved.musics);
-    *collection = saved;
-    notify_audio_style_training_inputs_ready(
-        "downloaded_leaf_music_persisted",
-        training_inputs,
-    );
-    log::info!(
-        target: "downloads",
-        "downloaded_leaf_music_persist_finished collection=\"{}\" source_kind={} url=\"{}\" relative_path=\"{}\" materialized={} musics={}",
-        collection.url,
-        source_kind.as_str(),
-        probe.webpage_url,
-        file_name,
-        materialized_count,
-        collection.musics.len()
-    );
-    Ok(PersistDownloadedLeafMusicOutcome { changed: true })
+    };
+    notify_audio_style_training_inputs_ready(training_reason, training_inputs);
+    Ok(PersistDownloadedLeafMusicOutcome { changed })
 }
 
 pub(crate) async fn persist_downloaded_leaf_music_batch(
@@ -497,97 +499,103 @@ pub(crate) async fn persist_downloaded_leaf_music_batch(
         leaves.len()
     );
 
-    let _collection_write = collection_repo::acquire_collection_write_composition_lock().await;
-    let mut current = collection_repo::get_collection_by_url(&collection.url)
-        .await?
-        .unwrap_or_else(|| collection.clone());
-    let previous_musics = current.musics.clone();
-    let mut replacements = leaves
-        .iter()
-        .map(|leaf| {
-            let mut materialized =
-                materialize_music_entries(&leaf.probe, &leaf.file_name, leaf.group.clone());
-            inherit_existing_music_lifecycle(&mut materialized, &current.musics);
-            let group_url = materialized
-                .first()
-                .map(|music| music.group.url.clone())
-                .unwrap_or_else(|| leaf.group.url.clone());
-            (leaf.probe.webpage_url.clone(), group_url, materialized)
-        })
-        .collect::<Vec<_>>();
-    let materialized_count = replacements
-        .iter()
-        .map(|(_, _, musics)| musics.len())
-        .sum::<usize>();
+    let (training_reason, training_inputs, changed) = {
+        let _collection_write = collection_repo::acquire_collection_write_composition_lock().await;
+        let mut current = collection_repo::get_collection_by_url(&collection.url)
+            .await?
+            .unwrap_or_else(|| collection.clone());
+        let previous_musics = current.musics.clone();
+        let mut replacements = leaves
+            .iter()
+            .map(|leaf| {
+                let mut materialized =
+                    materialize_music_entries(&leaf.probe, &leaf.file_name, leaf.group.clone());
+                inherit_existing_music_lifecycle(&mut materialized, &current.musics);
+                let group_url = materialized
+                    .first()
+                    .map(|music| music.group.url.clone())
+                    .unwrap_or_else(|| leaf.group.url.clone());
+                (leaf.probe.webpage_url.clone(), group_url, materialized)
+            })
+            .collect::<Vec<_>>();
+        let training_scope = replacements
+            .iter()
+            .flat_map(|(_, _, musics)| materialized_training_scope(musics))
+            .collect::<Vec<_>>();
+        let materialized_count = replacements
+            .iter()
+            .map(|(_, _, musics)| musics.len())
+            .sum::<usize>();
 
-    if source_kind == CollectionSourceKind::Single {
-        current.musics = replacements
-            .into_iter()
-            .flat_map(|(_, _, musics)| musics)
-            .collect();
-    } else {
-        let mut inserted_replacements = HashSet::<usize>::new();
-        let mut next_musics = Vec::with_capacity(current.musics.len() + materialized_count);
-        for music in current.musics {
-            let replacement_index = replacements
-                .iter()
-                .position(|(url, group_url, _)| music.url == *url && music.group.url == *group_url);
-            match replacement_index {
-                Some(index) if inserted_replacements.insert(index) => {
-                    next_musics.append(&mut replacements[index].2);
+        if source_kind == CollectionSourceKind::Single {
+            current.musics = replacements
+                .into_iter()
+                .flat_map(|(_, _, musics)| musics)
+                .collect();
+        } else {
+            let mut inserted_replacements = HashSet::<usize>::new();
+            let mut next_musics = Vec::with_capacity(current.musics.len() + materialized_count);
+            for music in current.musics {
+                let replacement_index = replacements.iter().position(|(url, group_url, _)| {
+                    music.url == *url && music.group.url == *group_url
+                });
+                match replacement_index {
+                    Some(index) if inserted_replacements.insert(index) => {
+                        next_musics.append(&mut replacements[index].2);
+                    }
+                    Some(_) => {}
+                    None => next_musics.push(music),
                 }
-                Some(_) => {}
-                None => next_musics.push(music),
             }
-        }
-        for (index, (_, _, musics)) in replacements.into_iter().enumerate() {
-            if !inserted_replacements.contains(&index) {
-                next_musics.extend(musics);
+            for (index, (_, _, musics)) in replacements.into_iter().enumerate() {
+                if !inserted_replacements.contains(&index) {
+                    next_musics.extend(musics);
+                }
             }
+            current.musics = next_musics;
         }
-        current.musics = next_musics;
-    }
 
-    normalize_music_titles_within_collection(&mut current);
-    if music_collections_are_semantically_equal(&previous_musics, &current.musics) {
-        let training_inputs =
-            audio_style_training_inputs_from_musics(save_root, &current, &current.musics);
-        *collection = current;
-        log::info!(
-            target: "downloads",
-            "downloaded_leaf_music_batch_persist_skipped collection=\"{}\" source_kind={} leaves={} materialized={} musics={} reason=unchanged",
-            collection.url,
-            source_kind.as_str(),
-            leaves.len(),
-            materialized_count,
-            collection.musics.len()
-        );
-        notify_audio_style_training_inputs_ready(
-            "downloaded_leaf_music_batch_reused",
-            training_inputs,
-        );
-        return Ok(PersistDownloadedLeafMusicOutcome { changed: false });
-    }
-
-    current.last_updated = now_timestamp();
-    let saved = collection_repo::upsert_collection(&current).await?;
-    let training_inputs =
-        audio_style_training_inputs_from_musics(save_root, &saved, &saved.musics);
-    *collection = saved;
-    notify_audio_style_training_inputs_ready(
-        "downloaded_leaf_music_batch_persisted",
-        training_inputs,
-    );
-    log::info!(
-        target: "downloads",
-        "downloaded_leaf_music_batch_persist_finished collection=\"{}\" source_kind={} leaves={} materialized={} musics={}",
-        collection.url,
-        source_kind.as_str(),
-        leaves.len(),
-        materialized_count,
-        collection.musics.len()
-    );
-    Ok(PersistDownloadedLeafMusicOutcome { changed: true })
+        normalize_music_titles_within_collection(&mut current);
+        if music_collections_are_semantically_equal(&previous_musics, &current.musics) {
+            *collection = current;
+            let training_inputs =
+                audio_style_training_inputs_from_scope(save_root, collection, &training_scope);
+            log::info!(
+                target: "downloads",
+                "downloaded_leaf_music_batch_persist_skipped collection=\"{}\" source_kind={} leaves={} materialized={} training_inputs={} musics={} reason=unchanged",
+                collection.url,
+                source_kind.as_str(),
+                leaves.len(),
+                materialized_count,
+                training_inputs.len(),
+                collection.musics.len()
+            );
+            ("downloaded_leaf_music_batch_reused", training_inputs, false)
+        } else {
+            current.last_updated = now_timestamp();
+            let saved = collection_repo::upsert_collection(&current).await?;
+            *collection = saved;
+            let training_inputs =
+                audio_style_training_inputs_from_scope(save_root, collection, &training_scope);
+            log::info!(
+                target: "downloads",
+                "downloaded_leaf_music_batch_persist_finished collection=\"{}\" source_kind={} leaves={} materialized={} training_inputs={} musics={}",
+                collection.url,
+                source_kind.as_str(),
+                leaves.len(),
+                materialized_count,
+                training_inputs.len(),
+                collection.musics.len()
+            );
+            (
+                "downloaded_leaf_music_batch_persisted",
+                training_inputs,
+                true,
+            )
+        }
+    };
+    notify_audio_style_training_inputs_ready(training_reason, training_inputs);
+    Ok(PersistDownloadedLeafMusicOutcome { changed })
 }
 
 pub(crate) fn notify_downloaded_leaf_collection_committed() {
@@ -2656,6 +2664,52 @@ fn audio_style_training_input_from_music(
     })
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct MaterializedTrainingScope {
+    url: String,
+    group_url: String,
+    path: Option<String>,
+}
+
+fn materialized_training_scope(musics: &[Music]) -> Vec<MaterializedTrainingScope> {
+    let mut seen = HashSet::new();
+    let mut scope = Vec::new();
+    for music in musics {
+        let item = MaterializedTrainingScope {
+            url: music.url.clone(),
+            group_url: music.group.url.clone(),
+            path: music.path.clone(),
+        };
+        if seen.insert(item.clone()) {
+            scope.push(item);
+        }
+    }
+    scope
+}
+
+fn audio_style_training_inputs_from_scope(
+    save_root: &Path,
+    collection: &Collection,
+    scope: &[MaterializedTrainingScope],
+) -> Vec<AudioStyleTrainingTrackInput> {
+    if scope.is_empty() {
+        return Vec::new();
+    }
+    let scope = scope.iter().collect::<HashSet<_>>();
+    collection
+        .musics
+        .iter()
+        .filter(|music| {
+            scope.contains(&MaterializedTrainingScope {
+                url: music.url.clone(),
+                group_url: music.group.url.clone(),
+                path: music.path.clone(),
+            })
+        })
+        .filter_map(|music| audio_style_training_input_from_music(save_root, collection, music))
+        .collect()
+}
+
 fn notify_playlist_playback_library_changed() {
     #[cfg(not(test))]
     playlist_playback_service::notify_playable_library_changed();
@@ -3135,6 +3189,9 @@ fn write_raw_leaf_manifest_file(
     collection_root: &Path,
     manifest: &CollectionManifest,
 ) -> Result<()> {
+    let _guard = RAW_LEAF_MANIFEST_EVIDENCE_LOCK
+        .lock()
+        .map_err(|_| anyhow::anyhow!("raw leaf manifest evidence lock poisoned"))?;
     std::fs::create_dir_all(collection_root)
         .with_context(|| format!("failed to create {}", collection_root.display()))?;
     let manifest_path = collection_root.join(COLLECTION_MANIFEST_FILE_NAME);

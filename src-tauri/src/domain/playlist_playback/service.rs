@@ -36,9 +36,9 @@ use crate::domain::playlist_playback::recommendation::{
     AudioStylePlaylistPlaybackProposal, filter_recently_played_recommendation_candidates,
 };
 #[cfg(not(test))]
-use crate::domain::playlists::model::Music;
-#[cfg(not(test))]
 use crate::domain::playlists::model::AudioStyleTrainingTrackInput;
+#[cfg(not(test))]
+use crate::domain::playlists::model::Music;
 #[cfg(not(test))]
 use crate::domain::playlists::repo as playlist_repo;
 use crate::domain::playlists::repo::{PlaylistPlaybackSelection, PlaylistPlaybackTrackSource};
@@ -61,8 +61,10 @@ use tauri_specta::Event;
 
 #[cfg(not(test))]
 const INITIAL_PLAYBACK_QUEUE_LIMIT: usize = 256;
-#[cfg(not(test))]
 const PLAYLIST_PLAYBACK_RANDOM_WINDOW_LIMIT: usize = 96;
+#[cfg(not(test))]
+const PLAYLIST_PLAYBACK_AUDIO_STYLE_PROBE_WINDOW_LIMIT: usize =
+    PLAYLIST_PLAYBACK_RANDOM_WINDOW_LIMIT * 4;
 #[cfg(not(test))]
 const PLAYLIST_PLAYBACK_QUEUE_REFRESH_INTERVAL_MS: u64 = 250;
 #[cfg(not(test))]
@@ -75,13 +77,11 @@ type SharedPlaylistPlaybackRecentHistory = Arc<Mutex<PlaylistPlaybackRecentHisto
 #[cfg(not(test))]
 type SharedPlaylistPlaybackQueueRefreshGate = Arc<tokio::sync::Mutex<()>>;
 
-#[cfg(not(test))]
 #[derive(Clone, Default)]
 pub(crate) struct PlaylistPlaybackRecentHistory {
     tracks: Vec<PlaybackTrack>,
 }
 
-#[cfg(not(test))]
 impl PlaylistPlaybackRecentHistory {
     pub(crate) fn from_initial_track(track: PlaybackTrack) -> Self {
         let mut history = Self::default();
@@ -90,13 +90,14 @@ impl PlaylistPlaybackRecentHistory {
     }
 
     pub(crate) fn observe(&mut self, track: PlaybackTrack) {
-        if !self
+        if let Some(index) = self
             .tracks
             .iter()
-            .any(|recorded| are_playlist_playback_tracks_equal(recorded, &track))
+            .position(|recorded| are_playlist_playback_tracks_equal(recorded, &track))
         {
-            self.tracks.push(track);
+            self.tracks.remove(index);
         }
+        self.tracks.push(track);
     }
 
     pub(crate) fn snapshot(&self) -> Vec<PlaybackTrack> {
@@ -1402,18 +1403,17 @@ async fn fill_playlist_track_queue(
                 &recent_history_snapshot,
                 true,
             )
-                .await?;
-            if should_seed_playlist_next_from_prepared_pool(
-                current_session_queue_contains_next(&session, &active_track)?,
-            )
-                && seed_playlist_session_next_from_prepared_pool(
-                    &app,
-                    &playlist_name,
-                    &session,
-                    &active_track,
-                    &recent_history_snapshot,
-                )?
-            {
+            .await?;
+            if should_seed_playlist_next_from_prepared_pool(current_session_queue_contains_next(
+                &session,
+                &active_track,
+            )?) && seed_playlist_session_next_from_prepared_pool(
+                &app,
+                &playlist_name,
+                &session,
+                &active_track,
+                &recent_history_snapshot,
+            )? {
                 current_anchor = Some(active_track);
                 tokio::time::sleep(std::time::Duration::from_millis(
                     PLAYLIST_PLAYBACK_QUEUE_REFRESH_INTERVAL_MS,
@@ -1610,7 +1610,11 @@ async fn refresh_playlist_track_queue_for_anchor(
     let source = load_random_playlist_track_resolution_window(
         app,
         playlist_name,
-        PLAYLIST_PLAYBACK_RANDOM_WINDOW_LIMIT,
+        if readiness.is_ready() {
+            PLAYLIST_PLAYBACK_AUDIO_STYLE_PROBE_WINDOW_LIMIT
+        } else {
+            PLAYLIST_PLAYBACK_RANDOM_WINDOW_LIMIT
+        },
     )
     .await?;
     if source.resolution.tracks.is_empty() {
@@ -1684,7 +1688,8 @@ async fn refresh_playlist_track_queue_for_anchor(
     } else {
         "random_unavailable_audio_style"
     };
-    let updated = player_service::update_session_tracks_for_anchor(session, &current_track, tracks)?;
+    let updated =
+        player_service::update_session_tracks_for_anchor(session, &current_track, tracks)?;
     log::info!(
         target: PLAYLIST_PLAYBACK_LOG_TARGET,
         "next track queued source=proposal queue_source={} mode=keep_current playlist=\"{}\" anchor_title=\"{}\" title=\"{}\" updated={}",
@@ -2026,19 +2031,24 @@ fn propose_audio_style_playlist_playback_queue_from_snapshot(
 ) -> Option<AudioStylePlaylistPlaybackProposal> {
     let recommender = snapshot.recommender();
     let anchor_has_embedding = snapshot.has_embedding_for(&request.current_track);
+    let balanced_candidates = snapshot.balance_candidate_field_for_anchor(
+        &request.current_track,
+        request.candidates.clone(),
+        PLAYLIST_PLAYBACK_RANDOM_WINDOW_LIMIT,
+    );
 
     let mut proposal = match mode {
         PlaylistPlaybackRecommendationMode::KeepCurrent => {
             if anchor_has_embedding {
                 recommender.propose_queue_with_trace_and_recent_history(
                     request.current_track.clone(),
-                    request.candidates.clone(),
+                    balanced_candidates,
                     &request.recently_played_tracks,
                 )
             } else {
                 recommender.propose_centerless_queue_with_trace_and_recent_history(
                     request.current_track.clone(),
-                    request.candidates.clone(),
+                    balanced_candidates,
                     &request.recently_played_tracks,
                 )
             }
@@ -2046,7 +2056,7 @@ fn propose_audio_style_playlist_playback_queue_from_snapshot(
         PlaylistPlaybackRecommendationMode::ExcludeCurrent => recommender
             .propose_queue_after_exclude_with_trace_and_recent_history(
                 request.current_track.clone(),
-                request.candidates.clone(),
+                balanced_candidates,
                 &request.recently_played_tracks,
             ),
     };

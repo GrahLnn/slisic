@@ -33,8 +33,6 @@ const LOUDNESS_EVIDENCE_LOG_TARGET: &str = "loudness_evidence";
 #[cfg(not(test))]
 const MAX_LOUDNESS_EVIDENCE_QUEUE_LEN: usize = 256;
 #[cfg(not(test))]
-const LOUDNESS_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
-#[cfg(not(test))]
 const LOUDNESS_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(50);
 #[cfg(not(test))]
 const LOUDNESS_REQUEST_REBIND_ATTEMPT_LIMIT: usize = 3;
@@ -704,36 +702,27 @@ async fn wait_for_loudness_profile_request_result(
     request: &LoudnessEvidenceRequest,
 ) -> Result<Option<LoudnessProfile>> {
     let key = loudness_identity_key(request);
-    let wait = async {
-        loop {
-            if let Some(profile) = persisted_loudness_profile_for_request(
-                request,
-                LoudnessEvidenceSource::DirectRequest,
-            )
-            .await?
-            {
-                return Ok(Some(profile));
-            }
+    loop {
+        if let Some(profile) =
+            persisted_loudness_profile_for_request(request, LoudnessEvidenceSource::DirectRequest)
+                .await?
+        {
+            return Ok(Some(profile));
+        }
+        if let Some(profile) = published_loudness_profile_for_request(runtime, request)? {
+            return Ok(Some(profile));
+        }
+        if !loudness_identity_active(runtime, &key)? {
             if let Some(profile) = published_loudness_profile_for_request(runtime, request)? {
                 return Ok(Some(profile));
             }
-            if !loudness_identity_active(runtime, &key)? {
-                if let Some(profile) = published_loudness_profile_for_request(runtime, request)? {
-                    return Ok(Some(profile));
-                }
-                return Ok(None);
-            }
-            let notified = runtime.completion_notify.notified();
-            tokio::select! {
-                _ = notified => {}
-                _ = tokio::time::sleep(LOUDNESS_WAIT_POLL_INTERVAL) => {}
-            }
+            return Ok(None);
         }
-    };
-
-    match tokio::time::timeout(LOUDNESS_WAIT_TIMEOUT, wait).await {
-        Ok(result) => result,
-        Err(_) => Ok(None),
+        let notified = runtime.completion_notify.notified();
+        tokio::select! {
+            _ = notified => {}
+            _ = tokio::time::sleep(LOUDNESS_WAIT_POLL_INTERVAL) => {}
+        }
     }
 }
 

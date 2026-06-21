@@ -1083,6 +1083,40 @@ fn manifest_relative_paths_cannot_escape_collection_folder() {
     assert!(normalize_manifest_relative_path("Disc 1/track.m4a").is_ok());
 }
 
+#[test]
+fn materialized_training_scope_limits_inputs_to_committed_leafs() {
+    let save_root = PathBuf::from("D:/Music");
+    let group = collection_group("Disc 1", "https://example.com/disc-1", "Disc 1");
+    let committed = music_with_group(
+        "Committed",
+        "https://example.com/watch?v=committed",
+        "Disc 1/committed.m4a",
+        group.clone(),
+    );
+    let unrelated = music_with_group(
+        "Unrelated",
+        "https://example.com/watch?v=unrelated",
+        "Disc 1/unrelated.m4a",
+        group,
+    );
+    let collection = Collection {
+        name: "Collection".to_string(),
+        url: "https://example.com/playlist".to_string(),
+        folder: "youtube/collection".to_string(),
+        musics: vec![unrelated, committed.clone()],
+        last_updated: "2026-05-24T00:00:00+00:00".to_string(),
+        enable_updates: Some(false),
+    };
+
+    let scope = super::materialized_training_scope(&[committed]);
+    let inputs = super::audio_style_training_inputs_from_scope(&save_root, &collection, &scope);
+
+    assert_eq!(inputs.len(), 1);
+    assert_eq!(inputs[0].url, "https://example.com/watch?v=committed");
+    assert!(inputs[0].absolute_path.contains("collection"));
+    assert!(inputs[0].absolute_path.contains("committed.m4a"));
+}
+
 fn manifest_collection() -> CollectionManifestCollection {
     CollectionManifestCollection {
         name: "Collection".to_string(),

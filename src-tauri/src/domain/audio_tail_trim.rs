@@ -71,6 +71,9 @@ const TAIL_ATTACHED_MIN_LINK_FRACTION: f32 = 0.70;
 const TAIL_CUT_REFINEMENT_LOOKBACK_MS: u32 = 3_000;
 const TAIL_CUT_SILENCE_THRESHOLD_DB: f32 = -42.0;
 const TAIL_CUT_RELATIVE_QUIET_DROP_DB: f32 = 8.0;
+const TAIL_CUT_POST_QUIET_GUARD_MS: u32 = 400;
+const TAIL_CUT_REENTRY_RISE_DB: f32 = 10.0;
+const TAIL_CUT_EDGE_QUIET_MARGIN_DB: f32 = 6.0;
 
 #[cfg(not(test))]
 static AUDIO_TAIL_TRIM_RUNTIME: OnceLock<Arc<AudioTailTrimRuntime>> = OnceLock::new();
@@ -203,6 +206,10 @@ impl AudioTailTrimSource {
 
     fn requires_active_rerun(self) -> bool {
         matches!(self, Self::DownloadedLeaf | Self::DownloadedLeafForeground)
+    }
+
+    fn completes_foreground_playable_gate(self) -> bool {
+        matches!(self, Self::DownloadedLeafForeground)
     }
 }
 
@@ -700,17 +707,39 @@ fn refine_tail_cut_to_quiet_boundary(signature: &TailEvidenceSignature, coarse_c
         TAIL_CUT_SILENCE_THRESHOLD_DB
     };
 
-    nearby_frames
+    let quiet_frames = nearby_frames
         .iter()
+        .copied()
         .filter(|frame| frame.source_end_ms <= coarse_cut_ms)
         .filter(|frame| frame.rms_db <= quiet_threshold)
+        .collect::<Vec<_>>();
+
+    let Some(cut_frame) = quiet_frames
+        .iter()
         .max_by(|left, right| {
             left.source_end_ms
                 .cmp(&right.source_end_ms)
                 .then_with(|| right.rms_db.total_cmp(&left.rms_db))
         })
-        .map(|frame| frame.source_end_ms)
-        .unwrap_or(coarse_cut_ms)
+        .copied()
+    else {
+        return coarse_cut_ms;
+    };
+
+    let trailing_reentry = nearby_frames.iter().any(|frame| {
+        frame.source_start_ms
+            <= cut_frame
+                .source_end_ms
+                .saturating_add(TAIL_CUT_POST_QUIET_GUARD_MS)
+            && frame.source_end_ms > cut_frame.source_start_ms
+            && frame.rms_db >= quiet_threshold + TAIL_CUT_REENTRY_RISE_DB
+    });
+    let edge_quiet = cut_frame.rms_db >= quiet_threshold - TAIL_CUT_EDGE_QUIET_MARGIN_DB;
+    if trailing_reentry && edge_quiet {
+        cut_frame.source_start_ms
+    } else {
+        cut_frame.source_end_ms
+    }
 }
 
 fn build_audio_tail_trim_focus_plan(
@@ -1521,6 +1550,13 @@ pub(crate) fn audio_tail_trim_source_requires_active_rerun_for_test(source: &str
 }
 
 #[cfg(test)]
+pub(crate) fn audio_tail_trim_source_completes_foreground_playable_gate_for_test(
+    source: &str,
+) -> bool {
+    audio_tail_trim_source_for_test(source).completes_foreground_playable_gate()
+}
+
+#[cfg(test)]
 fn audio_tail_trim_source_for_test(source: &str) -> AudioTailTrimSource {
     match source {
         "pending_store" => AudioTailTrimSource::PendingStore,
@@ -1611,12 +1647,16 @@ async fn run_audio_tail_trim_worker(runtime: Arc<AudioTailTrimRuntime>) {
         };
 
         let completed_request = queued.request.clone();
+        let completed_source = queued.source;
         drop(claim);
         drop(queued);
         let requeued =
             requeue_coalesced_audio_tail_trim_if_present(Arc::clone(&runtime), &collection_key);
         if processed_ok && !requeued {
             remove_pending_audio_tail_trim_request(&runtime, &completed_request);
+            if completed_source.completes_foreground_playable_gate() {
+                collection_import::notify_downloaded_leaf_foreground_playable_committed();
+            }
         }
         tokio::time::sleep(AUDIO_TAIL_TRIM_WORKER_COOLDOWN).await;
     }
@@ -1777,7 +1817,10 @@ async fn process_audio_tail_trim_request(
             source.as_str(),
             request.collection_url
         );
-        return Ok(());
+        return Err(anyhow!(
+            "audio tail trim collection not found: {}",
+            request.collection_url
+        ));
     };
 
     let mut candidates = collect_audio_tail_trim_candidates(&collection, &request.save_root)
@@ -1914,6 +1957,15 @@ async fn process_audio_tail_trim_request(
             .await?;
             applied_trim_keys.extend(focus_plan.iter().map(audio_tail_trim_key));
         }
+    }
+
+    if all_signatures.len() < MIN_TAIL_SAMPLE_COUNT {
+        return Err(anyhow!(
+            "audio tail trim analyzed too few candidates: collection={} analyzed={} required={}",
+            collection.url,
+            all_signatures.len(),
+            MIN_TAIL_SAMPLE_COUNT
+        ));
     }
 
     let Some(resolved_evidence) = resolve_audio_tail_trim_evidence(&all_signatures) else {

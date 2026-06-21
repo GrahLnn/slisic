@@ -104,9 +104,7 @@ mod domain {
             pub(crate) end_ms: u32,
         }
 
-        pub(crate) fn request_downloaded_leaf_loudness_evidence(
-            _request: LoudnessEvidenceRequest,
-        ) {
+        pub(crate) fn request_downloaded_leaf_loudness_evidence(_request: LoudnessEvidenceRequest) {
         }
 
         pub(crate) fn request_downloaded_leaf_foreground_loudness_evidence(
@@ -128,10 +126,7 @@ mod domain {
             pub(crate) focus_music: Option<super::playlists::model::Music>,
         }
 
-        pub(crate) fn request_downloaded_leaf_audio_tail_trim(
-            _request: AudioTailTrimRequest,
-        ) {
-        }
+        pub(crate) fn request_downloaded_leaf_audio_tail_trim(_request: AudioTailTrimRequest) {}
 
         pub(crate) fn request_downloaded_leaf_foreground_audio_tail_trim(
             _request: AudioTailTrimRequest,
@@ -159,16 +154,16 @@ mod domain {
                 pub candidate_count: Option<usize>,
                 pub queue_count: Option<usize>,
                 pub status: Option<String>,
-            pub error: Option<String>,
-            pub details: Option<Vec<PlaybackDiagnosticTraceDetail>>,
-        }
+                pub error: Option<String>,
+                pub details: Option<Vec<PlaybackDiagnosticTraceDetail>>,
+            }
 
-        impl PlaybackDiagnosticTraceEvent {
-            pub fn emit(&self, _app: &tauri::AppHandle) -> Result<(), String> {
-                Ok(())
+            impl PlaybackDiagnosticTraceEvent {
+                pub fn emit(&self, _app: &tauri::AppHandle) -> Result<(), String> {
+                    Ok(())
+                }
             }
         }
-    }
     }
 
     pub mod playlist_playback {
@@ -208,10 +203,10 @@ use domain::downloads::yt_dlp::{
 use domain::meta::model::MetaInfo;
 use domain::meta::repo::save_meta_info;
 use domain::playlists::model::{PlayList, PlayListWriteRequest, PlaylistCollectionRef};
-use std::path::PathBuf;
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::runtime::Runtime;
 
@@ -418,9 +413,10 @@ async fn run_manual_download_pass(
         );
         assert!(
             collection.musics.iter().all(|music| {
-                music.path.as_ref().is_some_and(|path| {
-                    save_root.join(&collection.folder).join(path).is_file()
-                })
+                music
+                    .path
+                    .as_ref()
+                    .is_some_and(|path| save_root.join(&collection.folder).join(path).is_file())
             }),
             "collection musics were materialized but file paths are missing for {url}: collection={:#?}",
             collection
@@ -542,11 +538,12 @@ async fn assert_manual_download_playback_path(
     );
     assert!(
         playback_sources.iter().all(|source| {
-            source
-                .music
-                .path
-                .as_deref()
-                .is_some_and(|path| save_root.join(&source.collection_folder).join(path).is_file())
+            source.music.path.as_deref().is_some_and(|path| {
+                save_root
+                    .join(&source.collection_folder)
+                    .join(path)
+                    .is_file()
+            })
         }),
         "playback source path produced entries without readable files: sources={:#?}",
         playback_sources
@@ -570,8 +567,16 @@ fn main() {
         let db_root = temp_test_dir("manual_download_chain_db");
         let save_root = temp_test_dir("manual_download_chain_save");
         let bin_dir = installed_bin_dir();
-        let ytdlp_path = bin_dir.join(if cfg!(windows) { "yt-dlp.exe" } else { "yt-dlp" });
-        let ffmpeg_path = bin_dir.join(if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" });
+        let ytdlp_path = bin_dir.join(if cfg!(windows) {
+            "yt-dlp.exe"
+        } else {
+            "yt-dlp"
+        });
+        let ffmpeg_path = bin_dir.join(if cfg!(windows) {
+            "ffmpeg.exe"
+        } else {
+            "ffmpeg"
+        });
 
         reinit_db_with_options(
             db_root,
@@ -647,12 +652,8 @@ fn main() {
         })
         .await
         .expect("manual download chain recreated db save path should persist");
-        let recreated_client = create_manual_download_client(
-            ytdlp_path,
-            bin_dir,
-            leaf_limit,
-            Arc::clone(&stats),
-        );
+        let recreated_client =
+            create_manual_download_client(ytdlp_path, bin_dir, leaf_limit, Arc::clone(&stats));
         let recreated_collections = run_manual_download_pass(
             "recreated_db_existing_files",
             &urls,
@@ -673,4 +674,3 @@ fn main() {
         reset_db();
     });
 }
-

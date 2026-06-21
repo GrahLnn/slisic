@@ -98,6 +98,7 @@ pub struct PlayerRuntime {
     start_requests: PlaybackStartRequestRegistry,
     active_request_track: RwLock<Option<PlaybackTrack>>,
     active_playback_range: RwLock<Option<ActivePlaybackRange>>,
+    active_playback_range_revision: SharedPlaybackRangeRevisionSender,
     spectrum_playback_scope: RwLock<Option<SpectrumPlaybackScope>>,
     spectrum_playback_loop_signal: RwLock<Option<SpectrumPlaybackLoopSignal>>,
     temporary_playback_pause: RwLock<bool>,
@@ -116,10 +117,22 @@ type SharedPlaybackTrackRevisionSender = watch::Sender<u64>;
 type SharedPlaybackTrackRevisionReceiver = watch::Receiver<u64>;
 
 #[cfg(not(test))]
+type SharedPlaybackRangeRevisionSender = watch::Sender<u64>;
+
+#[cfg(not(test))]
+type SharedPlaybackRangeRevisionReceiver = watch::Receiver<u64>;
+
+#[cfg(not(test))]
 type SharedPlaybackStrategy = Arc<Mutex<PlaybackStrategySet>>;
 
 #[cfg(not(test))]
 fn notify_playback_track_revision(sender: &SharedPlaybackTrackRevisionSender) {
+    let next_revision = sender.borrow().checked_add(1).unwrap_or_default();
+    let _previous = sender.send_replace(next_revision);
+}
+
+#[cfg(not(test))]
+fn notify_playback_range_revision(sender: &SharedPlaybackRangeRevisionSender) {
     let next_revision = sender.borrow().checked_add(1).unwrap_or_default();
     let _previous = sender.send_replace(next_revision);
 }
@@ -208,6 +221,7 @@ impl PlaybackStartRequestRegistry {
 #[cfg(not(test))]
 pub fn initialize_runtime(app: AppHandle) {
     let _ = PLAYER_RUNTIME.get_or_init(|| {
+        let (active_playback_range_revision, _) = watch::channel(0);
         Arc::new(PlayerRuntime {
             app,
             playback: Mutex::new(None),
@@ -215,6 +229,7 @@ pub fn initialize_runtime(app: AppHandle) {
             start_requests: PlaybackStartRequestRegistry::default(),
             active_request_track: RwLock::new(None),
             active_playback_range: RwLock::new(None),
+            active_playback_range_revision,
             spectrum_playback_scope: RwLock::new(None),
             spectrum_playback_loop_signal: RwLock::new(None),
             temporary_playback_pause: RwLock::new(false),
@@ -1526,12 +1541,22 @@ impl PlayerRuntime {
     }
 
     fn set_active_playback_range(&self, range: Option<ActivePlaybackRange>) -> Result<()> {
-        let mut active_playback_range = self
-            .active_playback_range
-            .write()
-            .map_err(|_| anyhow!("player runtime active playback range lock is poisoned"))?;
-        *active_playback_range = range;
+        {
+            let mut active_playback_range = self
+                .active_playback_range
+                .write()
+                .map_err(|_| anyhow!("player runtime active playback range lock is poisoned"))?;
+            if *active_playback_range == range {
+                return Ok(());
+            }
+            *active_playback_range = range;
+        }
+        notify_playback_range_revision(&self.active_playback_range_revision);
         Ok(())
+    }
+
+    fn subscribe_active_playback_range_revision(&self) -> SharedPlaybackRangeRevisionReceiver {
+        self.active_playback_range_revision.subscribe()
     }
 
     fn set_spectrum_playback_loop_signal(
@@ -1961,6 +1986,9 @@ impl PlayerRuntime {
 
         let active_range = self.active_playback_range_snapshot()?;
         let current_position_ms = resolve_playback_absolute_position_ms(&status, active_range);
+        let next_active_range =
+            resolve_identity_update_active_playback_range(active_range, &next_track);
+        self.set_active_playback_range(Some(next_active_range))?;
         emit_player_trace(
             "player-track-identity-playback-effect-start",
             PlayerTrace::new(&self.app)
@@ -1974,16 +2002,22 @@ impl PlayerRuntime {
                         "nextTrackRange",
                         format!("{}..{}", next_track.start_ms, next_track.end_ms),
                     ),
+                    trace_detail("nextActiveRange", trace_range(Some(next_active_range))),
                 ]),
         );
         emit_player_trace(
-            "player-track-identity-playback-effect-skipped",
+            "player-track-identity-playback-effect-applied",
             PlayerTrace::new(&self.app)
                 .track(Some(&next_track))
-                .status("identity_projection_only")
+                .status(if current_position_ms >= next_active_range.end_ms {
+                    "range_completed"
+                } else {
+                    "range_updated"
+                })
                 .details(vec![
                     trace_detail("currentPositionMs", current_position_ms),
-                    trace_detail("activeRange", trace_range(active_range)),
+                    trace_detail("previousActiveRange", trace_range(active_range)),
+                    trace_detail("nextActiveRange", trace_range(Some(next_active_range))),
                 ]),
         );
 
@@ -3005,6 +3039,23 @@ pub(crate) fn resolve_plain_playback_status_completion(
     )
 }
 
+pub(crate) fn resolve_identity_update_active_playback_range(
+    active_range: Option<ActivePlaybackRange>,
+    next_track: &PlaybackTrack,
+) -> ActivePlaybackRange {
+    let end_ms = next_track.end_ms;
+    let requested_start_ms = active_range
+        .map(|range| range.start_ms)
+        .unwrap_or(next_track.start_ms);
+    let start_ms = if requested_start_ms < end_ms {
+        requested_start_ms
+    } else {
+        next_track.start_ms.min(end_ms.saturating_sub(1))
+    };
+
+    ActivePlaybackRange { start_ms, end_ms }
+}
+
 pub(crate) fn resolve_playback_range_completion(
     current_position_ms: u32,
     active_range: ActivePlaybackRange,
@@ -3280,6 +3331,7 @@ async fn wait_until_track_finishes(
     generation: u64,
     current_path: &Path,
 ) -> Result<()> {
+    let mut active_range_revision = runtime.subscribe_active_playback_range_revision();
     let mut last_completion_trace: Option<(u32, ActivePlaybackRange, Option<ActivePlaybackRange>)> =
         None;
     let mut elapsed_range: Option<ActivePlaybackRange> = None;
@@ -3287,6 +3339,7 @@ async fn wait_until_track_finishes(
     let mut clock_anchor_position_ms: Option<u32> = None;
     let mut clock_anchor_at = Instant::now();
     let mut clock_running = true;
+    let mut force_status_sample = false;
     let mut last_visualization_frame_at: Option<Instant> = None;
     loop {
         if runtime.playback_run_generation.load(Ordering::SeqCst) != generation {
@@ -3353,13 +3406,17 @@ async fn wait_until_track_finishes(
             clock_running,
         );
         let status_read_started = Instant::now();
-        let deadline_ms = resolve_playback_range_deadline_ms(
-            clock_position_ms,
-            active_range,
-            spectrum_loop_range,
-            clock_running,
-            false,
-        );
+        let deadline_ms = if force_status_sample {
+            None
+        } else {
+            resolve_playback_range_deadline_ms(
+                clock_position_ms,
+                active_range,
+                spectrum_loop_range,
+                clock_running,
+                false,
+            )
+        };
         let status_result = match deadline_ms {
             Some(0) => {
                 log_player_end_signal(
@@ -3410,6 +3467,20 @@ async fn wait_until_track_finishes(
             Some(deadline_ms) => {
                 tokio::select! {
                     result = playback.status() => result,
+                    changed = active_range_revision.changed() => {
+                        if changed.is_err() {
+                            emit_player_trace(
+                                "player-range-watch-ended",
+                                PlayerTrace::new(&runtime.app)
+                                    .track(active_track.as_ref())
+                                    .status("active_range_revision_closed")
+                                    .details(vec![trace_detail("generation", generation)]),
+                            );
+                            return Ok(());
+                        }
+                        force_status_sample = true;
+                        continue;
+                    }
                     _ = tokio::time::sleep(Duration::from_millis(deadline_ms)) => {
                         let signaled_elapsed_ms = wall_elapsed_ms.saturating_add(deadline_ms.min(u64::from(u32::MAX)) as u32);
                         let status_read_ms = status_read_started.elapsed().as_millis().min(u128::from(u32::MAX)) as u32;
@@ -3463,6 +3534,7 @@ async fn wait_until_track_finishes(
             }
             None => playback.status().await,
         };
+        force_status_sample = false;
         let status =
             status_result.map_err(|error| anyhow!("failed to read playback status: {error}"))?;
         let status_read_ms = status_read_started

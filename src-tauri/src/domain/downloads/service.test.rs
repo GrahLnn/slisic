@@ -13,9 +13,11 @@ use super::service::{
     apply_collection_plan_to_task_with_existing_music_evidence,
     apply_completed_audio_duration_evidence, attach_root_shell_to_task,
     discard_materialized_planned_leaves, existing_file_completions_from_task_leaves,
+    existing_file_finalization_batch_limit, existing_file_finalization_batch_take_limit,
     handle_finished_leaf_download, is_non_retryable_leaf_access_error_message,
     is_retryable_leaf_download_error, is_youtube_cookie_challenge_error_message,
-    leaf_download_parallelism, leaf_pipeline_has_work, leaf_pipeline_next_stage,
+    leaf_download_parallelism, leaf_finalization_insert_index, leaf_finalization_parallelism,
+    leaf_pipeline_has_work, leaf_pipeline_next_stage, leaf_prepare_parallelism,
     leaf_work_item_insert_index, normalize_youtube_cookies_text, prepare_task_enqueue,
     probe_download_root_title_with_client, resolve_pasted_download_url,
     resolve_residual_temp_downloaded_file, resume_download_task, runnable_task_leaf_work_items,
@@ -146,23 +148,74 @@ fn leaf_download_window_keeps_single_downloads_serial() {
 
 #[test]
 fn leaf_pipeline_work_includes_ready_finalizations() {
-    assert!(!leaf_pipeline_has_work(0, 0, 0, 0, 0));
-    assert!(leaf_pipeline_has_work(0, 0, 0, 0, 1));
+    assert!(!leaf_pipeline_has_work(0, 0, 0, 0, 0, 0));
+    assert!(leaf_pipeline_has_work(0, 0, 0, 0, 0, 1));
+    assert!(leaf_pipeline_has_work(0, 0, 1, 0, 0, 0));
 }
 
 #[test]
-fn leaf_pipeline_fills_available_worker_slots_before_finalizing_ready_work() {
+fn leaf_pipeline_uses_independent_finalization_slots() {
     assert_eq!(
-        leaf_pipeline_next_stage(4, 0, 3, 4, 1, 4),
+        leaf_pipeline_next_stage(4, 0, 0, 3, 4, 1, 24, 4, 1),
         LeafPipelineStage::Download
     );
     assert_eq!(
-        leaf_pipeline_next_stage(0, 0, 3, 0, 1, 4),
+        leaf_pipeline_next_stage(0, 0, 0, 3, 0, 1, 24, 4, 1),
+        LeafPipelineStage::Finalize
+    );
+    assert_eq!(
+        leaf_pipeline_next_stage(0, 0, 1, 3, 0, 1, 24, 4, 1),
         LeafPipelineStage::Prepare
     );
     assert_eq!(
-        leaf_pipeline_next_stage(0, 0, 0, 0, 1, 4),
-        LeafPipelineStage::Finalize
+        leaf_pipeline_next_stage(24, 0, 1, 3, 0, 1, 24, 4, 1),
+        LeafPipelineStage::WaitForWorker
+    );
+}
+
+#[test]
+fn leaf_prepare_parallelism_is_not_capped_by_download_window() {
+    let window = LeafDownloadWindow::for_collection(CollectionSourceKind::List, 100);
+
+    assert_eq!(window.current_limit(), 4);
+    assert_eq!(leaf_prepare_parallelism(100, &window), 24);
+    assert_eq!(leaf_finalization_parallelism(100), 4);
+}
+
+#[test]
+fn existing_file_finalization_batches_split_across_available_slots() {
+    assert_eq!(existing_file_finalization_batch_limit(0, 4), 0);
+    assert_eq!(existing_file_finalization_batch_limit(10, 0), 0);
+    assert_eq!(existing_file_finalization_batch_limit(10, 4), 3);
+    assert_eq!(existing_file_finalization_batch_limit(7, 3), 3);
+    assert_eq!(existing_file_finalization_batch_limit(4, 2), 2);
+    assert_eq!(existing_file_finalization_batch_limit(2, 1), 2);
+}
+
+#[test]
+fn foreground_existing_file_finalization_is_not_batched_with_background_work() {
+    assert_eq!(
+        existing_file_finalization_batch_take_limit(
+            LeafReadinessCargo::Foreground,
+            [
+                LeafReadinessCargo::Background,
+                LeafReadinessCargo::Background,
+            ],
+            3,
+        ),
+        1
+    );
+    assert_eq!(
+        existing_file_finalization_batch_take_limit(
+            LeafReadinessCargo::Background,
+            [
+                LeafReadinessCargo::Background,
+                LeafReadinessCargo::Foreground,
+                LeafReadinessCargo::Background,
+            ],
+            3,
+        ),
+        2
     );
 }
 
@@ -181,6 +234,32 @@ fn leaf_work_item_foreground_cargo_preempts_background_prepare_work() {
     );
     assert_eq!(
         leaf_work_item_insert_index(
+            [
+                LeafReadinessCargo::Foreground,
+                LeafReadinessCargo::Background,
+            ],
+            2,
+            LeafReadinessCargo::Background,
+        ),
+        2
+    );
+}
+
+#[test]
+fn foreground_finalization_preempts_background_ready_work() {
+    assert_eq!(
+        leaf_finalization_insert_index(
+            [
+                LeafReadinessCargo::Background,
+                LeafReadinessCargo::Background,
+            ],
+            2,
+            LeafReadinessCargo::Foreground,
+        ),
+        0
+    );
+    assert_eq!(
+        leaf_finalization_insert_index(
             [
                 LeafReadinessCargo::Foreground,
                 LeafReadinessCargo::Background,
@@ -2789,7 +2868,10 @@ fn resolve_collection_plan_marks_partial_playlist_without_blocking_discovered_le
             .expect("partial provider lists should still expose discovered foreground leaves");
 
         assert_eq!(plan.leaves.len(), 2);
-        assert_eq!(plan.leaves[0].url, "https://www.youtube.com/watch?v=leaf-one");
+        assert_eq!(
+            plan.leaves[0].url,
+            "https://www.youtube.com/watch?v=leaf-one"
+        );
         assert!(
             plan.partial_reason
                 .as_deref()
@@ -2858,7 +2940,7 @@ fn resolve_collection_plan_can_consume_manual_enqueue_root_probe_once() {
             webpage_url: root_url.to_string(),
             extractor_key: Some("Generic".to_string()),
             expected_entry_count: None,
-                entries: vec![LeafReference {
+            entries: vec![LeafReference {
                 url: nested_url.to_string(),
                 title: Some("Album".to_string()),
                 sequence: 0,
@@ -4368,7 +4450,7 @@ fn expand_root_entries_to_planned_leafs_keeps_same_video_distinct_across_groups(
                     webpage_url: first_url.to_string(),
                     extractor_key: Some("YoutubeTab".to_string()),
                     expected_entry_count: None,
-                entries: vec![LeafReference {
+                    entries: vec![LeafReference {
                         url: repeated_video_url.to_string(),
                         title: Some("Shared Track".to_string()),
                         sequence: 0,
@@ -4382,7 +4464,7 @@ fn expand_root_entries_to_planned_leafs_keeps_same_video_distinct_across_groups(
                     webpage_url: second_url.to_string(),
                     extractor_key: Some("YoutubeTab".to_string()),
                     expected_entry_count: None,
-                entries: vec![LeafReference {
+                    entries: vec![LeafReference {
                         url: repeated_video_url.to_string(),
                         title: Some("Shared Track".to_string()),
                         sequence: 0,
@@ -4535,7 +4617,7 @@ liked = false
             collection_folder: collection_folder.to_string(),
             enable_updates: Some(false),
             partial_reason: None,
-        leaves: vec![PlannedLeaf {
+            leaves: vec![PlannedLeaf {
                 id: Id::from("leaf-one"),
                 url: "https://example.com/watch?v=one".to_string(),
                 sequence: 0,
@@ -4625,7 +4707,7 @@ liked = false
             collection_folder: collection_folder.to_string(),
             enable_updates: Some(false),
             partial_reason: None,
-        leaves: vec![PlannedLeaf {
+            leaves: vec![PlannedLeaf {
                 id: Id::from("leaf-what-now"),
                 url: "https://www.youtube.com/watch?v=Gv1CBp5NABw".to_string(),
                 sequence: 0,
@@ -4738,7 +4820,7 @@ liked = false
             collection_folder: collection_folder.to_string(),
             enable_updates: Some(false),
             partial_reason: None,
-        leaves: vec![PlannedLeaf {
+            leaves: vec![PlannedLeaf {
                 id: Id::from("leaf-what-now"),
                 url: "https://www.youtube.com/watch?v=Gv1CBp5NABw".to_string(),
                 sequence: 0,
@@ -4830,7 +4912,7 @@ liked = false
             collection_folder: collection_folder.to_string(),
             enable_updates: Some(false),
             partial_reason: None,
-        leaves: vec![PlannedLeaf {
+            leaves: vec![PlannedLeaf {
                 id: Id::from("leaf-inverted"),
                 url: "https://www.youtube.com/watch?v=inverted".to_string(),
                 sequence: 0,
@@ -4981,7 +5063,7 @@ fn persist_enqueued_collection_plan_saves_residual_leaves_for_single_probe_start
             collection_folder: "example/probe-once-playlist".to_string(),
             enable_updates: Some(false),
             partial_reason: None,
-        leaves: vec![
+            leaves: vec![
                 PlannedLeaf {
                     id: Id::from("leaf-one"),
                     url: "https://example.com/watch?v=one".to_string(),
@@ -5042,4 +5124,3 @@ fn persist_enqueued_collection_plan_saves_residual_leaves_for_single_probe_start
         reset_db();
     });
 }
-

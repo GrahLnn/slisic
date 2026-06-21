@@ -27,7 +27,7 @@ use std::time::Instant;
 use tokio::sync::Semaphore;
 use tokio::task;
 
-const MAX_CONCURRENT_ROOT_PROBES: usize = 2;
+const MAX_CONCURRENT_ROOT_PROBES: usize = 8;
 const MAX_CONCURRENT_ROOT_SHELL_PROBES: usize = 4;
 const MAX_NESTED_LIST_DEPTH: u8 = 4;
 
@@ -225,11 +225,10 @@ pub(crate) fn residual_collection_plan(task: &DownloadTask) -> Option<Collection
         collection_url: task.collection_url.clone()?,
         collection_folder: task.collection_folder.clone()?,
         enable_updates: None,
-        partial_reason: task.last_error.clone().and_then(|error| {
-            error
-                .starts_with("provider returned ")
-                .then_some(error)
-        }),
+        partial_reason: task
+            .last_error
+            .clone()
+            .and_then(|error| error.starts_with("provider returned ").then_some(error)),
         leaves: task
             .leafs
             .iter()

@@ -501,10 +501,25 @@ function createInitialPlaybackTrackEvidence(
   };
 }
 
+function sessionStartsPreparing(
+  event?: {
+    output: {
+      session: {
+        initial_track: PlaybackTrackPayload | null;
+        track_count: number;
+      };
+    };
+  },
+) {
+  return (
+    !!event && event.output.session.initial_track === null && event.output.session.track_count === 0
+  );
+}
+
 function createPlayReadyContext(
   context: Context,
   playlistName: string,
-  event?: { output: { session: { initial_track: PlaybackTrackPayload | null } } },
+  event?: { output: { session: { initial_track: PlaybackTrackPayload | null; track_count: number } } },
 ) {
   const pendingEvidence =
     context.pendingNowPlayingTrackEvidence?.playlist_name === playlistName &&
@@ -532,7 +547,8 @@ function createPlayReadyContext(
           nowPlayingTrackStartMs: null,
           nowPlayingTrackEndMs: null,
           nowPlayingTrackLiked: null,
-          playbackSurfaceStatus: pendingSurfaceStatus,
+          playbackSurfaceStatus:
+            pendingSurfaceStatus ?? (sessionStartsPreparing(event) ? "preparing" : null),
           pendingSpectrumMusicCreateId: null,
           spectrumMusicSourceContext: null,
           spectrumMusicDrafts: [],
@@ -678,18 +694,61 @@ function createPlaylistPlaybackStoppedPatch(
   event: { output: PlaylistPlaybackStopped },
 ): Partial<Context> {
   const current = context.pendingPlaylistPlaybackRequest;
+  recordTrace("playlist-play-backend-stopped-reducer-entered", {
+    eventPlaylistName: event.output.playlistName,
+    eventRequestId: event.output.requestId,
+    reason: event.output.reason,
+    error: event.output.error,
+    currentPendingPlaylistName: current?.playlistName ?? null,
+    currentPendingRequestId: current?.requestId ?? null,
+    playingPlaylistName: context.playingPlaylistName,
+    playingSessionGeneration: context.playingSessionGeneration,
+    playbackSurfaceStatus: context.playbackSurfaceStatus,
+    nowPlayingTrackName: context.nowPlayingTrackName,
+  });
   if (
     !current ||
     current.playlistName !== event.output.playlistName ||
     current.requestId !== event.output.requestId
   ) {
+    recordTrace("playlist-play-backend-stopped-reducer-ignored", {
+      eventPlaylistName: event.output.playlistName,
+      eventRequestId: event.output.requestId,
+      reason: event.output.reason,
+      currentPendingPlaylistName: current?.playlistName ?? null,
+      currentPendingRequestId: current?.requestId ?? null,
+    });
     return {};
   }
 
-  if (
-    event.output.reason === "pending_first_track" ||
-    event.output.reason === "unstable_target"
-  ) {
+  if (event.output.reason === "pending_first_track") {
+    recordTrace("playlist-play-backend-stopped-reducer-kept-preparing", {
+      playlistName: event.output.playlistName,
+      requestId: event.output.requestId,
+      reason: event.output.reason,
+    });
+    return {
+      pendingPlaylistPlaybackName: event.output.playlistName,
+      pendingPlaylistPlaybackSessionGeneration: null,
+      pendingPlaylistPlaybackRequest: {
+        error: event.output.error,
+        phase: "starting",
+        playlistName: event.output.playlistName,
+        reason: "pending_first_track",
+        requestId: event.output.requestId,
+      },
+      pendingNowPlayingTrackEvidence: null,
+      pendingPlaybackSurfaceStatusEvidence: null,
+    };
+  }
+
+  if (event.output.reason === "unstable_target") {
+    recordTrace("playlist-play-backend-stopped-reducer-closed-unstable-target", {
+      playlistName: event.output.playlistName,
+      requestId: event.output.requestId,
+      reason: event.output.reason,
+      error: event.output.error,
+    });
     return {
       pendingPlaylistPlaybackName: null,
       pendingPlaylistPlaybackSessionGeneration: null,
@@ -699,6 +758,12 @@ function createPlaylistPlaybackStoppedPatch(
     };
   }
 
+  recordTrace("playlist-play-backend-stopped-reducer-failed", {
+    playlistName: event.output.playlistName,
+    requestId: event.output.requestId,
+    reason: event.output.reason,
+    error: event.output.error,
+  });
   return {
     pendingPlaylistPlaybackName: null,
     pendingPlaylistPlaybackSessionGeneration: null,
@@ -1001,23 +1066,62 @@ export const machine = src.createMachine({
         const matchesAcceptedPlayback =
           context.playingPlaylistName === event.output.playlist_name &&
           context.playingSessionGeneration === event.output.session_generation;
+        const matchesPendingPlayback = matchesPendingPlaybackSurfaceStatusEvidence(
+          context,
+          event.output,
+        );
+
+        recordTrace("player-playback-surface-status-reducer-entered", {
+          playlistName: event.output.playlist_name,
+          sessionGeneration: event.output.session_generation,
+          status: event.output.status,
+          matchesAcceptedPlayback,
+          matchesPendingPlayback,
+          playingPlaylistName: context.playingPlaylistName,
+          playingSessionGeneration: context.playingSessionGeneration,
+          pendingPlaylistName: context.pendingPlaylistPlaybackName,
+          pendingSessionGeneration: context.pendingPlaylistPlaybackSessionGeneration,
+          nowPlayingTrackName: context.nowPlayingTrackName,
+          hasNowPlayingTrackUrl: context.nowPlayingTrackUrl !== null,
+          playbackSurfaceStatus: context.playbackSurfaceStatus,
+        });
 
         if (!matchesAcceptedPlayback) {
-          if (matchesPendingPlaybackSurfaceStatusEvidence(context, event.output)) {
+          if (matchesPendingPlayback) {
+            recordTrace("player-playback-surface-status-reducer-stashed-pending", {
+              playlistName: event.output.playlist_name,
+              sessionGeneration: event.output.session_generation,
+              status: event.output.status,
+            });
             return {
               pendingPlaybackSurfaceStatusEvidence: event.output,
             };
           }
 
+          recordTrace("player-playback-surface-status-reducer-ignored", {
+            playlistName: event.output.playlist_name,
+            sessionGeneration: event.output.session_generation,
+            status: event.output.status,
+          });
           return {};
         }
 
         if (context.nowPlayingTrackUrl !== null && event.output.status === "preparing") {
+          recordTrace("player-playback-surface-status-reducer-ignored-late-preparing", {
+            playlistName: event.output.playlist_name,
+            sessionGeneration: event.output.session_generation,
+            nowPlayingTrackName: context.nowPlayingTrackName,
+          });
           return {
             pendingPlaybackSurfaceStatusEvidence: null,
           };
         }
 
+        recordTrace("player-playback-surface-status-reducer-applied", {
+          playlistName: event.output.playlist_name,
+          sessionGeneration: event.output.session_generation,
+          status: event.output.status,
+        });
         return {
           nowPlayingTrackName: null,
           nowPlayingTrackUrl: null,
@@ -1168,22 +1272,41 @@ export const machine = src.createMachine({
           ),
         },
         [playPlaylist.evt]: {
-          actions: assign(({ context, event }) =>
-            createPendingPlaylistPlaybackContext(context, event.output),
-          ),
+          actions: assign(({ context, event }) => {
+            recordTrace("playlist-play-request-reducer-ready", {
+              playlistName: event.output.playlistName,
+              requestId: event.output.requestId,
+              previousPendingPlaylistName: context.pendingPlaylistPlaybackName,
+              previousPendingRequestId: context.pendingPlaylistPlaybackRequest?.requestId ?? null,
+              playingPlaylistName: context.playingPlaylistName,
+            });
+            return createPendingPlaylistPlaybackContext(context, event.output);
+          }),
         },
         [playlistPlaybackAccepted.evt]: {
           target: ss.mainx.State.play,
           guard: ({ context, event }) => isCurrentPlaylistPlaybackRequest(context, event.output),
           actions: assign(({ context, event }) =>
-            createPlayReadyContext(
-              {
-                ...context,
-                pendingPlaylistPlaybackSessionGeneration: event.output.session.session_generation,
-              },
-              event.output.playlistName,
-              event,
-            ),
+            (() => {
+              recordTrace("playlist-play-backend-accepted-reducer-ready", {
+                playlistName: event.output.playlistName,
+                requestId: event.output.requestId,
+                sessionStatus: event.output.session.status,
+                sessionGeneration: event.output.session.session_generation,
+                trackCount: event.output.session.track_count,
+                hasInitialTrack: event.output.session.initial_track !== null,
+                pendingPlaylistName: context.pendingPlaylistPlaybackName,
+                pendingRequestId: context.pendingPlaylistPlaybackRequest?.requestId ?? null,
+              });
+              return createPlayReadyContext(
+                {
+                  ...context,
+                  pendingPlaylistPlaybackSessionGeneration: event.output.session.session_generation,
+                },
+                event.output.playlistName,
+                event,
+              );
+            })(),
           ),
         },
         [openPlaylist.evt]: [
@@ -1238,20 +1361,44 @@ export const machine = src.createMachine({
           ),
         },
         [playPlaylist.evt]: {
-          actions: assign(({ event }) => createPendingPlaylistPlaybackDuringPlayPatch(event.output)),
+          actions: assign(({ context, event }) => {
+            recordTrace("playlist-play-request-reducer-play", {
+              playlistName: event.output.playlistName,
+              requestId: event.output.requestId,
+              previousPendingPlaylistName: context.pendingPlaylistPlaybackName,
+              previousPendingRequestId: context.pendingPlaylistPlaybackRequest?.requestId ?? null,
+              playingPlaylistName: context.playingPlaylistName,
+              playingSessionGeneration: context.playingSessionGeneration,
+            });
+            return createPendingPlaylistPlaybackDuringPlayPatch(event.output);
+          }),
         },
         [playlistPlaybackAccepted.evt]: {
           reenter: true,
           guard: ({ context, event }) => isCurrentPlaylistPlaybackRequest(context, event.output),
           actions: assign(({ context, event }) =>
-            createPlayReadyContext(
-              {
-                ...context,
-                pendingPlaylistPlaybackSessionGeneration: event.output.session.session_generation,
-              },
-              event.output.playlistName,
-              event,
-            ),
+            (() => {
+              recordTrace("playlist-play-backend-accepted-reducer-play", {
+                playlistName: event.output.playlistName,
+                requestId: event.output.requestId,
+                sessionStatus: event.output.session.status,
+                sessionGeneration: event.output.session.session_generation,
+                trackCount: event.output.session.track_count,
+                hasInitialTrack: event.output.session.initial_track !== null,
+                pendingPlaylistName: context.pendingPlaylistPlaybackName,
+                pendingRequestId: context.pendingPlaylistPlaybackRequest?.requestId ?? null,
+                currentPlayingPlaylistName: context.playingPlaylistName,
+                currentPlayingSessionGeneration: context.playingSessionGeneration,
+              });
+              return createPlayReadyContext(
+                {
+                  ...context,
+                  pendingPlaylistPlaybackSessionGeneration: event.output.session.session_generation,
+                },
+                event.output.playlistName,
+                event,
+              );
+            })(),
           ),
         },
         [openPlaylist.evt]: [

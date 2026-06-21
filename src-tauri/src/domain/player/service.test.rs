@@ -9,14 +9,15 @@ use super::service::{
     playback_tracks_match, resolve_active_request_track_liked_update,
     resolve_plain_playback_status_completion, resolve_playback_absolute_position_ms,
     resolve_playback_clock_position_ms, resolve_playback_completion_playback_action,
-    resolve_playback_range_completion, resolve_playback_range_deadline_ms,
-    resolve_playback_request_position, resolve_playback_seek_pause_after_request,
-    resolve_playback_seek_range, resolve_playback_status_track_identity,
-    resolve_repeated_playback_range_override, resolve_session_track_liked_update,
-    resolve_spectrum_loop_playback_range, resolve_spectrum_loop_signal_active_range,
-    resolve_spectrum_loop_signal_seek_position, resolve_spectrum_music_playback_range,
-    resolve_spectrum_playback_loop_signal, should_accept_spectrum_playback_signal,
-    should_commit_spectrum_playback_scope_exit, should_resume_playback_seek_cancel,
+    resolve_identity_update_active_playback_range, resolve_playback_range_completion,
+    resolve_playback_range_deadline_ms, resolve_playback_request_position,
+    resolve_playback_seek_pause_after_request, resolve_playback_seek_range,
+    resolve_playback_status_track_identity, resolve_repeated_playback_range_override,
+    resolve_session_track_liked_update, resolve_spectrum_loop_playback_range,
+    resolve_spectrum_loop_signal_active_range, resolve_spectrum_loop_signal_seek_position,
+    resolve_spectrum_music_playback_range, resolve_spectrum_playback_loop_signal,
+    should_accept_spectrum_playback_signal, should_commit_spectrum_playback_scope_exit,
+    should_resume_playback_seek_cancel,
 };
 use super::track_identity_substitution::{
     PlaybackTrackIdentityUpdate, resolve_active_request_track_identity_update,
@@ -675,6 +676,57 @@ fn plain_playback_completion_uses_player_position_not_wall_clock() {
 }
 
 #[test]
+fn identity_update_active_range_uses_trimmed_end_as_the_player_deadline() {
+    let mut next_track = track("a");
+    next_track.start_ms = 0;
+    next_track.end_ms = 240_000;
+    let active_range = ActivePlaybackRange {
+        start_ms: 0,
+        end_ms: 300_000,
+    };
+
+    let updated =
+        resolve_identity_update_active_playback_range(Some(active_range), &next_track);
+
+    assert_eq!(
+        updated,
+        ActivePlaybackRange {
+            start_ms: 0,
+            end_ms: 240_000,
+        },
+        "tail trim must replace the active player deadline, not only the persisted track identity"
+    );
+    assert_eq!(
+        resolve_playback_range_completion(239_999, updated, None),
+        PlaybackRangeCompletion::Continue,
+    );
+    assert_eq!(
+        resolve_playback_range_completion(240_000, updated, None),
+        PlaybackRangeCompletion::Finish,
+    );
+}
+
+#[test]
+fn identity_update_active_range_finishes_when_trim_passed_the_current_position() {
+    let mut next_track = track("a");
+    next_track.start_ms = 0;
+    next_track.end_ms = 240_000;
+    let active_range = ActivePlaybackRange {
+        start_ms: 0,
+        end_ms: 300_000,
+    };
+
+    let updated =
+        resolve_identity_update_active_playback_range(Some(active_range), &next_track);
+
+    assert_eq!(
+        resolve_playback_range_completion(250_000, updated, None),
+        PlaybackRangeCompletion::Finish,
+        "a late trim result must close the current range immediately once playback is already past the new end"
+    );
+}
+
+#[test]
 fn playback_clock_advances_between_player_status_samples() {
     assert_eq!(
         resolve_playback_clock_position_ms(156_000, 7_000, true),
@@ -832,7 +884,7 @@ fn playback_request_position_ignores_range_end_signal() {
 }
 
 #[test]
-fn playback_track_identity_change_is_not_a_running_range_sync_signal() {
+fn playback_track_identity_change_requires_an_explicit_active_range_substitution() {
     let mut old = track("a");
     old.start_ms = 20_000;
     old.end_ms = 80_000;
@@ -841,6 +893,20 @@ fn playback_track_identity_change_is_not_a_running_range_sync_signal() {
     draft.end_ms = 45_000;
 
     assert!(!are_playback_tracks_equal(&old, &draft));
+    assert_eq!(
+        resolve_identity_update_active_playback_range(
+            Some(ActivePlaybackRange {
+                start_ms: old.start_ms,
+                end_ms: old.end_ms,
+            }),
+            &draft,
+        ),
+        ActivePlaybackRange {
+            start_ms: 20_000,
+            end_ms: 45_000,
+        },
+        "track identity substitution updates metadata; the player runtime must explicitly substitute its active finish boundary"
+    );
 }
 
 #[test]

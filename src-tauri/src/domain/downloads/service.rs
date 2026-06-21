@@ -69,6 +69,8 @@ const AUTO_UPDATE_INTERVAL: Duration = Duration::from_secs(60 * 60 * 24);
 const MIN_PARALLEL_LEAF_DOWNLOADS: usize = 1;
 const INITIAL_PARALLEL_LEAF_DOWNLOADS: usize = 4;
 const MAX_PARALLEL_LEAF_DOWNLOADS: usize = 8;
+const MAX_PARALLEL_LEAF_PREPARES: usize = 24;
+const MAX_PARALLEL_LEAF_FINALIZATIONS: usize = 4;
 #[cfg(not(test))]
 const MAX_PARALLEL_EXISTING_FILE_DURATION_PROBES: usize = 4;
 const MAX_LEAF_DOWNLOAD_ATTEMPTS: usize = 3;
@@ -127,6 +129,15 @@ struct LeafPreparationInput {
     work_item: LeafWorkItem,
 }
 
+#[cfg(not(test))]
+struct ExistingLeafFinalizationInput {
+    collection: Collection,
+    source_kind: CollectionSourceKind,
+    save_root: PathBuf,
+    ffmpeg_path: PathBuf,
+    completions: Vec<ExistingLeafBatchCompletion>,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct LeafWorkItem {
     pub(crate) leaf: DownloadLeaf,
@@ -155,6 +166,13 @@ impl LeafReadinessCargo {
         match self {
             Self::Background => 0,
             Self::Foreground => 1,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Background => "background",
+            Self::Foreground => "foreground",
         }
     }
 }
@@ -222,6 +240,41 @@ struct ExistingLeafCompletion {
     readiness: LeafReadinessCargo,
 }
 
+#[cfg(not(test))]
+#[derive(Debug)]
+struct ExistingLeafFinalizationFailure {
+    completions: Vec<ExistingLeafBatchCompletion>,
+    probe_failures: Vec<ExistingLeafProbeFailure>,
+    error: String,
+}
+
+#[cfg(not(test))]
+type ExistingLeafFinalizationOutcome =
+    std::result::Result<ExistingLeafFinalizationResult, ExistingLeafFinalizationFailure>;
+
+#[cfg(not(test))]
+#[derive(Debug)]
+struct ExistingLeafFinalizationResult {
+    persist_changed: bool,
+    completed: Vec<ExistingLeafBatchCompletion>,
+    failed: Vec<ExistingLeafProbeFailure>,
+}
+
+#[cfg(not(test))]
+#[derive(Debug)]
+struct ExistingLeafDurationProbeOutcome {
+    completed: Vec<ExistingLeafBatchCompletion>,
+    failed: Vec<ExistingLeafProbeFailure>,
+}
+
+#[cfg(not(test))]
+#[derive(Debug)]
+struct ExistingLeafProbeFailure {
+    completion: ExistingLeafBatchCompletion,
+    error: String,
+}
+
+#[derive(Debug)]
 pub(crate) struct ExistingLeafBatchCompletion {
     pub(crate) leaf: DownloadLeaf,
     pub(crate) music_probe: LeafProbe,
@@ -256,46 +309,99 @@ struct CommittedLeafPostProcessing {
 #[derive(Debug, Default)]
 struct LeafCommitResult {
     collection_changed: bool,
-    foreground_playable_available: bool,
     committed_paths: Vec<CommittedLeafPostProcessing>,
 }
 
 pub(crate) fn leaf_pipeline_has_work(
     active_prepares: usize,
     active_downloads: usize,
+    active_finalizations: usize,
     pending_prepares: usize,
     ready_downloads: usize,
     ready_finalizations: usize,
 ) -> bool {
     active_prepares > 0
         || active_downloads > 0
+        || active_finalizations > 0
         || pending_prepares > 0
         || ready_downloads > 0
         || ready_finalizations > 0
+}
+
+pub(crate) fn leaf_prepare_parallelism(
+    leaf_count: usize,
+    download_window: &LeafDownloadWindow,
+) -> usize {
+    leaf_count
+        .min(MAX_PARALLEL_LEAF_PREPARES)
+        .max(download_window.current_limit())
+        .max(1)
+}
+
+pub(crate) fn leaf_finalization_parallelism(leaf_count: usize) -> usize {
+    leaf_count.min(MAX_PARALLEL_LEAF_FINALIZATIONS).max(1)
+}
+
+pub(crate) fn existing_file_finalization_batch_limit(
+    ready_existing_files: usize,
+    available_finalization_slots: usize,
+) -> usize {
+    if ready_existing_files == 0 || available_finalization_slots == 0 {
+        return 0;
+    }
+
+    ready_existing_files.div_ceil(available_finalization_slots)
+}
+
+pub(crate) fn existing_file_finalization_batch_take_limit(
+    first_readiness: LeafReadinessCargo,
+    following_readiness: impl IntoIterator<Item = LeafReadinessCargo>,
+    fair_share_limit: usize,
+) -> usize {
+    let fair_share_limit = fair_share_limit.max(1);
+    let mut take_limit = 1;
+    for readiness in following_readiness {
+        if readiness != first_readiness {
+            break;
+        }
+        if first_readiness == LeafReadinessCargo::Background
+            && readiness.priority() > first_readiness.priority()
+        {
+            break;
+        }
+        if take_limit >= fair_share_limit && first_readiness == LeafReadinessCargo::Background {
+            break;
+        }
+        take_limit += 1;
+    }
+    take_limit
 }
 
 #[cfg(test)]
 pub(crate) fn leaf_pipeline_next_stage(
     active_prepares: usize,
     active_downloads: usize,
+    active_finalizations: usize,
     pending_prepares: usize,
     ready_downloads: usize,
     ready_finalizations: usize,
+    prepare_limit: usize,
     download_limit: usize,
+    finalization_limit: usize,
 ) -> LeafPipelineStage {
     if ready_downloads > 0 && active_downloads < download_limit {
         return LeafPipelineStage::Download;
     }
 
-    if pending_prepares > 0 {
-        return LeafPipelineStage::Prepare;
-    }
-
-    if ready_finalizations > 0 {
+    if ready_finalizations > 0 && active_finalizations < finalization_limit {
         return LeafPipelineStage::Finalize;
     }
 
-    if active_prepares > 0 || active_downloads > 0 {
+    if pending_prepares > 0 && active_prepares < prepare_limit {
+        return LeafPipelineStage::Prepare;
+    }
+
+    if active_prepares > 0 || active_downloads > 0 || active_finalizations > 0 {
         return LeafPipelineStage::WaitForWorker;
     }
 
@@ -321,14 +427,17 @@ struct LeafPipelineState {
     ready_finalizations: VecDeque<LeafFinalization>,
     active_prepares: usize,
     active_downloads: usize,
+    active_finalizations: usize,
     prepare_parallelism: usize,
+    finalization_parallelism: usize,
     download_window: LeafDownloadWindow,
 }
 
 #[cfg(not(test))]
 impl LeafPipelineState {
     fn new(leaves: Vec<LeafWorkItem>, download_window: LeafDownloadWindow) -> Self {
-        let prepare_parallelism = download_window.current_limit();
+        let prepare_parallelism = leaf_prepare_parallelism(leaves.len(), &download_window);
+        let finalization_parallelism = leaf_finalization_parallelism(leaves.len());
         let mut pending_prepares = VecDeque::new();
         for leaf in leaves {
             push_leaf_work_item(&mut pending_prepares, leaf);
@@ -340,7 +449,9 @@ impl LeafPipelineState {
             ready_finalizations: VecDeque::new(),
             active_prepares: 0,
             active_downloads: 0,
+            active_finalizations: 0,
             prepare_parallelism,
+            finalization_parallelism,
             download_window,
         }
     }
@@ -349,11 +460,18 @@ impl LeafPipelineState {
         leaf_pipeline_has_work(
             self.active_prepares,
             self.active_downloads,
+            self.active_finalizations,
             self.pending_prepares.len(),
             self.ready_downloads.len(),
             self.ready_finalizations.len(),
         )
     }
+}
+
+#[cfg(not(test))]
+fn merge_leaf_commit_result(target: &mut LeafCommitResult, next: LeafCommitResult) {
+    target.collection_changed |= next.collection_changed;
+    target.committed_paths.extend(next.committed_paths);
 }
 
 #[cfg(not(test))]
@@ -364,6 +482,25 @@ fn push_leaf_work_item(queue: &mut VecDeque<LeafWorkItem>, work_item: LeafWorkIt
         work_item.readiness,
     );
     queue.insert(index, work_item);
+}
+
+#[cfg(not(test))]
+fn push_leaf_finalization(queue: &mut VecDeque<LeafFinalization>, finalization: LeafFinalization) {
+    let readiness = match &finalization {
+        LeafFinalization::Downloaded(Ok(completed)) => completed.readiness,
+        LeafFinalization::ExistingFile(completion) => completion.readiness,
+        LeafFinalization::Downloaded(Err(_)) => LeafReadinessCargo::Background,
+    };
+    let index = leaf_finalization_insert_index(
+        queue.iter().map(|current| match current {
+            LeafFinalization::Downloaded(Ok(completed)) => completed.readiness,
+            LeafFinalization::ExistingFile(completion) => completion.readiness,
+            LeafFinalization::Downloaded(Err(_)) => LeafReadinessCargo::Background,
+        }),
+        queue.len(),
+        readiness,
+    );
+    queue.insert(index, finalization);
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -556,6 +693,7 @@ type LeafPreparationOutcome = std::result::Result<PreparedLeafDownload, FailedLe
 enum LeafPipelineEvent {
     Prepared(LeafPreparationOutcome),
     Downloaded(LeafDownloadOutcome),
+    FinalizedExistingFile(ExistingLeafFinalizationOutcome),
 }
 
 #[cfg(not(test))]
@@ -1155,7 +1293,8 @@ async fn prepare_task_enqueue_once(
             ));
         }
 
-        let mut task = DownloadTask::new(stable_task_id.clone(), normalized_url.to_string(), trigger);
+        let mut task =
+            DownloadTask::new(stable_task_id.clone(), normalized_url.to_string(), trigger);
         apply_existing_collection_shell_to_task(&mut task).await?;
 
         let saved = repo::save_task(task).await?;
@@ -1344,17 +1483,42 @@ async fn run_task_with_deps(
     deps: DownloadExecutionDeps,
     root_probe: Option<RootProbe>,
 ) -> Result<()> {
+    let task_started = Instant::now();
     let mut task_snapshot = repo::get_task(&task_id).await?;
     task_snapshot.url = normalize_url(&task_snapshot.url)?;
+    log::info!(
+        target: "downloads",
+        "task_run_loaded task={} trigger={} url=\"{}\" status={} leaves={} completed={} failed={} carried_root_probe={}",
+        task_snapshot.id,
+        task_snapshot.trigger.as_str(),
+        task_snapshot.url,
+        task_snapshot.status.as_str(),
+        task_snapshot.leafs.len(),
+        task_snapshot.completed_leaves,
+        task_snapshot.failed_leaves,
+        root_probe.is_some()
+    );
     let carried_partial_reason = task_snapshot
         .last_error
         .clone()
         .filter(|error| error.starts_with("provider returned "));
-    update_task_status(&mut task_snapshot, DownloadTaskStatus::Resolving, carried_partial_reason)
-        .await?;
+    update_task_status(
+        &mut task_snapshot,
+        DownloadTaskStatus::Resolving,
+        carried_partial_reason,
+    )
+    .await?;
 
     let client = deps.client;
     let save_root = deps.save_root;
+    let plan_started = Instant::now();
+    log::info!(
+        target: "downloads",
+        "task_plan_resolve_started task={} url=\"{}\" carried_root_probe={}",
+        task_snapshot.id,
+        task_snapshot.url,
+        root_probe.is_some()
+    );
     let plan =
         match resolve_collection_plan_with_root_probe(&task_snapshot, client.clone(), root_probe)
             .await
@@ -1373,6 +1537,16 @@ async fn run_task_with_deps(
                 return Err(error);
             }
         };
+    log::info!(
+        target: "downloads",
+        "task_plan_resolve_finished task={} collection=\"{}\" source_kind={} leaves={} partial={} elapsed_ms={}",
+        task_snapshot.id,
+        plan.collection_url,
+        plan.source_kind.as_str(),
+        plan.leaves.len(),
+        plan.partial_reason.is_some(),
+        plan_started.elapsed().as_millis()
+    );
     let mut collection =
         collection_import::load_download_transaction_collection_shell(&plan).await?;
     apply_collection_plan_to_task_with_existing_music_evidence(
@@ -1386,6 +1560,15 @@ async fn run_task_with_deps(
         .await?
         .context("download task shell evidence did not produce a collection")?;
     publish_download_task_change(&task_snapshot);
+    log::info!(
+        target: "downloads",
+        "task_shell_persisted task={} collection=\"{}\" task_leaves={} collection_musics={} elapsed_ms={}",
+        task_snapshot.id,
+        task_snapshot.collection_url.as_deref().unwrap_or("none"),
+        task_snapshot.leafs.len(),
+        shell.musics.len(),
+        task_started.elapsed().as_millis()
+    );
     if collection.musics.is_empty() {
         collection = shell;
     }
@@ -1398,51 +1581,6 @@ async fn run_task_with_deps(
     }
 
     let mut collection_changed = false;
-    let runnable_leaves = runnable_task_leaf_work_items(&task_snapshot, &plan);
-    let existing_completions = existing_file_completions_from_task_leaves(
-        &collection,
-        &group_catalog,
-        &runnable_leaves,
-        &save_root,
-    );
-    if !existing_completions.is_empty() {
-        let existing_completed = existing_completions.len();
-        log::info!(
-            target: "downloads",
-            "task_existing_file_batch_started task={} leaves={}",
-            task_snapshot.id,
-            existing_completed
-        );
-        let existing_result = consume_existing_file_batch(
-            &mut task_snapshot,
-            &mut collection,
-            plan.source_kind,
-            &save_root,
-            &deps.ffmpeg_path,
-            existing_completions,
-        )
-        .await?;
-        collection_changed |= existing_result.collection_changed;
-        request_committed_leaf_post_processing(
-            &collection,
-            plan.source_kind,
-            &save_root,
-            &existing_result.committed_paths,
-        );
-        if existing_result.foreground_playable_available {
-            collection_import::notify_downloaded_leaf_foreground_playable_committed();
-        }
-        group_catalog = GroupCatalog::seed(&collection);
-        task_snapshot = repo::save_task(task_snapshot.clone()).await?;
-        publish_download_task_change(&task_snapshot);
-        log::info!(
-            target: "downloads",
-            "task_existing_file_batch_finished task={} completed={} remaining={}",
-            task_snapshot.id,
-            existing_completed,
-            task_snapshot.leafs.len()
-        );
-    }
 
     if task_snapshot.leafs.is_empty() {
         if collection_changed {
@@ -1487,12 +1625,26 @@ async fn run_task_with_deps(
     fill_leaf_pipeline(
         &mut pipeline,
         &mut task_snapshot,
+        &collection,
         client.clone(),
         plan.source_kind,
         &save_root,
+        &deps.ffmpeg_path,
         deps.cookies_path.clone(),
     )
     .await?;
+    log::info!(
+        target: "downloads",
+        "task_pipeline_seeded task={} active_prepares={} active_downloads={} active_finalizations={} pending_prepares={} ready_downloads={} ready_finalizations={} elapsed_ms={}",
+        task_snapshot.id,
+        pipeline.active_prepares,
+        pipeline.active_downloads,
+        pipeline.active_finalizations,
+        pipeline.pending_prepares.len(),
+        pipeline.ready_downloads.len(),
+        pipeline.ready_finalizations.len(),
+        task_started.elapsed().as_millis()
+    );
 
     while pipeline.has_work() {
         let commit_result = handle_leaf_pipeline_event(
@@ -1514,9 +1666,6 @@ async fn run_task_with_deps(
             &save_root,
             &commit_result.committed_paths,
         );
-        if commit_result.foreground_playable_available {
-            collection_import::notify_downloaded_leaf_foreground_playable_committed();
-        }
         if task_snapshot.status == DownloadTaskStatus::AwaitingCredentials {
             log::warn!(
                 target: "downloads",
@@ -1528,12 +1677,28 @@ async fn run_task_with_deps(
         fill_leaf_pipeline(
             &mut pipeline,
             &mut task_snapshot,
+            &collection,
             client.clone(),
             plan.source_kind,
             &save_root,
+            &deps.ffmpeg_path,
             deps.cookies_path.clone(),
         )
         .await?;
+        log::info!(
+            target: "downloads",
+            "task_pipeline_loop_tick task={} active_prepares={} active_downloads={} active_finalizations={} pending_prepares={} ready_downloads={} ready_finalizations={} completed={} failed={} elapsed_ms={}",
+            task_snapshot.id,
+            pipeline.active_prepares,
+            pipeline.active_downloads,
+            pipeline.active_finalizations,
+            pipeline.pending_prepares.len(),
+            pipeline.ready_downloads.len(),
+            pipeline.ready_finalizations.len(),
+            task_snapshot.completed_leaves,
+            task_snapshot.failed_leaves,
+            task_started.elapsed().as_millis()
+        );
     }
 
     if collection_changed {
@@ -1621,6 +1786,14 @@ pub(crate) fn leaf_work_item_insert_index(
         .unwrap_or(current_len)
 }
 
+pub(crate) fn leaf_finalization_insert_index(
+    current_readiness: impl IntoIterator<Item = LeafReadinessCargo>,
+    current_len: usize,
+    readiness: LeafReadinessCargo,
+) -> usize {
+    leaf_work_item_insert_index(current_readiness, current_len, readiness)
+}
+
 pub(crate) fn discard_materialized_planned_leaves(
     task: &mut DownloadTask,
     completions: Vec<collection_import::ExistingPlannedLeafCompletion>,
@@ -1668,9 +1841,11 @@ async fn mark_unresolved_leaves_failed(task_snapshot: &mut DownloadTask) -> Resu
 async fn fill_leaf_pipeline(
     pipeline: &mut LeafPipelineState,
     task_snapshot: &mut DownloadTask,
+    collection: &Collection,
     client: Arc<dyn YtDlpClient>,
     source_kind: CollectionSourceKind,
     save_root: &Path,
+    ffmpeg_path: &Path,
     cookies_path: Option<PathBuf>,
 ) -> Result<()> {
     spawn_ready_leaf_downloads(
@@ -1682,6 +1857,7 @@ async fn fill_leaf_pipeline(
         cookies_path,
     )
     .await?;
+    spawn_ready_leaf_finalizations(pipeline, collection, source_kind, save_root, ffmpeg_path);
     spawn_ready_leaf_preparations(pipeline, task_snapshot, client).await?;
     Ok(())
 }
@@ -1725,6 +1901,76 @@ async fn spawn_ready_leaf_preparations(
     }
 
     Ok(())
+}
+
+#[cfg(not(test))]
+fn spawn_ready_leaf_finalizations(
+    pipeline: &mut LeafPipelineState,
+    collection: &Collection,
+    source_kind: CollectionSourceKind,
+    save_root: &Path,
+    ffmpeg_path: &Path,
+) {
+    while pipeline.active_finalizations < pipeline.finalization_parallelism {
+        let Some(outcome) = pipeline.ready_finalizations.pop_front() else {
+            break;
+        };
+        match outcome {
+            LeafFinalization::Downloaded(outcome) => {
+                pipeline
+                    .ready_finalizations
+                    .push_front(LeafFinalization::Downloaded(outcome));
+                break;
+            }
+            LeafFinalization::ExistingFile(completion) => {
+                let first_readiness = completion.readiness;
+                let available_slots = pipeline
+                    .finalization_parallelism
+                    .saturating_sub(pipeline.active_finalizations)
+                    .max(1);
+                let ready_existing_files = 1 + ready_existing_file_prefix_len(pipeline);
+                let fair_share_limit =
+                    existing_file_finalization_batch_limit(ready_existing_files, available_slots)
+                        .max(1);
+                let batch_limit = existing_file_finalization_batch_take_limit(
+                    first_readiness,
+                    pipeline
+                        .ready_finalizations
+                        .iter()
+                        .filter_map(|finalization| match finalization {
+                            LeafFinalization::ExistingFile(completion) => {
+                                Some(completion.readiness)
+                            }
+                            LeafFinalization::Downloaded(_) => None,
+                        }),
+                    fair_share_limit,
+                );
+                let completions =
+                    collect_ready_existing_file_finalizations(completion, pipeline, batch_limit);
+                log::info!(
+                    target: "downloads",
+                    "leaf_existing_file_finalization_queued collection=\"{}\" leaves={} readiness={} active_finalizations={} pending_finalizations={} available_slots={} ready_existing_files={}",
+                    collection.url,
+                    completions.len(),
+                    first_readiness.as_str(),
+                    pipeline.active_finalizations + 1,
+                    pipeline.ready_finalizations.len(),
+                    available_slots,
+                    ready_existing_files
+                );
+                pipeline.workers.spawn(finalize_existing_leaf_files_worker(
+                    ExistingLeafFinalizationInput {
+                        collection: collection.clone(),
+                        source_kind,
+                        save_root: save_root.to_path_buf(),
+                        ffmpeg_path: ffmpeg_path.to_path_buf(),
+                        completions,
+                    },
+                ));
+                pipeline.active_finalizations += 1;
+            }
+        }
+    }
 }
 
 #[cfg(not(test))]
@@ -1857,6 +2103,133 @@ async fn download_leaf_audio_worker(
 }
 
 #[cfg(not(test))]
+async fn finalize_existing_leaf_files_worker(
+    input: ExistingLeafFinalizationInput,
+) -> LeafPipelineEvent {
+    let collection_url = input.collection.url.clone();
+    let leaves = input.completions.len();
+    log::info!(
+        target: "downloads",
+        "leaf_existing_file_finalization_worker_started collection=\"{}\" leaves={}",
+        collection_url,
+        leaves
+    );
+    let outcome = finalize_existing_leaf_files(input).await.map_err(
+        |(completions, probe_failures, error)| ExistingLeafFinalizationFailure {
+            completions,
+            probe_failures,
+            error: error.to_string(),
+        },
+    );
+    log::info!(
+        target: "downloads",
+        "leaf_existing_file_finalization_worker_finished collection=\"{}\" leaves={} status={}",
+        collection_url,
+        leaves,
+        if outcome.is_ok() { "ok" } else { "failed" }
+    );
+    LeafPipelineEvent::FinalizedExistingFile(outcome)
+}
+
+#[cfg(not(test))]
+async fn finalize_existing_leaf_files(
+    input: ExistingLeafFinalizationInput,
+) -> std::result::Result<
+    ExistingLeafFinalizationResult,
+    (
+        Vec<ExistingLeafBatchCompletion>,
+        Vec<ExistingLeafProbeFailure>,
+        anyhow::Error,
+    ),
+> {
+    let ExistingLeafFinalizationInput {
+        mut collection,
+        source_kind,
+        save_root,
+        ffmpeg_path,
+        completions,
+    } = input;
+
+    log::info!(
+        target: "downloads",
+        "leaf_existing_file_duration_probe_batch_started collection=\"{}\" leaves={}",
+        collection.url,
+        completions.len()
+    );
+    let probe_outcome = probe_existing_file_batch_durations(&ffmpeg_path, completions).await;
+    log::info!(
+        target: "downloads",
+        "leaf_existing_file_duration_probe_batch_finished collection=\"{}\" completed={} failed={}",
+        collection.url,
+        probe_outcome.completed.len(),
+        probe_outcome.failed.len()
+    );
+
+    let materializations = probe_outcome
+        .completed
+        .iter()
+        .map(
+            |completion| collection_import::DownloadedLeafMusicMaterialization {
+                probe: completion.music_probe.clone(),
+                file_name: completion.relative_path.clone(),
+                group: completion.group.clone(),
+            },
+        )
+        .collect::<Vec<_>>();
+    log::info!(
+        target: "downloads",
+        "leaf_existing_file_batch_persist_requested collection=\"{}\" leaves={}",
+        collection.url,
+        materializations.len()
+    );
+    let persist_outcome = match collection_import::persist_downloaded_leaf_music_batch(
+        &mut collection,
+        source_kind,
+        &save_root,
+        &materializations,
+    )
+    .await
+    {
+        Ok(outcome) => outcome,
+        Err(error) => return Err((probe_outcome.completed, probe_outcome.failed, error)),
+    };
+    log::info!(
+        target: "downloads",
+        "leaf_existing_file_batch_persist_finished collection=\"{}\" leaves={} changed={}",
+        collection.url,
+        materializations.len(),
+        persist_outcome.changed
+    );
+    if let Err(error) = collection_import::write_raw_leaf_manifest_evidence_batch(
+        &save_root.join(&collection.folder),
+        &collection,
+        source_kind,
+        &materializations,
+    ) {
+        log::warn!(
+            target: "downloads",
+            "leaf_existing_file_manifest_evidence_write_failed collection=\"{}\" leaves={} error=\"{}\"",
+            collection.url,
+            materializations.len(),
+            error
+        );
+    } else {
+        log::info!(
+            target: "downloads",
+            "leaf_existing_file_manifest_evidence_written collection=\"{}\" leaves={}",
+            collection.url,
+            materializations.len()
+        );
+    }
+
+    Ok(ExistingLeafFinalizationResult {
+        persist_changed: persist_outcome.changed,
+        completed: probe_outcome.completed,
+        failed: probe_outcome.failed,
+    })
+}
+
+#[cfg(not(test))]
 async fn handle_leaf_pipeline_event(
     pipeline: &mut LeafPipelineState,
     task_snapshot: &mut DownloadTask,
@@ -1883,14 +2256,7 @@ async fn handle_leaf_pipeline_event(
         return Ok(LeafCommitResult::default());
     }
 
-    if !pipeline.pending_prepares.is_empty()
-        && pipeline.active_prepares < pipeline.prepare_parallelism
-    {
-        spawn_ready_leaf_preparations(pipeline, task_snapshot, client).await?;
-        return Ok(LeafCommitResult::default());
-    }
-
-    drain_ready_leaf_worker_events(
+    let mut commit_result = drain_ready_leaf_worker_events(
         pipeline,
         task_snapshot,
         collection,
@@ -1903,8 +2269,17 @@ async fn handle_leaf_pipeline_event(
     )
     .await?;
 
-    if !pipeline.ready_finalizations.is_empty() {
-        return finalize_one_ready_leaf(
+    if pipeline.active_finalizations < pipeline.finalization_parallelism {
+        spawn_ready_leaf_finalizations(pipeline, collection, source_kind, save_root, ffmpeg_path);
+    }
+
+    if !pipeline.ready_finalizations.is_empty()
+        && pipeline
+            .ready_finalizations
+            .front()
+            .is_some_and(|finalization| matches!(finalization, LeafFinalization::Downloaded(_)))
+    {
+        let next = finalize_one_ready_leaf(
             pipeline,
             task_snapshot,
             collection,
@@ -1912,11 +2287,23 @@ async fn handle_leaf_pipeline_event(
             save_root,
             ffmpeg_path,
         )
-        .await;
+        .await?;
+        merge_leaf_commit_result(&mut commit_result, next);
+        return Ok(commit_result);
     }
 
-    if pipeline.active_prepares == 0 && pipeline.active_downloads == 0 {
-        return Ok(LeafCommitResult::default());
+    if !pipeline.pending_prepares.is_empty()
+        && pipeline.active_prepares < pipeline.prepare_parallelism
+    {
+        spawn_ready_leaf_preparations(pipeline, task_snapshot, client).await?;
+        return Ok(commit_result);
+    }
+
+    if pipeline.active_prepares == 0
+        && pipeline.active_downloads == 0
+        && pipeline.active_finalizations == 0
+    {
+        return Ok(commit_result);
     }
 
     let event = pipeline
@@ -1926,7 +2313,7 @@ async fn handle_leaf_pipeline_event(
         .context("download pipeline worker set was unexpectedly empty")?
         .context("download pipeline worker panicked")?;
 
-    handle_leaf_worker_event(
+    let next = handle_leaf_worker_event(
         pipeline,
         task_snapshot,
         collection,
@@ -1939,7 +2326,8 @@ async fn handle_leaf_pipeline_event(
         event,
     )
     .await?;
-    Ok(LeafCommitResult::default())
+    merge_leaf_commit_result(&mut commit_result, next);
+    Ok(commit_result)
 }
 
 #[cfg(not(test))]
@@ -1953,10 +2341,11 @@ async fn drain_ready_leaf_worker_events(
     save_root: &Path,
     ffmpeg_path: &Path,
     cookies_path: Option<PathBuf>,
-) -> Result<()> {
+) -> Result<LeafCommitResult> {
+    let mut commit_result = LeafCommitResult::default();
     while let Some(joined) = pipeline.workers.try_join_next() {
         let event = joined.context("download pipeline worker panicked")?;
-        handle_leaf_worker_event(
+        let next = handle_leaf_worker_event(
             pipeline,
             task_snapshot,
             collection,
@@ -1969,8 +2358,9 @@ async fn drain_ready_leaf_worker_events(
             event,
         )
         .await?;
+        merge_leaf_commit_result(&mut commit_result, next);
     }
-    Ok(())
+    Ok(commit_result)
 }
 
 #[cfg(not(test))]
@@ -1985,7 +2375,7 @@ async fn handle_leaf_worker_event(
     ffmpeg_path: &Path,
     cookies_path: Option<PathBuf>,
     event: LeafPipelineEvent,
-) -> Result<()> {
+) -> Result<LeafCommitResult> {
     match event {
         LeafPipelineEvent::Prepared(outcome) => {
             pipeline.active_prepares = pipeline.active_prepares.saturating_sub(1);
@@ -2002,7 +2392,7 @@ async fn handle_leaf_worker_event(
                 outcome,
             )
             .await?;
-            Ok(())
+            Ok(LeafCommitResult::default())
         }
         LeafPipelineEvent::Downloaded(outcome) => {
             pipeline.active_downloads = pipeline.active_downloads.saturating_sub(1);
@@ -2015,7 +2405,7 @@ async fn handle_leaf_worker_event(
                     failed.error.clone(),
                 )
                 .await?;
-                return Ok(());
+                return Ok(LeafCommitResult::default());
             }
 
             match &outcome {
@@ -2034,10 +2424,18 @@ async fn handle_leaf_worker_event(
                     pipeline.download_window.record_failure();
                 }
             }
-            pipeline
-                .ready_finalizations
-                .push_back(LeafFinalization::Downloaded(outcome));
-            Ok(())
+            push_leaf_finalization(
+                &mut pipeline.ready_finalizations,
+                LeafFinalization::Downloaded(outcome),
+            );
+            Ok(LeafCommitResult::default())
+        }
+        LeafPipelineEvent::FinalizedExistingFile(outcome) => {
+            pipeline.active_finalizations = pipeline.active_finalizations.saturating_sub(1);
+            let commit_result =
+                handle_existing_file_finalization_result(task_snapshot, collection, outcome)
+                    .await?;
+            Ok(commit_result)
         }
     }
 }
@@ -2067,16 +2465,53 @@ async fn finalize_one_ready_leaf(
             .await
         }
         LeafFinalization::ExistingFile(completion) => {
-            let completions = collect_ready_existing_file_finalizations(completion, pipeline);
-            consume_existing_file_batch(
-                task_snapshot,
+            pipeline
+                .ready_finalizations
+                .push_front(LeafFinalization::ExistingFile(completion));
+            spawn_ready_leaf_finalizations(
+                pipeline,
                 collection,
                 source_kind,
                 save_root,
                 ffmpeg_path,
-                completions,
+            );
+            Ok(LeafCommitResult::default())
+        }
+    }
+}
+
+#[cfg(not(test))]
+async fn handle_existing_file_finalization_result(
+    task_snapshot: &mut DownloadTask,
+    collection: &mut Collection,
+    outcome: ExistingLeafFinalizationOutcome,
+) -> Result<LeafCommitResult> {
+    match outcome {
+        Ok(result) => {
+            for failure in result.failed {
+                mark_leaf_failed(task_snapshot, failure.completion.leaf, failure.error).await?;
+            }
+            commit_existing_file_finalizations(
+                collection,
+                task_snapshot,
+                result.persist_changed,
+                result.completed,
             )
             .await
+        }
+        Err(failure) => {
+            for probe_failure in failure.probe_failures {
+                mark_leaf_failed(
+                    task_snapshot,
+                    probe_failure.completion.leaf,
+                    probe_failure.error,
+                )
+                .await?;
+            }
+            for completion in failure.completions {
+                mark_leaf_failed(task_snapshot, completion.leaf, failure.error.clone()).await?;
+            }
+            Ok(LeafCommitResult::default())
         }
     }
 }
@@ -2085,9 +2520,15 @@ async fn finalize_one_ready_leaf(
 fn collect_ready_existing_file_finalizations(
     first: ExistingLeafCompletion,
     pipeline: &mut LeafPipelineState,
+    batch_limit: usize,
 ) -> Vec<ExistingLeafBatchCompletion> {
     let mut completions = vec![ExistingLeafBatchCompletion::from(first)];
-    while let Some(LeafFinalization::ExistingFile(_)) = pipeline.ready_finalizations.front() {
+    while completions.len() < batch_limit
+        && matches!(
+            pipeline.ready_finalizations.front(),
+            Some(LeafFinalization::ExistingFile(_))
+        )
+    {
         let Some(LeafFinalization::ExistingFile(completion)) =
             pipeline.ready_finalizations.pop_front()
         else {
@@ -2096,6 +2537,15 @@ fn collect_ready_existing_file_finalizations(
         completions.push(ExistingLeafBatchCompletion::from(completion));
     }
     completions
+}
+
+#[cfg(not(test))]
+fn ready_existing_file_prefix_len(pipeline: &LeafPipelineState) -> usize {
+    pipeline
+        .ready_finalizations
+        .iter()
+        .take_while(|finalization| matches!(finalization, LeafFinalization::ExistingFile(_)))
+        .count()
 }
 
 #[cfg(not(test))]
@@ -2175,16 +2625,17 @@ async fn handle_prepared_leaf_download(
             "leaf_reusing_existing_file leaf={} relative_path=\"{}\"",
             leaf_snapshot.id, relative_path
         );
-        pipeline
-            .ready_finalizations
-            .push_back(LeafFinalization::ExistingFile(ExistingLeafCompletion {
+        push_leaf_finalization(
+            &mut pipeline.ready_finalizations,
+            LeafFinalization::ExistingFile(ExistingLeafCompletion {
                 leaf: leaf_snapshot,
                 music_probe: prepared.music_probe,
                 group: music_group,
                 relative_path,
                 absolute_path,
                 readiness: prepared.readiness,
-            }));
+            }),
+        );
         return Ok(());
     }
 
@@ -2201,9 +2652,9 @@ async fn handle_prepared_leaf_download(
                 leaf_snapshot.id,
                 downloaded_path.display()
             );
-            pipeline
-                .ready_finalizations
-                .push_back(LeafFinalization::Downloaded(Ok(CompletedLeafDownload {
+            push_leaf_finalization(
+                &mut pipeline.ready_finalizations,
+                LeafFinalization::Downloaded(Ok(CompletedLeafDownload {
                     leaf: leaf_snapshot,
                     probe: prepared.probe,
                     music_probe: prepared.music_probe,
@@ -2215,7 +2666,8 @@ async fn handle_prepared_leaf_download(
                     progress: DownloadProgress::default(),
                     retry_failures: 0,
                     readiness: prepared.readiness,
-                })));
+                })),
+            );
             return Ok(());
         }
         ResidualTempFileResolution::Ambiguous(candidates) => {
@@ -2246,6 +2698,7 @@ async fn handle_prepared_leaf_download(
     Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn existing_file_completions_from_task_leaves(
     collection: &Collection,
     group_catalog: &GroupCatalog,
@@ -2293,52 +2746,19 @@ pub(crate) fn existing_file_completions_from_task_leaves(
 }
 
 #[cfg(not(test))]
-async fn consume_existing_file_batch(
-    task_snapshot: &mut DownloadTask,
+async fn commit_existing_file_finalizations(
     collection: &mut Collection,
-    source_kind: CollectionSourceKind,
-    save_root: &Path,
-    ffmpeg_path: &Path,
+    task_snapshot: &mut DownloadTask,
+    persist_changed: bool,
     completions: Vec<ExistingLeafBatchCompletion>,
 ) -> Result<LeafCommitResult> {
     if completions.is_empty() {
         return Ok(LeafCommitResult::default());
     }
 
-    let completions_with_duration =
-        probe_existing_file_batch_durations(task_snapshot, ffmpeg_path, completions).await?;
-
-    if completions_with_duration.is_empty() {
-        return Ok(LeafCommitResult::default());
-    }
-
-    let materializations = completions_with_duration
-        .iter()
-        .map(
-            |completion| collection_import::DownloadedLeafMusicMaterialization {
-                probe: completion.music_probe.clone(),
-                file_name: completion.relative_path.clone(),
-                group: completion.group.clone(),
-            },
-        )
-        .collect::<Vec<_>>();
-    let persist_outcome = collection_import::persist_downloaded_leaf_music_batch(
-        collection,
-        source_kind,
-        save_root,
-        &materializations,
-    )
-    .await?;
-    collection_import::write_raw_leaf_manifest_evidence_batch(
-        &save_root.join(&collection.folder),
-        collection,
-        source_kind,
-        &materializations,
-    )?;
-
     let mut post_processing = Vec::new();
-    let mut foreground_playable_committed = false;
-    for completion in completions_with_duration {
+    for completion in completions {
+        sync_existing_leaf_completion_into_collection(collection, &completion);
         let mut leaf_snapshot = completion.leaf;
         let leaf_id = leaf_snapshot.id.to_string();
         leaf_snapshot.title = Some(completion.music_probe.title.clone());
@@ -2353,7 +2773,6 @@ async fn consume_existing_file_batch(
         leaf_snapshot.touch();
         task_snapshot.replace_leaf(leaf_snapshot);
 
-        foreground_playable_committed |= completion.readiness == LeafReadinessCargo::Foreground;
         post_processing.push(CommittedLeafPostProcessing {
             relative_path: completion.relative_path.clone(),
             readiness: completion.readiness,
@@ -2368,21 +2787,54 @@ async fn consume_existing_file_batch(
     }
 
     Ok(LeafCommitResult {
-        collection_changed: persist_outcome.changed,
-        foreground_playable_available: foreground_playable_committed,
+        collection_changed: persist_changed,
         committed_paths: post_processing,
     })
 }
 
 #[cfg(not(test))]
+fn sync_existing_leaf_completion_into_collection(
+    collection: &mut Collection,
+    completion: &ExistingLeafBatchCompletion,
+) {
+    let mut materialized = collection_import::materialize_music_entries(
+        &completion.music_probe,
+        &completion.relative_path,
+        completion.group.clone(),
+    );
+    let replacement_group_url = materialized.first().map(|music| music.group.url.clone());
+    let mut replaced = false;
+    let mut next_musics = Vec::with_capacity(collection.musics.len() + materialized.len());
+    for music in collection.musics.drain(..) {
+        let should_replace = music.url == completion.music_probe.webpage_url
+            && replacement_group_url
+                .as_ref()
+                .is_some_and(|group_url| music.group.url == *group_url);
+        if should_replace {
+            if !replaced {
+                next_musics.append(&mut materialized);
+                replaced = true;
+            }
+        } else {
+            next_musics.push(music);
+        }
+    }
+    if !replaced {
+        next_musics.append(&mut materialized);
+    }
+    collection.musics = next_musics;
+    collection_import::normalize_music_titles_within_collection(collection);
+}
+
+#[cfg(not(test))]
 async fn probe_existing_file_batch_durations(
-    task_snapshot: &mut DownloadTask,
     ffmpeg_path: &Path,
     completions: Vec<ExistingLeafBatchCompletion>,
-) -> Result<Vec<ExistingLeafBatchCompletion>> {
+) -> ExistingLeafDurationProbeOutcome {
     let mut pending = VecDeque::from(completions);
     let mut workers = JoinSet::new();
     let mut completed = Vec::new();
+    let mut failed = Vec::new();
     let parallelism = MAX_PARALLEL_EXISTING_FILE_DURATION_PROBES.max(1);
 
     loop {
@@ -2392,11 +2844,26 @@ async fn probe_existing_file_batch_durations(
             };
             let ffmpeg_path = ffmpeg_path.to_path_buf();
             workers.spawn(async move {
+                let started = Instant::now();
+                log::info!(
+                    target: "downloads",
+                    "leaf_existing_file_duration_probe_started leaf={} relative_path=\"{}\"",
+                    completion.leaf.id,
+                    completion.relative_path
+                );
                 let duration_result = completed_local_audio_duration_ms(
                     ffmpeg_path,
                     completion.absolute_path.clone(),
                 )
                 .await;
+                log::info!(
+                    target: "downloads",
+                    "leaf_existing_file_duration_probe_finished leaf={} relative_path=\"{}\" status={} elapsed_ms={}",
+                    completion.leaf.id,
+                    completion.relative_path,
+                    if duration_result.is_ok() { "ok" } else { "failed" },
+                    started.elapsed().as_millis()
+                );
                 (completion, duration_result)
             });
         }
@@ -2404,8 +2871,9 @@ async fn probe_existing_file_batch_durations(
         let Some(joined) = workers.join_next().await else {
             break;
         };
-        let (mut completion, duration_result) =
-            joined.context("existing file duration probe worker panicked")?;
+        let Ok((mut completion, duration_result)) = joined else {
+            continue;
+        };
         match duration_result {
             Ok(duration_ms) => {
                 apply_completed_audio_duration_evidence(&mut completion.music_probe, duration_ms);
@@ -2420,12 +2888,12 @@ async fn probe_existing_file_batch_durations(
                     completion.relative_path,
                     error
                 );
-                mark_leaf_failed(task_snapshot, completion.leaf, error).await?;
+                failed.push(ExistingLeafProbeFailure { completion, error });
             }
         }
     }
 
-    Ok(completed)
+    ExistingLeafDurationProbeOutcome { completed, failed }
 }
 
 #[cfg(not(test))]
@@ -2721,7 +3189,6 @@ async fn handle_finished_leaf_download(
     );
     Ok(LeafCommitResult {
         collection_changed: persist_changed,
-        foreground_playable_available: readiness == LeafReadinessCargo::Foreground,
         committed_paths: vec![CommittedLeafPostProcessing {
             relative_path: file_name,
             readiness,
@@ -3088,9 +3555,7 @@ async fn update_task_status(
     task.touch();
     task.refresh_counts();
     let saved = repo::save_task(task.clone()).await?;
-    if saved.status.is_terminal() {
-        publish_download_task_change(&saved);
-    }
+    publish_download_task_change(&saved);
     *task = saved;
     Ok(())
 }

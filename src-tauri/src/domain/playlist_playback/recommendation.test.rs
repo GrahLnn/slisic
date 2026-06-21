@@ -1,7 +1,10 @@
 use super::recommendation::{
     AUDIO_STYLE_EMBEDDING_VERSION_FOR_TEST, AudioStyleEmbeddingCache, AudioStyleModelSnapshot,
-    AudioStylePlaylistPlaybackRecommender, audio_style_startup_input_coverage_for_test,
+    AudioStylePlaylistPlaybackRecommender,
+    acknowledge_audio_style_pending_training_input_file_for_test,
+    audio_style_source_repetition_gate_for_test, audio_style_startup_input_coverage_for_test,
     audio_style_training_path_is_transient_for_test, audio_style_transition_fingerprint_for_test,
+    balance_audio_style_candidate_field_basins_for_test,
     choose_audio_style_model_snapshots_for_anchor,
     choose_centerless_audio_style_candidate_for_test, choose_next_audio_style_candidate_for_test,
     choose_next_audio_style_candidate_with_generation_for_test,
@@ -17,6 +20,7 @@ use crate::domain::playlists::model::{
     AudioStyleTrainingTrackInput, CollectionGroupOwner, Group, LoudnessProfile, Music,
 };
 use crate::domain::playlists::repo::PlaylistPlaybackTrackSource;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -76,6 +80,13 @@ fn track_in_basin(basin: &str, name: &str) -> PlaybackTrack {
 fn track_in_source_leaf(source: &str, leaf: &str, name: &str) -> PlaybackTrack {
     PlaybackTrack {
         file_path: PathBuf::from(format!("youtube/{source}/{leaf}/{name}.m4a")),
+        ..track(name)
+    }
+}
+
+fn track_in_source(source: &str, name: &str) -> PlaybackTrack {
+    PlaybackTrack {
+        file_path: PathBuf::from(format!("youtube/{source}/{name}.m4a")),
         ..track(name)
     }
 }
@@ -532,6 +543,57 @@ fn audio_style_distance_softmin_keeps_smooth_track_preferred() {
 
     assert_eq!(selection.index, 0);
     assert!(selection.probability > 0.85);
+}
+
+#[test]
+fn audio_style_source_repetition_gate_penalizes_repeated_collection_without_blacklisting_it() {
+    let repeated_candidate = track_in_source("Repeated Work", "repeated_candidate");
+    let fresh_candidate = track_in_source("Fresh Work", "fresh_candidate");
+    let repeated_history = (0..10)
+        .map(|index| track_in_source("Repeated Work", &format!("played_{index}")))
+        .collect::<Vec<_>>();
+
+    let gates = audio_style_source_repetition_gate_for_test(
+        &[repeated_candidate.clone(), fresh_candidate.clone()],
+        &repeated_history,
+    );
+
+    assert_eq!(gates.len(), 2);
+    assert!(gates[0] < gates[1]);
+    assert!(gates[0] > 0.0);
+}
+
+#[test]
+fn audio_style_sampler_can_leave_repeated_source_when_audio_distance_is_ambiguous() {
+    let current = track_in_source("Repeated Work", "current");
+    let repeated_candidate = track_in_source("Repeated Work", "repeated_candidate");
+    let fresh_candidate = track_in_source("Fresh Work", "fresh_candidate");
+    let repeated_history = (0..10)
+        .map(|index| track_in_source("Repeated Work", &format!("played_{index}")))
+        .collect::<Vec<_>>();
+    let mut embeddings = vec![
+        (current.clone(), embedding(2)),
+        (repeated_candidate.clone(), embedding(2)),
+        (fresh_candidate.clone(), embedding(2)),
+    ];
+    embeddings.extend(
+        repeated_history
+            .iter()
+            .cloned()
+            .map(|track| (track, embedding(2))),
+    );
+    let recommender = AudioStylePlaylistPlaybackRecommender::from_test_embeddings(embeddings);
+
+    let selection = choose_next_audio_style_candidate_with_recent_history_for_test(
+        &current,
+        &[repeated_candidate.clone(), fresh_candidate.clone()],
+        &recommender,
+        &repeated_history,
+        0.50,
+    );
+
+    assert_eq!(selection.index, 1);
+    assert!(selection.probability > selection.uniform_probability);
 }
 
 #[test]
@@ -1490,8 +1552,11 @@ fn audio_style_basin_mass_homeostasis_preserves_balanced_candidate_field() {
     ];
     let base = [0.125, 0.125, 0.125, 0.125, 0.25, 0.25];
 
-    let gate =
-        super::recommendation::audio_style_basin_mass_homeostasis_gate_for_test(&candidates, &base, &[]);
+    let gate = super::recommendation::audio_style_basin_mass_homeostasis_gate_for_test(
+        &candidates,
+        &base,
+        &[],
+    );
 
     assert!(gate.iter().all(|value| *value >= 0.95));
 }
@@ -1558,6 +1623,149 @@ fn audio_style_topology_frontier_reserve_preserves_balanced_candidate_topology()
     );
 
     assert!(gate.iter().all(|value| (*value - 1.0).abs() < 0.001));
+}
+
+#[test]
+fn audio_style_candidate_top_pressure_gate_damps_repeated_candidate_top_basin() {
+    let dominant = (0..12)
+        .map(|index| track_in_basin("Dominant", &format!("candidate_{index}")))
+        .collect::<Vec<_>>();
+    let candidates = [
+        dominant[0].clone(),
+        dominant[1].clone(),
+        dominant[2].clone(),
+        dominant[3].clone(),
+        dominant[4].clone(),
+        dominant[5].clone(),
+        dominant[6].clone(),
+        dominant[7].clone(),
+        dominant[8].clone(),
+        dominant[9].clone(),
+        dominant[10].clone(),
+        dominant[11].clone(),
+        track_in_basin("Open A", "candidate"),
+        track_in_basin("Open B", "candidate"),
+        track_in_basin("Open C", "candidate"),
+        track_in_basin("Open D", "candidate"),
+        track_in_basin("Open E", "candidate"),
+        track_in_basin("Open F", "candidate"),
+    ];
+
+    let gate = super::recommendation::audio_style_candidate_top_pressure_gate_for_test(&candidates);
+
+    assert!(gate[0] < 0.85);
+    assert!(gate[3] < 0.85);
+    assert!(gate[12] > gate[0]);
+    assert!(gate[17] > gate[3]);
+    assert!(gate[12] >= 0.95);
+    assert!(gate[17] >= 0.95);
+}
+
+#[test]
+fn audio_style_candidate_top_pressure_gate_preserves_balanced_candidate_topology() {
+    let candidates = [
+        track_in_basin("A", "candidate_0"),
+        track_in_basin("A", "candidate_1"),
+        track_in_basin("B", "candidate_0"),
+        track_in_basin("B", "candidate_1"),
+        track_in_basin("C", "candidate_0"),
+        track_in_basin("C", "candidate_1"),
+    ];
+
+    let gate = super::recommendation::audio_style_candidate_top_pressure_gate_for_test(&candidates);
+
+    assert!(gate.iter().all(|value| (*value - 1.0).abs() < 0.001));
+}
+
+#[test]
+fn audio_style_candidate_field_balance_caps_dominant_basin() {
+    let dominant = (0..80).map(|index| ("Dominant", 1.0 - index as f32 * 0.001));
+    let open = (0..200).map(|index| {
+        let basin = match index % 20 {
+            0 => "Open 00",
+            1 => "Open 01",
+            2 => "Open 02",
+            3 => "Open 03",
+            4 => "Open 04",
+            5 => "Open 05",
+            6 => "Open 06",
+            7 => "Open 07",
+            8 => "Open 08",
+            9 => "Open 09",
+            10 => "Open 10",
+            11 => "Open 11",
+            12 => "Open 12",
+            13 => "Open 13",
+            14 => "Open 14",
+            15 => "Open 15",
+            16 => "Open 16",
+            17 => "Open 17",
+            18 => "Open 18",
+            _ => "Open 19",
+        };
+        (basin, 0.70 - index as f32 * 0.001)
+    });
+
+    let selected = balance_audio_style_candidate_field_basins_for_test(dominant.chain(open), 96);
+    let counts = basin_counts(&selected);
+
+    assert_eq!(selected.len(), 96);
+    assert!(counts["youtube:dominant"] <= 16);
+    assert!(counts.len() >= 20);
+}
+
+#[test]
+fn audio_style_candidate_field_balance_keeps_small_fields_unchanged() {
+    let selected = balance_audio_style_candidate_field_basins_for_test(
+        [("A", 0.9), ("A", 0.8), ("B", 0.7), ("C", 0.6)],
+        96,
+    );
+
+    assert_eq!(
+        selected,
+        vec![
+            "youtube:a".to_string(),
+            "youtube:a".to_string(),
+            "youtube:b".to_string(),
+            "youtube:c".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn audio_style_candidate_field_balance_keeps_locality_in_reserve() {
+    let dominant = (0..80).map(|index| ("Dominant", 1.0 - index as f32 * 0.001));
+    let open = (0..80).map(|index| {
+        let basin = match index {
+            0..=7 => "Open 00",
+            8..=15 => "Open 01",
+            16..=23 => "Open 02",
+            24..=31 => "Open 03",
+            32..=39 => "Open 04",
+            40..=47 => "Open 05",
+            48..=55 => "Open 06",
+            56..=63 => "Open 07",
+            64..=71 => "Open 08",
+            _ => "Open 09",
+        };
+        (basin, 0.50 - index as f32 * 0.001)
+    });
+
+    let selected = balance_audio_style_candidate_field_basins_for_test(dominant.chain(open), 40);
+    let counts = basin_counts(&selected);
+
+    assert_eq!(selected.len(), 40);
+    assert!(counts["youtube:dominant"] > 5);
+    assert!(counts["youtube:dominant"] <= 8);
+    assert!(counts.len() >= 8);
+}
+
+fn basin_counts(basins: &[String]) -> HashMap<String, usize> {
+    let mut counts = HashMap::new();
+    for basin in basins {
+        *counts.entry(basin.clone()).or_insert(0) += 1;
+    }
+    counts
 }
 
 #[test]
@@ -2854,13 +3062,7 @@ fn audio_style_startup_skips_training_when_model_evidence_restores_without_input
         AudioStyleStartupTrainingDecision::TrainPendingInputChanges
     );
     assert_eq!(
-        audio_style_startup_training_decision(
-            true,
-            0,
-            0,
-            0,
-            AudioStyleStartupInputCoverage::Empty,
-        ),
+        audio_style_startup_training_decision(true, 0, 0, 0, AudioStyleStartupInputCoverage::Empty,),
         AudioStyleStartupTrainingDecision::SkipNoTrainingInputs
     );
 }
@@ -2992,6 +3194,74 @@ fn audio_style_pending_training_inputs_are_durable_and_deduplicated_by_track_ide
             .iter()
             .any(|input| input.canonical_music_id == "canonical-b")
     );
+}
+
+#[test]
+fn audio_style_pending_training_input_ack_only_removes_consumed_records() {
+    let root = temp_cache_root("audio-style-pending-training-inputs-ack");
+    std::fs::create_dir_all(&root).expect("pending input ack root should be created");
+    let path = root.join("pending-inputs.json");
+    let first = AudioStyleTrainingTrackInput {
+        occurrence_id: "occ-a".to_string(),
+        alias: "Track A".to_string(),
+        canonical_music_id: "canonical-a".to_string(),
+        url: "https://example.test/a".to_string(),
+        absolute_path: "C:/music/a.m4a".to_string(),
+        start_ms: 0,
+        end_ms: 100,
+        liked: false,
+        loudness_profile: None,
+    };
+    let second = AudioStyleTrainingTrackInput {
+        occurrence_id: "occ-b".to_string(),
+        alias: "Track B".to_string(),
+        canonical_music_id: "canonical-b".to_string(),
+        url: "https://example.test/b".to_string(),
+        absolute_path: "C:/music/b.m4a".to_string(),
+        start_ms: 0,
+        end_ms: 100,
+        liked: false,
+        loudness_profile: None,
+    };
+    let updated_first = AudioStyleTrainingTrackInput {
+        alias: "Track A updated".to_string(),
+        liked: true,
+        ..first.clone()
+    };
+    let third = AudioStyleTrainingTrackInput {
+        occurrence_id: "occ-c".to_string(),
+        alias: "Track C".to_string(),
+        canonical_music_id: "canonical-c".to_string(),
+        url: "https://example.test/c".to_string(),
+        absolute_path: "C:/music/c.m4a".to_string(),
+        start_ms: 0,
+        end_ms: 100,
+        liked: false,
+        loudness_profile: None,
+    };
+
+    upsert_audio_style_pending_training_input_file_for_test(
+        &path,
+        &[first.clone(), second.clone()],
+    )
+    .expect("initial pending inputs should write");
+    upsert_audio_style_pending_training_input_file_for_test(
+        &path,
+        &[updated_first.clone(), third.clone()],
+    )
+    .expect("new pending inputs should write");
+
+    let (removed, remaining) =
+        acknowledge_audio_style_pending_training_input_file_for_test(&path, &[first, second])
+            .expect("ack should remove only records consumed by the finished run");
+    let inputs = read_audio_style_pending_training_input_file_for_test(&path)
+        .expect("remaining pending inputs should read");
+
+    assert_eq!(removed, 1);
+    assert_eq!(remaining, 2);
+    assert_eq!(inputs.len(), 2);
+    assert!(inputs.iter().any(|input| input == &updated_first));
+    assert!(inputs.iter().any(|input| input == &third));
 }
 
 #[test]

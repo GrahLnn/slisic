@@ -4,7 +4,7 @@ use super::recommendation::{
     recommendation_candidate_allowed_by_recent_history,
 };
 use super::service::{
-    PlaylistInitialTrackRelease, PlaylistPlaybackRecommendationMode,
+    PlaylistInitialTrackRelease, PlaylistPlaybackRecentHistory, PlaylistPlaybackRecommendationMode,
     PlaylistPlaybackRecommendationRequest, PlaylistPlaybackRecommender,
     PlaylistQueueRecommendationReadiness, RandomPlaylistPlaybackRecommender,
     apply_initial_track_loudness_profile, audio_style_playlist_playback_proposal_is_complete,
@@ -730,6 +730,25 @@ fn recommendation_history_keeps_liked_played_music() {
             .iter()
             .any(|track| track.music_url == fresh.music_url)
     );
+}
+
+#[test]
+fn recent_history_observe_moves_replayed_track_to_latest_event_position() {
+    let first = playback_track("first");
+    let second = playback_track("second");
+    let third = playback_track("third");
+    let mut history = PlaylistPlaybackRecentHistory::from_initial_track(first.clone());
+
+    history.observe(second.clone());
+    history.observe(third.clone());
+    history.observe(first.clone());
+
+    let snapshot = history.snapshot();
+
+    assert_eq!(snapshot.len(), 3);
+    assert_eq!(snapshot[0].music_url, second.music_url);
+    assert_eq!(snapshot[1].music_url, third.music_url);
+    assert_eq!(snapshot[2].music_url, first.music_url);
 }
 
 #[test]

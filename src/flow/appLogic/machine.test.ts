@@ -114,6 +114,19 @@ function createStartedPlaybackSession(
   };
 }
 
+function createPreparingPlaybackSession(
+  sessionGeneration = 1,
+  playlistName = "Focus Session",
+): PlayPlaylistSession & { status: "started"; session_generation: number } {
+  return {
+    playlist_name: playlistName,
+    status: "started",
+    session_generation: sessionGeneration,
+    track_count: 0,
+    initial_track: null,
+  };
+}
+
 function createStoppedPlaybackSession(
   status: Exclude<PlayPlaylistSession["status"], "started">,
   playlistName = "Focus Session",
@@ -637,7 +650,7 @@ describe("appLogic machine", () => {
     assert.equal(actor.getSnapshot().context.pendingPlaylistPlaybackRequest?.requestId, 1);
   });
 
-  test("closes playback intent when the backend has no prepared first slot", async () => {
+  test("keeps playback intent preparing when the backend has no prepared first slot", async () => {
     const collection = createCollection([createMusic()]);
     const actor = createActor(
       machine.provide({
@@ -665,11 +678,17 @@ describe("appLogic machine", () => {
     );
 
     assert.equal(actor.getSnapshot().value, "ready");
-    assert.equal(actor.getSnapshot().context.pendingPlaylistPlaybackName, null);
-    assert.equal(actor.getSnapshot().context.pendingPlaylistPlaybackRequest, null);
+    assert.equal(actor.getSnapshot().context.pendingPlaylistPlaybackName, "Focus Session");
+    assert.deepEqual(actor.getSnapshot().context.pendingPlaylistPlaybackRequest, {
+      error: null,
+      phase: "starting",
+      playlistName: "Focus Session",
+      reason: "pending_first_track",
+      requestId: 1,
+    });
   });
 
-  test("does not let playlist upsert revive a missing first-slot playback intent", async () => {
+  test("keeps missing first-slot playback intent alive across playlist upsert", async () => {
     const collection = createCollection([createMusic()]);
     const actor = createActor(
       machine.provide({
@@ -703,8 +722,14 @@ describe("appLogic machine", () => {
     );
 
     assert.equal(actor.getSnapshot().value, "ready");
-    assert.equal(actor.getSnapshot().context.pendingPlaylistPlaybackName, null);
-    assert.equal(actor.getSnapshot().context.pendingPlaylistPlaybackRequest, null);
+    assert.equal(actor.getSnapshot().context.pendingPlaylistPlaybackName, "Focus Session");
+    assert.deepEqual(actor.getSnapshot().context.pendingPlaylistPlaybackRequest, {
+      error: null,
+      phase: "starting",
+      playlistName: "Focus Session",
+      reason: "pending_first_track",
+      requestId: 1,
+    });
     assert.equal(actor.getSnapshot().context.playingPlaylistName, null);
   });
 
@@ -853,7 +878,7 @@ describe("appLogic machine", () => {
     assert.equal(actor.getSnapshot().context.draft, null);
   });
 
-  test("rejects accepted playback after a missing first-slot result closed its intent", async () => {
+  test("accepts playback after a missing first-slot result kept its intent alive", async () => {
     const music = createMusic();
     const collection = createCollection([music]);
     const actor = createActor(
@@ -899,13 +924,13 @@ describe("appLogic machine", () => {
       }),
     );
 
-    assert.equal(actor.getSnapshot().value, "ready");
+    assert.equal(actor.getSnapshot().value, "play");
     assert.equal(actor.getSnapshot().context.pendingPlaylistPlaybackName, null);
-    assert.equal(actor.getSnapshot().context.playingPlaylistName, null);
-    assert.equal(actor.getSnapshot().context.nowPlayingTrackName, null);
+    assert.equal(actor.getSnapshot().context.playingPlaylistName, "Focus Session");
+    assert.equal(actor.getSnapshot().context.nowPlayingTrackName, music.alias);
   });
 
-  test("rejects accepted initial track after a missing first-slot result closed its intent", async () => {
+  test("accepts initial track after a missing first-slot result kept its intent alive", async () => {
     const music = createMusic();
     const collection = createCollection([music]);
     const actor = createActor(
@@ -953,10 +978,10 @@ describe("appLogic machine", () => {
       }),
     );
 
-    assert.equal(actor.getSnapshot().value, "ready");
-    assert.equal(actor.getSnapshot().context.playingPlaylistName, null);
-    assert.equal(actor.getSnapshot().context.nowPlayingTrackName, null);
-    assert.equal(actor.getSnapshot().context.nowPlayingTrackUrl, null);
+    assert.equal(actor.getSnapshot().value, "play");
+    assert.equal(actor.getSnapshot().context.playingPlaylistName, "Focus Session");
+    assert.equal(actor.getSnapshot().context.nowPlayingTrackName, music.alias);
+    assert.equal(actor.getSnapshot().context.nowPlayingTrackUrl, music.url);
     assert.equal(actor.getSnapshot().context.pendingPlaylistPlaybackName, null);
   });
 
@@ -1253,6 +1278,38 @@ describe("appLogic machine", () => {
     assert.equal(actor.getSnapshot().context.playbackSurfaceStatus, null);
     assert.equal(actor.getSnapshot().context.nowPlayingTrackName, music.alias);
     assert.equal(actor.getSnapshot().context.nowPlayingTrackUrl, music.url);
+  });
+
+  test("projects preparing from an accepted empty first-slot session", async () => {
+    const collection = createCollection([createMusic()]);
+    const actor = createActor(
+      machine.provide({
+        actors: {
+          loadCollections: fromPromise<BootstrapResult>(async () =>
+            createBootstrapResult([collection]),
+          ),
+        },
+      }),
+    );
+
+    actor.start();
+    actor.send(sig.mainx.run);
+    await waitForState(actor, "ready");
+
+    actor.send(payloads["playlist.play"].load({ playlistName: "Focus Session", requestId: 1 }));
+    actor.send(
+      payloads["playlist.playback.accepted"].load({
+        playlistName: "Focus Session",
+        requestId: 1,
+        session: createPreparingPlaybackSession(1),
+      }),
+    );
+
+    assert.equal(actor.getSnapshot().value, "play");
+    assert.equal(actor.getSnapshot().context.playingPlaylistName, "Focus Session");
+    assert.equal(actor.getSnapshot().context.playbackSurfaceStatus, "preparing");
+    assert.equal(actor.getSnapshot().context.nowPlayingTrackName, null);
+    assert.equal(actor.getSnapshot().context.nowPlayingTrackUrl, null);
   });
 
   test("does not let late preparing status overwrite accepted now playing evidence", async () => {

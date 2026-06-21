@@ -2,6 +2,7 @@ use super::{
     AudioTailTrimCandidate, AudioTailTrimFocusMusic, AudioTailTrimRequest, AudioTailTrimScopeKind,
     TailEvidenceFrame, TailEvidenceSignature, audio_tail_trim_queue_insert_index_for_test,
     audio_tail_trim_queue_overflow_action_for_test,
+    audio_tail_trim_source_completes_foreground_playable_gate_for_test,
     audio_tail_trim_source_requires_active_rerun_for_test, build_audio_tail_trim_focus_plan,
     build_audio_tail_trim_plan, detect_common_tail_evidence, merge_audio_tail_trim_request,
     prioritize_audio_tail_trim_focus_candidate, read_audio_tail_trim_pending_task_file_for_test,
@@ -446,6 +447,22 @@ fn downloaded_leaf_tail_trim_requests_require_active_rerun() {
 }
 
 #[test]
+fn only_foreground_downloaded_tail_trim_completion_opens_the_playable_gate() {
+    assert!(!audio_tail_trim_source_completes_foreground_playable_gate_for_test(
+        "downloaded_leaf"
+    ));
+    assert!(audio_tail_trim_source_completes_foreground_playable_gate_for_test(
+        "downloaded_leaf_foreground"
+    ));
+    assert!(!audio_tail_trim_source_completes_foreground_playable_gate_for_test(
+        "playback_current"
+    ));
+    assert!(!audio_tail_trim_source_completes_foreground_playable_gate_for_test(
+        "pending_store"
+    ));
+}
+
+#[test]
 fn playback_current_focus_update_can_replace_queue_tail_after_explicit_task_match() {
     assert_eq!(
         audio_tail_trim_queue_overflow_action_for_test("playback_current"),
@@ -612,7 +629,7 @@ fn trim_plan_refines_common_tail_start_to_nearest_quiet_boundary() {
                     quiet_frame(end_ms, unit_vector(1), -12.0)
                 })
                 .chain([
-                    quiet_frame(56_500, unit_vector(3), -48.0),
+                    quiet_frame(56_500, unit_vector(3), -50.0),
                     quiet_frame(56_000, unit_vector(4), -18.0),
                 ])
                 .collect(),
@@ -638,4 +655,52 @@ fn trim_plan_refines_common_tail_start_to_nearest_quiet_boundary() {
         .find(|trim| trim.url == "https://example.com/focused")
         .expect("focused member should be trimmed");
     assert_eq!(focused.next_end_ms, 56_500);
+}
+
+#[test]
+fn trim_plan_moves_edge_quiet_window_before_tail_reentry() {
+    let tail = repeated_tail(1, 65);
+    let mut signatures = vec![
+        signature(&[3, 4], &tail),
+        signature(&[4, 3], &tail),
+        signature(&[5, 3], &tail),
+        signature(&[3, 5], &tail),
+        signature(&[4, 5], &tail),
+    ];
+    signatures.insert(
+        0,
+        signature_with_frames(
+            (0..65)
+                .map(|index| {
+                    let end_ms = 90_000 - index * 500;
+                    quiet_frame(end_ms, unit_vector(1), -12.0)
+                })
+                .chain([
+                    quiet_frame(56_500, unit_vector(3), -45.0),
+                    quiet_frame(56_000, unit_vector(4), -18.0),
+                ])
+                .into_iter()
+                .collect(),
+        ),
+    );
+    let mut candidates = vec![
+        candidate("focused", 90_000),
+        candidate("first", 90_000),
+        candidate("second", 90_000),
+        candidate("third", 90_000),
+        candidate("fourth", 90_000),
+        candidate("fifth", 90_000),
+    ];
+    candidates[0].canonical_music_id = "music:focused:0:90000".to_string();
+    let evidence = resolve_audio_tail_trim_evidence(&signatures)
+        .expect("full collection evidence should own commit duration")
+        .evidence;
+
+    let plan = build_audio_tail_trim_plan(&candidates, &signatures, &evidence);
+
+    let focused = plan
+        .iter()
+        .find(|trim| trim.url == "https://example.com/focused")
+        .expect("focused member should be trimmed");
+    assert_eq!(focused.next_end_ms, 55_500);
 }

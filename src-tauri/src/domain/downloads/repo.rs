@@ -53,7 +53,7 @@ pub async fn try_get_task(id: &str) -> Result<Option<DownloadTask>> {
                 DBError::MissingTable(_) | DBError::NotFound => return Ok(None),
                 other => return Err(other.into()),
             },
-        }
+        },
         Err(error) => match classify_db_error(&error.into()) {
             DBError::MissingTable(_) | DBError::NotFound => return Ok(None),
             other => return Err(other.into()),
