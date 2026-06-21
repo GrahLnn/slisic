@@ -1,36 +1,31 @@
 import { assign } from "xstate";
-import { draftCollectionUpserted, send as sendAppLogic } from "../appLogic/runtime";
 import {
   appendCandidateItem,
   acceptCandidateDownloadTask,
   acceptCandidateRootTitleEvidence,
   applyDownloadTaskChangeSignal,
   applyCandidateUrlResolution,
-  createCandidateItemId,
-  createInvalidPastedDownloadUrlResolution,
   createInitialContext,
   deleteCandidateItem,
   deleteCandidateItemByTaskId,
   failCandidateTask,
   failCandidateItem,
-  hasCandidateItem,
-  downloadTaskIsTerminal,
-  parseClipboardDownloadUrl,
   resetCandidateItems,
-  toErrorMessage,
 } from "./core";
-import { deps, payloads, ss } from "./events";
 import {
-  createFastUrlResolveQueue,
-  resolveDefaultFastUrlResolveConcurrency,
-  type FastUrlResolveQueue,
-} from "./fastUrlResolveQueue";
+  cancelCandidateEffects,
+  enqueuedCollectionClosesCandidate,
+  publishEnqueuedCollection,
+  publishResolvedCollection,
+  publishRootTitleCollection,
+  publishTaskCollection,
+  requestFinishedTaskCollection,
+  requestNewDownloadCandidateEffects,
+  requestPastedDownloadUrlResolution,
+  resetCandidateEffects,
+} from "./effects";
+import { payloads, ss } from "./events";
 import { src } from "./src";
-import {
-  createTitleProbeQueue,
-  resolveDefaultTitleProbeConcurrency,
-  type TitleProbeQueue,
-} from "./titleProbeQueue";
 
 const pasteRequested = payloads["paste.requested"];
 const candidateDelete = payloads["candidate.delete"];
@@ -44,39 +39,6 @@ const downloadTaskChanged = payloads["download.task.changed"];
 const candidateTaskCollectionLoaded = payloads["candidate.task.collection.loaded"];
 const candidateTaskCollectionFailed = payloads["candidate.task.collection.failed"];
 
-const fastUrlResolveQueues = new WeakMap<object, FastUrlResolveQueue>();
-const titleProbeQueues = new WeakMap<object, TitleProbeQueue>();
-
-function fastUrlResolveQueueFor(actor: object) {
-  let queue = fastUrlResolveQueues.get(actor);
-  if (queue) {
-    return queue;
-  }
-
-  queue = createFastUrlResolveQueue({
-    concurrency: resolveDefaultFastUrlResolveConcurrency,
-    resolve: (url) => deps.resolvePastedDownloadUrl(url),
-    toErrorMessage,
-  });
-  fastUrlResolveQueues.set(actor, queue);
-  return queue;
-}
-
-function titleProbeQueueFor(actor: object) {
-  let queue = titleProbeQueues.get(actor);
-  if (queue) {
-    return queue;
-  }
-
-  queue = createTitleProbeQueue({
-    concurrency: resolveDefaultTitleProbeConcurrency,
-    probe: (url) => deps.probeDownloadRootTitle(url),
-    toErrorMessage,
-  });
-  titleProbeQueues.set(actor, queue);
-  return queue;
-}
-
 export const machine = src.createMachine({
   initial: ss.mainx.State.idle,
   context: createInitialContext(),
@@ -85,47 +47,28 @@ export const machine = src.createMachine({
       actions: [
         assign(({ context, event }) => appendCandidateItem(context, event.output)),
         ({ context, event, self }) => {
-          const id = createCandidateItemId(context.nextItemSequence - 1);
-          const parsed = parseClipboardDownloadUrl(event.output);
-          if (!parsed.ok) {
-            self.send(
-              candidateResolveCompleted.load({
-                id,
-                resolution: createInvalidPastedDownloadUrlResolution(parsed.error),
-              }),
-            );
-            return;
-          }
-
-          fastUrlResolveQueueFor(self).enqueue({
-            id,
-            url: parsed.url,
-            sink: {
-              completed: ({ id, resolution }) => {
-                self.send(candidateResolveCompleted.load({ id, resolution }));
-              },
-              failed: ({ id, error }) => {
-                self.send(candidateResolveFailed.load({ id, error }));
-              },
-            },
+          requestPastedDownloadUrlResolution({
+            actor: self,
+            context,
+            rawText: event.output,
           });
         },
       ],
     },
     [candidateDelete.evt]: {
       actions: [
-        ({ event, self }) => fastUrlResolveQueueFor(self).cancel(event.output),
-        ({ event, self }) => titleProbeQueueFor(self).cancel(event.output),
+        ({ event, self }) => cancelCandidateEffects({ actor: self, id: event.output }),
         assign(({ context, event }) => deleteCandidateItem(context, event.output)),
       ],
     },
     [candidateResolveCompleted.evt]: {
       actions: [
-        ({ context, event }) => {
-          if (hasCandidateItem(context, event.output.id) && event.output.resolution.collection) {
-            sendAppLogic(draftCollectionUpserted.load(event.output.resolution.collection));
-          }
-        },
+        ({ context, event }) =>
+          publishResolvedCollection({
+            context,
+            id: event.output.id,
+            collection: event.output.resolution.collection,
+          }),
         assign(({ context, event }) => {
           const next = applyCandidateUrlResolution(
             context,
@@ -137,41 +80,12 @@ export const machine = src.createMachine({
             : next;
         }),
         ({ context, event, self }) => {
-          if (event.output.resolution.status !== "new_url") {
-            return;
-          }
-
-          const item = context.items.find((candidate) => candidate.id === event.output.id);
-          if (!item?.sourceUrl) {
-            return;
-          }
-
-          titleProbeQueueFor(self).enqueue({
+          requestNewDownloadCandidateEffects({
+            actor: self,
+            context,
             id: event.output.id,
-            url: item.sourceUrl,
-            sink: {
-              completed: ({ id, evidence }) => {
-                self.send(candidateTitleCompleted.load({ id, evidence }));
-              },
-              failed: ({ id, error }) => {
-                self.send(candidateTitleFailed.load({ id, error }));
-              },
-            },
+            isNewUrl: event.output.resolution.status === "new_url",
           });
-
-          void deps
-            .enqueueCollectionDownload(item.sourceUrl)
-            .then((result) => {
-              self.send(candidateEnqueueCompleted.load({ id: event.output.id, result }));
-            })
-            .catch((error) => {
-              self.send(
-                candidateEnqueueFailed.load({
-                  id: event.output.id,
-                  error: toErrorMessage(error),
-                }),
-              );
-            });
         },
       ],
     },
@@ -182,13 +96,12 @@ export const machine = src.createMachine({
     },
     [candidateTitleCompleted.evt]: {
       actions: [
-        ({ context, event }) => {
-          if (!hasCandidateItem(context, event.output.id)) {
-            return;
-          }
-
-          sendAppLogic(draftCollectionUpserted.load(event.output.evidence.collection));
-        },
+        ({ context, event }) =>
+          publishRootTitleCollection({
+            context,
+            id: event.output.id,
+            collection: event.output.evidence.collection,
+          }),
         assign(({ context, event }) =>
           acceptCandidateRootTitleEvidence(context, event.output.id, event.output.evidence),
         ),
@@ -197,13 +110,14 @@ export const machine = src.createMachine({
     [candidateTitleFailed.evt]: {},
     [candidateEnqueueCompleted.evt]: {
       actions: [
-        ({ context, event }) => {
-          if (hasCandidateItem(context, event.output.id) && event.output.result.collection) {
-            sendAppLogic(draftCollectionUpserted.load(event.output.result.collection));
-          }
-        },
+        ({ context, event }) =>
+          publishEnqueuedCollection({
+            context,
+            id: event.output.id,
+            result: event.output.result,
+          }),
         assign(({ context, event }) =>
-          event.output.result.collection && downloadTaskIsTerminal(event.output.result.task.status)
+          enqueuedCollectionClosesCandidate(event.output.result)
             ? deleteCandidateItem(context, event.output.id)
             : acceptCandidateDownloadTask(context, event.output.id, event.output.result.task),
         ),
@@ -211,55 +125,23 @@ export const machine = src.createMachine({
     },
     [downloadTaskChanged.evt]: {
       actions: [
-        ({ context, event, self }) => {
-          if (
-            !event.output.collection_url ||
-            (event.output.status !== "completed" &&
-              event.output.status !== "completed_with_errors") ||
-            !context.items.some((item) => item.taskId === event.output.task_id)
-          ) {
-            return;
-          }
-
-          void deps
-            .getCollection(event.output.collection_url)
-            .then((collection) => {
-              if (collection) {
-                self.send(
-                  candidateTaskCollectionLoaded.load({
-                    taskId: event.output.task_id,
-                    collection,
-                  }),
-                );
-                return;
-              }
-
-              self.send(
-                candidateTaskCollectionFailed.load({
-                  taskId: event.output.task_id,
-                  error: "Download finished but the collection could not be loaded.",
-                }),
-              );
-            })
-            .catch((error) => {
-              self.send(
-                candidateTaskCollectionFailed.load({
-                  taskId: event.output.task_id,
-                  error: toErrorMessage(error),
-                }),
-              );
-            });
-        },
+        ({ context, event, self }) =>
+          requestFinishedTaskCollection({
+            actor: self,
+            context,
+            signal: event.output,
+          }),
         assign(({ context, event }) => applyDownloadTaskChangeSignal(context, event.output)),
       ],
     },
     [candidateTaskCollectionLoaded.evt]: {
       actions: [
-        ({ context, event }) => {
-          if (context.items.some((item) => item.taskId === event.output.taskId)) {
-            sendAppLogic(draftCollectionUpserted.load(event.output.collection));
-          }
-        },
+        ({ context, event }) =>
+          publishTaskCollection({
+            context,
+            taskId: event.output.taskId,
+            collection: event.output.collection,
+          }),
         assign(({ context, event }) => deleteCandidateItemByTaskId(context, event.output.taskId)),
       ],
     },
@@ -276,8 +158,7 @@ export const machine = src.createMachine({
     reset: {
       target: `.${ss.mainx.State.idle}`,
       actions: [
-        ({ self }) => fastUrlResolveQueueFor(self).reset(),
-        ({ self }) => titleProbeQueueFor(self).reset(),
+        ({ self }) => resetCandidateEffects(self),
         assign(({ context }) => resetCandidateItems(context)),
       ],
     },
