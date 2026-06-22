@@ -1879,12 +1879,12 @@ function WaveformSelectionOverlay(args: {
     >
       <div
         aria-hidden
-        className="absolute inset-y-0 bg-[#f5f5f5]/58 dark:bg-[#050505]/58"
+        className="waveform-selection-glass-mask absolute inset-y-0"
         style={{ left: 0, width: Math.max(0, geometry.startX) }}
       />
       <div
         aria-hidden
-        className="absolute inset-y-0 right-0 bg-[#f5f5f5]/58 dark:bg-[#050505]/58"
+        className="waveform-selection-glass-mask absolute inset-y-0 right-0"
         style={{ left: Math.max(0, geometry.endX) }}
       />
       <WaveformSelectionHandle

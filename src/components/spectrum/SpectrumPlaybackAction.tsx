@@ -8,6 +8,7 @@ import {
   type SpectrumPlaybackActionSnapshot,
   type SpectrumPlaybackActionKind,
 } from "./SpectrumPage.view-model";
+import { GlassSurface } from "../glass/GlassSurface";
 
 const SPECTRUM_PLAYBACK_STATUS_POLL_MS = 250;
 
@@ -172,15 +173,16 @@ export function SpectrumPlaybackAction({
       className={cn(
         "group relative isolate inline-flex size-8 items-center justify-center rounded-[25px] p-2",
         "text-[#737373] transition duration-300 [corner-shape:squircle_squircle_squircle_squircle]",
-        "before:absolute before:inset-0 before:-z-10 before:rounded-[25px] before:bg-transparent",
-        "before:transition before:duration-300 before:[corner-shape:squircle_squircle_squircle_squircle]",
-        "hover:text-[#262626] hover:before:bg-[#e5e5e5]",
-        "dark:text-[#8a8a8a] dark:hover:text-[#d4d4d4] dark:hover:before:bg-[#262626]",
+        "hover:text-[#262626]",
+        "dark:text-[#8a8a8a] dark:hover:text-[#d4d4d4]",
         visualState.disabled && "pointer-events-none",
         visualState.dimmed && "opacity-35",
       )}
     >
-      <SpectrumPlaybackIcon visualState={visualState} />
+      <GlassSurface variant="button" className="inset-0 z-0" />
+      <span className="relative z-10">
+        <SpectrumPlaybackIcon visualState={visualState} />
+      </span>
     </button>
   );
 }

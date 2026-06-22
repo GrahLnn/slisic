@@ -15,6 +15,7 @@ import {
   type TrackSpectrumPlaybackStatusCommit,
   type WaveformRenderDataStore,
 } from "./SpectrumVisualizer";
+import { GlassSurface } from "../glass/GlassSurface";
 
 const musicSpectrumContentFadeProps = {
   initial: { opacity: 0 },
@@ -265,16 +266,15 @@ export const MusicSpectrumEditor = forwardRef<EditableTitleHandle, MusicSpectrum
                   "group absolute top-0 z-10 isolate inline-flex size-8 items-center justify-center rounded-[25px] p-2",
                   resolveMusicSpectrumFloatingActionPlacementClassName("end"),
                   "text-[#737373] transition duration-300 [corner-shape:squircle_squircle_squircle_squircle]",
-                  "before:absolute before:inset-0 before:-z-10 before:rounded-[25px] before:bg-transparent",
-                  "before:transition before:duration-300 before:[corner-shape:squircle_squircle_squircle_squircle]",
-                  "hover:text-[#262626] hover:before:bg-[#e5e5e5]",
-                  "dark:text-[#8a8a8a] dark:hover:text-[#d4d4d4] dark:hover:before:bg-[#262626]",
+                  "hover:text-[#262626]",
+                  "dark:text-[#8a8a8a] dark:hover:text-[#d4d4d4]",
                   "cursor-pointer",
                 )}
                 {...resolveMusicSpectrumResetActionFadeProps({ exitPresentation })}
                 onClick={onReset}
               >
-                <icons.arrowRotateAnticlockwise size={18} />
+                <GlassSurface variant="button" className="inset-0 z-0" />
+                <icons.arrowRotateAnticlockwise className="relative z-10" size={18} />
               </motion.button>
             )}
           </AnimatePresence>

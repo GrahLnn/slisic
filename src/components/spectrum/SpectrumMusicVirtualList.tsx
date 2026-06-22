@@ -38,6 +38,7 @@ import {
   type SpectrumPlaybackActionSnapshot,
   type SpectrumPlaybackIdentity,
 } from "./SpectrumPage.view-model";
+import { GlassSurface } from "../glass/GlassSurface";
 
 const SPECTRUM_MUSIC_VIRTUAL_ROW_ESTIMATE_PX = 336;
 const SPECTRUM_MUSIC_EDITOR_ROW_CONTENT_HEIGHT_PX = 280;
@@ -492,13 +493,12 @@ const SpectrumMusicVirtualListRow = memo(function SpectrumMusicVirtualListRow({
                 className={cn(
                   "group relative isolate inline-flex size-8 items-center justify-center rounded-[25px] p-2",
                   "text-[#737373] transition duration-300 [corner-shape:squircle_squircle_squircle_squircle]",
-                  "before:absolute before:inset-0 before:-z-10 before:rounded-[25px] before:bg-transparent",
-                  "before:transition before:duration-300 before:[corner-shape:squircle_squircle_squircle_squircle]",
-                  "hover:text-red-600 hover:before:bg-[#e5e5e5]",
-                  "dark:text-[#8a8a8a] dark:hover:text-red-400 dark:hover:before:bg-[#262626]",
+                  "hover:text-red-600",
+                  "dark:text-[#8a8a8a] dark:hover:text-red-400",
                 )}
               >
-                <icons.trashXmark size={18} />
+                <GlassSurface variant="button" className="inset-0 z-0" />
+                <icons.trashXmark className="relative z-10" size={18} />
               </button>
             )
           }

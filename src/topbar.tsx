@@ -8,6 +8,7 @@ import { action as pasteDownloadAction } from "./flow/pasteDownload";
 import { useIsBarVisible } from "./flow/barVisible";
 import { useIsWindowFocus } from "./flow/windowFocus";
 import { os } from "@/lib/utils";
+import { GlassSurface } from "./components/glass/GlassSurface";
 
 interface CtrlButtonProps extends PropsWithChildren {
   icon?: React.ReactNode;
@@ -197,14 +198,15 @@ const TopBar = memo(function TopBarComponent({
       {
         <div
           className={cn([
-            "flex flex-none relative",
+            "flex flex-none relative overflow-hidden",
             "w-full h-8 z-100 select-none",
             "app-titlebar-glass",
           ])}
         >
+          <GlassSurface variant="titlebar" className="inset-0 z-0" />
           <div
             className={cn([
-              "grid grid-cols-[1fr_auto_1fr] w-full h-full",
+              "relative z-10 grid grid-cols-[1fr_auto_1fr] w-full h-full",
               !windowFocused && "opacity-30",
               "transition duration-300 ease-in-out",
             ])}

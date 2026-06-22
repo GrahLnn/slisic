@@ -39,6 +39,7 @@ import {
 } from "./SpectrumPlaybackSession";
 import { SPECTRUM_PLAYBACK_STATUS_POLL_MS } from "./SpectrumPlaybackAction";
 import { usePageRenderFreeze } from "../usePageRenderFreeze";
+import { GlassSurface } from "../glass/GlassSurface";
 
 const contentFadeProps = {
   initial: { opacity: 0 },
@@ -60,7 +61,7 @@ const spectrumBackIconStrokeTransition = {
 } as const;
 
 const spectrumBackIconToneClassName =
-  "text-[#737373] dark:text-[#8a8a8a] group-hover:text-[#262626] dark:group-hover:text-[#d4d4d4]";
+  "text-[#737373] transition-colors duration-300 dark:text-[#8a8a8a] group-hover:text-[#262626] dark:group-hover:text-[#d4d4d4]";
 
 type SpectrumRenderData = {
   backActionVisualState: SpectrumBackActionVisualState;
@@ -766,13 +767,12 @@ export function SpectrumPage() {
             className={cn(
               "group relative isolate inline-flex w-fit select-none py-2 pr-2",
               isBackActionLocked ? "pointer-events-none cursor-default" : "cursor-pointer",
-              "before:absolute before:inset-y-0 before:-left-2 before:right-0 before:-z-10",
-              "before:rounded-[25px] before:bg-transparent before:transition before:duration-300",
-              "before:[corner-shape:squircle_squircle_squircle_squircle]",
-              "hover:before:bg-[#e5e5e5] dark:hover:before:bg-[#262626]",
             )}
           >
-            <SpectrumBackIcon visualState={renderData.backActionVisualState} />
+            <GlassSurface variant="button" className="inset-y-0 -left-2 right-0 z-0" />
+            <span className="relative z-10">
+              <SpectrumBackIcon visualState={renderData.backActionVisualState} />
+            </span>
           </button>
         </motion.div>
         <motion.div {...spectrumListExitFadeProps}>
