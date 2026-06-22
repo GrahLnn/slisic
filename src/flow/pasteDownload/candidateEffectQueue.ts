@@ -18,8 +18,12 @@ export interface CandidateEffectQueueRuntime<TOutput> {
 
 export interface CandidateEffectQueue<TOutput> {
   cancel(id: string): void;
-  enqueue(demand: CandidateEffectDemand<TOutput>): void;
+  enqueue(demand: CandidateEffectDemand<TOutput>, options?: CandidateEffectEnqueueOptions): void;
   reset(): void;
+}
+
+export interface CandidateEffectEnqueueOptions {
+  priority?: "front" | "normal";
 }
 
 type QueuedCandidateEffect<TOutput> = CandidateEffectDemand<TOutput> & {
@@ -90,7 +94,10 @@ export function createCandidateEffectQueue<TOutput>(
     }
   }
 
-  function enqueue(demand: CandidateEffectDemand<TOutput>) {
+  function enqueue(
+    demand: CandidateEffectDemand<TOutput>,
+    options: CandidateEffectEnqueueOptions = {},
+  ) {
     for (const item of queued) {
       if (item.id === demand.id) {
         item.cancelled = true;
@@ -107,12 +114,17 @@ export function createCandidateEffectQueue<TOutput>(
 
     const token = nextToken++;
     latestTokenById.set(demand.id, token);
-    queued.push({
+    const item = {
       ...demand,
       cancelled: false,
       controller: null,
       token,
-    });
+    };
+    if (options.priority === "front") {
+      queued.unshift(item);
+    } else {
+      queued.push(item);
+    }
     pump();
   }
 

@@ -314,6 +314,7 @@ function PlayItemFn({
   const inactiveColorRef = useRef<string | undefined>(undefined);
   const isActive = controlledActive ?? internalActive;
   const isInteractive = Boolean(activeColor || onClick || onPointerDown);
+  const activeResolvedColor = activeColor && isActive ? activeColor : undefined;
   const animatedColor =
     activeColor && (isActive || inactiveColorRef.current)
       ? isActive
@@ -330,6 +331,7 @@ function PlayItemFn({
         "inline-flex items-center justify-center border-0 bg-transparent p-2 text-current",
         isInteractive ? "cursor-pointer" : "cursor-default",
       )}
+      style={activeResolvedColor ? { color: activeResolvedColor } : undefined}
       animate={animatedColor ? { color: animatedColor, opacity: 0.7 } : { opacity: 0.7 }}
       whileHover={{
         scale: 1.1,
@@ -345,7 +347,9 @@ function PlayItemFn({
         opacity: { duration: 0.5 },
         scale: { duration: 0.18, ease: "easeOut" },
       }}
-      initial={{ opacity: 0.7 }}
+      initial={
+        activeResolvedColor ? { color: activeResolvedColor, opacity: 0.7 } : { opacity: 0.7 }
+      }
       onPointerDown={(event) => {
         if (event.button !== 0) {
           return;

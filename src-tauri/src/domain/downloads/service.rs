@@ -69,7 +69,8 @@ const AUTO_UPDATE_INTERVAL: Duration = Duration::from_secs(60 * 60 * 24);
 const MIN_PARALLEL_LEAF_DOWNLOADS: usize = 1;
 const INITIAL_PARALLEL_LEAF_DOWNLOADS: usize = 4;
 const MAX_PARALLEL_LEAF_DOWNLOADS: usize = 8;
-const MAX_PARALLEL_LEAF_PREPARES: usize = 24;
+const LEAF_PREPARE_CPU_BUDGET_NUMERATOR: usize = 2;
+const LEAF_PREPARE_CPU_BUDGET_DENOMINATOR: usize = 3;
 const MAX_PARALLEL_LEAF_FINALIZATIONS: usize = 4;
 #[cfg(not(test))]
 const MAX_PARALLEL_EXISTING_FILE_DURATION_PROBES: usize = 4;
@@ -332,10 +333,39 @@ pub(crate) fn leaf_prepare_parallelism(
     leaf_count: usize,
     download_window: &LeafDownloadWindow,
 ) -> usize {
-    leaf_count
-        .min(MAX_PARALLEL_LEAF_PREPARES)
-        .max(download_window.current_limit())
+    let _ = download_window;
+    leaf_prepare_parallelism_for_cpu(leaf_count, resolve_leaf_prepare_cpu_parallelism())
+}
+
+pub(crate) fn leaf_prepare_parallelism_for_cpu(
+    leaf_count: usize,
+    cpu_parallelism: usize,
+) -> usize {
+    if leaf_count == 0 {
+        return 0;
+    }
+
+    leaf_count.min(leaf_prepare_cpu_budget(cpu_parallelism))
+}
+
+pub(crate) fn leaf_prepare_cpu_budget(cpu_parallelism: usize) -> usize {
+    cpu_parallelism
+        .saturating_mul(LEAF_PREPARE_CPU_BUDGET_NUMERATOR)
+        .checked_div(LEAF_PREPARE_CPU_BUDGET_DENOMINATOR)
+        .unwrap_or(0)
         .max(1)
+}
+
+#[cfg(not(test))]
+fn resolve_leaf_prepare_cpu_parallelism() -> usize {
+    thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(1)
+}
+
+#[cfg(test)]
+fn resolve_leaf_prepare_cpu_parallelism() -> usize {
+    1
 }
 
 pub(crate) fn leaf_finalization_parallelism(leaf_count: usize) -> usize {
@@ -1990,24 +2020,16 @@ async fn prepare_leaf_download_worker(
         .and_then(|planned| planned.initial_probe.clone())
     {
         Some(probe) => probe,
-        None => {
-            let probe_url = url.clone();
-            let usage = acquire_downloads_ytdlp_probe_usage();
-            match run_blocking(move || {
-                let _usage = usage;
-                client.probe_leaf(&probe_url)
-            })
-            .await
-            {
-                Ok(probe) => probe,
-                Err(error) => {
-                    return LeafPipelineEvent::Prepared(Err(FailedLeafPreparation {
-                        leaf,
-                        error: error.to_string(),
-                    }));
-                }
+        None => match probe_leaf_with_retry(client.clone(), leaf.id.to_string(), url.clone()).await
+        {
+            Ok(probe) => probe,
+            Err(error) => {
+                return LeafPipelineEvent::Prepared(Err(FailedLeafPreparation {
+                    leaf,
+                    error: error.to_string(),
+                }));
             }
-        }
+        },
     };
 
     let mut music_probe = probe.clone();
@@ -2027,6 +2049,48 @@ async fn prepare_leaf_download_worker(
         url,
         readiness: input.work_item.readiness,
     }))
+}
+
+#[cfg(not(test))]
+async fn probe_leaf_with_retry(
+    client: Arc<dyn YtDlpClient>,
+    leaf_id: String,
+    url: String,
+) -> Result<LeafProbe> {
+    let retry_policy = LeafDownloadRetryPolicy::default();
+    let mut attempt = 1;
+
+    loop {
+        let client = client.clone();
+        let probe_url = url.clone();
+        let usage = acquire_downloads_ytdlp_probe_usage();
+        let probe_result = run_blocking(move || {
+            let _usage = usage;
+            client.probe_leaf(&probe_url)
+        })
+        .await;
+
+        match probe_result {
+            Ok(probe) => return Ok(probe),
+            Err(error) => {
+                let Some(delay) = retry_policy.cooldown_after_failure(attempt, &leaf_id, &error)
+                else {
+                    return Err(error);
+                };
+
+                log::warn!(
+                    target: "downloads",
+                    "leaf_prepare_retry leaf={} attempt={} delay_ms={} error=\"{}\"",
+                    leaf_id,
+                    attempt,
+                    delay.as_millis(),
+                    error
+                );
+                tokio::time::sleep(delay).await;
+                attempt += 1;
+            }
+        }
+    }
 }
 
 #[cfg(not(test))]

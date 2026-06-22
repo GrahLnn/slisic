@@ -94,7 +94,7 @@ export function requestPastedDownloadUrlResolution(args: {
         args.actor.send(candidateResolveFailed.load({ id, error }));
       },
     },
-  });
+  }, { priority: "front" });
 }
 
 export function cancelCandidateEffects(args: { actor: object; id: string }) {

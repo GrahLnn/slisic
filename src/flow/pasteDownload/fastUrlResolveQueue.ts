@@ -11,6 +11,10 @@ export interface FastUrlResolveDemand {
   url: string;
 }
 
+export interface FastUrlResolveEnqueueOptions {
+  priority?: "front" | "normal";
+}
+
 export interface FastUrlResolveQueueSink {
   completed(input: { id: string; resolution: PastedDownloadUrlResolution }): void;
   failed(input: { error: string; id: string }): void;
@@ -25,7 +29,7 @@ export interface FastUrlResolveQueueRuntime {
 
 export interface FastUrlResolveQueue {
   cancel(id: string): void;
-  enqueue(demand: FastUrlResolveDemand): void;
+  enqueue(demand: FastUrlResolveDemand, options?: FastUrlResolveEnqueueOptions): void;
   reset(): void;
 }
 
@@ -42,19 +46,22 @@ export function createFastUrlResolveQueue(
 
   return {
     cancel: (id) => queue.cancel(id),
-    enqueue: (demand) =>
-      queue.enqueue({
-        id: demand.id,
-        input: demand.url,
-        sink: {
-          completed: ({ id, output }) =>
-            demand.sink.completed({
-              id,
-              resolution: output,
-            }),
-          failed: demand.sink.failed,
+    enqueue: (demand, options) =>
+      queue.enqueue(
+        {
+          id: demand.id,
+          input: demand.url,
+          sink: {
+            completed: ({ id, output }) =>
+              demand.sink.completed({
+                id,
+                resolution: output,
+              }),
+            failed: demand.sink.failed,
+          },
         },
-      }),
+        options,
+      ),
     reset: () => queue.reset(),
   };
 }

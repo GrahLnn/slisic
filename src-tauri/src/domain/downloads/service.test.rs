@@ -17,9 +17,9 @@ use super::service::{
     handle_finished_leaf_download, is_non_retryable_leaf_access_error_message,
     is_retryable_leaf_download_error, is_youtube_cookie_challenge_error_message,
     leaf_download_parallelism, leaf_finalization_insert_index, leaf_finalization_parallelism,
-    leaf_pipeline_has_work, leaf_pipeline_next_stage, leaf_prepare_parallelism,
-    leaf_work_item_insert_index, normalize_youtube_cookies_text, prepare_task_enqueue,
-    probe_download_root_title_with_client, resolve_pasted_download_url,
+    leaf_pipeline_has_work, leaf_pipeline_next_stage, leaf_prepare_cpu_budget,
+    leaf_prepare_parallelism_for_cpu, leaf_work_item_insert_index, normalize_youtube_cookies_text,
+    prepare_task_enqueue, probe_download_root_title_with_client, resolve_pasted_download_url,
     resolve_residual_temp_downloaded_file, resume_download_task, runnable_task_leaf_work_items,
     should_interrupt_unresumable_active_task_after_restart,
     should_recover_download_task_after_restart, should_resume_download_task_after_restart,
@@ -174,11 +174,15 @@ fn leaf_pipeline_uses_independent_finalization_slots() {
 }
 
 #[test]
-fn leaf_prepare_parallelism_is_not_capped_by_download_window() {
-    let window = LeafDownloadWindow::for_collection(CollectionSourceKind::List, 100);
+fn leaf_prepare_parallelism_uses_cpu_budget_without_eating_all_cores() {
+    assert_eq!(leaf_prepare_cpu_budget(1), 1);
+    assert_eq!(leaf_prepare_cpu_budget(8), 5);
+    assert_eq!(leaf_prepare_cpu_budget(24), 16);
 
-    assert_eq!(window.current_limit(), 4);
-    assert_eq!(leaf_prepare_parallelism(100, &window), 24);
+    assert_eq!(leaf_prepare_parallelism_for_cpu(0, 24), 0);
+    assert_eq!(leaf_prepare_parallelism_for_cpu(3, 24), 3);
+    assert_eq!(leaf_prepare_parallelism_for_cpu(100, 8), 5);
+    assert_eq!(leaf_prepare_parallelism_for_cpu(100, 24), 16);
     assert_eq!(leaf_finalization_parallelism(100), 4);
 }
 
@@ -296,6 +300,27 @@ fn leaf_download_retry_policy_does_not_retry_structural_failures() {
         LeafDownloadRetryPolicy::default().cooldown_after_failure(1, "leaf-a", &error),
         None
     );
+}
+
+#[test]
+fn leaf_download_retry_policy_retries_ytdlp_onefile_extraction_failures() {
+    let errors = [
+        "yt-dlp command failed: [PYI-450036:ERROR] Failed to extract api-ms-win-crt-convert-l1-1-0.dll: decompression resulted in return code -1!",
+        "yt-dlp command failed: [PYI-653440:ERROR] Failed to extract _brotli.cp310-win_amd64.pyd: decompression resulted in return code -1!",
+        "yt-dlp command failed: [PYI-362820:ERROR] Failed to extract Cryptodome\\PublicKey\\_ec_ws.pyd: decompression resulted in return code -1!",
+    ];
+
+    for message in errors {
+        let error = anyhow!(message);
+
+        assert!(is_retryable_leaf_download_error(&error), "{message}");
+        assert!(
+            LeafDownloadRetryPolicy::default()
+                .cooldown_after_failure(1, "leaf-a", &error)
+                .is_some(),
+            "{message}"
+        );
+    }
 }
 
 #[test]

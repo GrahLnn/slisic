@@ -105,6 +105,65 @@ describe("candidate effect queue", () => {
     assert.deepEqual(failed, []);
   });
 
+  test("starts front-priority queued effects before older normal queued work", async () => {
+    const activeEffect = createDeferred<string>();
+    const normalEffect = createDeferred<string>();
+    const urgentEffect = createDeferred<string>();
+    const started: string[] = [];
+    const completed: string[] = [];
+    const effects = new Map([
+      ["active", activeEffect],
+      ["normal", normalEffect],
+      ["urgent", urgentEffect],
+    ]);
+    const queue = createCandidateEffectQueue({
+      concurrency: () => 1,
+      run: (input) => {
+        started.push(input);
+        const effect = effects.get(input);
+        if (!effect) {
+          throw new Error(`unexpected input: ${input}`);
+        }
+        return effect.promise;
+      },
+      toErrorMessage: (error) => String(error),
+    });
+    const sink = {
+      completed: ({ id }: { id: string }) => completed.push(id),
+      failed: () => undefined,
+    };
+
+    queue.enqueue({ id: "candidate:active", input: "active", sink });
+    queue.enqueue({ id: "candidate:normal", input: "normal", sink });
+    queue.enqueue(
+      { id: "candidate:urgent", input: "urgent", sink },
+      { priority: "front" },
+    );
+    await flushMicrotasks();
+
+    assert.deepEqual(started, ["active"]);
+
+    activeEffect.resolve("done");
+    await flushMicrotasks();
+
+    assert.deepEqual(started, ["active", "urgent"]);
+    assert.deepEqual(completed, ["candidate:active"]);
+
+    urgentEffect.resolve("done");
+    await flushMicrotasks();
+
+    assert.deepEqual(started, ["active", "urgent", "normal"]);
+
+    normalEffect.resolve("done");
+    await flushMicrotasks();
+
+    assert.deepEqual(completed, [
+      "candidate:active",
+      "candidate:urgent",
+      "candidate:normal",
+    ]);
+  });
+
   test("reset releases capacity without waiting for old active promises", async () => {
     const oldEffect = createDeferred<string>();
     const newEffect = createDeferred<string>();
