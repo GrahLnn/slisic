@@ -48,6 +48,7 @@ import {
   type EditableTitleChangeSource,
   type EditableTitleHandle,
 } from "./EditableTitle";
+import { GlassSurface } from "./glass/GlassSurface";
 import { useListConfigGhostTransition } from "./ListConfig.ghost-transition";
 import { usePageRenderFreeze } from "./usePageRenderFreeze";
 import {
@@ -378,15 +379,12 @@ function FnButton({
         "group relative isolate inline-flex h-7 w-fit items-center justify-center",
         "cursor-pointer select-none text-xs leading-none outline-none transition duration-300 ease-in-out",
         "text-[#525252] dark:text-[#e5e5e5] hover:text-[#262626] hover:dark:text-[#d4d4d4]",
-        "before:absolute before:inset-y-0 before:-left-2.5 before:-right-2.5 before:-z-10",
-        "before:rounded-[25px] before:bg-transparent before:transition before:duration-300",
-        "before:[corner-shape:squircle_squircle_squircle_squircle]",
-        "hover:before:bg-[#e7eced] dark:hover:before:bg-[#383838]",
         "disabled:pointer-events-none disabled:opacity-50",
       )}
       onClick={onClick}
     >
-      {text}
+      <GlassSurface variant="button" className="inset-y-0 -left-2.5 -right-2.5 z-0" />
+      <span className="relative z-10">{text}</span>
     </button>
   );
 }
@@ -1352,13 +1350,12 @@ export function ListConfig() {
               "group relative isolate inline-flex w-fit select-none py-2 pr-2",
               isBackActionLocked ? "cursor-wait" : "cursor-pointer",
               isBackNavigationPending && "pointer-events-none",
-              "before:absolute before:inset-y-0 before:-left-2 before:right-0 before:-z-10",
-              "before:rounded-[25px] before:bg-transparent before:transition before:duration-300",
-              "before:[corner-shape:squircle_squircle_squircle_squircle]",
-              "hover:before:bg-[#e5e5e5] dark:hover:before:bg-[#262626]",
             )}
           >
-            <BackActionIcon visualState={backActionVisualState} />
+            <GlassSurface variant="button" className="inset-y-0 -left-2 right-0 z-0" />
+            <span className="relative z-10">
+              <BackActionIcon visualState={backActionVisualState} />
+            </span>
           </button>
         </motion.div>
         <motion.div {...contentFadeProps} className="flex items-center gap-4">
@@ -1385,14 +1382,14 @@ export function ListConfig() {
                 void handleDeletePlaylistAction();
               }}
               className={cn(
-                "group p-2 [corner-shape:squircle_squircle_squircle_squircle] rounded-[25px] transition",
-                "hover:bg-[#e5e5e5] dark:hover:bg-[#262626]",
+                "group relative isolate p-2 [corner-shape:squircle_squircle_squircle_squircle] rounded-[25px] transition",
                 "disabled:pointer-events-none",
               )}
             >
+              <GlassSurface variant="button" className="inset-0 z-0" />
               <icons.trashXmark
                 className={cn(
-                  "opacity-20 transition group-hover:opacity-70 group-hover:text-red-600",
+                  "relative z-10 opacity-20 transition group-hover:opacity-70 group-hover:text-red-600",
                   isDeletePending && "opacity-70 text-red-600",
                 )}
               />
