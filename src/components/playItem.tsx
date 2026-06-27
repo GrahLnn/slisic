@@ -253,14 +253,12 @@ function arePlaybackIconLayerBoxesEqual(
 export function shouldShowPlaybackIconLayer(args: {
   hasLayerBox: boolean;
   isDismissed?: boolean;
-  isPlaybackPreparing?: boolean;
   isWindowPointerInside: boolean;
   showPlaybackIcons: boolean;
   torphStage: TorphStage;
 }) {
   return (
     !args.isDismissed &&
-    !args.isPlaybackPreparing &&
     args.showPlaybackIcons &&
     args.hasLayerBox &&
     args.isWindowPointerInside &&
@@ -413,7 +411,6 @@ function PlayItemText({
     showPlaybackIcons,
     torphStage,
     isDismissed: isPlaybackIconLayerDismissed,
-    isPlaybackPreparing,
   });
   const textMetricClassName = resolvePlayItemTextMetricClassName(textClassName);
 

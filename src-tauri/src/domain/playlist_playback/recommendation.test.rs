@@ -2922,7 +2922,7 @@ fn audio_style_startup_skips_training_only_when_stable_model_restores_without_pe
             1,
             AudioStyleStartupInputCoverage::Covered,
         ),
-        AudioStyleStartupTrainingDecision::TrainPendingInputChanges
+        AudioStyleStartupTrainingDecision::SkipRestoredStableModel
     );
     assert_eq!(
         audio_style_startup_training_decision(
@@ -2932,7 +2932,7 @@ fn audio_style_startup_skips_training_only_when_stable_model_restores_without_pe
             1,
             AudioStyleStartupInputCoverage::Covered,
         ),
-        AudioStyleStartupTrainingDecision::TrainPendingInputChanges
+        AudioStyleStartupTrainingDecision::SkipNoTrainingInputs
     );
     assert_eq!(
         audio_style_startup_training_decision(

@@ -5765,9 +5765,11 @@ pub(crate) fn audio_style_startup_training_decision(
     persisted_invalidations: u64,
     input_coverage: AudioStyleStartupInputCoverage,
 ) -> AudioStyleStartupTrainingDecision {
-    if pending_input_changes > 0
-        || restored_pending_training_inputs > 0
-        || persisted_invalidations > 0
+    if pending_input_changes > 0 || restored_pending_training_inputs > 0 {
+        AudioStyleStartupTrainingDecision::TrainPendingInputChanges
+    } else if persisted_invalidations > 0
+        && !restored_stable_model
+        && input_coverage != AudioStyleStartupInputCoverage::Covered
     {
         AudioStyleStartupTrainingDecision::TrainPendingInputChanges
     } else if restored_stable_model && input_coverage == AudioStyleStartupInputCoverage::Covered {
