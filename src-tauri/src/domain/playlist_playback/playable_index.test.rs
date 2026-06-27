@@ -48,6 +48,10 @@ fn group() -> Group {
 }
 
 fn music(index: usize) -> Music {
+    music_with_loudness(index, Some(-18.0 - index as f32 / 10.0))
+}
+
+fn music_with_loudness(index: usize, loudness_profile: Option<f32>) -> Music {
     let url = format!("https://example.com/watch?v={index}");
     Music {
         occurrence_id: String::new(),
@@ -60,7 +64,7 @@ fn music(index: usize) -> Music {
         start_ms: 0,
         end_ms: 180_000,
         liked: false,
-        loudness_profile: None,
+        loudness_profile: loudness_profile.and_then(LoudnessProfile::from_integrated_lufs),
     }
 }
 
@@ -68,6 +72,13 @@ fn source(index: usize) -> PlaylistPlaybackTrackSource {
     PlaylistPlaybackTrackSource {
         collection_folder: "youtube/index".to_string(),
         music: music(index),
+    }
+}
+
+fn source_without_loudness(index: usize) -> PlaylistPlaybackTrackSource {
+    PlaylistPlaybackTrackSource {
+        collection_folder: "youtube/index".to_string(),
+        music: music_with_loudness(index, None),
     }
 }
 
@@ -146,28 +157,27 @@ async fn playable_index_reads_prepared_playlist_source_without_rebuilding() {
 #[tokio::test]
 async fn playable_index_loudness_evidence_updates_prepared_first_slot_cargo_without_consuming_it() {
     let _guard = setup_playable_index_test();
-    refresh_playlist_now_for_test(selection("Focus"), Some(source(3)))
+    let pending_source = source_without_loudness(3);
+    refresh_playlist_now_for_test(selection("Focus"), Some(pending_source.clone()))
         .await
-        .expect("test snapshot should commit");
-    let before = read_playlist_source("Focus")
-        .expect("index read should succeed")
-        .expect("prepared source should exist");
-    let request = loudness_request_for_track(
-        before
-            .track
-            .as_ref()
-            .expect("prepared playback track should exist"),
+        .expect("test snapshot should commit incomplete cargo as pending");
+    assert!(
+        read_playlist_source("Focus")
+            .expect("index read should succeed")
+            .is_none(),
+        "first-slot pool must not expose incomplete cargo"
     );
+    let request = loudness_request_for_source(&pending_source);
 
     publish_first_slot_loudness_evidence(
         &request,
         LoudnessProfile::from_integrated_lufs(-14.25).expect("test LUFS should be valid"),
     )
-    .expect("first-slot evidence should publish");
+    .expect("first-slot evidence should promote pending cargo");
 
     let updated = read_playlist_source("Focus")
         .expect("index read should succeed")
-        .expect("prepared source should still exist");
+        .expect("prepared source should be promoted after evidence arrives");
     let updated_track = updated
         .track
         .as_ref()
@@ -209,8 +219,8 @@ async fn playable_index_loudness_evidence_updates_prepared_first_slot_cargo_with
 #[tokio::test]
 async fn playable_index_loudness_evidence_updates_only_matching_first_slot_identity() {
     let _guard = setup_playable_index_test();
-    let first_source = source(3);
-    let second_source = source(4);
+    let first_source = source_without_loudness(3);
+    let second_source = source_without_loudness(4);
     refresh_playlist_now_for_test(selection("Focus"), Some(first_source.clone()))
         .await
         .expect("first snapshot should commit");
@@ -227,29 +237,31 @@ async fn playable_index_loudness_evidence_updates_only_matching_first_slot_ident
         LoudnessProfile::from_integrated_lufs(-20.5).expect("test LUFS should be valid"),
     )
     .expect("second source evidence should publish");
+    publish_first_slot_loudness_evidence(
+        &loudness_request_for_source(&first_source),
+        LoudnessProfile::from_integrated_lufs(-18.0).expect("test LUFS should be valid"),
+    )
+    .expect("first source evidence should publish");
 
-    let first = read_playlist_source("Focus")
+    let ready_first = read_playlist_source("Focus")
         .expect("index read should succeed")
-        .expect("first source should exist");
+        .expect("first completed source should exist");
     assert_eq!(
-        first
-            .track
+        ready_first
+            .source
             .as_ref()
-            .expect("first track should exist")
-            .loudness_profile,
-        None
+            .expect("first completed source should exist")
+            .music
+            .url,
+        second_source.music.url
     );
-    assert!(consume_playlist_source(&first).expect("first source should consume"));
-    let second = read_playlist_source("Focus")
-        .expect("index read should succeed")
-        .expect("second source should exist");
     assert_eq!(
-        second
+        ready_first
             .track
             .as_ref()
-            .expect("second track should exist")
+            .expect("first completed track should exist")
             .loudness_profile
-            .expect("second track should carry loudness profile")
+            .expect("first completed track should carry its own loudness")
             .integrated_lufs,
         -20.5
     );
@@ -263,16 +275,39 @@ async fn playable_index_loudness_evidence_updates_only_matching_first_slot_ident
     .expect("nonmatching evidence should be ignored");
     let unchanged_second = read_playlist_source("Focus")
         .expect("index read should succeed")
-        .expect("second source should still exist");
+        .expect("completed second source should still exist");
     assert_eq!(
         unchanged_second
             .track
             .as_ref()
-            .expect("second track should exist")
+            .expect("completed second track should exist")
             .loudness_profile
-            .expect("second track should keep loudness profile")
+            .expect("completed second track should keep loudness profile")
             .integrated_lufs,
         -20.5
+    );
+    assert!(consume_playlist_source(&ready_first).expect("first completed source should consume"));
+    let ready_second = read_playlist_source("Focus")
+        .expect("index read should succeed")
+        .expect("second completed source should exist");
+    assert_eq!(
+        ready_second
+            .source
+            .as_ref()
+            .expect("second completed source should exist")
+            .music
+            .url,
+        first_source.music.url
+    );
+    assert_eq!(
+        ready_second
+            .track
+            .as_ref()
+            .expect("second completed track should exist")
+            .loudness_profile
+            .expect("second completed track should carry its own loudness")
+            .integrated_lufs,
+        -18.0
     );
 }
 
