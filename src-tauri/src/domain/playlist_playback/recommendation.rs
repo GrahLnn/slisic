@@ -40,7 +40,6 @@ const AUDIO_STYLE_EMBEDDING_VERSION: &str = "audio-style-watermark-transition-v3
 pub(crate) const AUDIO_STYLE_EMBEDDING_VERSION_FOR_TEST: &str = AUDIO_STYLE_EMBEDDING_VERSION;
 const AUDIO_STYLE_STABLE_MODEL_VERSION: &str = "audio-style-stable-model-v1";
 pub(crate) const AUDIO_STYLE_STABLE_MODEL_DIR_NAME: &str = "audio-style-stable-model";
-#[cfg(not(test))]
 pub(crate) const AUDIO_STYLE_LEGACY_MODEL_EVIDENCE_DIR_NAME: &str = "audio-style-model-evidence";
 const AUDIO_STYLE_TRAINING_INVALIDATION_FILE_VERSION: &str = "audio-style-training-invalidation-v1";
 const AUDIO_STYLE_TRAINING_INVALIDATION_FILE_NAME: &str = "audio-style-training-invalidations.json";
