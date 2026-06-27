@@ -2,7 +2,9 @@ use super::recommendation::{
     AUDIO_STYLE_EMBEDDING_VERSION_FOR_TEST, AudioStyleEmbeddingCache, AudioStyleModelSnapshot,
     AudioStylePlaylistPlaybackRecommender,
     acknowledge_audio_style_pending_training_input_file_for_test,
-    audio_style_source_repetition_gate_for_test, audio_style_startup_input_coverage_for_test,
+    audio_style_agreement_aware_continuity_for_test, audio_style_semantic_continuity_gate_for_test,
+    audio_style_source_repetition_gate_for_test,
+    audio_style_training_inputs_covered_by_snapshot_for_test,
     audio_style_training_path_is_transient_for_test, audio_style_transition_fingerprint_for_test,
     balance_audio_style_candidate_field_basins_for_test,
     choose_audio_style_model_snapshots_for_anchor,
@@ -10,10 +12,9 @@ use super::recommendation::{
     choose_next_audio_style_candidate_with_generation_for_test,
     choose_next_audio_style_candidate_with_recent_history_for_test,
     filter_recently_played_recommendation_candidates,
-    read_audio_style_pending_training_input_file_for_test,
-    read_cached_audio_style_model_evidence_for_test,
+    read_audio_style_pending_training_input_file_for_test, read_audio_style_stable_model_for_test,
     upsert_audio_style_pending_training_input_file_for_test,
-    write_cached_audio_style_model_evidence_for_test,
+    write_audio_style_stable_model_for_test,
 };
 use crate::domain::player::model::PlaybackTrack;
 use crate::domain::playlists::model::{
@@ -634,27 +635,31 @@ fn audio_style_attractor_basin_pressure_can_move_out_of_repeated_basin() {
 #[test]
 fn audio_style_basin_pressure_uses_self_supervised_audio_geometry_before_paths() {
     let current = track_in_basin("Current Path", "current");
-    let played_a = track_in_basin("Played A Path", "played_a");
-    let played_b = track_in_basin("Played B Path", "played_b");
-    let played_c = track_in_basin("Played C Path", "played_c");
+    let played = (0..7)
+        .map(|index| track_in_basin("Played Path", &format!("played_{index}")))
+        .collect::<Vec<_>>();
     let same_audio_basin = track_in_basin("Fresh Different Path", "same_audio_basin");
     let open_audio_basin = track_in_basin("Fresh Open Path", "open_audio_basin");
     let open_audio_neighbor = track_in_basin("Fresh Open Path", "open_audio_neighbor");
-    let recommender = AudioStylePlaylistPlaybackRecommender::from_test_embeddings([
+    let mut embeddings = vec![
         (current.clone(), embedding(2)),
-        (played_a.clone(), basin_neighbor_embedding()),
-        (played_b.clone(), basin_neighbor_embedding()),
-        (played_c.clone(), basin_neighbor_embedding()),
         (same_audio_basin.clone(), embedding(2)),
         (open_audio_basin.clone(), nearby_open_basin_embedding()),
         (open_audio_neighbor, nearby_open_basin_embedding()),
-    ]);
+    ];
+    embeddings.extend(
+        played
+            .iter()
+            .cloned()
+            .map(|track| (track, basin_neighbor_embedding())),
+    );
+    let recommender = AudioStylePlaylistPlaybackRecommender::from_test_embeddings(embeddings);
 
     let selection = choose_next_audio_style_candidate_with_recent_history_for_test(
         &current,
         &[same_audio_basin.clone(), open_audio_basin.clone()],
         &recommender,
-        &[played_a, played_b, played_c],
+        &played,
         0.35,
     );
 
@@ -703,7 +708,7 @@ fn audio_style_basin_diagnostics_do_not_use_paths_for_embedded_geometry() {
 }
 
 #[test]
-fn audio_style_future_occupancy_reduces_absorbing_local_basin_window() {
+fn audio_style_basin_homeostasis_reduces_absorbing_local_basin_window() {
     let current = track_in_basin("Tenet", "current");
     let played = (0..7)
         .map(|index| track_in_basin("Tenet", &format!("played_{index}")))
@@ -748,7 +753,7 @@ fn audio_style_future_occupancy_reduces_absorbing_local_basin_window() {
 }
 
 #[test]
-fn audio_style_region_pressure_reduces_repeated_model_region_without_changing_basin_contract() {
+fn audio_style_local_fatigue_reduces_repeated_model_neighborhood_without_changing_basin_contract() {
     let current = track_in_basin("Current", "current");
     let recent = (0..8)
         .map(|index| track_in_basin(&format!("Recent {index}"), &format!("recent_{index}")))
@@ -796,7 +801,7 @@ fn audio_style_region_pressure_reduces_repeated_model_region_without_changing_ba
 }
 
 #[test]
-fn audio_style_readonly_route_pressure_moves_out_of_recent_style_macro_basin() {
+fn audio_style_listening_adaptation_reduces_recent_style_macro_basin() {
     let current = track_in_basin("Current", "current");
     let mut embeddings = vec![(current.clone(), dense_embedding(&[(0, 1.0)]))];
     let recent_same_style = (0..10)
@@ -947,7 +952,7 @@ fn audio_style_broad_region_fatigue_reduces_weak_attractor_domain_without_single
 }
 
 #[test]
-fn audio_style_readonly_route_pressure_ignores_current_anchor_similarity() {
+fn audio_style_semantic_support_still_prefers_current_anchor_similarity() {
     let current = track_in_basin("Current", "current");
     let near = track_in_basin("Near", "near");
     let far = track_in_basin("Far", "far");
@@ -997,7 +1002,7 @@ fn audio_style_attractor_basin_pressure_does_not_remove_liked_tracks_from_sampli
 }
 
 #[test]
-fn audio_style_readonly_route_pressure_does_not_discount_liked_recent_style_candidate() {
+fn audio_style_sampling_distribution_does_not_remove_liked_recent_style_candidate() {
     let current = track_in_basin("Current", "current");
     let recent_same_style = (0..10)
         .map(|index| track_in_basin("Cinematic", &format!("played_{index}")))
@@ -1202,7 +1207,7 @@ fn audio_style_bio_route_gate_modulates_distance_base_without_replacing_it() {
 }
 
 #[test]
-fn audio_style_bio_route_hcr_dendrite_prefers_open_basin_without_replacing_distance() {
+fn audio_style_control_gate_prefers_open_basin_without_replacing_distance() {
     let current = track_in_basin("Current", "current");
     let played = (0..10)
         .map(|index| track_in_basin("Current", &format!("played_{index}")))
@@ -1243,6 +1248,48 @@ fn audio_style_bio_route_hcr_dendrite_prefers_open_basin_without_replacing_dista
     assert!(open_selection.probability > 0.50);
     assert_eq!(distance_selection.index, 1);
     assert!(distance_selection.probability > 0.0);
+}
+
+#[test]
+fn audio_style_semantic_continuity_gate_suppresses_only_unforced_shock_jumps() {
+    let cold = audio_style_semantic_continuity_gate_for_test(&[0.20, -0.80], 0, 0);
+    let closed = audio_style_semantic_continuity_gate_for_test(&[0.40, -0.80], 1, 0);
+    let reopened_by_basin = audio_style_semantic_continuity_gate_for_test(&[0.20, -0.80], 3, 0);
+    let reopened_by_source = audio_style_semantic_continuity_gate_for_test(&[0.20, -0.80], 0, 3);
+
+    assert_eq!(cold, vec![1.0, 1.0]);
+    assert!(closed[0] > closed[1]);
+    assert!(closed[1] < 1.0);
+    assert!(reopened_by_basin[0] > reopened_by_basin[1]);
+    assert!(reopened_by_source[0] > reopened_by_source[1]);
+    assert!(reopened_by_basin[1] > closed[1]);
+    assert!(reopened_by_source[1] > closed[1]);
+    assert!(reopened_by_basin[1] < 1.0);
+    assert!(reopened_by_source[1] < 1.0);
+}
+
+#[test]
+fn audio_style_learned_novelty_gate_prefers_manageable_prediction_error() {
+    let gates =
+        audio_style_semantic_continuity_gate_for_test(&[-0.80, 0.00, 0.40, 0.80, 1.00], 1, 0);
+
+    assert!(gates[2] > gates[1]);
+    assert!(gates[2] > gates[3]);
+    assert!(gates[3] > gates[4]);
+    assert!(gates[0] < gates[1]);
+}
+
+#[test]
+fn audio_style_semantic_continuity_requires_channel_agreement_for_high_familiarity() {
+    let single_axis = audio_style_agreement_aware_continuity_for_test([0.92, 0.16, 0.12, 0.10]);
+    let consensus = audio_style_agreement_aware_continuity_for_test([0.86, 0.82, 0.78, 0.75]);
+    let below_threshold =
+        audio_style_agreement_aware_continuity_for_test([0.52, -0.20, 0.10, 0.18]);
+
+    assert!(single_axis < 0.80);
+    assert!(consensus > single_axis);
+    assert!(consensus > 0.80);
+    assert_eq!(below_threshold, 0.52);
 }
 
 #[test]
@@ -1292,9 +1339,10 @@ fn audio_style_selection_keeps_typed_perceptual_channels_until_candidate_topolog
     let topology = selection
         .diagnostics
         .topology_health
-        .expect("candidate projection topology telemetry should exist");
-    assert!(topology.candidate_projection_spectral_rank_retention >= 0.0);
-    assert!(topology.candidate_projection_neighbor_overlap >= 0.0);
+        .expect("candidate support telemetry should exist");
+    assert!(topology.support_width >= 1.0);
+    assert!(topology.support_entropy >= 0.0);
+    assert!(topology.control_entropy >= 0.0);
     assert!(topology.density_owner_best_vote_count >= 1);
 }
 
@@ -1353,7 +1401,7 @@ fn audio_style_typed_channels_keep_transition_neighbor_sampleable_under_scalar_s
 }
 
 #[test]
-fn audio_style_frontier_reserve_keeps_boundary_basin_flowing_in_narrow_candidate_pool() {
+fn audio_style_route_recovery_keeps_boundary_basin_flowing_in_narrow_candidate_pool() {
     let current = track_in_basin("Current", "current");
     let recent = (0..12)
         .map(|index| track_in_basin("Current", &format!("recent_{index}")))
@@ -1412,7 +1460,7 @@ fn audio_style_frontier_reserve_keeps_boundary_basin_flowing_in_narrow_candidate
             .diagnostics
             .bio_route
             .is_some_and(|route| route.final_weight > 0.0),
-        "frontier reserve should preserve an existing boundary candidate without turning far jumps into exits"
+        "route recovery should preserve an existing boundary candidate without turning far jumps into exits"
     );
 }
 
@@ -1559,122 +1607,6 @@ fn audio_style_basin_mass_homeostasis_preserves_balanced_candidate_field() {
     );
 
     assert!(gate.iter().all(|value| *value >= 0.95));
-}
-
-#[test]
-fn audio_style_topology_frontier_reserve_damps_candidate_top_attractor() {
-    let dominant = (0..8)
-        .map(|index| track_in_basin("Dominant", &format!("candidate_{index}")))
-        .collect::<Vec<_>>();
-    let open_a = track_in_basin("Open A", "candidate");
-    let open_b = track_in_basin("Open B", "candidate");
-    let candidates = [
-        dominant[0].clone(),
-        dominant[1].clone(),
-        dominant[2].clone(),
-        dominant[3].clone(),
-        dominant[4].clone(),
-        dominant[5].clone(),
-        dominant[6].clone(),
-        dominant[7].clone(),
-        open_a,
-        open_b,
-    ];
-    let base = [0.16, 0.15, 0.14, 0.13, 0.12, 0.11, 0.10, 0.09, 0.05, 0.05];
-    let anchor_similarities = [0.42, 0.40, 0.39, 0.38, 0.36, 0.35, 0.33, 0.32, 0.37, 0.36];
-    let local_reference = [0.20; 10];
-
-    let gate = super::recommendation::audio_style_topology_frontier_reserve_gate_for_test(
-        &candidates,
-        &base,
-        &anchor_similarities,
-        &local_reference,
-        &[],
-    );
-
-    assert!(gate[0] < 0.85);
-    assert!(gate[3] < 0.85);
-    assert!(gate[8] > gate[0]);
-    assert!(gate[9] > gate[3]);
-    assert!(gate[8] >= 0.95);
-    assert!(gate[9] >= 0.95);
-}
-
-#[test]
-fn audio_style_topology_frontier_reserve_preserves_balanced_candidate_topology() {
-    let candidates = [
-        track_in_basin("A", "candidate_0"),
-        track_in_basin("A", "candidate_1"),
-        track_in_basin("B", "candidate_0"),
-        track_in_basin("B", "candidate_1"),
-        track_in_basin("C", "candidate_0"),
-        track_in_basin("C", "candidate_1"),
-    ];
-    let base = [0.17; 6];
-    let anchor_similarities = [0.35; 6];
-    let local_reference = [0.20; 6];
-
-    let gate = super::recommendation::audio_style_topology_frontier_reserve_gate_for_test(
-        &candidates,
-        &base,
-        &anchor_similarities,
-        &local_reference,
-        &[],
-    );
-
-    assert!(gate.iter().all(|value| (*value - 1.0).abs() < 0.001));
-}
-
-#[test]
-fn audio_style_candidate_top_pressure_gate_damps_repeated_candidate_top_basin() {
-    let dominant = (0..12)
-        .map(|index| track_in_basin("Dominant", &format!("candidate_{index}")))
-        .collect::<Vec<_>>();
-    let candidates = [
-        dominant[0].clone(),
-        dominant[1].clone(),
-        dominant[2].clone(),
-        dominant[3].clone(),
-        dominant[4].clone(),
-        dominant[5].clone(),
-        dominant[6].clone(),
-        dominant[7].clone(),
-        dominant[8].clone(),
-        dominant[9].clone(),
-        dominant[10].clone(),
-        dominant[11].clone(),
-        track_in_basin("Open A", "candidate"),
-        track_in_basin("Open B", "candidate"),
-        track_in_basin("Open C", "candidate"),
-        track_in_basin("Open D", "candidate"),
-        track_in_basin("Open E", "candidate"),
-        track_in_basin("Open F", "candidate"),
-    ];
-
-    let gate = super::recommendation::audio_style_candidate_top_pressure_gate_for_test(&candidates);
-
-    assert!(gate[0] < 0.85);
-    assert!(gate[3] < 0.85);
-    assert!(gate[12] > gate[0]);
-    assert!(gate[17] > gate[3]);
-    assert!(gate[12] >= 0.95);
-    assert!(gate[17] >= 0.95);
-}
-
-#[test]
-fn audio_style_candidate_top_pressure_gate_preserves_balanced_candidate_topology() {
-    let candidates = [
-        track_in_basin("A", "candidate_0"),
-        track_in_basin("A", "candidate_1"),
-        track_in_basin("B", "candidate_0"),
-        track_in_basin("B", "candidate_1"),
-        track_in_basin("C", "candidate_0"),
-        track_in_basin("C", "candidate_1"),
-    ];
-
-    let gate = super::recommendation::audio_style_candidate_top_pressure_gate_for_test(&candidates);
-
-    assert!(gate.iter().all(|value| (*value - 1.0).abs() < 0.001));
 }
 
 #[test]
@@ -2098,60 +2030,84 @@ fn audio_style_centerless_source_ignores_scoped_tracks_without_embeddings() {
 }
 
 #[test]
-fn restored_audio_style_model_evidence_restores_indexed_sources() {
-    let root = temp_cache_root("model-evidence-source");
-    std::fs::create_dir_all(&root).expect("cache test root should be created");
+fn restored_audio_style_stable_model_restores_indexed_sources_and_geometry() {
+    let root = temp_cache_root("stable-model-source");
+    std::fs::create_dir_all(&root).expect("stable model test root should be created");
     let path = root.join("stable.json");
-    let old_source = "source:old".to_string();
-    let old_track = track("old");
+    let source = "source:current".to_string();
+    let current = track("current");
+    let near = track("near");
+    let far = track("far");
     let snapshot = AudioStyleModelSnapshot::from_test_indexed_embeddings(
         11,
-        [(
-            old_track.clone(),
-            dense_embedding(&[(1, 1.0)]),
-            old_source.clone(),
-        )],
+        [
+            (
+                current.clone(),
+                dense_embedding(&[(0, 1.0)]),
+                source.clone(),
+            ),
+            (
+                near.clone(),
+                dense_embedding(&[(0, 0.9), (1, 0.43589)]),
+                source.clone(),
+            ),
+            (far.clone(), dense_embedding(&[(2, 1.0)]), source.clone()),
+        ],
     );
-    let (before_source, _) = snapshot
+    let before_similarity = snapshot
         .recommender()
-        .propose_centerless_source(|source| source.collection_folder == old_source)
-        .expect("indexed setup should produce an old source before persistence");
-    assert_eq!(before_source.collection_folder, old_source);
+        .centered_similarity_for_test(&current, &near)
+        .expect("trained setup should expose sampling geometry");
 
-    write_cached_audio_style_model_evidence_for_test(&path, &snapshot)
-        .expect("model evidence should be written");
-    let restored = read_cached_audio_style_model_evidence_for_test(&path)
-        .expect("model evidence should be restored");
+    write_audio_style_stable_model_for_test(&path, &snapshot)
+        .expect("stable model should be written");
+    let restored =
+        read_audio_style_stable_model_for_test(&path).expect("stable model should be restored");
 
     assert_eq!(restored.generation(), 11);
-    assert!(restored.recommender().has_embedding_for(&old_track));
+    assert!(restored.recommender().has_embedding_for(&current));
     let (after_source, after_selection) = restored
         .recommender()
-        .propose_centerless_source(|source| source.collection_folder == old_source)
-        .expect("v3 model evidence should restore indexed source evidence");
-    assert_eq!(after_source.collection_folder, old_source);
-    assert_eq!(after_selection.candidate_count, 1);
+        .propose_centerless_source(|candidate_source| candidate_source.collection_folder == source)
+        .expect("stable model should restore indexed source evidence");
+    assert_eq!(after_source.collection_folder, source);
+    assert_eq!(after_selection.candidate_count, 3);
+    let after_similarity = restored
+        .recommender()
+        .centered_similarity_for_test(&current, &near)
+        .expect("stable model should restore sampling geometry");
+    assert!((before_similarity - after_similarity).abs() < 1.0e-6);
+
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]
-fn restored_audio_style_model_evidence_ranks_current_candidate_tracks() {
-    let root = temp_cache_root("model-evidence-candidates");
-    std::fs::create_dir_all(&root).expect("cache test root should be created");
+fn restored_audio_style_stable_model_ranks_current_candidate_tracks() {
+    let root = temp_cache_root("stable-model-candidates");
+    std::fs::create_dir_all(&root).expect("stable model test root should be created");
     let path = root.join("stable.json");
     let current_candidate = track("current_candidate");
     let other_candidate = track("other_candidate");
     let missing_candidate = track("missing_candidate");
-    let snapshot = AudioStyleModelSnapshot::from_test_embeddings(
+    let snapshot = AudioStyleModelSnapshot::from_test_indexed_embeddings(
         12,
         [
-            (current_candidate.clone(), dense_embedding(&[(2, 1.0)])),
-            (other_candidate.clone(), dense_embedding(&[(3, 1.0)])),
+            (
+                current_candidate.clone(),
+                dense_embedding(&[(2, 1.0)]),
+                "current".to_string(),
+            ),
+            (
+                other_candidate.clone(),
+                dense_embedding(&[(3, 1.0)]),
+                "other".to_string(),
+            ),
         ],
     );
-    write_cached_audio_style_model_evidence_for_test(&path, &snapshot)
-        .expect("model evidence should be written");
-    let restored = read_cached_audio_style_model_evidence_for_test(&path)
-        .expect("model evidence should be restored");
+    write_audio_style_stable_model_for_test(&path, &snapshot)
+        .expect("stable model should be written");
+    let restored =
+        read_audio_style_stable_model_for_test(&path).expect("stable model should be restored");
 
     let (source, selected_track, selection) = restored
         .recommender()
@@ -2169,65 +2125,45 @@ fn restored_audio_style_model_evidence_ranks_current_candidate_tracks() {
                 missing_candidate.clone(),
             ),
         ])
-        .expect("restored evidence should rank embedded current candidates");
+        .expect("stable model should rank embedded current candidates");
 
     assert_ne!(source.collection_folder, "missing");
     assert_ne!(selected_track.music_url, missing_candidate.music_url);
     assert_eq!(selection.candidate_count, 2);
     assert_eq!(selection.diagnostics.embedded_candidate_count, 2);
+
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]
-fn restored_audio_style_model_evidence_does_not_restore_loudness_as_recommendation_input() {
-    let root = temp_cache_root("model-evidence-loudness");
-    std::fs::create_dir_all(&root).expect("cache test root should be created");
+fn legacy_audio_style_model_evidence_is_not_restored_as_stable_model() {
+    let root = temp_cache_root("legacy-model-evidence-rejected");
+    std::fs::create_dir_all(&root).expect("legacy evidence test root should be created");
     let path = root.join("stable.json");
-    let current = track_with_loudness(
-        "current",
-        loudness_profile(-18.0, -18.5, -17.0, -15.0, -14.5, -10.0, 8.0),
-    );
-    let played_hot = track_with_loudness(
-        "played_hot",
-        loudness_profile(-8.0, -8.5, -7.0, -5.5, -5.0, -5.0, 4.0),
-    );
-    let hot_candidate = track_with_loudness(
-        "hot_candidate",
-        loudness_profile(-7.5, -8.0, -6.8, -5.2, -4.9, -4.8, 4.0),
-    );
-    let calm_candidate = track_with_loudness(
-        "calm_candidate",
-        loudness_profile(-22.0, -23.0, -21.0, -19.0, -18.5, -13.0, 10.0),
-    );
-    let snapshot = AudioStyleModelSnapshot::from_test_indexed_embeddings(
-        13,
-        [
-            (current.clone(), embedding(2), "source".to_string()),
-            (played_hot.clone(), embedding(2), "source".to_string()),
-            (hot_candidate.clone(), embedding(2), "source".to_string()),
-            (calm_candidate.clone(), embedding(2), "source".to_string()),
-        ],
-    );
-    write_cached_audio_style_model_evidence_for_test(&path, &snapshot)
-        .expect("model evidence should be written");
-    let restored = read_cached_audio_style_model_evidence_for_test(&path)
-        .expect("model evidence should be restored");
+    std::fs::write(
+        &path,
+        serde_json::json!({
+            "version": "audio-style-model-evidence-v3-indexed-sources",
+            "embedding_version": AUDIO_STYLE_EMBEDDING_VERSION_FOR_TEST,
+            "generation": 13,
+            "embeddings": [],
+            "indexed_tracks": []
+        })
+        .to_string(),
+    )
+    .expect("legacy evidence fixture should be written");
 
-    let selection = choose_next_audio_style_candidate_with_recent_history_for_test(
-        &current,
-        &[hot_candidate, calm_candidate],
-        restored.recommender(),
-        std::slice::from_ref(&played_hot),
-        0.0,
-    );
+    let error = match read_audio_style_stable_model_for_test(&path) {
+        Ok(_) => panic!("legacy evidence must not restore as the new stable model"),
+        Err(error) => error,
+    };
 
-    assert_eq!(restored.generation(), 13);
-    assert_eq!(selection.source.as_str(), "audio_style");
-    assert_eq!(selection.index, 0);
-    assert!(selection.probability > 0.0);
     assert!(
-        selection.probability >= 0.5,
-        "stable evidence restores embeddings only; loudness must not become a recommendation penalty"
+        error.contains("audio style stable model"),
+        "legacy evidence should fail inside the stable model reader: {error}"
     );
+
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]
@@ -2355,52 +2291,6 @@ fn audio_style_model_refresh_keeps_previous_snapshot_when_inputs_are_unchanged()
     assert!(refreshed.recommender().has_embedding_for(&other));
 
     let _ = std::fs::remove_dir_all(root);
-}
-
-#[test]
-fn audio_style_startup_input_coverage_distinguishes_restored_evidence_from_current_inputs() {
-    use super::recommendation::AudioStyleStartupInputCoverage;
-
-    let current = track("current");
-    let other = track("other");
-    let added = track("added");
-    let legacy_restored = AudioStyleModelSnapshot::from_test_embeddings(
-        5,
-        [
-            (current.clone(), embedding(2)),
-            (other.clone(), embedding(3)),
-        ],
-    );
-    let indexed_restored = AudioStyleModelSnapshot::from_test_indexed_embeddings(
-        6,
-        [
-            (current.clone(), embedding(2), "album".to_string()),
-            (other.clone(), embedding(3), "album".to_string()),
-        ],
-    );
-
-    assert_eq!(
-        audio_style_startup_input_coverage_for_test(
-            &legacy_restored,
-            vec![current.clone(), other.clone()],
-        ),
-        AudioStyleStartupInputCoverage::MissingMetadata
-    );
-    assert_eq!(
-        audio_style_startup_input_coverage_for_test(
-            &indexed_restored,
-            vec![current.clone(), other.clone()],
-        ),
-        AudioStyleStartupInputCoverage::Covered
-    );
-    assert_eq!(
-        audio_style_startup_input_coverage_for_test(&indexed_restored, vec![current, other, added]),
-        AudioStyleStartupInputCoverage::Changed
-    );
-    assert_eq!(
-        audio_style_startup_input_coverage_for_test(&indexed_restored, vec![]),
-        AudioStyleStartupInputCoverage::Empty
-    );
 }
 
 #[test]
@@ -2645,6 +2535,7 @@ fn trained_audio_style_snapshot_does_not_promote_liked_tail_candidate() {
     let current = track("current");
     let best = track("best");
     let mut liked_tail = track("liked_tail");
+    let plain_tail = track("liked_tail");
     let low = track("low");
     liked_tail.liked = true;
     let snapshot = AudioStyleModelSnapshot::from_test_embeddings(
@@ -2662,23 +2553,25 @@ fn trained_audio_style_snapshot_does_not_promote_liked_tail_candidate() {
 
     let selection = choose_next_audio_style_candidate_with_generation_for_test(
         &current,
-        &[best, liked_tail.clone(), low],
+        &[best.clone(), liked_tail.clone(), low.clone()],
+        snapshot.recommender(),
+        0.995,
+        Some(snapshot.generation()),
+    );
+    let plain_selection = choose_next_audio_style_candidate_with_generation_for_test(
+        &current,
+        &[best, plain_tail, low],
         snapshot.recommender(),
         0.995,
         Some(snapshot.generation()),
     );
 
-    assert_eq!(selection.index, 0);
-    assert_eq!(selection.model_generation, Some(9));
-    assert_ne!(
-        selection.index, 1,
+    assert_eq!(selection.index, plain_selection.index);
+    assert!(
+        (selection.probability - plain_selection.probability).abs() <= 1.0e-6,
         "liked status must not add a sampling bonus over distance and flow pressure"
     );
-    assert!(
-        selection
-            .local_rank_fraction
-            .is_some_and(|rank| rank <= 0.5)
-    );
+    assert_eq!(selection.model_generation, Some(9));
 }
 
 #[test]
@@ -2945,17 +2838,17 @@ fn stable_audio_style_snapshot_publication_refreshes_first_slot_only_on_availabi
         true,
     ));
     assert!(stable_snapshot_publication_requests_first_slot_refresh(
-        StableSnapshotPublicationReason::StartupEvidence,
+        StableSnapshotPublicationReason::StartupStableModel,
         false,
     ));
     assert!(!stable_snapshot_publication_requests_first_slot_refresh(
-        StableSnapshotPublicationReason::StartupEvidence,
+        StableSnapshotPublicationReason::StartupStableModel,
         true,
     ));
 }
 
 #[test]
-fn audio_style_startup_skips_training_when_model_evidence_restores_without_input_changes() {
+fn audio_style_startup_skips_training_only_when_stable_model_restores_without_pending_records() {
     use super::recommendation::{
         AudioStyleStartupInputCoverage, AudioStyleStartupTrainingDecision,
         audio_style_startup_training_decision,
@@ -2969,7 +2862,7 @@ fn audio_style_startup_skips_training_when_model_evidence_restores_without_input
             0,
             AudioStyleStartupInputCoverage::Covered,
         ),
-        AudioStyleStartupTrainingDecision::SkipRestoredEvidence
+        AudioStyleStartupTrainingDecision::SkipRestoredStableModel
     );
     assert_eq!(
         audio_style_startup_training_decision(
@@ -3038,16 +2931,6 @@ fn audio_style_startup_skips_training_when_model_evidence_restores_without_input
             0,
             1,
             AudioStyleStartupInputCoverage::Covered,
-        ),
-        AudioStyleStartupTrainingDecision::TrainPendingInputChanges
-    );
-    assert_eq!(
-        audio_style_startup_training_decision(
-            true,
-            0,
-            0,
-            0,
-            AudioStyleStartupInputCoverage::MissingMetadata,
         ),
         AudioStyleStartupTrainingDecision::TrainPendingInputChanges
     );
@@ -3262,6 +3145,46 @@ fn audio_style_pending_training_input_ack_only_removes_consumed_records() {
     assert_eq!(inputs.len(), 2);
     assert!(inputs.iter().any(|input| input == &updated_first));
     assert!(inputs.iter().any(|input| input == &third));
+}
+
+#[test]
+fn audio_style_pending_training_input_ack_only_covers_stable_embeddings() {
+    let covered_track = track("covered");
+    let missing_track = track("missing");
+    let covered_input = AudioStyleTrainingTrackInput {
+        occurrence_id: "occ-covered".to_string(),
+        alias: covered_track.music_name.clone(),
+        canonical_music_id: covered_track.canonical_music_id.clone(),
+        url: covered_track.music_url.clone(),
+        absolute_path: covered_track.file_path.to_string_lossy().to_string(),
+        start_ms: covered_track.start_ms,
+        end_ms: covered_track.end_ms,
+        liked: covered_track.liked,
+        loudness_profile: covered_track.loudness_profile,
+    };
+    let missing_input = AudioStyleTrainingTrackInput {
+        occurrence_id: "occ-missing".to_string(),
+        alias: missing_track.music_name.clone(),
+        canonical_music_id: missing_track.canonical_music_id.clone(),
+        url: missing_track.music_url.clone(),
+        absolute_path: missing_track.file_path.to_string_lossy().to_string(),
+        start_ms: missing_track.start_ms,
+        end_ms: missing_track.end_ms,
+        liked: missing_track.liked,
+        loudness_profile: missing_track.loudness_profile,
+    };
+    let snapshot = AudioStyleModelSnapshot::from_test_indexed_embeddings(
+        9,
+        [(covered_track, embedding(9), "album".to_string())],
+    );
+
+    let covered = audio_style_training_inputs_covered_by_snapshot_for_test(
+        &[covered_input.clone(), missing_input.clone()],
+        &snapshot,
+    );
+
+    assert_eq!(covered, vec![covered_input]);
+    assert!(!covered.contains(&missing_input));
 }
 
 #[test]

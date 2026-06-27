@@ -70,7 +70,10 @@ pub(super) fn dev_reset_local_data_artifact_paths(local_data_dir: &Path) -> Vec<
         local_data_dir
             .join(crate::domain::playlist_playback::playable_index::FIRST_SLOT_CACHE_FILE_NAME),
         local_data_dir.join(
-            crate::domain::playlist_playback::recommendation::AUDIO_STYLE_MODEL_EVIDENCE_DIR_NAME,
+            crate::domain::playlist_playback::recommendation::AUDIO_STYLE_STABLE_MODEL_DIR_NAME,
+        ),
+        local_data_dir.join(
+            crate::domain::playlist_playback::recommendation::AUDIO_STYLE_LEGACY_MODEL_EVIDENCE_DIR_NAME,
         ),
         local_data_dir.join(
             crate::domain::playlist_playback::recommendation::AUDIO_STYLE_TRAINING_INVALIDATION_ARTIFACT_FILE_NAME,

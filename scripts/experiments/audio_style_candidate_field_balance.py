@@ -9,7 +9,7 @@ from pathlib import Path
 
 import torch
 
-DEFAULT_STABLE = r"C:/Users/admin/AppData/Local/slisic/audio-style-model-evidence/stable.json"
+DEFAULT_STABLE = r"C:/Users/admin/AppData/Local/slisic/audio-style-stable-model/stable.json"
 
 
 @dataclass(frozen=True)
@@ -30,12 +30,13 @@ class Policy:
 
 def load_stable(path: Path, device: torch.device):
     data = json.loads(path.read_text(encoding="utf-8"))
-    x = torch.tensor([entry["values"] for entry in data["embeddings"]], dtype=torch.float32, device=device)
+    state = data["state"]
+    x = torch.tensor([entry["values"] for entry in state["embeddings"]], dtype=torch.float32, device=device)
     x = torch.nn.functional.normalize(x, dim=1)
     x = x - x.mean(dim=0, keepdim=True)
     x = torch.nn.functional.normalize(x, dim=1)
-    titles = [entry["track"]["music_name"] for entry in data["indexed_tracks"]]
-    collections = [entry["source"]["collection_folder"] for entry in data["indexed_tracks"]]
+    titles = [entry["track"]["music_name"] for entry in state["indexed_tracks"]]
+    collections = [entry["source"]["collection_folder"] for entry in state["indexed_tracks"]]
     return data["generation"], x, titles, collections
 
 

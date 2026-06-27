@@ -337,10 +337,7 @@ pub(crate) fn leaf_prepare_parallelism(
     leaf_prepare_parallelism_for_cpu(leaf_count, resolve_leaf_prepare_cpu_parallelism())
 }
 
-pub(crate) fn leaf_prepare_parallelism_for_cpu(
-    leaf_count: usize,
-    cpu_parallelism: usize,
-) -> usize {
+pub(crate) fn leaf_prepare_parallelism_for_cpu(leaf_count: usize, cpu_parallelism: usize) -> usize {
     if leaf_count == 0 {
         return 0;
     }
@@ -1295,9 +1292,7 @@ async fn prepare_task_enqueue_once(
     let stable_task_id = task_id_for(normalized_url, trigger);
     loop {
         if let Some(existing) = repo::try_get_task(&stable_task_id).await? {
-            return Ok(PreparedTaskEnqueue::Existing(
-                attach_existing_collection_shell_to_task(existing).await?,
-            ));
+            return prepare_existing_stable_task_enqueue(existing).await;
         }
 
         if let Some(existing) = repo::find_latest_active_task_for_url(normalized_url).await? {
@@ -1312,9 +1307,7 @@ async fn prepare_task_enqueue_once(
         };
 
         if let Some(existing) = repo::try_get_task(&stable_task_id).await? {
-            return Ok(PreparedTaskEnqueue::Existing(
-                attach_existing_collection_shell_to_task(existing).await?,
-            ));
+            return prepare_existing_stable_task_enqueue(existing).await;
         }
 
         if let Some(existing) = repo::find_latest_active_task_for_url(normalized_url).await? {
@@ -1339,6 +1332,33 @@ async fn prepare_task_enqueue_once(
         );
         return Ok(PreparedTaskEnqueue::New(saved));
     }
+}
+
+async fn prepare_existing_stable_task_enqueue(
+    mut task: DownloadTask,
+) -> Result<PreparedTaskEnqueue> {
+    if should_revive_stable_download_task(task.status) {
+        task.revive_for_retry();
+        let saved = repo::save_task(task).await?;
+        publish_download_task_change(&saved);
+        return Ok(PreparedTaskEnqueue::Existing(
+            attach_existing_collection_shell_to_task(saved).await?,
+        ));
+    }
+
+    Ok(PreparedTaskEnqueue::Existing(
+        attach_existing_collection_shell_to_task(task).await?,
+    ))
+}
+
+fn should_revive_stable_download_task(status: DownloadTaskStatus) -> bool {
+    matches!(
+        status,
+        DownloadTaskStatus::Failed
+            | DownloadTaskStatus::Cancelled
+            | DownloadTaskStatus::Interrupted
+            | DownloadTaskStatus::CompletedWithErrors
+    )
 }
 
 async fn attach_existing_collection_shell_to_task(mut task: DownloadTask) -> Result<DownloadTask> {
@@ -1964,15 +1984,14 @@ fn spawn_ready_leaf_finalizations(
                         .max(1);
                 let batch_limit = existing_file_finalization_batch_take_limit(
                     first_readiness,
-                    pipeline
-                        .ready_finalizations
-                        .iter()
-                        .filter_map(|finalization| match finalization {
+                    pipeline.ready_finalizations.iter().filter_map(
+                        |finalization| match finalization {
                             LeafFinalization::ExistingFile(completion) => {
                                 Some(completion.readiness)
                             }
                             LeafFinalization::Downloaded(_) => None,
-                        }),
+                        },
+                    ),
                     fair_share_limit,
                 );
                 let completions =

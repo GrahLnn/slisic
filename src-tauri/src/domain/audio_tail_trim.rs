@@ -213,6 +213,13 @@ impl AudioTailTrimSource {
     }
 }
 
+fn completed_audio_tail_trim_opens_foreground_playable_gate(
+    source: AudioTailTrimSource,
+    processed_ok: bool,
+) -> bool {
+    processed_ok && source.completes_foreground_playable_gate()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AudioTailTrimCandidate {
     pub(crate) canonical_music_id: String,
@@ -1557,6 +1564,17 @@ pub(crate) fn audio_tail_trim_source_completes_foreground_playable_gate_for_test
 }
 
 #[cfg(test)]
+pub(crate) fn completed_audio_tail_trim_opens_foreground_playable_gate_for_test(
+    source: &str,
+    processed_ok: bool,
+) -> bool {
+    completed_audio_tail_trim_opens_foreground_playable_gate(
+        audio_tail_trim_source_for_test(source),
+        processed_ok,
+    )
+}
+
+#[cfg(test)]
 fn audio_tail_trim_source_for_test(source: &str) -> AudioTailTrimSource {
     match source {
         "pending_store" => AudioTailTrimSource::PendingStore,
@@ -1650,13 +1668,18 @@ async fn run_audio_tail_trim_worker(runtime: Arc<AudioTailTrimRuntime>) {
         let completed_source = queued.source;
         drop(claim);
         drop(queued);
+        let opens_foreground_playable_gate =
+            completed_audio_tail_trim_opens_foreground_playable_gate(
+                completed_source,
+                processed_ok,
+            );
         let requeued =
             requeue_coalesced_audio_tail_trim_if_present(Arc::clone(&runtime), &collection_key);
         if processed_ok && !requeued {
             remove_pending_audio_tail_trim_request(&runtime, &completed_request);
-            if completed_source.completes_foreground_playable_gate() {
-                collection_import::notify_downloaded_leaf_foreground_playable_committed();
-            }
+        }
+        if opens_foreground_playable_gate {
+            collection_import::notify_downloaded_leaf_foreground_playable_committed();
         }
         tokio::time::sleep(AUDIO_TAIL_TRIM_WORKER_COOLDOWN).await;
     }

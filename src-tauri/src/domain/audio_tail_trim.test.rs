@@ -4,7 +4,8 @@ use super::{
     audio_tail_trim_queue_overflow_action_for_test,
     audio_tail_trim_source_completes_foreground_playable_gate_for_test,
     audio_tail_trim_source_requires_active_rerun_for_test, build_audio_tail_trim_focus_plan,
-    build_audio_tail_trim_plan, detect_common_tail_evidence, merge_audio_tail_trim_request,
+    build_audio_tail_trim_plan, completed_audio_tail_trim_opens_foreground_playable_gate_for_test,
+    detect_common_tail_evidence, merge_audio_tail_trim_request,
     prioritize_audio_tail_trim_focus_candidate, read_audio_tail_trim_pending_task_file_for_test,
     remove_audio_tail_trim_pending_task_from_file_for_test, resolve_audio_tail_trim_evidence,
     select_audio_tail_trim_scope, take_next_audio_tail_trim_candidate,
@@ -448,18 +449,35 @@ fn downloaded_leaf_tail_trim_requests_require_active_rerun() {
 
 #[test]
 fn only_foreground_downloaded_tail_trim_completion_opens_the_playable_gate() {
-    assert!(!audio_tail_trim_source_completes_foreground_playable_gate_for_test(
-        "downloaded_leaf"
-    ));
-    assert!(audio_tail_trim_source_completes_foreground_playable_gate_for_test(
-        "downloaded_leaf_foreground"
-    ));
-    assert!(!audio_tail_trim_source_completes_foreground_playable_gate_for_test(
-        "playback_current"
-    ));
-    assert!(!audio_tail_trim_source_completes_foreground_playable_gate_for_test(
-        "pending_store"
-    ));
+    assert!(!audio_tail_trim_source_completes_foreground_playable_gate_for_test("downloaded_leaf"));
+    assert!(
+        audio_tail_trim_source_completes_foreground_playable_gate_for_test(
+            "downloaded_leaf_foreground"
+        )
+    );
+    assert!(
+        !audio_tail_trim_source_completes_foreground_playable_gate_for_test("playback_current")
+    );
+    assert!(!audio_tail_trim_source_completes_foreground_playable_gate_for_test("pending_store"));
+}
+
+#[test]
+fn foreground_tail_trim_completion_opens_playable_gate_independent_of_batch_rerun() {
+    assert!(
+        completed_audio_tail_trim_opens_foreground_playable_gate_for_test(
+            "downloaded_leaf_foreground",
+            true,
+        )
+    );
+    assert!(
+        !completed_audio_tail_trim_opens_foreground_playable_gate_for_test(
+            "downloaded_leaf_foreground",
+            false,
+        )
+    );
+    assert!(
+        !completed_audio_tail_trim_opens_foreground_playable_gate_for_test("downloaded_leaf", true,)
+    );
 }
 
 #[test]

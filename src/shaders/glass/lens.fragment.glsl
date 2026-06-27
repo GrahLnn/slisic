@@ -39,11 +39,11 @@ float fbm(vec2 p) {
 }
 
 vec3 lightPalette(float dark) {
-  return mix(vec3(0.92, 0.97, 1.0), vec3(0.34, 0.52, 0.72), dark);
+  return mix(vec3(0.985, 0.995, 1.0), vec3(0.34, 0.52, 0.72), dark);
 }
 
 vec3 shadowPalette(float dark) {
-  return mix(vec3(0.50, 0.58, 0.66), vec3(0.04, 0.09, 0.15), dark);
+  return mix(vec3(0.86, 0.92, 0.98), vec3(0.04, 0.09, 0.15), dark);
 }
 
 void main() {
@@ -56,6 +56,7 @@ void main() {
   float activation = mix(u_activation, 0.82, titlebar);
   float dark = clamp(u_theme, 0.0, 1.0);
   float press = clamp(u_pressed, 0.0, 1.0);
+  float light = 1.0 - dark;
 
   vec2 edgeDistance = min(uv, 1.0 - uv);
   float edge = min(edgeDistance.x, edgeDistance.y);
@@ -85,8 +86,8 @@ void main() {
 
   vec3 cool = lightPalette(dark);
   vec3 shade = shadowPalette(dark);
-  vec3 prismA = mix(vec3(0.62, 0.84, 1.0), vec3(0.32, 0.70, 1.0), dark);
-  vec3 prismB = mix(vec3(1.0, 0.72, 0.88), vec3(0.72, 0.42, 0.96), dark);
+  vec3 prismA = mix(vec3(0.84, 0.94, 1.0), vec3(0.32, 0.70, 1.0), dark);
+  vec3 prismB = mix(vec3(1.0, 0.88, 0.96), vec3(0.72, 0.42, 0.96), dark);
 
   float directional = clamp(dot(normal, normalize(vec2(-0.45, 0.88))) * 0.5 + 0.5, 0.0, 1.0);
   float fill = mix(0.12, 0.28, dark) + caustic * mix(0.22, 0.16, dark);
@@ -98,10 +99,11 @@ void main() {
   color += prismB * caustic * mix(0.13, 0.09, dark);
   color += vec3(1.0) * sweep * mix(0.10, 0.07, dark);
   color += vec3(1.0) * smoothstep(0.92, 1.0, uv.y) * mix(0.16, 0.08, dark);
+  color += vec3(0.98, 0.995, 1.0) * light * mix(0.34, 0.12, titlebar);
 
-  float alpha = mix(0.12, 0.22, dark);
-  alpha += caustic * mix(0.20, 0.14, dark);
-  alpha += innerEdge * mix(0.32, 0.22, dark);
+  float alpha = mix(0.08, 0.22, dark);
+  alpha += caustic * mix(0.13, 0.14, dark);
+  alpha += innerEdge * mix(0.22, 0.22, dark);
   alpha += sweep * 0.12;
   alpha = mix(alpha, alpha * 0.82, titlebar);
   alpha *= activation;

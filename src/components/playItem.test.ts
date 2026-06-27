@@ -222,6 +222,19 @@ describe("playItem", () => {
     );
   });
 
+  test("hides playback icons while playback is preparing", () => {
+    assert.equal(
+      shouldShowPlaybackIconLayer({
+        hasLayerBox: true,
+        isPlaybackPreparing: true,
+        isWindowPointerInside: true,
+        showPlaybackIcons: true,
+        torphStage: "idle",
+      }),
+      false,
+    );
+  });
+
   test("uses one text metric class for both the wrapper and Torph root", () => {
     const className = resolvePlayItemTextMetricClassName(collectionTitleTextRetainHoverClassName);
 

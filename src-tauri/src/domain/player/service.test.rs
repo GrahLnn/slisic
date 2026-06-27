@@ -7,9 +7,9 @@ use super::service::{
     are_playback_tracks_equal, backend_playback_normalization, playback_loudness_plan_for_profile,
     playback_normalization_for_track_loudness_profile, playback_request_for_track_range,
     playback_tracks_match, resolve_active_request_track_liked_update,
-    resolve_plain_playback_status_completion, resolve_playback_absolute_position_ms,
-    resolve_playback_clock_position_ms, resolve_playback_completion_playback_action,
-    resolve_identity_update_active_playback_range, resolve_playback_range_completion,
+    resolve_identity_update_active_playback_range, resolve_plain_playback_status_completion,
+    resolve_playback_absolute_position_ms, resolve_playback_clock_position_ms,
+    resolve_playback_completion_playback_action, resolve_playback_range_completion,
     resolve_playback_range_deadline_ms, resolve_playback_request_position,
     resolve_playback_seek_pause_after_request, resolve_playback_seek_range,
     resolve_playback_status_track_identity, resolve_repeated_playback_range_override,
@@ -685,8 +685,7 @@ fn identity_update_active_range_uses_trimmed_end_as_the_player_deadline() {
         end_ms: 300_000,
     };
 
-    let updated =
-        resolve_identity_update_active_playback_range(Some(active_range), &next_track);
+    let updated = resolve_identity_update_active_playback_range(Some(active_range), &next_track);
 
     assert_eq!(
         updated,
@@ -716,8 +715,7 @@ fn identity_update_active_range_finishes_when_trim_passed_the_current_position()
         end_ms: 300_000,
     };
 
-    let updated =
-        resolve_identity_update_active_playback_range(Some(active_range), &next_track);
+    let updated = resolve_identity_update_active_playback_range(Some(active_range), &next_track);
 
     assert_eq!(
         resolve_playback_range_completion(250_000, updated, None),

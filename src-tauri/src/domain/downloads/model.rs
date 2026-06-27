@@ -320,6 +320,15 @@ impl DownloadTask {
         self.refresh_counts();
     }
 
+    pub fn revive_for_retry(&mut self) {
+        self.status = DownloadTaskStatus::Queued;
+        self.leafs.clear();
+        self.total_leaves = 0;
+        self.failed_leaves = 0;
+        self.last_error = None;
+        self.touch();
+    }
+
     pub fn mark_interrupted(&mut self) {
         if self.status.is_active() {
             self.status = DownloadTaskStatus::Interrupted;

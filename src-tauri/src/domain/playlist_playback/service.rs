@@ -2277,11 +2277,13 @@ fn format_audio_style_bio_route(
     diagnostics
         .map(|diagnostics| {
             format!(
-                "distance_base:{:.6},route_drive:{:.3},hcr:{:.3},ibnn:{:.3},damping:{:.3},local_gate:{:.3},final_weight:{:.6}",
+                "distance_base:{:.6},route_drive:{:.3},control_gate:{:.3},semantic_gate:{:.3},novelty:{:.3},novelty_gate:{:.3},damping:{:.3},local_gate:{:.3},final_weight:{:.6}",
                 diagnostics.distance_base,
                 diagnostics.route_drive,
-                diagnostics.hcr_drive,
-                diagnostics.ibnn_state,
+                diagnostics.control_gate,
+                diagnostics.semantic_gate,
+                diagnostics.novelty,
+                diagnostics.novelty_gate,
                 diagnostics.damping,
                 diagnostics.local_gate,
                 diagnostics.final_weight
@@ -2317,10 +2319,15 @@ pub(crate) fn format_audio_style_topology_health(
     diagnostics
         .map(|diagnostics| {
             format!(
-                "neighbor_overlap:{:.3},spectral_rank_retention:{:.3},mcr2_margin:{:.3},density_owner_best_vote_count:{}",
-                diagnostics.candidate_projection_neighbor_overlap,
-                diagnostics.candidate_projection_spectral_rank_retention,
-                diagnostics.candidate_projection_mcr2_margin,
+                "support_width:{:.3},support_entropy:{:.3},control_entropy:{:.3},local_fatigue_mass:{:.3},basin_fatigue_mass:{:.3},prediction_error:{:.3},novelty:{:.3},novelty_gate:{:.3},density_owner_best_vote_count:{}",
+                diagnostics.support_width,
+                diagnostics.support_entropy,
+                diagnostics.control_entropy,
+                diagnostics.local_fatigue_mass,
+                diagnostics.basin_fatigue_mass,
+                diagnostics.prediction_error,
+                diagnostics.novelty,
+                diagnostics.novelty_gate,
                 diagnostics.density_owner_best_vote_count
             )
         })

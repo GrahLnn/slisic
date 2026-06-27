@@ -19,6 +19,7 @@ fn dev_reset_local_data_artifacts_include_pending_tasks_and_first_slot_cache() {
             .any(|name| name == STARTUP_PROJECTION_FILE_NAME)
     );
     assert!(names.iter().any(|name| name == "first-slot-cache.json"));
+    assert!(names.iter().any(|name| name == "audio-style-stable-model"));
     assert!(
         names
             .iter()

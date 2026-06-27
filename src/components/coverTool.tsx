@@ -9,8 +9,8 @@ export function CoverTool({ text, onClick }: ComponentProps<"div"> & { text: str
       className={cn(
         "relative isolate overflow-visible",
         "text-[12px] trim-cap text-[#404040] dark:text-[#a3a3a3]",
-        "bg-[rgb(255_255_255_/_0.18)] backdrop-blur-md backdrop-saturate-150",
-        "shadow-[inset_0_0_0_1px_rgb(255_255_255_/_0.22),0_4px_18px_rgb(0_0_0_/_0.08)]",
+        "bg-[rgb(255_255_255_/_0.34)] backdrop-blur-md backdrop-saturate-150",
+        "shadow-[inset_0_0_0_1px_rgb(255_255_255_/_0.48),0_4px_18px_rgb(148_163_184_/_0.08)]",
         "dark:bg-[rgb(82_82_82_/_0.24)]",
         "dark:shadow-[inset_0_0_0_1px_rgb(255_255_255_/_0.08),0_4px_18px_rgb(0_0_0_/_0.22)]",
         "[corner-shape:squircle_squircle_squircle_squircle]",

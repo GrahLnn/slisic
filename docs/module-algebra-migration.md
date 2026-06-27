@@ -618,13 +618,13 @@ Closed paths:
 Behavior:
 
 ```text
-StartupEvidence x LibraryProjection x FirstSlotPool -> ReadyProjection
+StartupStableModel x LibraryProjection x FirstSlotPool -> ReadyProjection
 ```
 
 Contract:
 
 - Deleting the database may trigger initial model training because there is no
-  persisted evidence.
+  persisted stable model.
 - Startup transaction conflicts may retry or recover; they must not poison
   later ready behavior.
 - Ready projection must not hide existing playable playlists.

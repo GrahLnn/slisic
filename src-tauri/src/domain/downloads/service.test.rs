@@ -3511,6 +3511,48 @@ fn prepare_task_enqueue_reuses_completed_same_url_task() {
 }
 
 #[test]
+fn prepare_task_enqueue_revives_failed_same_url_task_for_retry() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let url = "https://example.com/list";
+        let mut first = prepare_task_enqueue(url.to_string(), DownloadTrigger::Manual)
+            .await
+            .expect("initial enqueue should succeed");
+        first.status = DownloadTaskStatus::Failed;
+        first.failed_leaves = 1;
+        first.total_leaves = 1;
+        first.last_error = Some("yt-dlp failed".to_string());
+        first.leafs.push(DownloadLeaf::new(
+            Id::from("failed-leaf"),
+            url.to_string(),
+            0,
+        ));
+        let first = save_task(first).await.expect("failed task should persist");
+
+        let second = prepare_task_enqueue(url.to_string(), DownloadTrigger::Manual)
+            .await
+            .expect("repeat enqueue should revive failed task");
+        let tasks = list_tasks().await.expect("task listing should succeed");
+
+        assert_eq!(
+            first.id, second.id,
+            "retrying the same normalized url should keep one stable task identity"
+        );
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].status, DownloadTaskStatus::Queued);
+        assert!(tasks[0].leafs.is_empty());
+        assert_eq!(tasks[0].total_leaves, 0);
+        assert_eq!(tasks[0].failed_leaves, 0);
+        assert_eq!(tasks[0].last_error, None);
+
+        reset_db();
+    });
+}
+
+#[test]
 fn prepare_task_enqueue_accepts_many_distinct_urls_concurrently() {
     let _guard = acquire_db_test_lock();
 

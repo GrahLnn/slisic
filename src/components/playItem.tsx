@@ -50,6 +50,7 @@ type PlayItemTextProps = Pick<
   PlayItemBaseProps,
   | "handoffTone"
   | "isLiked"
+  | "isPlaybackPreparing"
   | "layoutId"
   | "onClick"
   | "onExcludeCurrentMusic"
@@ -252,12 +253,14 @@ function arePlaybackIconLayerBoxesEqual(
 export function shouldShowPlaybackIconLayer(args: {
   hasLayerBox: boolean;
   isDismissed?: boolean;
+  isPlaybackPreparing?: boolean;
   isWindowPointerInside: boolean;
   showPlaybackIcons: boolean;
   torphStage: TorphStage;
 }) {
   return (
     !args.isDismissed &&
+    !args.isPlaybackPreparing &&
     args.showPlaybackIcons &&
     args.hasLayerBox &&
     args.isWindowPointerInside &&
@@ -375,6 +378,7 @@ function PlayItemFn({
 function PlayItemText({
   handoffTone = null,
   isLiked = false,
+  isPlaybackPreparing = false,
   onClick,
   onExcludeCurrentMusic,
   onOpenSpectrum,
@@ -409,6 +413,7 @@ function PlayItemText({
     showPlaybackIcons,
     torphStage,
     isDismissed: isPlaybackIconLayerDismissed,
+    isPlaybackPreparing,
   });
   const textMetricClassName = resolvePlayItemTextMetricClassName(textClassName);
 
@@ -600,7 +605,7 @@ export function PlayItem({
   layoutId,
   tone = "solid",
   handoffTone = null,
-  isPlaybackPreparing: _isPlaybackPreparing = false,
+  isPlaybackPreparing = false,
   isLiked = false,
   text,
   textClassName,
@@ -623,6 +628,7 @@ export function PlayItem({
       <PlayItemText
         handoffTone={handoffTone}
         isLiked={isLiked}
+        isPlaybackPreparing={isPlaybackPreparing}
         onClick={onClick}
         onExcludeCurrentMusic={onExcludeCurrentMusic}
         onOpenSpectrum={onOpenSpectrum}
