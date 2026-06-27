@@ -222,15 +222,16 @@ describe("playItem", () => {
     );
   });
 
-  test("keeps playback icons visible while playback is preparing", () => {
+  test("hides playback icons while playback is preparing", () => {
     assert.equal(
       shouldShowPlaybackIconLayer({
         hasLayerBox: true,
+        isPlaybackPreparing: true,
         isWindowPointerInside: true,
         showPlaybackIcons: true,
         torphStage: "idle",
       }),
-      true,
+      false,
     );
   });
 
