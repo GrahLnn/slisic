@@ -87,7 +87,7 @@ fn playback_normalization_requires_loudness_evidence() {
 }
 
 #[test]
-fn loudness_profile_correction_does_not_penalize_dynamic_tracks_by_lra() {
+fn loudness_profile_correction_penalizes_dense_low_lra_tracks_without_punishing_dynamic_tracks() {
     let dark_shadows = LoudnessProfile {
         integrated_lufs: -7.580,
         true_peak_dbtp: Some(1.550),
@@ -116,15 +116,16 @@ fn loudness_profile_correction_does_not_penalize_dynamic_tracks_by_lra() {
     let parade_plan =
         playback_loudness_plan_for_profile(&parade).expect("valid profile should plan");
 
+    assert!(dark_plan.lra_correction_db < parade_plan.lra_correction_db);
     assert_eq!(parade_plan.lra_correction_db, 0.0);
     assert!(
         parade_plan.final_gain_db > dark_plan.final_gain_db,
-        "a quieter integrated track should still receive more gain when LRA is only profile evidence"
+        "a quieter integrated dynamic track should still receive more gain than a dense low-LRA track"
     );
 }
 
 #[test]
-fn loudness_profile_correction_uses_body_loudness_not_only_p95() {
+fn loudness_profile_correction_uses_upper_body_loudness_not_integrated_loudness_only() {
     let underground = LoudnessProfile {
         integrated_lufs: -16.700,
         true_peak_dbtp: Some(-0.450),
@@ -154,8 +155,63 @@ fn loudness_profile_correction_uses_body_loudness_not_only_p95() {
         playback_loudness_plan_for_profile(&caelestinum).expect("valid profile should plan");
 
     assert!(
-        caelestinum_plan.short_term_correction_db > underground_plan.short_term_correction_db,
-        "a track whose body remains quieter after base gain should not be penalized only because p95 is hotter"
+        caelestinum_plan.short_term_correction_db < underground_plan.short_term_correction_db,
+        "a track with a hotter upper short-term body should receive less gain even when integrated LUFS is quieter"
+    );
+}
+
+#[test]
+fn loudness_profile_correction_unifies_kirisame_and_to_the_wilder_upper_body() {
+    let kirisame = LoudnessProfile {
+        integrated_lufs: -7.590,
+        true_peak_dbtp: Some(2.540),
+        lra: Some(5.000),
+        short_lufs_p50: Some(-7.600),
+        short_lufs_p80: Some(-6.700),
+        short_lufs_p95: Some(-6.000),
+        short_lufs_max: Some(-5.700),
+        presence_db: Some(-6.651),
+        model_adjustment_db: None,
+    };
+    let to_the_wilder = LoudnessProfile {
+        integrated_lufs: -8.900,
+        true_peak_dbtp: Some(0.980),
+        lra: Some(11.200),
+        short_lufs_p50: Some(-9.900),
+        short_lufs_p80: Some(-6.900),
+        short_lufs_p95: Some(-6.100),
+        short_lufs_max: Some(-5.500),
+        presence_db: Some(-9.056),
+        model_adjustment_db: None,
+    };
+
+    let kirisame_plan =
+        playback_loudness_plan_for_profile(&kirisame).expect("valid profile should plan");
+    let wilder_plan =
+        playback_loudness_plan_for_profile(&to_the_wilder).expect("valid profile should plan");
+
+    let kirisame_post_p80 = kirisame
+        .short_lufs_p80
+        .expect("test profile should include p80")
+        + kirisame_plan.final_gain_db;
+    let wilder_post_p80 = to_the_wilder
+        .short_lufs_p80
+        .expect("test profile should include p80")
+        + wilder_plan.final_gain_db;
+    let kirisame_post_p95 = kirisame
+        .short_lufs_p95
+        .expect("test profile should include p95")
+        + kirisame_plan.final_gain_db;
+    let wilder_post_p95 = to_the_wilder
+        .short_lufs_p95
+        .expect("test profile should include p95")
+        + wilder_plan.final_gain_db;
+
+    assert!((kirisame_post_p80 - wilder_post_p80).abs() < 1.0);
+    assert!((kirisame_post_p95 - wilder_post_p95).abs() < 1.0);
+    assert!(
+        wilder_plan.final_gain_db < -10.0,
+        "the dynamic Woodkid track should be normalized from its upper body, not left near integrated-only gain"
     );
 }
 

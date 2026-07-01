@@ -55,16 +55,17 @@ const SPECTRUM_LOOP_SIGNAL_STATUS_POLL_MS: u64 = 16;
 #[cfg(not(test))]
 const PLAYBACK_AUDIO_VISUALIZATION_FRAME_MIN_INTERVAL_MS: u64 = 250;
 pub(crate) const BACKEND_PLAYBACK_TARGET_LUFS: f32 = -18.0;
-const PLAYBACK_LOUDNESS_SHORT_TERM_REFERENCE_LUFS: f32 = -18.0;
-const PLAYBACK_LOUDNESS_SHORT_TERM_CORRECTION_SLOPE: f32 = -0.5;
-const PLAYBACK_LOUDNESS_SHORT_TERM_CORRECTION_LIMIT_DB: f32 = 2.0;
-const PLAYBACK_LOUDNESS_BODY_P50_WEIGHT: f32 = 0.65;
-const PLAYBACK_LOUDNESS_BODY_P80_WEIGHT: f32 = 0.25;
-const PLAYBACK_LOUDNESS_BODY_P95_WEIGHT: f32 = 0.10;
+const PLAYBACK_LOUDNESS_BODY_P50_WEIGHT: f32 = 0.15;
+const PLAYBACK_LOUDNESS_BODY_P80_WEIGHT: f32 = 0.36;
+const PLAYBACK_LOUDNESS_BODY_P95_WEIGHT: f32 = 0.49;
 const PLAYBACK_LOUDNESS_PRESENCE_REFERENCE_DB: f32 = -10.0;
-const PLAYBACK_LOUDNESS_PRESENCE_CORRECTION_SLOPE: f32 = 0.2;
-const PLAYBACK_LOUDNESS_PRESENCE_CORRECTION_LIMIT_DB: f32 = 0.75;
-const PLAYBACK_LOUDNESS_LRA_CORRECTION_SLOPE: f32 = 0.0;
+const PLAYBACK_LOUDNESS_PRESENCE_CORRECTION_SLOPE: f32 = 0.04;
+const PLAYBACK_LOUDNESS_PRESENCE_CORRECTION_LIMIT_DB: f32 = 0.35;
+const PLAYBACK_LOUDNESS_DENSITY_REFERENCE_LRA: f32 = 8.0;
+const PLAYBACK_LOUDNESS_DENSITY_CORRECTION_LIMIT_DB: f32 = 0.75;
+const PLAYBACK_LOUDNESS_TRUE_PEAK_REFERENCE_DBTP: f32 = -1.0;
+const PLAYBACK_LOUDNESS_TRUE_PEAK_CORRECTION_SLOPE: f32 = 0.35;
+const PLAYBACK_LOUDNESS_TRUE_PEAK_CORRECTION_LIMIT_DB: f32 = 0.60;
 const PLAYBACK_LOUDNESS_MODEL_CORRECTION_LIMIT_DB: f32 = 2.0;
 const PLAYBACK_LOUDNESS_TOTAL_CORRECTION_LIMIT_DB: f32 = 3.0;
 
@@ -2861,16 +2862,10 @@ pub(crate) fn playback_loudness_plan_for_profile(
     }
 
     let base_gain_db = BACKEND_PLAYBACK_TARGET_LUFS - profile.integrated_lufs;
-    let short_term_correction_db =
-        playback_short_term_body_loudness(profile).map_or(0.0, |body_lufs| {
-            let body_after_base = body_lufs + base_gain_db;
-            ((body_after_base - PLAYBACK_LOUDNESS_SHORT_TERM_REFERENCE_LUFS)
-                * PLAYBACK_LOUDNESS_SHORT_TERM_CORRECTION_SLOPE)
-                .clamp(
-                    -PLAYBACK_LOUDNESS_SHORT_TERM_CORRECTION_LIMIT_DB,
-                    PLAYBACK_LOUDNESS_SHORT_TERM_CORRECTION_LIMIT_DB,
-                )
-        });
+    let body_loudness = playback_static_body_loudness_anchor(profile);
+    let short_term_correction_db = body_loudness
+        .map(|body_lufs| (BACKEND_PLAYBACK_TARGET_LUFS - body_lufs) - base_gain_db)
+        .unwrap_or(0.0);
     let presence_correction_db = profile
         .presence_db
         .map(|presence| {
@@ -2882,10 +2877,17 @@ pub(crate) fn playback_loudness_plan_for_profile(
                 )
         })
         .unwrap_or(0.0);
-    let lra_correction_db = profile
+    let density_correction_db = profile
         .lra
-        .map(|_| PLAYBACK_LOUDNESS_LRA_CORRECTION_SLOPE)
+        .map(playback_density_lra_correction_db)
         .unwrap_or(0.0);
+    let planned_gain_before_peak_guard =
+        base_gain_db + short_term_correction_db + presence_correction_db + density_correction_db;
+    let lra_correction_db = density_correction_db
+        + playback_true_peak_guard_correction_db(
+            profile.true_peak_dbtp,
+            planned_gain_before_peak_guard,
+        );
     let model_correction_db = profile
         .model_adjustment_db
         .map(|adjustment| {
@@ -2933,7 +2935,7 @@ pub(crate) fn playback_loudness_plan_for_profile(
     })
 }
 
-fn playback_short_term_body_loudness(profile: &LoudnessProfile) -> Option<f32> {
+fn playback_static_body_loudness_anchor(profile: &LoudnessProfile) -> Option<f32> {
     match (
         profile.short_lufs_p50,
         profile.short_lufs_p80,
@@ -2947,6 +2949,26 @@ fn playback_short_term_body_loudness(profile: &LoudnessProfile) -> Option<f32> {
         (_, _, Some(p95)) => Some(p95),
         _ => None,
     }
+}
+
+fn playback_density_lra_correction_db(lra: f32) -> f32 {
+    let density = ((PLAYBACK_LOUDNESS_DENSITY_REFERENCE_LRA - lra)
+        / PLAYBACK_LOUDNESS_DENSITY_REFERENCE_LRA)
+        .clamp(0.0, 1.0);
+    -PLAYBACK_LOUDNESS_DENSITY_CORRECTION_LIMIT_DB * density
+}
+
+fn playback_true_peak_guard_correction_db(
+    true_peak_dbtp: Option<f32>,
+    planned_gain_db: f32,
+) -> f32 {
+    let Some(true_peak) = true_peak_dbtp else {
+        return 0.0;
+    };
+    let post_gain_peak = true_peak + planned_gain_db;
+    let excess = (post_gain_peak - PLAYBACK_LOUDNESS_TRUE_PEAK_REFERENCE_DBTP).clamp(0.0, 1.5);
+    -(excess * PLAYBACK_LOUDNESS_TRUE_PEAK_CORRECTION_SLOPE)
+        .clamp(0.0, PLAYBACK_LOUDNESS_TRUE_PEAK_CORRECTION_LIMIT_DB)
 }
 
 fn playback_loudness_plan_reason(
