@@ -23,7 +23,7 @@ use super::service::{
     resolve_residual_temp_downloaded_file, resume_download_task, runnable_task_leaf_work_items,
     should_interrupt_unresumable_active_task_after_restart,
     should_recover_download_task_after_restart, should_resume_download_task_after_restart,
-    try_claim_enqueue_url,
+    submit_youtube_cookies_and_resume_download_task, try_claim_enqueue_url,
 };
 use super::yt_dlp::{
     DownloadProgress, DownloadedLeaf, LeafChapter, LeafProbe, LeafReference, PlaylistRoot,
@@ -3966,6 +3966,70 @@ fn resume_download_task_rejects_completed_tasks() {
                 .to_string()
                 .contains("completed download tasks cannot be resumed")
         );
+
+        reset_db();
+    });
+}
+
+#[test]
+fn submitting_youtube_cookies_resumes_all_credential_blocked_tasks() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let mut first = DownloadTask::new(
+            "credential-task-a".to_string(),
+            "https://www.youtube.com/playlist?list=a".to_string(),
+            DownloadTrigger::Manual,
+        );
+        first.status = DownloadTaskStatus::AwaitingCredentials;
+        first.last_error = Some("YouTube wants cookies.".to_string());
+        save_task(first)
+            .await
+            .expect("first awaiting task should save");
+
+        let mut second = DownloadTask::new(
+            "credential-task-b".to_string(),
+            "https://www.youtube.com/playlist?list=b".to_string(),
+            DownloadTrigger::Manual,
+        );
+        second.status = DownloadTaskStatus::AwaitingCredentials;
+        second.last_error = Some("YouTube wants cookies.".to_string());
+        save_task(second)
+            .await
+            .expect("second awaiting task should save");
+
+        let cookies_path = temp_test_dir().join("youtube.cookies.txt");
+        let returned = submit_youtube_cookies_and_resume_download_task(
+            "credential-task-a".to_string(),
+            ".youtube.com\tTRUE\t/\tTRUE\t1893456000\tSID\tabc".to_string(),
+            cookies_path.clone(),
+        )
+        .await
+        .expect("cookie submission should resume all waiting YouTube tasks");
+
+        assert_eq!(returned.id.to_string(), "credential-task-a");
+        assert!(
+            std::fs::read_to_string(cookies_path)
+                .expect("cookie file should be written")
+                .contains(".youtube.com")
+        );
+
+        let tasks = list_tasks().await.expect("task listing should succeed");
+        let first = tasks
+            .iter()
+            .find(|task| task.id.to_string() == "credential-task-a")
+            .expect("first task should remain");
+        let second = tasks
+            .iter()
+            .find(|task| task.id.to_string() == "credential-task-b")
+            .expect("second task should remain");
+
+        assert_eq!(first.status, DownloadTaskStatus::Queued);
+        assert_eq!(first.last_error, None);
+        assert_eq!(second.status, DownloadTaskStatus::Queued);
+        assert_eq!(second.last_error, None);
 
         reset_db();
     });

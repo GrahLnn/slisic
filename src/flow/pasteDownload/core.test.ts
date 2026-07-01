@@ -10,7 +10,6 @@ import {
   candidateItemIsErrored,
   acceptCandidateDownloadTask,
   createInitialContext,
-  credentialPromptRequestFromDownloadTask,
   deleteCandidateItem,
   downloadTaskIsTerminal,
   parseBatchClipboardDownloadUrls,
@@ -332,30 +331,6 @@ describe("candidate item helpers", () => {
 });
 
 describe("download credential prompt projection", () => {
-  test("projects awaiting credential tasks from the authoritative task snapshot", () => {
-    const request = credentialPromptRequestFromDownloadTask({
-      id: { String: "task:youtube" },
-      url: "https://www.youtube.com/playlist?list=abc",
-      collection_url: "https://www.youtube.com/playlist?list=abc",
-      collection_name: "Blocked Playlist",
-      collection_folder: "youtube/blocked-playlist",
-      source_kind: "list",
-      trigger: "manual",
-      status: "awaiting_credentials",
-      leafs: [],
-      total_leaves: 1,
-      completed_leaves: 0,
-      failed_leaves: 0,
-      last_error: "Sign in to confirm you're not a bot.",
-      created_at: "2026-06-16T00:00:00Z",
-      updated_at: "2026-06-16T00:00:00Z",
-    });
-
-    assert.equal(request?.taskId, "task:youtube");
-    assert.equal(request?.request.provider, "youtube");
-    assert.equal(request?.request.reason, "Sign in to confirm you're not a bot.");
-  });
-
   test("keeps credential prompt requests aligned with global task changes", () => {
     const waiting = applyCredentialTaskChange([], {
       task_id: "task:youtube",
@@ -384,5 +359,36 @@ describe("download credential prompt projection", () => {
     });
 
     assert.deepEqual(resumed, []);
+  });
+
+  test("deduplicates credential prompt requests by provider", () => {
+    const first = applyCredentialTaskChange([], {
+      task_id: "task:youtube:a",
+      task_url: "https://www.youtube.com/playlist?list=a",
+      collection_url: "https://www.youtube.com/playlist?list=a",
+      collection_name: "Blocked Playlist A",
+      status: "awaiting_credentials",
+      last_error: "Sign in to confirm you're not a bot.",
+      credential_request: {
+        provider: "youtube",
+        reason: "YouTube wants a bot confirmation before continuing.",
+      },
+    });
+
+    const second = applyCredentialTaskChange(first, {
+      task_id: "task:youtube:b",
+      task_url: "https://www.youtube.com/playlist?list=b",
+      collection_url: "https://www.youtube.com/playlist?list=b",
+      collection_name: "Blocked Playlist B",
+      status: "awaiting_credentials",
+      last_error: "Sign in to confirm you're not a bot.",
+      credential_request: {
+        provider: "youtube",
+        reason: "YouTube wants a bot confirmation before continuing.",
+      },
+    });
+
+    assert.equal(second.length, 1);
+    assert.equal(second[0]?.taskId, "task:youtube:a");
   });
 });

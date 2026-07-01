@@ -50,6 +50,10 @@ export interface DownloadCredentialPromptRequest {
   request: DownloadCredentialRequestSignal;
 }
 
+export function credentialProviderKey(request: DownloadCredentialPromptRequest): string {
+  return request.request.provider;
+}
+
 export type ParsedClipboardDownloadUrl =
   | {
       ok: true;
@@ -289,25 +293,6 @@ export function downloadTaskIdText(task: DownloadTask) {
   return task.id.String ?? String(task.id.Number);
 }
 
-export function credentialPromptRequestFromDownloadTask(
-  task: DownloadTask,
-): DownloadCredentialPromptRequest | null {
-  if (task.status !== "awaiting_credentials") {
-    return null;
-  }
-
-  return {
-    taskId: downloadTaskIdText(task),
-    taskUrl: task.url,
-    collectionUrl: task.collection_url,
-    collectionName: task.collection_name,
-    request: {
-      provider: "youtube",
-      reason: task.last_error ?? "YouTube needs cookies to continue this download.",
-    },
-  };
-}
-
 export function credentialPromptRequestFromTaskChange(
   signal: DownloadTaskChangeSignal,
 ): DownloadCredentialPromptRequest | null {
@@ -332,7 +317,19 @@ export function applyCredentialTaskChange(
   const nextRequest = credentialPromptRequestFromTaskChange(signal);
   const remaining = requests.filter((request) => request.taskId !== signal.task_id);
 
-  return nextRequest ? [...remaining, nextRequest] : remaining;
+  if (!nextRequest) {
+    return remaining;
+  }
+
+  if (
+    remaining.some(
+      (request) => credentialProviderKey(request) === credentialProviderKey(nextRequest),
+    )
+  ) {
+    return remaining;
+  }
+
+  return [...remaining, nextRequest];
 }
 
 export function acceptCandidateDownloadTask(

@@ -769,17 +769,7 @@ pub async fn resume_download_task(task_id: String) -> Result<DownloadTask> {
         bail!("completed download tasks cannot be resumed");
     }
     if task.status == DownloadTaskStatus::AwaitingCredentials {
-        task.status = DownloadTaskStatus::Queued;
-        task.last_error = None;
-        for leaf in &mut task.leafs {
-            if leaf.status == DownloadLeafStatus::AwaitingCredentials {
-                leaf.status = DownloadLeafStatus::Queued;
-                leaf.last_error = None;
-                leaf.touch();
-            }
-        }
-        task = repo::save_task(task).await?;
-        publish_download_task_change(&task);
+        task = queue_download_task_after_credentials(task).await?;
     }
     spawn_task(task.id.to_string(), None)?;
     Ok(task)
@@ -797,7 +787,50 @@ pub async fn submit_youtube_cookies_and_resume_download_task(
     }
     std::fs::write(&path, normalized)
         .with_context(|| format!("failed to write YouTube cookies to {}", path.display()))?;
-    resume_download_task(task_id).await
+
+    let resumed = resume_all_youtube_credential_blocked_tasks().await?;
+    if let Some(task) = resumed
+        .into_iter()
+        .find(|task| task.id.to_string() == task_id)
+    {
+        return Ok(task);
+    }
+
+    repo::get_task(&task_id).await.with_context(|| {
+        format!("download task {task_id} was not found after saving YouTube cookies")
+    })
+}
+
+async fn resume_all_youtube_credential_blocked_tasks() -> Result<Vec<DownloadTask>> {
+    let tasks = repo::list_tasks().await?;
+    let mut resumed = Vec::new();
+
+    for task in tasks {
+        if task.status != DownloadTaskStatus::AwaitingCredentials {
+            continue;
+        }
+
+        let task = queue_download_task_after_credentials(task).await?;
+        spawn_task(task.id.to_string(), None)?;
+        resumed.push(task);
+    }
+
+    Ok(resumed)
+}
+
+async fn queue_download_task_after_credentials(mut task: DownloadTask) -> Result<DownloadTask> {
+    task.status = DownloadTaskStatus::Queued;
+    task.last_error = None;
+    for leaf in &mut task.leafs {
+        if leaf.status == DownloadLeafStatus::AwaitingCredentials {
+            leaf.status = DownloadLeafStatus::Queued;
+            leaf.last_error = None;
+            leaf.touch();
+        }
+    }
+    let task = repo::save_task(task).await?;
+    publish_download_task_change(&task);
+    Ok(task)
 }
 
 pub async fn get_download_task(task_id: String) -> Result<DownloadTask> {
@@ -1932,7 +1965,7 @@ async fn spawn_ready_leaf_preparations(
         task_snapshot.last_error = None;
         task_snapshot.replace_leaf(leaf_snapshot.clone());
 
-        log::info!(
+        log::debug!(
             target: "downloads",
             "leaf_prepare_queued leaf={} sequence={} url={} active_prepares={} active_downloads={} pending={}",
             leaf_snapshot.id,
@@ -1996,7 +2029,7 @@ fn spawn_ready_leaf_finalizations(
                 );
                 let completions =
                     collect_ready_existing_file_finalizations(completion, pipeline, batch_limit);
-                log::info!(
+                log::debug!(
                     target: "downloads",
                     "leaf_existing_file_finalization_queued collection=\"{}\" leaves={} readiness={} active_finalizations={} pending_finalizations={} available_slots={} ready_existing_files={}",
                     collection.url,
@@ -2670,7 +2703,7 @@ async fn handle_prepared_leaf_download(
             return Ok(());
         }
     };
-    log::info!(
+    log::debug!(
         target: "downloads",
         "leaf_prepared leaf={} title=\"{}\" url={} active_prepares={} active_downloads={}",
         prepared.leaf.id,
@@ -2703,7 +2736,7 @@ async fn handle_prepared_leaf_download(
         &file_stem,
     ) {
         let absolute_path = target_dir.join(&relative_path);
-        log::info!(
+        log::debug!(
             target: "downloads",
             "leaf_reusing_existing_file leaf={} relative_path=\"{}\"",
             leaf_snapshot.id, relative_path
@@ -2729,7 +2762,7 @@ async fn handle_prepared_leaf_download(
                 downloaded_path.clone(),
             )
             .await?;
-            log::info!(
+            log::debug!(
                 target: "downloads",
                 "leaf_found_existing_temp_file leaf={} path=\"{}\"",
                 leaf_snapshot.id,
@@ -2862,7 +2895,7 @@ async fn commit_existing_file_finalizations(
         });
         log::info!(
             target: "downloads",
-            "leaf_completed_existing_file leaf={} relative_path=\"{}\" url={}",
+            "leaf_completed leaf={} source=existing_file file=\"{}\" url={}",
             leaf_id,
             completion.relative_path,
             completion.music_probe.webpage_url
@@ -2928,7 +2961,7 @@ async fn probe_existing_file_batch_durations(
             let ffmpeg_path = ffmpeg_path.to_path_buf();
             workers.spawn(async move {
                 let started = Instant::now();
-                log::info!(
+                log::debug!(
                     target: "downloads",
                     "leaf_existing_file_duration_probe_started leaf={} relative_path=\"{}\"",
                     completion.leaf.id,
@@ -2939,7 +2972,7 @@ async fn probe_existing_file_batch_durations(
                     completion.absolute_path.clone(),
                 )
                 .await;
-                log::info!(
+                log::debug!(
                     target: "downloads",
                     "leaf_existing_file_duration_probe_finished leaf={} relative_path=\"{}\" status={} elapsed_ms={}",
                     completion.leaf.id,
@@ -3057,7 +3090,7 @@ async fn spawn_ready_leaf_downloads(
         );
         let temp_file_stem =
             temporary_download_stem(&file_stem, &task_snapshot.id, &leaf_snapshot.id);
-        log::info!(
+        log::debug!(
             target: "downloads",
             "leaf_download_queued leaf={} sequence={} source_kind={} active_downloads={} parallelism={} temp_stem=\"{}\" target_dir=\"{}\"",
             leaf_snapshot.id,
@@ -3266,7 +3299,7 @@ async fn handle_finished_leaf_download(
 
     log::info!(
         target: "downloads",
-        "leaf_completed leaf={} file=\"{}\"",
+        "leaf_completed leaf={} source=downloaded file=\"{}\"",
         leaf_id,
         file_name
     );

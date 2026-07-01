@@ -3,7 +3,7 @@ import { sileo } from "sileo";
 import { deps, listenDownloadTaskChanged } from "./events";
 import {
   applyCredentialTaskChange,
-  credentialPromptRequestFromDownloadTask,
+  credentialProviderKey,
   type DownloadCredentialPromptRequest,
 } from "./core";
 
@@ -78,39 +78,27 @@ function YoutubeCookiePromptContent({
 export function DownloadCredentialPrompt() {
   const [taskRequests, setTaskRequests] = useState<DownloadCredentialPromptRequest[]>([]);
   const [submittedTaskIds, setSubmittedTaskIds] = useState<Set<string>>(() => new Set());
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const activeToastIdRef = useRef<string | null>(null);
-  const activeTaskIdRef = useRef<string | null>(null);
+  const activeProviderRef = useRef<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     let unlisten: (() => void) | null = null;
 
-    void deps
-      .listDownloadTasks()
-      .then((tasks) => {
-        if (cancelled) {
-          return;
-        }
-        setTaskRequests(
-          tasks.flatMap((task) => credentialPromptRequestFromDownloadTask(task) ?? []),
-        );
-      })
-      .catch((error) => {
-        console.error("Failed to load download credential requests", error);
-      });
-
     void listenDownloadTaskChanged((payload) => {
       setTaskRequests((requests) => applyCredentialTaskChange(requests, payload));
       if (payload.status === "awaiting_credentials") {
-        setSubmittedTaskIds((taskIds) => {
-          if (!taskIds.has(payload.task_id)) {
-            return taskIds;
-          }
-          const nextTaskIds = new Set(taskIds);
-          nextTaskIds.delete(payload.task_id);
-          return nextTaskIds;
-        });
+        return;
       }
+      setSubmittedTaskIds((taskIds) => {
+        if (!taskIds.has(payload.task_id)) {
+          return taskIds;
+        }
+        const nextTaskIds = new Set(taskIds);
+        nextTaskIds.delete(payload.task_id);
+        return nextTaskIds;
+      });
     })
       .then((unsubscribe) => {
         if (cancelled) {
@@ -135,8 +123,12 @@ export function DownloadCredentialPrompt() {
   );
 
   useEffect(() => {
-    const taskId = credentialRequest?.taskId ?? null;
-    if (!credentialRequest || !taskId || activeTaskIdRef.current === taskId) {
+    setSubmitError(null);
+  }, [credentialRequest ? credentialProviderKey(credentialRequest) : null]);
+
+  useEffect(() => {
+    const provider = credentialRequest ? credentialProviderKey(credentialRequest) : null;
+    if (!credentialRequest || !provider || activeProviderRef.current === provider) {
       return;
     }
 
@@ -144,7 +136,7 @@ export function DownloadCredentialPrompt() {
       sileo.dismiss(activeToastIdRef.current);
     }
 
-    activeTaskIdRef.current = taskId;
+    activeProviderRef.current = provider;
     activeToastIdRef.current = sileo.warning({
       title: "YouTube cookies needed",
       description: "Paste YouTube cookies in the prompt to continue the download.",
@@ -159,7 +151,7 @@ export function DownloadCredentialPrompt() {
     if (activeToastIdRef.current) {
       sileo.dismiss(activeToastIdRef.current);
       activeToastIdRef.current = null;
-      activeTaskIdRef.current = null;
+      activeProviderRef.current = null;
     }
   }, [credentialRequest]);
 
@@ -169,18 +161,38 @@ export function DownloadCredentialPrompt() {
 
   return (
     <YoutubeCookiePromptContent
-      reason={credentialRequest.request.reason}
+      reason={submitError ?? credentialRequest.request.reason}
       onSubmit={async (cookies) => {
-        await deps.submitYoutubeCookiesAndResumeDownloadTask(credentialRequest.taskId, cookies);
-        setSubmittedTaskIds((taskIds) => new Set(taskIds).add(credentialRequest.taskId));
+        const submittedRequest = credentialRequest;
+        const submittedTaskId = submittedRequest.taskId;
+        const submittedProvider = credentialProviderKey(submittedRequest);
+        setSubmitError(null);
+        setSubmittedTaskIds((taskIds) => new Set(taskIds).add(submittedTaskId));
         setTaskRequests((requests) =>
-          requests.filter((request) => request.taskId !== credentialRequest.taskId),
+          requests.filter((request) => credentialProviderKey(request) !== submittedProvider),
         );
         if (activeToastIdRef.current) {
           sileo.dismiss(activeToastIdRef.current);
         }
         activeToastIdRef.current = null;
-        activeTaskIdRef.current = null;
+        activeProviderRef.current = null;
+        try {
+          await deps.submitYoutubeCookiesAndResumeDownloadTask(submittedTaskId, cookies);
+        } catch (cause) {
+          setSubmittedTaskIds((taskIds) => {
+            const nextTaskIds = new Set(taskIds);
+            nextTaskIds.delete(submittedTaskId);
+            return nextTaskIds;
+          });
+          setTaskRequests((requests) => {
+            if (requests.some((request) => request.taskId === submittedTaskId)) {
+              return requests;
+            }
+            return [submittedRequest, ...requests];
+          });
+          setSubmitError(cause instanceof Error ? cause.message : String(cause));
+          throw cause;
+        }
       }}
     />
   );
