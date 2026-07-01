@@ -2,8 +2,9 @@ use super::recommendation::{
     AUDIO_STYLE_EMBEDDING_VERSION_FOR_TEST, AudioStyleEmbeddingCache, AudioStyleModelSnapshot,
     AudioStylePlaylistPlaybackRecommender,
     acknowledge_audio_style_pending_training_input_file_for_test,
-    audio_style_agreement_aware_continuity_for_test, audio_style_semantic_continuity_gate_for_test,
-    audio_style_source_repetition_gate_for_test,
+    audio_style_agreement_aware_continuity_for_test, audio_style_alternative_route_gate_for_test,
+    audio_style_semantic_continuity_gate_for_test, audio_style_source_repetition_gate_for_test,
+    audio_style_stream_continuation_gate_for_test,
     audio_style_training_inputs_covered_by_snapshot_for_test,
     audio_style_training_path_is_transient_for_test, audio_style_transition_fingerprint_for_test,
     balance_audio_style_candidate_field_basins_for_test,
@@ -387,6 +388,10 @@ fn audio_style_sampler_applies_continuous_attractor_basin_pressure() {
     let played_a = track_in_basin("Kurzgesagt", "played_a");
     let played_b = track_in_basin("Kurzgesagt", "played_b");
     let played_c = track_in_basin("Kurzgesagt", "played_c");
+    let played_d = track_in_basin("Kurzgesagt", "played_d");
+    let played_e = track_in_basin("Kurzgesagt", "played_e");
+    let played_f = track_in_basin("Kurzgesagt", "played_f");
+    let played_g = track_in_basin("Kurzgesagt", "played_g");
     let same_basin = track_in_basin("Kurzgesagt", "same_basin");
     let other_basin = track_in_basin("ZWEI2", "other_basin");
     let other_basin_neighbor = track_in_basin("ZWEI2", "other_basin_neighbor");
@@ -395,6 +400,10 @@ fn audio_style_sampler_applies_continuous_attractor_basin_pressure() {
         (played_a.clone(), basin_neighbor_embedding()),
         (played_b.clone(), basin_neighbor_embedding()),
         (played_c.clone(), basin_neighbor_embedding()),
+        (played_d.clone(), basin_neighbor_embedding()),
+        (played_e.clone(), basin_neighbor_embedding()),
+        (played_f.clone(), basin_neighbor_embedding()),
+        (played_g.clone(), basin_neighbor_embedding()),
         (same_basin.clone(), embedding(2)),
         (other_basin.clone(), nearby_open_basin_embedding()),
         (other_basin_neighbor, nearby_open_basin_embedding()),
@@ -411,13 +420,22 @@ fn audio_style_sampler_applies_continuous_attractor_basin_pressure() {
         &current,
         &[same_basin.clone(), other_basin.clone()],
         &recommender,
-        &[played_a, played_b, played_c],
+        &[played_a.clone(), played_b.clone(), played_c.clone()],
+        0.55,
+    );
+    let with_mature_pressure = choose_next_audio_style_candidate_with_recent_history_for_test(
+        &current,
+        &[same_basin.clone(), other_basin.clone()],
+        &recommender,
+        &[played_a, played_b, played_c, played_d, played_e, played_f, played_g],
         0.55,
     );
 
     assert_eq!(without_pressure.index, 0);
-    assert_eq!(with_pressure.index, 1);
-    assert!(with_pressure.probability > with_pressure.uniform_probability);
+    assert_eq!(with_pressure.index, 0);
+    assert!(with_pressure.probability < without_pressure.probability);
+    assert_eq!(with_mature_pressure.index, 1);
+    assert!(with_mature_pressure.probability > with_mature_pressure.uniform_probability);
 }
 
 #[test]
@@ -444,6 +462,154 @@ fn audio_style_basin_pressure_does_not_override_clear_distance_preference() {
 
     assert_eq!(selection.index, 0);
     assert!(selection.probability > 0.70);
+}
+
+#[test]
+fn audio_style_stream_continuation_is_adaptive_not_fixed_run_length() {
+    let unsupported =
+        audio_style_stream_continuation_gate_for_test(2, 1.0, 0.12, 0.18, 1, 8, 0.62, 0.90);
+    let supported =
+        audio_style_stream_continuation_gate_for_test(2, 1.0, 0.12, 0.18, 4, 2, 0.76, 0.72);
+    let supported_after_three =
+        audio_style_stream_continuation_gate_for_test(4, 1.1, 0.16, 0.18, 5, 1, 0.82, 0.65);
+    let overused =
+        audio_style_stream_continuation_gate_for_test(8, 4.0, 0.42, 0.18, 4, 2, 0.76, 0.72);
+
+    assert!(unsupported < 1.0);
+    assert!(supported > unsupported);
+    assert!(supported > 1.0);
+    assert!(supported_after_three > 1.0);
+    assert!(overused < supported);
+    assert!(overused < 1.0);
+}
+
+#[test]
+fn audio_style_route_field_requires_escape_pressure_before_alternative_capture() {
+    let weak_escape =
+        audio_style_alternative_route_gate_for_test(1, 1.0, 0.18, 0.40, 0.40, 2, 8, 0.78, 0.74);
+    let supported_escape =
+        audio_style_alternative_route_gate_for_test(7, 4.0, 0.62, 0.20, 0.44, 2, 8, 0.78, 0.74);
+
+    assert!(weak_escape < 1.0);
+    assert!(supported_escape > weak_escape);
+    assert!(supported_escape > 1.0);
+}
+
+#[test]
+fn audio_style_route_field_follows_recent_trajectory_before_style_hopping() {
+    let previous = track_in_basin("Current", "previous");
+    let current = track_in_basin("Current", "current");
+    let along_route = track_in_basin("Current", "along_route");
+    let side_jump = track_in_basin("Open", "side_jump");
+    let open_neighbor = track_in_basin("Open", "open_neighbor");
+    let recommender = AudioStylePlaylistPlaybackRecommender::from_test_embeddings([
+        (previous.clone(), dense_embedding(&[(0, 1.0)])),
+        (current.clone(), dense_embedding(&[(0, 0.92), (1, 0.39)])),
+        (
+            along_route.clone(),
+            dense_embedding(&[(0, 0.78), (1, 0.63)]),
+        ),
+        (side_jump.clone(), dense_embedding(&[(2, 1.0)])),
+        (open_neighbor, dense_embedding(&[(2, 0.98), (3, 0.20)])),
+    ]);
+
+    let selection = choose_next_audio_style_candidate_with_recent_history_for_test(
+        &current,
+        &[along_route.clone(), side_jump.clone()],
+        &recommender,
+        &[previous],
+        0.62,
+    );
+
+    assert_eq!(selection.index, 0);
+    assert!(selection.probability > selection.uniform_probability);
+    assert!(
+        selection
+            .diagnostics
+            .bio_route
+            .is_some_and(|route| route.stream_gate >= 1.0),
+        "route field should preserve a coherent same-basin trajectory before style hopping"
+    );
+}
+
+#[test]
+fn audio_style_manifold_field_allows_local_residence_before_escape() {
+    let current = track_in_basin("Current", "current");
+    let recent = (0..2)
+        .map(|index| track_in_basin("Current", &format!("recent_{index}")))
+        .collect::<Vec<_>>();
+    let same_a = track_in_basin("Current", "same_a");
+    let same_b = track_in_basin("Current", "same_b");
+    let open = track_in_basin("Open", "open");
+    let open_neighbor = track_in_basin("Open", "open_neighbor");
+    let mut embeddings = vec![
+        (current.clone(), dense_embedding(&[(0, 1.0)])),
+        (same_a.clone(), dense_embedding(&[(0, 0.985), (1, 0.172)])),
+        (same_b.clone(), dense_embedding(&[(0, 0.975), (2, 0.222)])),
+        (open.clone(), dense_embedding(&[(0, 0.970), (128, 0.243)])),
+        (
+            open_neighbor,
+            dense_embedding(&[(0, 0.960), (128, 0.280)]),
+        ),
+    ];
+    embeddings.extend(
+        recent
+            .iter()
+            .cloned()
+            .map(|track| (track, dense_embedding(&[(0, 0.980), (3, 0.199)]))),
+    );
+    let recommender = AudioStylePlaylistPlaybackRecommender::from_test_embeddings(embeddings);
+
+    let selection = choose_next_audio_style_candidate_with_recent_history_for_test(
+        &current,
+        &[same_a.clone(), same_b.clone(), open.clone()],
+        &recommender,
+        &recent,
+        0.20,
+    );
+
+    assert!(selection.index <= 1);
+    assert!(selection.probability > selection.uniform_probability);
+}
+
+#[test]
+fn audio_style_manifold_field_escapes_mature_boundary_basin_without_far_jump() {
+    let current = track_in_basin("Current", "current");
+    let recent = (0..8)
+        .map(|index| track_in_basin("Current", &format!("recent_{index}")))
+        .collect::<Vec<_>>();
+    let sticky = track_in_basin("Current", "sticky");
+    let boundary = track_in_basin("Boundary", "boundary");
+    let boundary_neighbor = track_in_basin("Boundary", "boundary_neighbor");
+    let far = track_in_basin("Far", "far");
+    let mut embeddings = vec![
+        (current.clone(), dense_embedding(&[(0, 1.0)])),
+        (sticky.clone(), dense_embedding(&[(0, 0.985), (1, 0.172)])),
+        (boundary.clone(), dense_embedding(&[(0, 0.975), (128, 0.222)])),
+        (
+            boundary_neighbor,
+            dense_embedding(&[(0, 0.965), (128, 0.262)]),
+        ),
+        (far.clone(), embedding(256)),
+    ];
+    embeddings.extend(
+        recent
+            .iter()
+            .cloned()
+            .map(|track| (track, dense_embedding(&[(0, 0.990), (2, 0.141)]))),
+    );
+    let recommender = AudioStylePlaylistPlaybackRecommender::from_test_embeddings(embeddings);
+
+    let selection = choose_next_audio_style_candidate_with_recent_history_for_test(
+        &current,
+        &[sticky, boundary.clone(), far],
+        &recommender,
+        &recent,
+        0.52,
+    );
+
+    assert_eq!(selection.index, 1);
+    assert!(selection.probability > selection.uniform_probability);
 }
 
 #[test]

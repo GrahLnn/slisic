@@ -6,11 +6,12 @@ use super::recommendation::{
 use super::service::{
     PlaylistInitialTrackRelease, PlaylistPlaybackRecentHistory, PlaylistPlaybackRecommendationMode,
     PlaylistPlaybackRecommendationRequest, PlaylistPlaybackRecommender,
-    PlaylistQueueRecommendationReadiness, RandomPlaylistPlaybackRecommender,
-    apply_initial_track_loudness_profile, audio_style_playlist_playback_proposal_is_complete,
-    create_exclude_current_cargo_queue, create_start_anchor_playback_queue,
-    exclude_current_next_cargo_queue, initial_track_release_requires_loudness_gate,
-    place_track_at_queue_start, playlist_playback_proposal_contains_next_track,
+    PlaylistQueueRecommendationReadiness, PlaylistTrackQueueRefreshOutcome,
+    RandomPlaylistPlaybackRecommender, apply_initial_track_loudness_profile,
+    audio_style_playlist_playback_proposal_is_complete, create_exclude_current_cargo_queue,
+    create_start_anchor_playback_queue, exclude_current_next_cargo_queue,
+    initial_track_release_requires_loudness_gate, place_track_at_queue_start,
+    playlist_playback_proposal_contains_next_track,
     playlist_playback_queue_contains_next_track_after_anchor,
     playlist_selection_has_relevant_active_downloads, playlist_track_needs_loudness_evidence,
     prepared_first_track_can_replace_excluded_current,
@@ -18,8 +19,8 @@ use super::service::{
     propose_playlist_playback_queue_without_audio_style_model, propose_random_queue_after_exclude,
     resolve_playlist_playback_continuation_mode, resolve_playlist_playback_source_resolution,
     should_commit_playlist_queue_refresh, should_refresh_playlist_queue_for_anchor_after_startup,
-    should_refresh_playlist_queue_for_same_anchor, should_seed_playlist_next_from_prepared_pool,
-    shuffle_playback_tracks,
+    should_refresh_playlist_queue_for_same_anchor, should_retry_playlist_queue_fill_after_refresh,
+    should_seed_playlist_next_from_prepared_pool, shuffle_playback_tracks,
 };
 use crate::domain::downloads::model::{
     DownloadLeaf, DownloadLeafStatus, DownloadTask, DownloadTaskStatus, DownloadTrigger,
@@ -1048,6 +1049,22 @@ fn playlist_queue_refresh_for_same_anchor_only_runs_when_next_is_missing() {
 fn playlist_queue_fill_uses_prepared_first_slot_only_after_proposal_misses_next() {
     assert!(should_seed_playlist_next_from_prepared_pool(false));
     assert!(!should_seed_playlist_next_from_prepared_pool(true));
+}
+
+#[test]
+fn playlist_queue_fill_retries_immediately_when_refresh_result_is_stale_anchor() {
+    assert!(should_retry_playlist_queue_fill_after_refresh(
+        PlaylistTrackQueueRefreshOutcome::StaleAnchor
+    ));
+    assert!(!should_retry_playlist_queue_fill_after_refresh(
+        PlaylistTrackQueueRefreshOutcome::Committed
+    ));
+    assert!(!should_retry_playlist_queue_fill_after_refresh(
+        PlaylistTrackQueueRefreshOutcome::NoCandidates
+    ));
+    assert!(!should_retry_playlist_queue_fill_after_refresh(
+        PlaylistTrackQueueRefreshOutcome::MissingNext
+    ));
 }
 
 #[test]

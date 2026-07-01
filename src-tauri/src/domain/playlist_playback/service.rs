@@ -1395,7 +1395,7 @@ async fn fill_playlist_track_queue(
                 .await;
                 continue;
             }
-            refresh_playlist_track_queue_for_anchor(
+            let refresh_outcome = refresh_playlist_track_queue_for_anchor(
                 &app,
                 &playlist_name,
                 &session,
@@ -1404,6 +1404,22 @@ async fn fill_playlist_track_queue(
                 true,
             )
             .await?;
+            if should_retry_playlist_queue_fill_after_refresh(refresh_outcome) {
+                log::info!(
+                    target: PLAYLIST_PLAYBACK_LOG_TARGET,
+                    "next queue fill refresh retried playlist=\"{}\" anchor_title=\"{}\" reason=stale_anchor",
+                    escape_log_value(&playlist_name),
+                    escape_log_value(&active_track.music_name)
+                );
+                emit_playlist_playback_trace(
+                    "playlist-playback-queue-fill-refresh-retry",
+                    PlaylistPlaybackTrace::new(&app)
+                        .playlist_name(&playlist_name)
+                        .track(&active_track)
+                        .status("stale_anchor"),
+                );
+                continue;
+            }
             if should_seed_playlist_next_from_prepared_pool(current_session_queue_contains_next(
                 &session,
                 &active_track,
@@ -1463,6 +1479,20 @@ async fn fill_playlist_track_queue(
 
 pub(crate) fn should_seed_playlist_next_from_prepared_pool(queue_has_next: bool) -> bool {
     !queue_has_next
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PlaylistTrackQueueRefreshOutcome {
+    Committed,
+    StaleAnchor,
+    NoCandidates,
+    MissingNext,
+}
+
+pub(crate) fn should_retry_playlist_queue_fill_after_refresh(
+    outcome: PlaylistTrackQueueRefreshOutcome,
+) -> bool {
+    outcome == PlaylistTrackQueueRefreshOutcome::StaleAnchor
 }
 
 #[cfg(not(test))]
@@ -1567,7 +1597,7 @@ async fn refresh_playlist_tracks_until_downloads_finish(
                 }
                 continue;
             }
-            let updated = refresh_playlist_track_queue_for_anchor(
+            let outcome = refresh_playlist_track_queue_for_anchor(
                 &app,
                 &playlist_name,
                 &session,
@@ -1576,7 +1606,7 @@ async fn refresh_playlist_tracks_until_downloads_finish(
                 false,
             )
             .await?;
-            if !updated {
+            if outcome == PlaylistTrackQueueRefreshOutcome::StaleAnchor {
                 return Ok(());
             }
         }
@@ -1595,7 +1625,7 @@ async fn refresh_playlist_track_queue_for_anchor(
     current_track: PlaybackTrack,
     recently_played_tracks: &[PlaybackTrack],
     should_log_selection: bool,
-) -> Result<bool> {
+) -> Result<PlaylistTrackQueueRefreshOutcome> {
     let readiness = audio_style_playlist_queue_readiness_for_anchor(&current_track);
     if !readiness.is_ready() {
         emit_playlist_playback_trace(
@@ -1625,11 +1655,11 @@ async fn refresh_playlist_track_queue_for_anchor(
                 .track(&current_track)
                 .status("empty_candidate_window"),
         );
-        return Ok(true);
+        return Ok(PlaylistTrackQueueRefreshOutcome::NoCandidates);
     }
 
     if !player_service::is_session_current(session)? {
-        return Ok(false);
+        return Ok(PlaylistTrackQueueRefreshOutcome::StaleAnchor);
     }
 
     let request = PlaylistPlaybackRecommendationRequest {
@@ -1675,7 +1705,7 @@ async fn refresh_playlist_track_queue_for_anchor(
                 .queue_count(tracks.len())
                 .status("missing_next"),
         );
-        return Ok(true);
+        return Ok(PlaylistTrackQueueRefreshOutcome::MissingNext);
     }
     let next_title = next_track_for_recommendation_mode(
         PlaylistPlaybackRecommendationMode::KeepCurrent,
@@ -1699,7 +1729,11 @@ async fn refresh_playlist_track_queue_for_anchor(
         next_title,
         updated
     );
-    Ok(updated)
+    if updated {
+        Ok(PlaylistTrackQueueRefreshOutcome::Committed)
+    } else {
+        Ok(PlaylistTrackQueueRefreshOutcome::StaleAnchor)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2277,13 +2311,14 @@ fn format_audio_style_bio_route(
     diagnostics
         .map(|diagnostics| {
             format!(
-                "distance_base:{:.6},route_drive:{:.3},control_gate:{:.3},semantic_gate:{:.3},novelty:{:.3},novelty_gate:{:.3},damping:{:.3},local_gate:{:.3},final_weight:{:.6}",
+                "distance_base:{:.6},route_drive:{:.3},control_gate:{:.3},semantic_gate:{:.3},novelty:{:.3},novelty_gate:{:.3},stream_gate:{:.3},damping:{:.3},local_gate:{:.3},final_weight:{:.6}",
                 diagnostics.distance_base,
                 diagnostics.route_drive,
                 diagnostics.control_gate,
                 diagnostics.semantic_gate,
                 diagnostics.novelty,
                 diagnostics.novelty_gate,
+                diagnostics.stream_gate,
                 diagnostics.damping,
                 diagnostics.local_gate,
                 diagnostics.final_weight

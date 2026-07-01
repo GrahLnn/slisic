@@ -65,7 +65,7 @@ const AUDIO_STYLE_HOP_SIZE: usize = 256;
 const AUDIO_STYLE_DISTANCE_SOFTMIN_BETA: f32 = 6.0;
 const AUDIO_STYLE_BIO_ROUTE_FUTURE_WINDOW: f32 = 12.0;
 const AUDIO_STYLE_BIO_ROUTE_DAMPING_STRENGTH: f32 = 0.80;
-const AUDIO_STYLE_BIO_ROUTE_BASIN_ESCAPE_STRENGTH: f32 = 0.65;
+const AUDIO_STYLE_BIO_ROUTE_BASIN_ESCAPE_STRENGTH: f32 = 0.95;
 const AUDIO_STYLE_BIO_ROUTE_BASIN_ESCAPE_CAP: f32 = 2.10;
 const AUDIO_STYLE_BIO_ROUTE_RECOVERY_STRENGTH: f32 = 8.0;
 const AUDIO_STYLE_BIO_ROUTE_RECOVERY_CAP: f32 = 32.0;
@@ -74,7 +74,7 @@ const AUDIO_STYLE_BIO_ROUTE_TOPOLOGY_TOP_FATIGUE_STRENGTH: f32 = 0.75;
 const AUDIO_STYLE_BIO_ROUTE_TOPOLOGY_TOP_FATIGUE_CAP: f32 = 1.75;
 const AUDIO_STYLE_BIO_ROUTE_SOURCE_FATIGUE_STRENGTH: f32 = 1.35;
 const AUDIO_STYLE_BIO_ROUTE_SOURCE_FATIGUE_FLOOR: f32 = 0.34;
-const AUDIO_STYLE_BIO_ROUTE_BASIN_MASS_HOMEOSTASIS_STRENGTH: f32 = 1.85;
+const AUDIO_STYLE_BIO_ROUTE_BASIN_MASS_HOMEOSTASIS_STRENGTH: f32 = 1.45;
 const AUDIO_STYLE_BIO_ROUTE_BASIN_MASS_HOMEOSTASIS_RECENT_STRENGTH: f32 = 0.70;
 const AUDIO_STYLE_BIO_ROUTE_BASIN_MASS_HOMEOSTASIS_FLOOR: f32 = 0.42;
 const AUDIO_STYLE_BIO_ROUTE_BASIN_MASS_HOMEOSTASIS_RESERVE_CAP: f32 = 1.45;
@@ -101,6 +101,7 @@ const AUDIO_STYLE_LISTENER_COMFORT_STRENGTH: f32 = 0.35;
 const AUDIO_STYLE_LISTENER_SHOCK_STRENGTH: f32 = 0.40;
 const AUDIO_STYLE_LISTENER_SHOCK_DISTANCE: f32 = 1.15;
 const AUDIO_STYLE_DISTRIBUTED_REPEAT_GATE_FLOOR: f32 = 0.08;
+const AUDIO_STYLE_DISTRIBUTED_LIKED_REPEAT_GATE_FLOOR: f32 = 0.34;
 const AUDIO_STYLE_DISTRIBUTED_FIELD_RELAXATION_STEPS: usize = 10;
 const AUDIO_STYLE_DISTRIBUTED_FIELD_RELAXATION_RATE: f32 = 0.28;
 const AUDIO_STYLE_DISTRIBUTED_FIELD_CROWDING_STRENGTH: f32 = 0.18;
@@ -113,11 +114,37 @@ const AUDIO_STYLE_SELF_SUPERVISED_BASIN_SEPARATION_OFFSET: f32 = 0.08;
 const AUDIO_STYLE_SELF_SUPERVISED_BASIN_NEAR_DUPLICATE_FLOOR: f32 = 0.985;
 const AUDIO_STYLE_BASIN_FATIGUE_DECAY: f32 = 0.86;
 const AUDIO_STYLE_BASIN_FATIGUE_IMPULSE: f32 = 1.0;
-const AUDIO_STYLE_BASIN_FATIGUE_STRENGTH: f32 = 1.0;
+const AUDIO_STYLE_BASIN_FATIGUE_STRENGTH: f32 = 0.24;
 const AUDIO_STYLE_BASIN_HOMEOSTATIC_DECAY: f32 = 0.93;
 const AUDIO_STYLE_BASIN_HOMEOSTATIC_IMPULSE: f32 = 1.0;
-const AUDIO_STYLE_BASIN_HOMEOSTATIC_STRENGTH: f32 = 3.40;
-const AUDIO_STYLE_BASIN_RUN_HAZARD_STRENGTH: f32 = 0.95;
+const AUDIO_STYLE_BASIN_HOMEOSTATIC_STRENGTH: f32 = 1.45;
+const AUDIO_STYLE_ROUTE_EVIDENCE_WARMUP_OFFSET: f32 = 3.0;
+const AUDIO_STYLE_ROUTE_EVIDENCE_WARMUP_WIDTH: f32 = 18.0;
+const AUDIO_STYLE_ROUTE_STREAM_MATURITY_START: f32 = 2.0;
+const AUDIO_STYLE_ROUTE_STREAM_MATURITY_WIDTH: f32 = 3.0;
+const AUDIO_STYLE_ROUTE_EARLY_CONTINUITY_STRENGTH: f32 = 0.58;
+const AUDIO_STYLE_STREAM_CONTINUATION_STRENGTH: f32 = 1.90;
+const AUDIO_STYLE_STREAM_CONTINUATION_MARGIN: f32 = 0.10;
+const AUDIO_STYLE_STREAM_CONTINUATION_QUALITY_STRENGTH: f32 = 1.65;
+const AUDIO_STYLE_STREAM_CONTINUATION_SUPPORT_STRENGTH: f32 = 0.75;
+const AUDIO_STYLE_STREAM_CONTINUATION_SUPPORT_NEUTRAL: f32 = 0.08;
+const AUDIO_STYLE_STREAM_CONTINUATION_QUALITY_FLOOR: f32 = 0.32;
+const AUDIO_STYLE_STREAM_CONTINUATION_LOW_QUALITY_STRENGTH: f32 = 1.55;
+const AUDIO_STYLE_STREAM_CONTINUATION_RELATIVE_LOSS_STRENGTH: f32 = 3.0;
+const AUDIO_STYLE_STREAM_CONTINUATION_FATIGUE_STRENGTH: f32 = 0.52;
+const AUDIO_STYLE_STREAM_CONTINUATION_OVERUSE_STRENGTH: f32 = 1.35;
+const AUDIO_STYLE_STREAM_CONTINUATION_RUN_STRENGTH: f32 = 0.08;
+const AUDIO_STYLE_ROUTE_ALTERNATIVE_UNDERUSE_STRENGTH: f32 = 1.25;
+const AUDIO_STYLE_ROUTE_ALTERNATIVE_FATIGUE_STRENGTH: f32 = 0.24;
+const AUDIO_STYLE_ROUTE_ALTERNATIVE_SWITCH_INERTIA: f32 = 0.36;
+const AUDIO_STYLE_ROUTE_TRAJECTORY_STRENGTH: f32 = 0.42;
+const AUDIO_STYLE_MANIFOLD_NEIGHBOR_TOP_K: usize = 24;
+const AUDIO_STYLE_MANIFOLD_ESCAPE_STRENGTH: f32 = 0.92;
+const AUDIO_STYLE_MANIFOLD_CONTINUITY_STRENGTH: f32 = 0.44;
+const AUDIO_STYLE_MANIFOLD_RESIDENCE_RANK_SCALE: f32 = 0.55;
+const AUDIO_STYLE_MODEL_BASIN_SUPPORT_SINGLETON_GATE: f32 = 0.52;
+const AUDIO_STYLE_MODEL_BASIN_SUPPORT_PAIR_GATE: f32 = 0.88;
+const AUDIO_STYLE_BASIN_RUN_HAZARD_STRENGTH: f32 = 0.10;
 // Basin pressure breaks near-distance ties, but the current track distance stays the primary axis.
 const AUDIO_STYLE_BASIN_PENALTY_CAP: f32 = 2.0;
 const AUDIO_STYLE_BASIN_TARGET_COUNT_SHARE_WEIGHT: f32 = 0.72;
@@ -244,6 +271,7 @@ struct PlaybackAttractorBasinKey {
 struct PlaybackAttractorBasinPressure {
     current_basin: Option<PlaybackAttractorBasinKey>,
     current_basin_run: usize,
+    recent_evidence_count: usize,
     fatigue: HashMap<PlaybackAttractorBasinKey, f32>,
     usage: HashMap<PlaybackAttractorBasinKey, f32>,
     candidate_top_pressure: HashMap<PlaybackAttractorBasinKey, f32>,
@@ -266,6 +294,15 @@ struct AudioStyleListeningAdaptationDecision {
     gates: Vec<f32>,
     diagnostics: Vec<Option<AudioStyleBioRouteDiagnostics>>,
     topology_health: Option<AudioStyleTopologyHealthDiagnostics>,
+}
+
+struct AudioStyleRouteFieldDecision {
+    gates: Vec<f32>,
+}
+
+struct AudioStyleManifoldFieldDecision {
+    stream_gates: Vec<f32>,
+    route_caps: Vec<f32>,
 }
 
 struct AudioStylePerceptualChannelDecision {
@@ -315,6 +352,7 @@ pub(crate) struct AudioStyleBioRouteDiagnostics {
     pub(crate) semantic_gate: f32,
     pub(crate) novelty: f32,
     pub(crate) novelty_gate: f32,
+    pub(crate) stream_gate: f32,
     pub(crate) damping: f32,
     pub(crate) local_gate: f32,
     pub(crate) final_weight: f32,
@@ -476,6 +514,7 @@ struct CachedAudioStyleNeighborList {
 struct CachedAudioStyleSamplingGeometry {
     mean: Vec<f32>,
     local_density: Vec<CachedAudioStyleLocalDensity>,
+    manifold: Vec<CachedAudioStyleManifoldDescriptor>,
     self_supervised_basins: Vec<CachedAudioStyleBasinAssignment>,
     similarity_low: f32,
     similarity_high: f32,
@@ -485,6 +524,14 @@ struct CachedAudioStyleSamplingGeometry {
 struct CachedAudioStyleLocalDensity {
     key: CachedPlaybackTrackKey,
     value: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CachedAudioStyleManifoldDescriptor {
+    key: CachedPlaybackTrackKey,
+    spectral_rank: f32,
+    curvature: f32,
+    boundary_pressure: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -578,9 +625,17 @@ struct AudioStyleNeighborIndex {
 struct AudioStyleSamplingGeometry {
     mean: Vec<f32>,
     local_density: HashMap<PlaybackTrackKey, f32>,
+    manifold: HashMap<PlaybackTrackKey, AudioStyleManifoldDescriptor>,
     self_supervised_basins: HashMap<PlaybackTrackKey, PlaybackAttractorBasinKey>,
     similarity_low: f32,
     similarity_high: f32,
+}
+
+#[derive(Clone, Copy)]
+struct AudioStyleManifoldDescriptor {
+    spectral_rank: f32,
+    curvature: f32,
+    boundary_pressure: f32,
 }
 
 #[derive(Clone)]
@@ -1011,6 +1066,19 @@ impl From<&AudioStyleSamplingGeometry> for CachedAudioStyleSamplingGeometry {
                         })
                 })
                 .collect(),
+            manifold: sorted_audio_style_manifold_keys(&geometry.manifold)
+                .into_iter()
+                .filter_map(|key| {
+                    geometry.manifold.get(&key).map(|value| {
+                        CachedAudioStyleManifoldDescriptor {
+                            key: CachedPlaybackTrackKey::from(&key),
+                            spectral_rank: value.spectral_rank,
+                            curvature: value.curvature,
+                            boundary_pressure: value.boundary_pressure,
+                        }
+                    })
+                })
+                .collect(),
             self_supervised_basins: sorted_audio_style_basin_assignment_keys(
                 &geometry.self_supervised_basins,
             )
@@ -1046,6 +1114,21 @@ impl AudioStyleSamplingGeometry {
             }
             local_density.insert(key, cached_density.value);
         }
+        let mut manifold = HashMap::new();
+        for cached_descriptor in cached.manifold {
+            let key = PlaybackTrackKey::from(cached_descriptor.key);
+            if !embeddings.contains_key(&key) {
+                return Err("stable model manifold key is missing an embedding".to_string());
+            }
+            manifold.insert(
+                key,
+                AudioStyleManifoldDescriptor {
+                    spectral_rank: cached_descriptor.spectral_rank,
+                    curvature: cached_descriptor.curvature,
+                    boundary_pressure: cached_descriptor.boundary_pressure,
+                },
+            );
+        }
         let mut self_supervised_basins = HashMap::new();
         for cached_basin in cached.self_supervised_basins {
             let key = PlaybackTrackKey::from(cached_basin.key);
@@ -1057,12 +1140,16 @@ impl AudioStyleSamplingGeometry {
         if local_density.len() != embeddings.len() {
             return Err("stable model local density does not cover every embedding".to_string());
         }
+        if manifold.len() != embeddings.len() {
+            return Err("stable model manifold descriptors do not cover every embedding".to_string());
+        }
         if self_supervised_basins.len() != embeddings.len() {
             return Err("stable model basin assignments do not cover every embedding".to_string());
         }
         Ok(Self {
             mean: cached.mean,
             local_density,
+            manifold,
             self_supervised_basins,
             similarity_low: cached.similarity_low,
             similarity_high: cached.similarity_high,
@@ -3455,9 +3542,17 @@ impl AudioStyleSamplingGeometry {
         let local_density = neighbor_index.local_density_map(embeddings, &mean);
         let self_supervised_basins =
             self_supervised_style_basins_from_neighbors(embeddings, neighbor_index, &local_density);
+        let manifold = audio_style_manifold_descriptors_from_neighbors(
+            embeddings,
+            &mean,
+            neighbor_index,
+            &local_density,
+            &self_supervised_basins,
+        );
         Some(Self {
             mean,
             local_density,
+            manifold,
             self_supervised_basins,
             similarity_low: neighbor_index.similarity_low,
             similarity_high: neighbor_index.similarity_high,
@@ -3502,6 +3597,10 @@ impl AudioStyleSamplingGeometry {
         self.self_supervised_basins
             .get(&PlaybackTrackKey::from_track(track))
             .cloned()
+    }
+
+    fn manifold_for_key(&self, key: &PlaybackTrackKey) -> Option<AudioStyleManifoldDescriptor> {
+        self.manifold.get(key).copied()
     }
 }
 
@@ -4820,6 +4919,14 @@ fn sorted_audio_style_local_density_keys(
     keys
 }
 
+fn sorted_audio_style_manifold_keys(
+    manifold: &HashMap<PlaybackTrackKey, AudioStyleManifoldDescriptor>,
+) -> Vec<PlaybackTrackKey> {
+    let mut keys = manifold.keys().cloned().collect::<Vec<_>>();
+    keys.sort_by_key(audio_style_track_key_sort_value);
+    keys
+}
+
 fn sorted_audio_style_basin_assignment_keys(
     basins: &HashMap<PlaybackTrackKey, PlaybackAttractorBasinKey>,
 ) -> Vec<PlaybackTrackKey> {
@@ -4947,6 +5054,135 @@ fn audio_style_local_density_from_neighbors(
         result.insert(key.clone(), density);
     }
     result
+}
+
+fn audio_style_manifold_descriptors_from_neighbors(
+    embeddings: &AudioStyleEmbeddingMap,
+    mean: &[f32],
+    neighbor_index: &AudioStyleNeighborIndex,
+    local_density: &HashMap<PlaybackTrackKey, f32>,
+    basins: &HashMap<PlaybackTrackKey, PlaybackAttractorBasinKey>,
+) -> HashMap<PlaybackTrackKey, AudioStyleManifoldDescriptor> {
+    let mut result = HashMap::with_capacity(embeddings.len());
+    for (key, embedding) in embeddings {
+        let neighbor_similarities = neighbor_index
+            .neighbors
+            .get(key)
+            .into_iter()
+            .flatten()
+            .filter_map(|neighbor| {
+                let neighbor_embedding = embeddings.get(neighbor)?;
+                let similarity = centered_cosine(embedding, neighbor_embedding, mean)?;
+                similarity.is_finite().then_some((neighbor, similarity))
+            })
+            .take(AUDIO_STYLE_MANIFOLD_NEIGHBOR_TOP_K)
+            .collect::<Vec<_>>();
+
+        if neighbor_similarities.is_empty() {
+            result.insert(
+                key.clone(),
+                AudioStyleManifoldDescriptor {
+                    spectral_rank: 1.0,
+                    curvature: 0.0,
+                    boundary_pressure: 0.0,
+                },
+            );
+            continue;
+        }
+
+        let spectral_rank = audio_style_effective_rank_from_neighbor_similarities(
+            neighbor_similarities
+                .iter()
+                .map(|(_, similarity)| *similarity),
+        );
+        let density = local_density.get(key).copied().unwrap_or(0.0);
+        let curvature =
+            audio_style_curvature_from_neighbor_similarities(&neighbor_similarities, density);
+        let boundary_pressure =
+            audio_style_boundary_pressure_from_neighbor_basins(key, &neighbor_similarities, basins);
+
+        result.insert(
+            key.clone(),
+            AudioStyleManifoldDescriptor {
+                spectral_rank,
+                curvature,
+                boundary_pressure,
+            },
+        );
+    }
+    result
+}
+
+fn audio_style_effective_rank_from_neighbor_similarities(
+    similarities: impl IntoIterator<Item = f32>,
+) -> f32 {
+    let shifted = similarities
+        .into_iter()
+        .filter(|value| value.is_finite())
+        .map(|value| (value + 1.0).max(0.0).powi(2))
+        .collect::<Vec<_>>();
+    let total = shifted.iter().copied().sum::<f32>();
+    if total <= 1.0e-6 || !total.is_finite() {
+        return 1.0;
+    }
+
+    let entropy = shifted
+        .iter()
+        .copied()
+        .filter(|weight| *weight > 0.0)
+        .map(|weight| {
+            let probability = (weight / total).clamp(1.0e-8, 1.0);
+            -probability * probability.ln()
+        })
+        .sum::<f32>();
+    entropy.exp().clamp(1.0, AUDIO_STYLE_MANIFOLD_NEIGHBOR_TOP_K as f32)
+}
+
+fn audio_style_curvature_from_neighbor_similarities(
+    neighbor_similarities: &[(&PlaybackTrackKey, f32)],
+    density: f32,
+) -> f32 {
+    let count = neighbor_similarities.len();
+    if count <= 1 {
+        return 0.0;
+    }
+    let mean = neighbor_similarities
+        .iter()
+        .map(|(_, similarity)| *similarity)
+        .sum::<f32>()
+        / count as f32;
+    let variance = neighbor_similarities
+        .iter()
+        .map(|(_, similarity)| (*similarity - mean).powi(2))
+        .sum::<f32>()
+        / count as f32;
+    let scale = (density.abs() + mean.abs() + 0.25).max(1.0e-6);
+    (variance.sqrt() / scale).clamp(0.0, 1.0)
+}
+
+fn audio_style_boundary_pressure_from_neighbor_basins(
+    key: &PlaybackTrackKey,
+    neighbor_similarities: &[(&PlaybackTrackKey, f32)],
+    basins: &HashMap<PlaybackTrackKey, PlaybackAttractorBasinKey>,
+) -> f32 {
+    let Some(anchor_basin) = basins.get(key) else {
+        return 0.0;
+    };
+    let mut total = 0usize;
+    let mut outside = 0usize;
+    for (neighbor, _) in neighbor_similarities {
+        let Some(neighbor_basin) = basins.get(*neighbor) else {
+            continue;
+        };
+        total += 1;
+        if neighbor_basin != anchor_basin {
+            outside += 1;
+        }
+    }
+    if total == 0 {
+        return 0.0;
+    }
+    (outside as f32 / total as f32).clamp(0.0, 1.0)
 }
 
 fn self_supervised_style_basins_from_neighbors(
@@ -6252,6 +6488,11 @@ impl<'a> AudioStyleBasinResolver<'a> {
         Self { sampling_geometry }
     }
 
+    fn basin_for_key(&self, key: &PlaybackTrackKey) -> Option<PlaybackAttractorBasinKey> {
+        self.sampling_geometry
+            .and_then(|geometry| geometry.self_supervised_basins.get(key).cloned())
+    }
+
     fn basin_for_track(&self, track: &PlaybackTrack) -> Option<PlaybackAttractorBasinKey> {
         match self.sampling_geometry {
             Some(geometry) => geometry.self_supervised_basin_for_track(track),
@@ -6295,6 +6536,7 @@ impl PlaybackAttractorBasinPressure {
         let mut pressure = Self {
             current_basin: None,
             current_basin_run: 0,
+            recent_evidence_count: 0,
             fatigue: HashMap::new(),
             usage: HashMap::new(),
             candidate_top_pressure: candidate_topology_pressure(
@@ -6309,6 +6551,7 @@ impl PlaybackAttractorBasinPressure {
             let Some(basin) = basin_resolver.basin_for_track(track) else {
                 continue;
             };
+            pressure.recent_evidence_count += 1;
             decay_attractor_basin_map(&mut pressure.fatigue, AUDIO_STYLE_BASIN_FATIGUE_DECAY);
             decay_attractor_basin_map(&mut pressure.usage, AUDIO_STYLE_BASIN_HOMEOSTATIC_DECAY);
             *pressure.fatigue.entry(basin.clone()).or_insert(0.0) +=
@@ -6336,6 +6579,7 @@ impl PlaybackAttractorBasinPressure {
         let mut pressure = Self {
             current_basin: None,
             current_basin_run: 0,
+            recent_evidence_count: 0,
             fatigue: HashMap::new(),
             usage: HashMap::new(),
             candidate_top_pressure: candidate_topology_pressure(
@@ -6350,6 +6594,7 @@ impl PlaybackAttractorBasinPressure {
             let Some(basin) = source_resolver.basin_for_track(track) else {
                 continue;
             };
+            pressure.recent_evidence_count += 1;
             decay_attractor_basin_map(&mut pressure.fatigue, AUDIO_STYLE_BASIN_FATIGUE_DECAY);
             decay_attractor_basin_map(&mut pressure.usage, AUDIO_STYLE_BASIN_HOMEOSTATIC_DECAY);
             *pressure.fatigue.entry(basin.clone()).or_insert(0.0) +=
@@ -6377,12 +6622,16 @@ impl PlaybackAttractorBasinPressure {
             return 0.0;
         };
 
-        let fatigue =
-            self.fatigue.get(&basin).copied().unwrap_or(0.0) * AUDIO_STYLE_BASIN_FATIGUE_STRENGTH;
+        let evidence = self.route_evidence_confidence();
+        let fatigue = self.fatigue.get(&basin).copied().unwrap_or(0.0)
+            * AUDIO_STYLE_BASIN_FATIGUE_STRENGTH
+            * evidence;
         let usage_share = self.usage_share(&basin);
         let target_share = self.target_share.get(&basin).copied().unwrap_or(0.0);
         let homeostatic =
-            (usage_share - target_share).max(0.0) * AUDIO_STYLE_BASIN_HOMEOSTATIC_STRENGTH;
+            (usage_share - target_share).max(0.0)
+                * AUDIO_STYLE_BASIN_HOMEOSTATIC_STRENGTH
+                * evidence;
         let run_hazard = if self.current_basin.as_ref() == Some(&basin) {
             (self.current_basin_run as f32).max(1.0).ln() * AUDIO_STYLE_BASIN_RUN_HAZARD_STRENGTH
         } else {
@@ -6401,12 +6650,16 @@ impl PlaybackAttractorBasinPressure {
     }
 
     fn penalty_for_basin(&self, basin: &PlaybackAttractorBasinKey) -> f32 {
-        let fatigue =
-            self.fatigue.get(basin).copied().unwrap_or(0.0) * AUDIO_STYLE_BASIN_FATIGUE_STRENGTH;
+        let evidence = self.route_evidence_confidence();
+        let fatigue = self.fatigue.get(basin).copied().unwrap_or(0.0)
+            * AUDIO_STYLE_BASIN_FATIGUE_STRENGTH
+            * evidence;
         let usage_share = self.usage_share(basin);
         let target_share = self.target_share.get(basin).copied().unwrap_or(0.0);
         let homeostatic =
-            (usage_share - target_share).max(0.0) * AUDIO_STYLE_BASIN_HOMEOSTATIC_STRENGTH;
+            (usage_share - target_share).max(0.0)
+                * AUDIO_STYLE_BASIN_HOMEOSTATIC_STRENGTH
+                * evidence;
         let run_hazard = if self.current_basin.as_ref() == Some(basin) {
             (self.current_basin_run as f32).max(1.0).ln() * AUDIO_STYLE_BASIN_RUN_HAZARD_STRENGTH
         } else {
@@ -6449,6 +6702,187 @@ impl PlaybackAttractorBasinPressure {
             * AUDIO_STYLE_BIO_ROUTE_FUTURE_WINDOW.sqrt()
     }
 
+    fn route_field_gate(
+        &self,
+        anchor_basin: Option<&PlaybackAttractorBasinKey>,
+        track: &PlaybackTrack,
+        candidate_basins: &[Option<PlaybackAttractorBasinKey>],
+        candidate_similarities: &[f32],
+        candidate_index: usize,
+        basin_resolver: AudioStyleBasinResolver<'_>,
+    ) -> f32 {
+        let Some(current_basin) = self.current_basin.as_ref().or(anchor_basin) else {
+            return 1.0;
+        };
+        let Some(candidate_basin) = basin_resolver.basin_for_track(track) else {
+            return 1.0;
+        };
+        let Some(same_quality) = candidate_similarities
+            .get(candidate_index)
+            .copied()
+            .filter(|value| value.is_finite())
+        else {
+            return 1.0;
+        };
+        if &candidate_basin == current_basin {
+            return self.stream_continuation_gate_for_basin(
+                current_basin,
+                candidate_basins,
+                candidate_similarities,
+                same_quality,
+            );
+        }
+
+        self.alternative_route_gate_for_basin(
+            current_basin,
+            &candidate_basin,
+            candidate_basins,
+            candidate_similarities,
+            same_quality,
+        )
+    }
+
+    fn stream_continuation_gate_for_basin(
+        &self,
+        current_basin: &PlaybackAttractorBasinKey,
+        candidate_basins: &[Option<PlaybackAttractorBasinKey>],
+        candidate_similarities: &[f32],
+        same_quality: f32,
+    ) -> f32 {
+        let same_support = candidate_basins
+            .iter()
+            .filter(|basin| basin.as_ref() == Some(current_basin))
+            .count() as f32
+            / candidate_basins.len().max(1) as f32;
+        let other_quality = candidate_basins
+            .iter()
+            .zip(candidate_similarities.iter().copied())
+            .filter(|(basin, similarity)| {
+                basin.as_ref().is_some_and(|basin| basin != current_basin) && similarity.is_finite()
+            })
+            .map(|(_, similarity)| similarity)
+            .fold(-1.0_f32, f32::max);
+        let quality_margin = (same_quality - other_quality
+            + AUDIO_STYLE_STREAM_CONTINUATION_MARGIN)
+            .clamp(-1.0, 1.0);
+        let quality_floor = ((same_quality - AUDIO_STYLE_STREAM_CONTINUATION_QUALITY_FLOOR)
+            / (1.0 - AUDIO_STYLE_STREAM_CONTINUATION_QUALITY_FLOOR).max(1.0e-6))
+        .clamp(-1.0, 1.0);
+        let field_support = ((same_support - AUDIO_STYLE_STREAM_CONTINUATION_SUPPORT_NEUTRAL)
+            / (1.0 - AUDIO_STYLE_STREAM_CONTINUATION_SUPPORT_NEUTRAL).max(1.0e-6))
+        .clamp(-1.0, 1.0);
+        let fatigue = (self.fatigue.get(current_basin).copied().unwrap_or(0.0) - 1.0).max(0.0);
+        let overuse = (self.usage_share(current_basin)
+            - self.target_share.get(current_basin).copied().unwrap_or(0.0))
+        .max(0.0);
+        let evidence = self.route_evidence_confidence();
+        let maturity = self.route_stream_maturity();
+        let early_continuity = self.route_early_continuity();
+        let run_pressure = self.current_basin_run.saturating_sub(1) as f32;
+        let continuation = AUDIO_STYLE_STREAM_CONTINUATION_STRENGTH
+            * (AUDIO_STYLE_STREAM_CONTINUATION_QUALITY_STRENGTH * quality_margin
+                + AUDIO_STYLE_STREAM_CONTINUATION_LOW_QUALITY_STRENGTH
+                    * quality_floor
+                    * early_continuity.max(1.0 - maturity)
+                + AUDIO_STYLE_STREAM_CONTINUATION_SUPPORT_STRENGTH * field_support
+                + AUDIO_STYLE_ROUTE_EARLY_CONTINUITY_STRENGTH * early_continuity
+                - AUDIO_STYLE_STREAM_CONTINUATION_FATIGUE_STRENGTH * evidence * maturity * fatigue
+                - AUDIO_STYLE_STREAM_CONTINUATION_OVERUSE_STRENGTH * evidence * maturity * overuse
+                - AUDIO_STYLE_STREAM_CONTINUATION_RUN_STRENGTH
+                    * maturity
+                    * run_pressure.ln_1p());
+
+        let gate = continuation.clamp(-3.2, 3.2).exp().clamp(0.04, 12.0);
+        if quality_margin < 0.0 {
+            let relative_loss_gate =
+                (AUDIO_STYLE_STREAM_CONTINUATION_RELATIVE_LOSS_STRENGTH * quality_margin)
+                    .exp()
+                    .clamp(0.06, 1.0);
+            return gate.min(relative_loss_gate);
+        }
+        if quality_floor < 0.0 {
+            let low_quality_gate =
+                (AUDIO_STYLE_STREAM_CONTINUATION_LOW_QUALITY_STRENGTH * quality_floor)
+                    .exp()
+                    .clamp(0.12, 1.0);
+            return gate.min(low_quality_gate);
+        }
+        gate
+    }
+
+    fn alternative_route_gate_for_basin(
+        &self,
+        current_basin: &PlaybackAttractorBasinKey,
+        candidate_basin: &PlaybackAttractorBasinKey,
+        candidate_basins: &[Option<PlaybackAttractorBasinKey>],
+        candidate_similarities: &[f32],
+        candidate_quality: f32,
+    ) -> f32 {
+        let current_quality =
+            best_quality_for_basin(current_basin, candidate_basins, candidate_similarities);
+        let candidate_support = candidate_basins
+            .iter()
+            .filter(|basin| basin.as_ref() == Some(candidate_basin))
+            .count() as f32
+            / candidate_basins.len().max(1) as f32;
+        let quality_margin = (candidate_quality - current_quality
+            + AUDIO_STYLE_STREAM_CONTINUATION_MARGIN)
+            .clamp(-1.0, 1.0);
+        let field_support = ((candidate_support - AUDIO_STYLE_STREAM_CONTINUATION_SUPPORT_NEUTRAL)
+            / (1.0 - AUDIO_STYLE_STREAM_CONTINUATION_SUPPORT_NEUTRAL).max(1.0e-6))
+        .clamp(-1.0, 1.0);
+        let current_fatigue =
+            (self.fatigue.get(current_basin).copied().unwrap_or(0.0) - 1.0).max(0.0);
+        let current_overuse = (self.usage_share(current_basin)
+            - self.target_share.get(current_basin).copied().unwrap_or(0.0))
+        .max(0.0);
+        let candidate_underuse = (self
+            .target_share
+            .get(candidate_basin)
+            .copied()
+            .unwrap_or(0.0)
+            - self.usage_share(candidate_basin))
+        .max(0.0);
+        let candidate_fatigue =
+            (self.fatigue.get(candidate_basin).copied().unwrap_or(0.0) - 0.5).max(0.0);
+        let evidence = self.route_evidence_confidence();
+        let maturity = self.route_stream_maturity();
+        let run_pressure = self.current_basin_run.saturating_sub(1) as f32;
+        let escape_readiness = (maturity
+            * evidence
+            * (0.28 * current_fatigue
+                + 2.40 * current_overuse
+                + 0.42 * run_pressure.ln_1p()
+                + 0.50 * candidate_underuse))
+            .clamp(0.0, 1.25);
+        let quality_drive = if quality_margin > 0.0 {
+            quality_margin * escape_readiness.min(1.0)
+        } else {
+            quality_margin
+        };
+        let route = AUDIO_STYLE_STREAM_CONTINUATION_STRENGTH
+            * (AUDIO_STYLE_STREAM_CONTINUATION_QUALITY_STRENGTH * quality_drive
+                + AUDIO_STYLE_STREAM_CONTINUATION_SUPPORT_STRENGTH
+                    * field_support
+                    * escape_readiness
+                + AUDIO_STYLE_STREAM_CONTINUATION_FATIGUE_STRENGTH
+                    * evidence
+                    * maturity
+                    * current_fatigue
+                + AUDIO_STYLE_STREAM_CONTINUATION_OVERUSE_STRENGTH
+                    * evidence
+                    * maturity
+                    * current_overuse
+                + AUDIO_STYLE_STREAM_CONTINUATION_RUN_STRENGTH
+                    * maturity
+                    * run_pressure.ln_1p()
+                + AUDIO_STYLE_ROUTE_ALTERNATIVE_UNDERUSE_STRENGTH * candidate_underuse
+                - AUDIO_STYLE_ROUTE_ALTERNATIVE_FATIGUE_STRENGTH * candidate_fatigue
+                - AUDIO_STYLE_ROUTE_ALTERNATIVE_SWITCH_INERTIA * (1.0 - escape_readiness.min(1.0)));
+
+        route.clamp(-2.6, 2.8).exp().clamp(0.06, 16.0)
+    }
+
     fn usage_share(&self, basin: &PlaybackAttractorBasinKey) -> f32 {
         let total = self
             .usage
@@ -6461,6 +6895,42 @@ impl PlaybackAttractorBasinPressure {
         }
         self.usage.get(basin).copied().unwrap_or(0.0).max(0.0) / total
     }
+
+    fn route_evidence_confidence(&self) -> f32 {
+        let history_evidence = ((self.recent_evidence_count as f32
+            - AUDIO_STYLE_ROUTE_EVIDENCE_WARMUP_OFFSET)
+            / AUDIO_STYLE_ROUTE_EVIDENCE_WARMUP_WIDTH.max(1.0e-6))
+        .clamp(0.0, 1.0);
+        history_evidence.max(self.route_stream_maturity())
+    }
+
+    fn route_stream_maturity(&self) -> f32 {
+        ((self.current_basin_run as f32 - AUDIO_STYLE_ROUTE_STREAM_MATURITY_START)
+            / AUDIO_STYLE_ROUTE_STREAM_MATURITY_WIDTH.max(1.0e-6))
+        .clamp(0.0, 1.0)
+    }
+
+    fn route_early_continuity(&self) -> f32 {
+        if self.current_basin_run < 2 {
+            return 0.0;
+        }
+        ((3.0 - self.current_basin_run as f32) / 2.0).clamp(0.0, 1.0)
+    }
+}
+
+fn best_quality_for_basin(
+    target_basin: &PlaybackAttractorBasinKey,
+    candidate_basins: &[Option<PlaybackAttractorBasinKey>],
+    candidate_similarities: &[f32],
+) -> f32 {
+    candidate_basins
+        .iter()
+        .zip(candidate_similarities.iter().copied())
+        .filter(|(basin, similarity)| {
+            basin.as_ref() == Some(target_basin) && similarity.is_finite()
+        })
+        .map(|(_, similarity)| similarity)
+        .fold(-1.0_f32, f32::max)
 }
 
 fn candidate_topology_pressure<R: PlaybackBasinResolver + Copy>(
@@ -7041,11 +7511,173 @@ impl AudioStyleControlGateDecision {
     }
 }
 
+impl AudioStyleRouteFieldDecision {
+    fn from_recent_history(
+        candidates: &[PlaybackTrack],
+        anchor_key: &PlaybackTrackKey,
+        basin_pressure: &PlaybackAttractorBasinPressure,
+        embeddings: &AudioStyleEmbeddingMap,
+        geometry: &AudioStyleSamplingGeometry,
+        recently_played_tracks: &[PlaybackTrack],
+        basin_resolver: AudioStyleBasinResolver<'_>,
+    ) -> Self {
+        let Some(anchor_embedding) = embeddings.get(anchor_key) else {
+            return Self {
+                gates: vec![1.0; candidates.len()],
+            };
+        };
+        let Some(previous_embedding) = recently_played_tracks
+            .iter()
+            .rev()
+            .filter_map(|track| embeddings.get(&PlaybackTrackKey::from_track(track)))
+            .find(|embedding| !Arc::ptr_eq(embedding, anchor_embedding))
+        else {
+            return Self {
+                gates: vec![1.0; candidates.len()],
+            };
+        };
+        let Some(route_axis) = audio_style_route_velocity_axis(
+            previous_embedding.as_ref(),
+            anchor_embedding.as_ref(),
+            &geometry.mean,
+        ) else {
+            return Self {
+                gates: vec![1.0; candidates.len()],
+            };
+        };
+
+        let gates = candidates
+            .iter()
+            .map(|candidate| {
+                let Some(current_basin) = basin_pressure.current_basin.as_ref() else {
+                    return 1.0;
+                };
+                if basin_resolver.basin_for_track(candidate).as_ref() != Some(current_basin) {
+                    return 1.0;
+                }
+                let key = PlaybackTrackKey::from_track(candidate);
+                let Some(candidate_embedding) = embeddings.get(&key) else {
+                    return 1.0;
+                };
+                let alignment = audio_style_route_candidate_alignment(
+                    anchor_embedding.as_ref(),
+                    candidate_embedding.as_ref(),
+                    &geometry.mean,
+                    &route_axis,
+                )
+                .unwrap_or(0.0);
+                (AUDIO_STYLE_ROUTE_TRAJECTORY_STRENGTH * alignment)
+                    .clamp(-0.90, 0.90)
+                    .exp()
+                    .clamp(0.40, 2.45)
+            })
+            .collect();
+
+        Self { gates }
+    }
+}
+
+impl AudioStyleManifoldFieldDecision {
+    fn from_support(
+        candidates: &[PlaybackTrack],
+        anchor_key: &PlaybackTrackKey,
+        support: &AudioStyleCandidateSupport,
+        geometry: &AudioStyleSamplingGeometry,
+        basin_pressure: &PlaybackAttractorBasinPressure,
+        basin_resolver: AudioStyleBasinResolver<'_>,
+    ) -> Self {
+        let Some(anchor_manifold) = geometry.manifold_for_key(anchor_key) else {
+            return Self {
+                stream_gates: vec![1.0; candidates.len()],
+                route_caps: vec![1.0; candidates.len()],
+            };
+        };
+        let Some(current_basin) = basin_pressure.current_basin.as_ref() else {
+            return Self {
+                stream_gates: vec![1.0; candidates.len()],
+                route_caps: vec![1.0; candidates.len()],
+            };
+        };
+
+        let capacity = audio_style_manifold_residence_capacity(anchor_manifold);
+        let maturity =
+            ((basin_pressure.current_basin_run.saturating_sub(1) as f32) / capacity).clamp(0.0, 1.0);
+        let current_overuse = basin_pressure.usage_share(current_basin);
+        let escape_pressure = (maturity
+            * (0.42 * (anchor_manifold.boundary_pressure * 1.35).clamp(0.0, 1.0)
+                + 0.34 * anchor_manifold.curvature.clamp(0.0, 1.0)
+                + 0.24 * (current_overuse * 5.0).clamp(0.0, 1.0)))
+        .clamp(0.0, 1.0);
+
+        let decisions: Vec<(f32, f32)> = candidates
+            .iter()
+            .enumerate()
+            .map(|(index, candidate)| {
+                let key = PlaybackTrackKey::from_track(candidate);
+                let candidate_manifold = geometry
+                    .manifold_for_key(&key)
+                    .unwrap_or(anchor_manifold);
+                let Some(candidate_basin) = basin_resolver.basin_for_track(candidate) else {
+                    return (1.0, 1.0);
+                };
+                let same_basin = &candidate_basin == current_basin;
+                let rank_support = (candidate_manifold.spectral_rank.max(1.0).sqrt()
+                    * AUDIO_STYLE_MANIFOLD_RESIDENCE_RANK_SCALE)
+                    .clamp(0.0, 1.0);
+                let density_delta = (geometry.local_density.get(&key).copied().unwrap_or(0.0)
+                    - geometry.local_density.get(anchor_key).copied().unwrap_or(0.0))
+                .max(0.0);
+                let curvature_penalty =
+                    (candidate_manifold.curvature - anchor_manifold.curvature).max(0.0);
+                let continuity = support
+                    .similarities
+                    .get(index)
+                    .and_then(|value| *value)
+                    .unwrap_or(-1.0)
+                    .clamp(-1.0, 1.0);
+                let capture_quality = ((continuity - AUDIO_STYLE_SEMANTIC_CONTINUITY_FLOOR)
+                    / (1.0 - AUDIO_STYLE_SEMANTIC_CONTINUITY_FLOOR).max(1.0e-6))
+                .clamp(0.0, 1.0);
+
+                if same_basin {
+                    let stream_drive = AUDIO_STYLE_MANIFOLD_CONTINUITY_STRENGTH
+                        * (1.0 - escape_pressure)
+                        * rank_support
+                        - AUDIO_STYLE_MANIFOLD_ESCAPE_STRENGTH * escape_pressure
+                        - 0.34 * density_delta
+                        - 0.22 * curvature_penalty;
+                    (stream_drive.clamp(-2.20, 1.10).exp().clamp(0.08, 3.00), 1.0)
+                } else {
+                    let low_quality_cap = if capture_quality < 0.20 {
+                        (0.12 + 2.20 * capture_quality.powi(2)).clamp(0.08, 0.52)
+                    } else {
+                        1.0
+                    };
+                    (1.0, low_quality_cap)
+                }
+            })
+            .collect();
+
+        let (stream_gates, route_caps) = decisions.into_iter().unzip();
+        Self {
+            stream_gates,
+            route_caps,
+        }
+    }
+}
+
+fn audio_style_manifold_residence_capacity(manifold: AudioStyleManifoldDescriptor) -> f32 {
+    let spectral = manifold.spectral_rank.max(1.0);
+    let boundary = manifold.boundary_pressure.clamp(0.0, 1.0);
+    (spectral.sqrt() * (1.25 - 0.55 * boundary)).max(1.0)
+}
+
 impl AudioStyleListeningAdaptationDecision {
     fn from_support(
         candidates: &[PlaybackTrack],
         support: &AudioStyleCandidateSupport,
         control_gate: &AudioStyleControlGateDecision,
+        anchor_key: &PlaybackTrackKey,
         basin_pressure: &PlaybackAttractorBasinPressure,
         source_basin_pressure: &PlaybackAttractorBasinPressure,
         local_neighborhood_pressure: Option<&AudioStyleLocalNeighborhoodPressure<'_>>,
@@ -7067,6 +7699,35 @@ impl AudioStyleListeningAdaptationDecision {
         let source_gate = audio_style_source_repetition_gate(candidates, source_basin_pressure);
         let basin_escape =
             audio_style_basin_escape_gate(candidates, basin_pressure, basin_resolver);
+        let anchor_basin = basin_resolver.basin_for_key(anchor_key);
+        let route_field = AudioStyleRouteFieldDecision::from_recent_history(
+            candidates,
+            anchor_key,
+            basin_pressure,
+            embeddings,
+            geometry,
+            recently_played_tracks,
+            basin_resolver,
+        );
+        let manifold_field = AudioStyleManifoldFieldDecision::from_support(
+            candidates,
+            anchor_key,
+            support,
+            geometry,
+            basin_pressure,
+            basin_resolver,
+        );
+        let model_basin_support =
+            audio_style_model_basin_support_gate(candidates, geometry, basin_resolver);
+        let candidate_basins = candidates
+            .iter()
+            .map(|candidate| basin_resolver.basin_for_track(candidate))
+            .collect::<Vec<_>>();
+        let candidate_similarities = support
+            .similarities
+            .iter()
+            .map(|value| value.unwrap_or(-1.0).clamp(-1.0, 1.0))
+            .collect::<Vec<_>>();
         let mut pre_homeostatic = Vec::with_capacity(candidates.len());
         let mut diagnostics = Vec::with_capacity(candidates.len());
 
@@ -7082,8 +7743,11 @@ impl AudioStyleListeningAdaptationDecision {
             let local_gate = local_neighborhood_fatigue_gate(local_fatigue_value);
             let basin_penalty =
                 basin_pressure.penalty_for_track(&candidates[index], basin_resolver);
-            let source_penalty = source_basin_pressure
+            let mut source_penalty = source_basin_pressure
                 .source_penalty_for_track(&candidates[index], PlaybackSourceBasinResolver);
+            if candidates[index].liked {
+                source_penalty *= 0.25;
+            }
             let damping = basin_penalty + source_penalty + local_fatigue_value;
             let fatigue_gate = audio_style_listening_fatigue_gate(&candidates[index], damping);
             let continuity = support
@@ -7096,17 +7760,60 @@ impl AudioStyleListeningAdaptationDecision {
             let novelty_gate = audio_style_learned_novelty_gate(continuity);
             let route_drive =
                 basin_pressure.future_deficit_for_track(&candidates[index], basin_resolver);
-            let route_recovery =
-                audio_style_route_recovery_gate(route_drive, basin_pressure, source_basin_pressure);
+            let model_support = model_basin_support.get(index).copied().unwrap_or(1.0);
+            let route_capture_support = if candidates.len() <= 2 {
+                1.0
+            } else {
+                audio_style_route_capture_support_gate(model_support)
+            };
+            let manifold_stream_gate = manifold_field
+                .stream_gates
+                .get(index)
+                .copied()
+                .unwrap_or(1.0);
+            let manifold_route_cap = manifold_field
+                .route_caps
+                .get(index)
+                .copied()
+                .unwrap_or(1.0);
+            let route_recovery = audio_style_route_bonus_gate(
+                audio_style_route_recovery_gate(
+                    route_drive,
+                    basin_pressure,
+                    source_basin_pressure,
+                ),
+                route_capture_support,
+            );
+            let stream_continuation = audio_style_route_bonus_gate(
+                basin_pressure.route_field_gate(
+                    anchor_basin.as_ref(),
+                    &candidates[index],
+                    &candidate_basins,
+                    &candidate_similarities,
+                    index,
+                    basin_resolver,
+                ),
+                route_capture_support,
+            );
+            let stream_continuation =
+                (stream_continuation * manifold_stream_gate).clamp(0.02, 18.0);
+            let basin_escape_gate = audio_style_route_bonus_gate(
+                basin_escape.get(index).copied().unwrap_or(1.0),
+                route_capture_support,
+            );
             let weight = base
                 * control
                 * local_gate
                 * novelty_gate
+                * stream_continuation
+                * route_field.gates.get(index).copied().unwrap_or(1.0)
+                * manifold_route_cap
+                * model_support
                 * route_recovery
                 * listener_recovery.get(index).copied().unwrap_or(1.0)
                 * repeat_gate.get(index).copied().unwrap_or(1.0)
                 * source_gate.get(index).copied().unwrap_or(1.0)
-                * basin_escape.get(index).copied().unwrap_or(1.0)
+                * basin_escape_gate
                 * fatigue_gate;
             let weight = if weight.is_finite() {
                 weight.max(0.0)
@@ -7121,6 +7828,7 @@ impl AudioStyleListeningAdaptationDecision {
                 semantic_gate,
                 novelty,
                 novelty_gate,
+                stream_gate: stream_continuation,
                 damping,
                 local_gate,
                 final_weight: weight,
@@ -7364,6 +8072,72 @@ fn audio_style_support_topology_health(
     })
 }
 
+fn audio_style_route_velocity_axis(
+    previous: &AudioStyleEmbedding,
+    anchor: &AudioStyleEmbedding,
+    mean: &[f32],
+) -> Option<Vec<f32>> {
+    if previous.values.len() != AUDIO_STYLE_EMBEDDING_WIDTH
+        || anchor.values.len() != AUDIO_STYLE_EMBEDDING_WIDTH
+        || mean.len() != AUDIO_STYLE_EMBEDDING_WIDTH
+    {
+        return None;
+    }
+    let mut axis = Vec::with_capacity(AUDIO_STYLE_EMBEDDING_WIDTH);
+    let mut norm = 0.0_f32;
+    for ((previous_value, anchor_value), mean_value) in previous
+        .values
+        .iter()
+        .zip(anchor.values.iter())
+        .zip(mean.iter())
+    {
+        let value = (anchor_value - mean_value) - (previous_value - mean_value);
+        axis.push(value);
+        norm += value * value;
+    }
+    let norm = norm.sqrt();
+    if norm <= 1.0e-6 || !norm.is_finite() {
+        return None;
+    }
+    for value in &mut axis {
+        *value /= norm;
+    }
+    Some(axis)
+}
+
+fn audio_style_route_candidate_alignment(
+    anchor: &AudioStyleEmbedding,
+    candidate: &AudioStyleEmbedding,
+    mean: &[f32],
+    route_axis: &[f32],
+) -> Option<f32> {
+    if anchor.values.len() != AUDIO_STYLE_EMBEDDING_WIDTH
+        || candidate.values.len() != AUDIO_STYLE_EMBEDDING_WIDTH
+        || mean.len() != AUDIO_STYLE_EMBEDDING_WIDTH
+        || route_axis.len() != AUDIO_STYLE_EMBEDDING_WIDTH
+    {
+        return None;
+    }
+    let mut dot = 0.0_f32;
+    let mut norm = 0.0_f32;
+    for (((candidate_value, anchor_value), mean_value), axis_value) in candidate
+        .values
+        .iter()
+        .zip(anchor.values.iter())
+        .zip(mean.iter())
+        .zip(route_axis.iter())
+    {
+        let value = (candidate_value - mean_value) - (anchor_value - mean_value);
+        dot += value * axis_value;
+        norm += value * value;
+    }
+    let norm = norm.sqrt();
+    if norm <= 1.0e-6 || !norm.is_finite() {
+        return None;
+    }
+    Some((dot / norm).clamp(-1.0, 1.0))
+}
+
 fn audio_style_support_effective_width(weights: &[f32]) -> f32 {
     let squared = weights.iter().map(|weight| weight * weight).sum::<f32>();
     if squared <= 1.0e-6 || !squared.is_finite() {
@@ -7557,6 +8331,7 @@ fn select_next_audio_style_candidate(
         candidates,
         &support,
         &control_gate,
+        anchor_key,
         &basin_pressure,
         &source_basin_pressure,
         Some(&local_neighborhood_pressure),
@@ -7706,6 +8481,7 @@ fn select_centerless_audio_style_candidate(
         candidates,
         &support,
         &control_gate,
+        &PlaybackTrackKey::empty_anchor(),
         &basin_pressure,
         &source_basin_pressure,
         None,
@@ -7834,8 +8610,12 @@ fn audio_style_distributed_repeat_gate(
     candidates
         .iter()
         .map(|candidate| {
-            if !candidate.liked && recent_keys.contains(&PlaybackTrackKey::from_track(candidate)) {
-                AUDIO_STYLE_DISTRIBUTED_REPEAT_GATE_FLOOR
+            if recent_keys.contains(&PlaybackTrackKey::from_track(candidate)) {
+                if candidate.liked {
+                    AUDIO_STYLE_DISTRIBUTED_LIKED_REPEAT_GATE_FLOOR
+                } else {
+                    AUDIO_STYLE_DISTRIBUTED_REPEAT_GATE_FLOOR
+                }
             } else {
                 1.0
             }
@@ -7890,6 +8670,58 @@ fn audio_style_basin_escape_gate(
             (1.0 + run_drive).min(AUDIO_STYLE_BIO_ROUTE_BASIN_ESCAPE_CAP)
         })
         .collect()
+}
+
+fn audio_style_model_basin_support_gate(
+    candidates: &[PlaybackTrack],
+    geometry: &AudioStyleSamplingGeometry,
+    basin_resolver: AudioStyleBasinResolver<'_>,
+) -> Vec<f32> {
+    if candidates.len() <= 2 {
+        return vec![1.0; candidates.len()];
+    }
+    let mut global_basin_counts = HashMap::<PlaybackAttractorBasinKey, usize>::new();
+    for basin in geometry.self_supervised_basins.values() {
+        *global_basin_counts.entry(basin.clone()).or_insert(0) += 1;
+    }
+    candidates
+        .iter()
+        .map(|candidate| {
+            let Some(basin) = basin_resolver.basin_for_track(candidate) else {
+                return 1.0;
+            };
+            match global_basin_counts.get(&basin).copied().unwrap_or(0) {
+                0 => 1.0,
+                1 => {
+                    let key = PlaybackTrackKey::from_track(candidate);
+                    let density = geometry.local_density.get(&key).copied().unwrap_or(0.0);
+                    let density_gate = (1.0 + density.max(0.0)).recip().clamp(0.55, 1.0);
+                    (AUDIO_STYLE_MODEL_BASIN_SUPPORT_SINGLETON_GATE * density_gate).clamp(0.32, 1.0)
+                }
+                2 => AUDIO_STYLE_MODEL_BASIN_SUPPORT_PAIR_GATE,
+                _ => 1.0,
+            }
+        })
+        .collect()
+}
+
+fn audio_style_route_capture_support_gate(model_basin_support: f32) -> f32 {
+    if !model_basin_support.is_finite() {
+        return 1.0;
+    }
+    ((model_basin_support - AUDIO_STYLE_MODEL_BASIN_SUPPORT_SINGLETON_GATE)
+        / (1.0 - AUDIO_STYLE_MODEL_BASIN_SUPPORT_SINGLETON_GATE).max(1.0e-6))
+    .clamp(0.0, 1.0)
+}
+
+fn audio_style_route_bonus_gate(gate: f32, capture_support: f32) -> f32 {
+    if !gate.is_finite() {
+        return 1.0;
+    }
+    if gate <= 1.0 {
+        return gate;
+    }
+    1.0 + (gate - 1.0) * capture_support.clamp(0.0, 1.0)
 }
 
 fn audio_style_route_recovery_gate(
@@ -8031,6 +8863,7 @@ pub(crate) fn audio_style_semantic_continuity_gate_for_test(
     let basin_pressure = PlaybackAttractorBasinPressure {
         current_basin: None,
         current_basin_run: basin_run,
+        recent_evidence_count: basin_run,
         fatigue: HashMap::new(),
         usage: HashMap::new(),
         candidate_top_pressure: HashMap::new(),
@@ -8039,6 +8872,7 @@ pub(crate) fn audio_style_semantic_continuity_gate_for_test(
     let source_basin_pressure = PlaybackAttractorBasinPressure {
         current_basin: None,
         current_basin_run: source_run,
+        recent_evidence_count: source_run,
         fatigue: HashMap::new(),
         usage: HashMap::new(),
         candidate_top_pressure: HashMap::new(),
@@ -8058,6 +8892,9 @@ fn audio_style_source_repetition_gate(
     candidates
         .iter()
         .map(|candidate| {
+            if candidate.liked {
+                return 1.0;
+            }
             let penalty =
                 source_basin_pressure.source_penalty_for_track(candidate, source_resolver);
             (1.0 / (1.0 + AUDIO_STYLE_BIO_ROUTE_SOURCE_FATIGUE_STRENGTH * penalty.max(0.0)))
@@ -9510,6 +10347,125 @@ pub(crate) fn choose_centerless_audio_style_candidate_for_test(
 #[cfg(test)]
 pub(crate) fn audio_style_training_path_is_transient_for_test(path: &Path) -> bool {
     audio_style_training_path_is_transient(path)
+}
+
+#[cfg(test)]
+pub(crate) fn audio_style_stream_continuation_gate_for_test(
+    current_run: usize,
+    fatigue: f32,
+    usage_share: f32,
+    target_share: f32,
+    same_candidate_count: usize,
+    other_candidate_count: usize,
+    same_quality: f32,
+    other_quality: f32,
+) -> f32 {
+    let current_basin = PlaybackAttractorBasinKey {
+        value: "current".to_string(),
+    };
+    let other_basin = PlaybackAttractorBasinKey {
+        value: "other".to_string(),
+    };
+    let mut candidate_basins = Vec::new();
+    let mut candidate_similarities = Vec::new();
+    for _ in 0..same_candidate_count {
+        candidate_basins.push(Some(current_basin.clone()));
+        candidate_similarities.push(same_quality);
+    }
+    for _ in 0..other_candidate_count {
+        candidate_basins.push(Some(other_basin.clone()));
+        candidate_similarities.push(other_quality);
+    }
+    let mut pressure = PlaybackAttractorBasinPressure {
+        current_basin: Some(current_basin.clone()),
+        current_basin_run: current_run,
+        recent_evidence_count: current_run,
+        fatigue: HashMap::new(),
+        usage: HashMap::new(),
+        candidate_top_pressure: HashMap::new(),
+        target_share: HashMap::new(),
+    };
+    pressure.fatigue.insert(current_basin.clone(), fatigue);
+    pressure
+        .usage
+        .insert(current_basin.clone(), usage_share.max(0.0));
+    pressure
+        .usage
+        .insert(other_basin.clone(), (1.0 - usage_share).max(0.0));
+    pressure
+        .target_share
+        .insert(current_basin.clone(), target_share.max(0.0));
+    pressure
+        .target_share
+        .insert(other_basin, (1.0 - target_share).max(0.0));
+    pressure.stream_continuation_gate_for_basin(
+        &current_basin,
+        &candidate_basins,
+        &candidate_similarities,
+        same_quality,
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn audio_style_alternative_route_gate_for_test(
+    current_run: usize,
+    current_fatigue: f32,
+    current_usage_share: f32,
+    current_target_share: f32,
+    alternative_target_share: f32,
+    current_candidate_count: usize,
+    alternative_candidate_count: usize,
+    current_quality: f32,
+    alternative_quality: f32,
+) -> f32 {
+    let current_basin = PlaybackAttractorBasinKey {
+        value: "current".to_string(),
+    };
+    let alternative_basin = PlaybackAttractorBasinKey {
+        value: "alternative".to_string(),
+    };
+    let mut candidate_basins = Vec::new();
+    let mut candidate_similarities = Vec::new();
+    for _ in 0..current_candidate_count {
+        candidate_basins.push(Some(current_basin.clone()));
+        candidate_similarities.push(current_quality);
+    }
+    for _ in 0..alternative_candidate_count {
+        candidate_basins.push(Some(alternative_basin.clone()));
+        candidate_similarities.push(alternative_quality);
+    }
+    let mut pressure = PlaybackAttractorBasinPressure {
+        current_basin: Some(current_basin.clone()),
+        current_basin_run: current_run,
+        recent_evidence_count: current_run,
+        fatigue: HashMap::new(),
+        usage: HashMap::new(),
+        candidate_top_pressure: HashMap::new(),
+        target_share: HashMap::new(),
+    };
+    pressure
+        .fatigue
+        .insert(current_basin.clone(), current_fatigue);
+    pressure
+        .usage
+        .insert(current_basin.clone(), current_usage_share.max(0.0));
+    pressure.usage.insert(
+        alternative_basin.clone(),
+        (1.0 - current_usage_share).max(0.0),
+    );
+    pressure
+        .target_share
+        .insert(current_basin.clone(), current_target_share.max(0.0));
+    pressure
+        .target_share
+        .insert(alternative_basin.clone(), alternative_target_share.max(0.0));
+    pressure.alternative_route_gate_for_basin(
+        &current_basin,
+        &alternative_basin,
+        &candidate_basins,
+        &candidate_similarities,
+        alternative_quality,
+    )
 }
 
 #[cfg(test)]
