@@ -96,6 +96,12 @@ export const LeftControls = memo(function LeftControlsComponent({
               o="opacity-30"
             />
           )}
+          <CtrlButton
+            label="Remote share"
+            icon={<icons.stacksquare size={14} />}
+            className="text-emerald-600 dark:text-emerald-300"
+            o="opacity-70"
+          />
         </>
       )}
     </div>

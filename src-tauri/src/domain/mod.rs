@@ -6,3 +6,4 @@ pub mod meta;
 pub mod player;
 pub mod playlist_playback;
 pub mod playlists;
+pub mod remote_share;

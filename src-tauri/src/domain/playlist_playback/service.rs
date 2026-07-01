@@ -922,6 +922,19 @@ async fn resolve_prepared_playlist_initial_track(
 }
 
 #[cfg(not(test))]
+pub(crate) async fn consume_prepared_playlist_initial_track(
+    app: &AppHandle,
+    playlist_name: &str,
+) -> Result<Option<PlaybackTrack>> {
+    let Some(initial) = resolve_prepared_playlist_initial_track(app, playlist_name).await? else {
+        return Ok(None);
+    };
+    let track = initial.track.clone();
+    consume_playlist_initial_prepared_source(&Some(initial.prepared_source));
+    Ok(Some(track))
+}
+
+#[cfg(not(test))]
 fn request_first_track_loudness_evidence(track: &PlaybackTrack) {
     if playlist_track_needs_loudness_evidence(track) {
         loudness_evidence::request_first_slot_playback_track_loudness_evidence(track);
@@ -1884,6 +1897,18 @@ async fn load_random_playlist_track_resolution_window(
 }
 
 #[cfg(not(test))]
+pub(crate) async fn load_random_playlist_playback_tracks(
+    app: &AppHandle,
+    playlist_name: &str,
+    limit: usize,
+) -> Result<Vec<PlaybackTrack>> {
+    Ok(load_random_playlist_track_resolution_window(app, playlist_name, limit)
+        .await?
+        .resolution
+        .tracks)
+}
+
+#[cfg(not(test))]
 async fn load_playlist_track_resolution_window(
     app: &AppHandle,
     playlist_name: &str,
@@ -1956,7 +1981,7 @@ impl PlaylistPlaybackRecommendationMode {
 }
 
 #[cfg(not(test))]
-fn propose_playlist_playback_queue_with_mode(
+pub(crate) fn propose_playlist_playback_queue_with_mode(
     request: PlaylistPlaybackRecommendationRequest,
     mode: PlaylistPlaybackRecommendationMode,
     should_log_selection: bool,

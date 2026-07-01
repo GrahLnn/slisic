@@ -15,6 +15,7 @@ dependencies = [
  "anyhow",
  "appdb",
  "async-trait",
+ "axum",
  "block2",
  "burn-ndarray",
  "burn-tensor",
@@ -51,7 +52,9 @@ dependencies = [
  "tauri-plugin-updater",
  "tauri-specta",
  "tokio",
+ "tokio-util",
  "toml 1.1.2+spec-1.1.0",
+ "tower-http 0.7.0",
  "walkdir",
  "webview2-com 0.39.1",
  "windows 0.62.2",
@@ -530,10 +533,13 @@ checksum = "31b698c5f9a010f6573133b09e0de5408834d0c82f8d7475a89fc1867a71cd90"
 dependencies = [
  "axum-core",
  "bytes",
+ "form_urlencoded",
  "futures-util",
  "http",
  "http-body",
  "http-body-util",
+ "hyper",
+ "hyper-util",
  "itoa",
  "matchit",
  "memchr",
@@ -541,10 +547,15 @@ dependencies = [
  "percent-encoding",
  "pin-project-lite",
  "serde_core",
+ "serde_json",
+ "serde_path_to_error",
+ "serde_urlencoded",
  "sync_wrapper",
+ "tokio",
  "tower",
  "tower-layer",
  "tower-service",
+ "tracing",
 ]
 
 [[package]]
@@ -563,6 +574,7 @@ dependencies = [
  "sync_wrapper",
  "tower-layer",
  "tower-service",
+ "tracing",
 ]
 
 [[package]]
@@ -6716,7 +6728,7 @@ dependencies = [
  "tokio-rustls",
  "tokio-util",
  "tower",
- "tower-http",
+ "tower-http 0.6.11",
  "tower-service",
  "url",
  "wasm-bindgen",
@@ -7133,6 +7145,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
 
 [[package]]
+name = "ryu"
+version = "1.0.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
+
+[[package]]
 name = "salsa20"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7396,6 +7414,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_path_to_error"
+version = "0.1.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "10a9ff822e371bb5403e391ecd83e182e0e77ba7f6fe0160b795797109d1b457"
+dependencies = [
+ "itoa",
+ "serde",
+ "serde_core",
+]
+
+[[package]]
 name = "serde_repr"
 version = "0.1.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7422,6 +7451,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6662b5879511e06e8999a8a235d848113e942c9124f211511b16466ee2995f26"
 dependencies = [
  "serde_core",
+]
+
+[[package]]
+name = "serde_urlencoded"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3491c14715ca2294c4d6a88f15e84739788c1d030eed8c110436aafdaa2f3fd"
+dependencies = [
+ "form_urlencoded",
+ "itoa",
+ "ryu",
+ "serde",
 ]
 
 [[package]]
@@ -9443,6 +9484,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "tower-http"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b11f75e912b0c2be01b63d8cf8057b8c3f97cf34abb3d431a3a4c8675498e233"
+dependencies = [
+ "bitflags 2.13.0",
+ "bytes",
+ "http",
+ "percent-encoding",
+ "pin-project-lite",
+ "tower-layer",
+ "tower-service",
+]
+
+[[package]]
 name = "tower-layer"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9460,6 +9516,7 @@ version = "0.1.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "63e71662fa4b2a2c3a26f570f037eb95bb1f85397f3cd8076caed2f026a6d100"
 dependencies = [
+ "log",
  "pin-project-lite",
  "tracing-attributes",
  "tracing-core",

@@ -249,6 +249,7 @@ pub fn run() {
                     domain::downloads::service::initialize_runtime(handle.clone());
                     domain::playlist_playback::service::initialize_runtime(handle.clone());
                     domain::player::service::initialize_runtime(handle.clone());
+                    domain::remote_share::initialize_runtime(handle.clone());
                     utils::binaries::spawn_binary_maintenance(
                         handle.clone(),
                         utils::binaries::BinaryMaintenanceActivity::new(),
