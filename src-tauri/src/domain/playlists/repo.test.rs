@@ -1938,6 +1938,91 @@ fn canonical_music_identity_shares_loudness_state_across_future_occurrences() {
 }
 
 #[test]
+fn loudness_profile_identity_ignores_non_unique_group_relations() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+        bootstrap_collection_write_schema().await;
+        bootstrap_relation_table("grouped").await;
+
+        let collection_url = "https://example.com/loudness-multi-group";
+        let music_url = format!("{collection_url}#shared");
+        let owner = collection_owner("Demo", collection_url, "youtube/loudness-multi-group");
+        let first_group = Group {
+            name: "Disc 1".to_string(),
+            url: format!("{collection_url}#disc-1"),
+            collection: owner.clone(),
+            folder: "Disc 1".to_string(),
+        };
+        let music = Music {
+            occurrence_id: String::new(),
+            name: "Shared Loudness".to_string(),
+            alias: "Shared Loudness".to_string(),
+            group: first_group,
+            canonical_music_id: music_canonical_id(&music_url, 0, 180_000),
+            url: music_url.clone(),
+            path: Some("Disc 1/Shared Loudness.m4a".to_string()),
+            start_ms: 0,
+            end_ms: 180_000,
+            liked: false,
+            loudness_profile: None,
+        };
+
+        upsert_collection(&collection_with_musics(
+            collection_url,
+            "youtube/loudness-multi-group",
+            Some(false),
+            vec![music],
+        ))
+        .await
+        .expect("collection should save");
+
+        let db = get_db().expect("global playlist repo database handle should exist");
+        let mut result = db
+            .query("SELECT VALUE id FROM $table WHERE url = $url LIMIT 1;")
+            .bind(("table", Table::from(Music::table_name())))
+            .bind(("url", music_url.clone()))
+            .await
+            .expect("music lookup query should succeed")
+            .check()
+            .expect("music lookup response should succeed");
+        let music_record: Option<RecordId> = result
+            .take(0)
+            .expect("music lookup result should deserialize");
+        let music_record = music_record.expect("music record should exist");
+        let second_group_record = RecordId::new(
+            Group::table_name(),
+            "synthetic-second-group-for-loudness-test",
+        );
+        db.query("INSERT RELATION INTO grouped { in: $group, out: $music } RETURN NONE;")
+            .bind(("group", second_group_record))
+            .bind(("music", music_record))
+            .await
+            .expect("extra group relation insert should succeed")
+            .check()
+            .expect("extra group relation insert should check");
+
+        let profile =
+            LoudnessProfile::from_integrated_lufs(-17.25).expect("test LUFS should be valid");
+        let updated = set_music_loudness_profile_by_identity(&music_url, 0, 180_000, profile)
+            .await
+            .expect("loudness profile should save without hydrating group relation")
+            .expect("music row should exist");
+
+        assert_eq!(updated.loudness_profile, Some(profile));
+        assert_eq!(
+            get_music_loudness_profile_by_identity(&music_url, 0, 180_000)
+                .await
+                .expect("loudness profile should read without hydrating group relation"),
+            Some(profile)
+        );
+
+        reset_db();
+    });
+}
+
+#[test]
 fn create_music_appends_to_the_source_collection_once() {
     let _guard = acquire_db_test_lock();
 

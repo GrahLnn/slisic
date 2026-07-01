@@ -1,9 +1,10 @@
 use super::{
     LoudnessEvidenceRequest, LoudnessEvidenceSource,
     deduplicate_pending_loudness_requests_for_test, loudness_identity_key_for_test,
-    loudness_queue_insert_index, loudness_request_from_playback_track_for_test,
-    read_loudness_pending_task_file_for_test, read_published_loudness_profile_for_test,
-    remember_published_loudness_profile_for_test, remove_loudness_pending_task_from_file_for_test,
+    loudness_measurement_worker_budget_for_source, loudness_queue_insert_index,
+    loudness_request_from_playback_track_for_test, read_loudness_pending_task_file_for_test,
+    read_published_loudness_profile_for_test, remember_published_loudness_profile_for_test,
+    remove_loudness_pending_task_from_file_for_test,
     should_close_loudness_request_after_error_for_test, upsert_loudness_pending_task_file_for_test,
 };
 use crate::domain::player::model::PlaybackTrack;
@@ -287,6 +288,27 @@ fn all_explicit_loudness_cargo_sources_are_pending_restorable() {
     assert!(
         !LoudnessEvidenceSource::PendingStore.persists_pending(),
         "restored pending tasks are already durable and must not rewrite themselves on restore"
+    );
+}
+
+#[test]
+fn foreground_loudness_sources_receive_reserved_worker_capacity() {
+    let base = 4;
+
+    assert_eq!(
+        loudness_measurement_worker_budget_for_source(base, LoudnessEvidenceSource::DownloadedLeaf),
+        base,
+        "background downloaded leaf analysis must stay inside the normal worker pool"
+    );
+    assert_eq!(
+        loudness_measurement_worker_budget_for_source(base, LoudnessEvidenceSource::FirstSlot),
+        base + 1,
+        "prepared first-slot analysis must be able to wake one reserved foreground worker"
+    );
+    assert_eq!(
+        loudness_measurement_worker_budget_for_source(base, LoudnessEvidenceSource::DirectRequest),
+        base + 1,
+        "current playback requests share the same foreground lane as first-slot startup cargo"
     );
 }
 

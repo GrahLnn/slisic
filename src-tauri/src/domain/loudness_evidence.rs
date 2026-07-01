@@ -40,6 +40,7 @@ const LOUDNESS_REQUEST_REBIND_ATTEMPT_LIMIT: usize = 3;
 const LOUDNESS_MEASUREMENT_WORKER_CAP: usize = 4;
 #[cfg(not(test))]
 const LOUDNESS_MEASUREMENT_WORKER_MIN_PARALLELISM: usize = 2;
+const LOUDNESS_FOREGROUND_WORKER_RESERVE: usize = 1;
 pub(crate) const LOUDNESS_PENDING_TASK_FILE_NAME: &str = "loudness-evidence-pending.json";
 const LOUDNESS_PENDING_TASK_FILE_VERSION: &str = "loudness-evidence-pending.v1";
 
@@ -367,6 +368,10 @@ impl LoudnessEvidenceSource {
                 | Self::FirstSlot
         )
     }
+
+    fn needs_foreground_worker(self) -> bool {
+        matches!(self, Self::DirectRequest | Self::FirstSlot)
+    }
 }
 
 #[cfg(not(test))]
@@ -440,7 +445,7 @@ fn enqueue_loudness_measurement(
                 && promote_queued_loudness_identity(&runtime, &request, source)
             {
                 persist_pending_loudness_request(&runtime, &request);
-                ensure_loudness_worker(runtime);
+                ensure_loudness_worker(runtime, source);
             }
             return;
         }
@@ -479,7 +484,7 @@ fn enqueue_loudness_measurement(
     if source.persists_pending() {
         persist_pending_loudness_request(&runtime, &request);
     }
-    ensure_loudness_worker(runtime);
+    ensure_loudness_worker(runtime, source);
 }
 
 #[cfg(not(test))]
@@ -581,10 +586,10 @@ fn loudness_queue_insert_index(
 }
 
 #[cfg(not(test))]
-fn ensure_loudness_worker(runtime: Arc<LoudnessEvidenceRuntime>) {
+fn ensure_loudness_worker(runtime: Arc<LoudnessEvidenceRuntime>, source: LoudnessEvidenceSource) {
     loop {
         let active = runtime.active_workers.load(Ordering::SeqCst);
-        if active >= loudness_measurement_worker_budget() {
+        if active >= loudness_measurement_worker_budget(source) {
             return;
         }
         if runtime
@@ -606,10 +611,15 @@ fn ensure_loudness_worker(runtime: Arc<LoudnessEvidenceRuntime>) {
 #[cfg(not(test))]
 async fn run_loudness_worker(runtime: Arc<LoudnessEvidenceRuntime>, worker_id: usize) {
     loop {
+        if foreground_reserve_worker_should_retire(runtime.as_ref()) {
+            runtime.active_workers.fetch_sub(1, Ordering::SeqCst);
+            return;
+        }
+
         let Some(queued) = pop_loudness_queue(&runtime) else {
             runtime.active_workers.fetch_sub(1, Ordering::SeqCst);
-            if queue_has_pending_loudness(&runtime) {
-                ensure_loudness_worker(Arc::clone(&runtime));
+            if let Some(source) = next_pending_loudness_source(&runtime) {
+                ensure_loudness_worker(Arc::clone(&runtime), source);
             }
             return;
         };
@@ -653,7 +663,30 @@ async fn run_loudness_worker(runtime: Arc<LoudnessEvidenceRuntime>, worker_id: u
 }
 
 #[cfg(not(test))]
-fn loudness_measurement_worker_budget() -> usize {
+fn foreground_reserve_worker_should_retire(runtime: &LoudnessEvidenceRuntime) -> bool {
+    runtime.active_workers.load(Ordering::SeqCst) > loudness_background_worker_budget()
+        && !next_pending_loudness_source(runtime)
+            .is_some_and(|source| source.needs_foreground_worker())
+}
+
+#[cfg(not(test))]
+fn loudness_measurement_worker_budget(source: LoudnessEvidenceSource) -> usize {
+    loudness_measurement_worker_budget_for_source(loudness_background_worker_budget(), source)
+}
+
+fn loudness_measurement_worker_budget_for_source(
+    base: usize,
+    source: LoudnessEvidenceSource,
+) -> usize {
+    if source.needs_foreground_worker() {
+        base.saturating_add(LOUDNESS_FOREGROUND_WORKER_RESERVE)
+    } else {
+        base
+    }
+}
+
+#[cfg(not(test))]
+fn loudness_background_worker_budget() -> usize {
     std::thread::available_parallelism()
         .map(|parallelism| {
             parallelism.get().saturating_sub(1).clamp(
@@ -670,12 +703,15 @@ fn pop_loudness_queue(runtime: &LoudnessEvidenceRuntime) -> Option<QueuedLoudnes
 }
 
 #[cfg(not(test))]
-fn queue_has_pending_loudness(runtime: &LoudnessEvidenceRuntime) -> bool {
+fn next_pending_loudness_source(
+    runtime: &LoudnessEvidenceRuntime,
+) -> Option<LoudnessEvidenceSource> {
     runtime
         .queue
         .lock()
-        .ok()
-        .is_some_and(|queue| !queue.is_empty())
+        .ok()?
+        .front()
+        .map(|queued| queued.source)
 }
 
 #[cfg(not(test))]

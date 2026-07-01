@@ -240,7 +240,7 @@ pub async fn set_music_loudness_profile_by_identity(
     start_ms: u32,
     end_ms: u32,
     profile: LoudnessProfile,
-) -> Result<Option<Music>> {
+) -> Result<Option<LoudnessEvidenceMusicRow>> {
     ensure_collection_graph_schema().await?;
     if !profile.is_valid() {
         bail!(
@@ -250,7 +250,7 @@ pub async fn set_music_loudness_profile_by_identity(
 
     let canonical_music_id = canonical_music_id_for_source(url, start_ms, end_ms);
     let records = find_music_record_ids_by_canonical_id(&canonical_music_id).await?;
-    apply_music_mutation_to_records(&records, MusicMutation::LoudnessProfile { profile }).await
+    apply_loudness_profile_to_records(&records, profile).await
 }
 
 pub async fn project_music_loudness_identity(
@@ -258,7 +258,7 @@ pub async fn project_music_loudness_identity(
     file_path: &Path,
     start_ms: u32,
     end_ms: u32,
-) -> Result<Option<Music>> {
+) -> Result<Option<LoudnessEvidenceMusicRow>> {
     ensure_collection_graph_schema().await?;
 
     if start_ms >= end_ms {
@@ -267,16 +267,20 @@ pub async fn project_music_loudness_identity(
 
     let records = find_music_record_ids_by_identity(url, start_ms, end_ms).await?;
     for record in records {
-        let music = Music::get_record(record).await?;
+        let Some(music) = load_loudness_evidence_music_row(&record).await? else {
+            continue;
+        };
         if music_path_matches_loudness_file(&music, file_path) {
             return Ok(Some(music));
         }
     }
 
     let candidates = find_music_record_ids_by_url_and_start(url, start_ms).await?;
-    let mut projected: Option<Music> = None;
+    let mut projected: Option<LoudnessEvidenceMusicRow> = None;
     for record in candidates {
-        let music = Music::get_record(record).await?;
+        let Some(music) = load_loudness_evidence_music_row(&record).await? else {
+            continue;
+        };
         if music.start_ms == start_ms
             && music.end_ms <= end_ms
             && music.start_ms < music.end_ms
@@ -292,7 +296,7 @@ pub async fn project_music_loudness_identity(
     Ok(projected)
 }
 
-fn music_path_matches_loudness_file(music: &Music, file_path: &Path) -> bool {
+fn music_path_matches_loudness_file(music: &LoudnessEvidenceMusicRow, file_path: &Path) -> bool {
     let Some(relative_path) = music.path.as_deref() else {
         return false;
     };
@@ -1023,9 +1027,6 @@ enum MusicMutation {
     Liked {
         liked: bool,
     },
-    LoudnessProfile {
-        profile: LoudnessProfile,
-    },
     DisplayIdentity {
         alias: String,
         start_ms: u32,
@@ -1051,6 +1052,43 @@ async fn apply_music_mutation_to_records(
     Ok(first_updated)
 }
 
+async fn apply_loudness_profile_to_records(
+    records: &[RecordId],
+    profile: LoudnessProfile,
+) -> Result<Option<LoudnessEvidenceMusicRow>> {
+    let mut first_updated = None;
+    for record in records {
+        let updated = apply_loudness_profile_to_record(record, profile).await?;
+        if first_updated.is_none() {
+            first_updated = Some(updated);
+        }
+    }
+
+    Ok(first_updated)
+}
+
+async fn apply_loudness_profile_to_record(
+    record: &RecordId,
+    profile: LoudnessProfile,
+) -> Result<LoudnessEvidenceMusicRow> {
+    if !profile.is_valid() {
+        bail!(
+            "music loudness profile evidence must be finite and include non-zero integrated LUFS"
+        );
+    }
+
+    let db = get_db()?;
+    db.query("UPDATE ONLY $record SET loudness_profile = $profile RETURN NONE;")
+        .bind(("record", record.clone()))
+        .bind(("profile", profile))
+        .await?
+        .check()?;
+
+    load_loudness_evidence_music_row(record)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("updated loudness evidence music record was not found"))
+}
+
 async fn apply_music_mutation_to_record(
     record: &RecordId,
     mutation: MusicMutation,
@@ -1062,19 +1100,6 @@ async fn apply_music_mutation_to_record(
             db.query("UPDATE ONLY $record SET liked = $liked RETURN NONE;")
                 .bind(("record", record.clone()))
                 .bind(("liked", liked))
-                .await?
-                .check()?;
-            Music::get_record(record.clone()).await
-        }
-        MusicMutation::LoudnessProfile { profile } => {
-            if !profile.is_valid() {
-                bail!(
-                    "music loudness profile evidence must be finite and include non-zero integrated LUFS"
-                );
-            }
-            db.query("UPDATE ONLY $record SET loudness_profile = $profile RETURN NONE;")
-                .bind(("record", record.clone()))
-                .bind(("profile", profile))
                 .await?
                 .check()?;
             Music::get_record(record.clone()).await
@@ -1899,7 +1924,9 @@ async fn canonical_music_id_loudness_profile_evidence(
 ) -> Result<Option<LoudnessProfile>> {
     let records = find_music_record_ids_by_canonical_id(canonical_music_id).await?;
     for record in records {
-        let music = Music::get_record(record).await?;
+        let Some(music) = load_loudness_evidence_music_row(&record).await? else {
+            continue;
+        };
         if let Some(profile) = music.loudness_profile
             && profile.is_valid()
         {
@@ -3163,6 +3190,34 @@ async fn find_music_record_ids_by_canonical_id(canonical_music_id: &str) -> Resu
     Ok(result.take(0)?)
 }
 
+async fn load_loudness_evidence_music_row(
+    record: &RecordId,
+) -> Result<Option<LoudnessEvidenceMusicRow>> {
+    let db = get_db()?;
+    let mut result = match db
+        .query(
+            "SELECT name, alias, canonical_music_id, url, path, start_ms, end_ms, loudness_profile
+             FROM ONLY $record;",
+        )
+        .bind(("record", record.clone()))
+        .await
+    {
+        Ok(result) => match result.check() {
+            Ok(result) => result,
+            Err(error) => match DBError::from(error) {
+                DBError::MissingTable(_) | DBError::NotFound => return Ok(None),
+                other => return Err(other.into()),
+            },
+        },
+        Err(error) => match classify_db_error(&error.into()) {
+            DBError::MissingTable(_) | DBError::NotFound => return Ok(None),
+            other => return Err(other.into()),
+        },
+    };
+
+    Ok(result.take(0)?)
+}
+
 async fn load_music_playback_identity(
     record: &RecordId,
 ) -> Result<Option<MusicPlaybackIdentityRow>> {
@@ -3842,6 +3897,19 @@ struct RelationInEdgeRow {
 #[derive(Debug, Clone, Deserialize, SurrealValue)]
 struct MusicPlaybackIdentityRow {
     canonical_music_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize, SurrealValue)]
+pub struct LoudnessEvidenceMusicRow {
+    pub name: String,
+    pub alias: String,
+    pub canonical_music_id: String,
+    pub url: String,
+    pub path: Option<String>,
+    pub start_ms: u32,
+    pub end_ms: u32,
+    #[serde(default)]
+    pub loudness_profile: Option<LoudnessProfile>,
 }
 
 #[derive(Debug, Clone, Deserialize, SurrealValue)]
