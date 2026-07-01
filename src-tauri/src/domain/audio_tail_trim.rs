@@ -9,7 +9,9 @@ use super::player::model::PlaybackTrack;
 use super::player::service as player_service;
 #[cfg(not(test))]
 use super::player::track_identity_substitution::PlaybackTrackIdentityUpdate;
-use super::playlists::model::{Collection, Music};
+#[cfg(not(test))]
+use super::playlist_playback::service as playlist_playback_service;
+use super::playlists::model::{AudioStyleTrainingTrackInput, Collection, Music};
 #[cfg(not(test))]
 use super::playlists::repo as playlists_repo;
 use super::playlists::repo::MusicEndTrim;
@@ -2074,6 +2076,7 @@ async fn apply_audio_tail_trim_plan(
         return Ok(());
     }
     collection_import::notify_downloaded_leaf_collection_committed();
+    notify_audio_style_training_for_trimmed_music(&updated, &request.save_root, &applied_plan);
     request_current_session_identity_updates_for_trimmed_music(&updated, &applied_plan);
     request_loudness_for_trimmed_music(&updated, &request.save_root, &applied_plan);
     log_applied_audio_tail_trim_tracks(&updated, &applied_plan);
@@ -2091,6 +2094,56 @@ async fn apply_audio_tail_trim_plan(
     );
 
     Ok(())
+}
+
+#[cfg(not(test))]
+fn notify_audio_style_training_for_trimmed_music(
+    collection: &Collection,
+    save_root: &Path,
+    trims: &[MusicEndTrim],
+) {
+    let trim_keys = applied_tail_trim_keys(trims);
+    let inputs = collection
+        .musics
+        .iter()
+        .filter(|music| trim_keys.contains(&(music.url.clone(), music.start_ms, music.end_ms)))
+        .filter_map(|music| {
+            audio_style_training_input_from_trimmed_music(save_root, collection, music)
+        })
+        .collect::<Vec<_>>();
+    playlist_playback_service::notify_music_training_inputs_ready(
+        "audio_tail_trim_applied",
+        inputs,
+    );
+}
+
+fn audio_style_training_input_from_trimmed_music(
+    save_root: &Path,
+    collection: &Collection,
+    music: &Music,
+) -> Option<AudioStyleTrainingTrackInput> {
+    if music.start_ms >= music.end_ms {
+        return None;
+    }
+    let relative_path = music.path.as_deref()?.trim();
+    if relative_path.is_empty() {
+        return None;
+    }
+    Some(AudioStyleTrainingTrackInput {
+        occurrence_id: music.occurrence_id.clone(),
+        alias: music.alias.clone(),
+        canonical_music_id: music.canonical_music_id.clone(),
+        url: music.url.clone(),
+        absolute_path: save_root
+            .join(&collection.folder)
+            .join(relative_path)
+            .to_string_lossy()
+            .to_string(),
+        start_ms: music.start_ms,
+        end_ms: music.end_ms,
+        liked: music.liked,
+        loudness_profile: music.loudness_profile,
+    })
 }
 
 #[cfg(not(test))]
@@ -2196,10 +2249,7 @@ fn request_loudness_for_trimmed_music(
     save_root: &Path,
     trims: &[MusicEndTrim],
 ) {
-    let trim_keys = trims
-        .iter()
-        .map(|trim| (trim.url.clone(), trim.start_ms, trim.next_end_ms))
-        .collect::<HashSet<_>>();
+    let trim_keys = applied_tail_trim_keys(trims);
     for music in &collection.musics {
         if !trim_keys.contains(&(music.url.clone(), music.start_ms, music.end_ms)) {
             continue;
@@ -2218,6 +2268,14 @@ fn request_loudness_for_trimmed_music(
             end_ms: music.end_ms,
         });
     }
+}
+
+#[cfg(not(test))]
+fn applied_tail_trim_keys(trims: &[MusicEndTrim]) -> HashSet<(String, u32, u32)> {
+    trims
+        .iter()
+        .map(|trim| (trim.url.clone(), trim.start_ms, trim.next_end_ms))
+        .collect()
 }
 
 #[cfg(not(test))]

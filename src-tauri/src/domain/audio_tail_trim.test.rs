@@ -1,7 +1,7 @@
 use super::{
     AudioTailTrimCandidate, AudioTailTrimFocusMusic, AudioTailTrimRequest, AudioTailTrimScopeKind,
-    TailEvidenceFrame, TailEvidenceSignature, audio_tail_trim_queue_insert_index_for_test,
-    audio_tail_trim_queue_overflow_action_for_test,
+    TailEvidenceFrame, TailEvidenceSignature, audio_style_training_input_from_trimmed_music,
+    audio_tail_trim_queue_insert_index_for_test, audio_tail_trim_queue_overflow_action_for_test,
     audio_tail_trim_source_completes_foreground_playable_gate_for_test,
     audio_tail_trim_source_requires_active_rerun_for_test, build_audio_tail_trim_focus_plan,
     build_audio_tail_trim_plan, completed_audio_tail_trim_opens_foreground_playable_gate_for_test,
@@ -86,6 +86,30 @@ fn collection_with_musics(musics: Vec<Music>) -> Collection {
         last_updated: "now".to_string(),
         enable_updates: None,
     }
+}
+
+#[test]
+fn trimmed_music_audio_style_training_input_uses_updated_identity() {
+    let group = group("https://example.com/group", "Album");
+    let mut track = music(&group, "Once", "Once.m4a", 0, 221_100);
+    track.end_ms = 187_400;
+    track.canonical_music_id = "source:https://example.com/Once:0:187400".to_string();
+    let collection = collection_with_musics(vec![track.clone()]);
+
+    let input = audio_style_training_input_from_trimmed_music(
+        &PathBuf::from("C:/MusicRoot"),
+        &collection,
+        &track,
+    )
+    .expect("trimmed playable music should become a training input");
+
+    assert_eq!(input.canonical_music_id, track.canonical_music_id);
+    assert_eq!(input.start_ms, 0);
+    assert_eq!(input.end_ms, 187_400);
+    assert!(
+        input.absolute_path.ends_with("Collection\\Once.m4a")
+            || input.absolute_path.ends_with("Collection/Once.m4a")
+    );
 }
 
 fn unit_vector(index: usize) -> Vec<f32> {
