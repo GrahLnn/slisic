@@ -104,6 +104,15 @@ struct RemoteBootstrapResponse {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct RemoteHealthResponse {
+    service: &'static str,
+    status: &'static str,
+    code: &'static str,
+    remote_page: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct RemoteSessionView {
     state: RemotePlaybackState,
     playlist_name: Option<String>,
@@ -164,6 +173,7 @@ pub fn initialize_runtime(app: AppHandle) {
 async fn serve_remote_share_gateway(runtime: Arc<RemoteShareRuntime>) -> Result<()> {
     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), REMOTE_SHARE_PORT);
     let app = Router::new()
+        .route("/", get(remote_share_health))
         .route("/api/connect", post(connect_remote_share))
         .route("/api/bootstrap", get(bootstrap_remote_share))
         .route("/api/session/start", post(start_remote_session))
@@ -186,6 +196,15 @@ async fn serve_remote_share_gateway(runtime: Arc<RemoteShareRuntime>) -> Result<
     );
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+async fn remote_share_health() -> Json<RemoteHealthResponse> {
+    Json(RemoteHealthResponse {
+        service: "slisic_remote_share",
+        status: "ok",
+        code: DEV_PAIRING_CODE,
+        remote_page: "http://127.0.0.1:4177/remote",
+    })
 }
 
 async fn connect_remote_share(
