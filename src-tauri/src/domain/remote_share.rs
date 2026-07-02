@@ -1,4 +1,5 @@
 use crate::domain::player::model::PlaybackTrack;
+use crate::domain::player::service::{PlaybackLoudnessPlan, playback_loudness_plan_for_profile};
 use crate::domain::playlist_playback::service::{
     PlaylistPlaybackRecommendationMode, PlaylistPlaybackRecommendationRequest,
     consume_prepared_playlist_initial_track, load_random_playlist_playback_tracks,
@@ -125,6 +126,7 @@ struct RemoteSessionView {
 struct RemotePlaybackResponse {
     session: RemoteSessionView,
     playback: Option<RemotePlaybackCargo>,
+    prefetch: Option<RemotePlaybackCargo>,
 }
 
 #[derive(Debug, Serialize)]
@@ -132,6 +134,19 @@ struct RemotePlaybackResponse {
 struct RemotePlaybackCargo {
     track: RemoteTrackView,
     audio_url: String,
+    loudness_plan: Option<RemoteLoudnessPlanView>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RemoteLoudnessPlanView {
+    integrated_lufs: f32,
+    true_peak_dbtp: Option<f32>,
+    lra: Option<f32>,
+    base_gain_db: f32,
+    final_gain_db: f32,
+    target_lufs: f32,
+    reason: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -281,6 +296,7 @@ async fn next_remote_track(
             let response = RemotePlaybackResponse {
                 session: session.view(),
                 playback: None,
+                prefetch: None,
             };
             return Ok(Json(response));
         };
@@ -398,14 +414,20 @@ impl RemoteShareRuntime {
             .collect();
         observe_remote_recent_track(&mut session.recently_played, current.clone());
         session.state = RemotePlaybackState::Playing;
-        let token = session.create_audio_token(current.clone());
-        let playback = RemotePlaybackCargo {
-            track: RemoteTrackView::from_track(&current),
-            audio_url: format!("/api/audio/{token}"),
-        };
+        let playback = session.create_playback_cargo(&current);
+        let prefetch = session
+            .queue
+            .front()
+            .cloned()
+            .map(|track| session.create_playback_cargo(&track));
+        let retained_tracks = std::iter::once(current.clone())
+            .chain(session.queue.front().cloned())
+            .collect::<Vec<_>>();
+        session.retain_audio_tokens_for_tracks(&retained_tracks);
         Ok(RemotePlaybackResponse {
             session: session.view(),
             playback: Some(playback),
+            prefetch,
         })
     }
 }
@@ -420,12 +442,39 @@ impl RemoteShareSession {
         }
     }
 
+    fn create_playback_cargo(&mut self, track: &PlaybackTrack) -> RemotePlaybackCargo {
+        let token = self.create_audio_token(track.clone());
+        RemotePlaybackCargo {
+            track: RemoteTrackView::from_track(track),
+            audio_url: format!("/api/audio/{token}"),
+            loudness_plan: track.loudness_profile.as_ref().and_then(|profile| {
+                playback_loudness_plan_for_profile(profile).map(RemoteLoudnessPlanView::from_plan)
+            }),
+        }
+    }
+
     fn create_audio_token(&mut self, track: PlaybackTrack) -> String {
+        if let Some((token, _)) = self
+            .audio_tokens
+            .iter()
+            .find(|(_, token)| same_remote_track(&token.track, &track))
+        {
+            return token.clone();
+        }
+
         self.next_token_id = self.next_token_id.saturating_add(1);
         let token = format!("dev-{}", self.next_token_id);
         self.audio_tokens
             .insert(token.clone(), RemoteAudioToken { track });
         token
+    }
+
+    fn retain_audio_tokens_for_tracks(&mut self, retained_tracks: &[PlaybackTrack]) {
+        self.audio_tokens.retain(|_, token| {
+            retained_tracks
+                .iter()
+                .any(|track| same_remote_track(track, &token.track))
+        });
     }
 }
 
@@ -439,6 +488,20 @@ impl RemoteTrackView {
             start_ms: track.start_ms,
             end_ms: track.end_ms,
             duration_ms: track.end_ms.saturating_sub(track.start_ms),
+        }
+    }
+}
+
+impl RemoteLoudnessPlanView {
+    fn from_plan(plan: PlaybackLoudnessPlan) -> Self {
+        Self {
+            integrated_lufs: plan.integrated_lufs,
+            true_peak_dbtp: plan.true_peak_dbtp,
+            lra: plan.lra,
+            base_gain_db: plan.base_gain_db,
+            final_gain_db: plan.final_gain_db,
+            target_lufs: plan.target_lufs,
+            reason: plan.reason,
         }
     }
 }
