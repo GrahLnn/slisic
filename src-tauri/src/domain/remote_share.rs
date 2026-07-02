@@ -37,7 +37,7 @@ use tower_http::cors::{Any, CorsLayer};
 const REMOTE_SHARE_LOG_TARGET: &str = "remote_share";
 const DEV_PAIRING_CODE: &str = "123456";
 const REMOTE_SHARE_PORT: u16 = 48_231;
-const REMOTE_AUDIO_CHUNK_SIZE: u64 = 256 * 1024;
+const REMOTE_AUDIO_CHUNK_SIZE: u64 = 64 * 1024;
 const REMOTE_CANDIDATE_WINDOW_LIMIT: usize = 96;
 const REMOTE_RELAY_HOST_URL_ENV: &str = "SLISIC_REMOTE_RELAY_HOST_URL";
 const DEFAULT_REMOTE_RELAY_HOST_URL: &str = "wss://slisic-remote.grahlnn.com/ws/host";
