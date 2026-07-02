@@ -237,6 +237,8 @@ struct RemoteAudioRelayCargo {
 }
 
 pub fn initialize_runtime(app: AppHandle) {
+    install_remote_tls_crypto_provider();
+
     let runtime = Arc::new(RemoteShareRuntime {
         app,
         session: Arc::new(Mutex::new(RemoteShareSession::default())),
@@ -261,6 +263,10 @@ pub fn initialize_runtime(app: AppHandle) {
     });
 
     tauri::async_runtime::spawn(run_remote_relay_host(runtime));
+}
+
+fn install_remote_tls_crypto_provider() {
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 }
 
 async fn serve_remote_share_gateway(runtime: Arc<RemoteShareRuntime>) -> Result<()> {
