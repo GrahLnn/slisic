@@ -131,6 +131,9 @@ pub fn run() {
             domain::downloads::submit_youtube_cookies_and_resume_download_task,
             domain::downloads::get_download_task,
             domain::downloads::list_download_tasks,
+            domain::remote_share::get_remote_share_status,
+            domain::remote_share::set_remote_share_enabled,
+            domain::remote_share::set_remote_share_code,
         ])
         .events(collect_events![
             event::FullScreenEvent,
@@ -249,7 +252,7 @@ pub fn run() {
                     domain::downloads::service::initialize_runtime(handle.clone());
                     domain::playlist_playback::service::initialize_runtime(handle.clone());
                     domain::player::service::initialize_runtime(handle.clone());
-                    domain::remote_share::initialize_runtime(handle.clone());
+                    domain::remote_share::initialize_runtime(handle.clone()).await?;
                     utils::binaries::spawn_binary_maintenance(
                         handle.clone(),
                         utils::binaries::BinaryMaintenanceActivity::new(),

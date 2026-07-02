@@ -1,8 +1,9 @@
 import { cn } from "@/lib/utils";
 import { icons } from "@/src/assets/icons";
+import { invoke } from "@tauri-apps/api/core";
 import { AnimatePresence, motion } from "motion/react";
 import type React from "react";
-import { type PropsWithChildren, type ReactNode, memo } from "react";
+import { type PropsWithChildren, type ReactNode, memo, useEffect, useRef, useState } from "react";
 import { app as bootstrapApp } from "./flow/bootstrap";
 import { action as pasteDownloadAction } from "./flow/pasteDownload";
 import { useIsBarVisible } from "./flow/barVisible";
@@ -17,6 +18,47 @@ interface CtrlButtonProps extends PropsWithChildren {
   className?: string;
   o?: string;
   p?: string;
+}
+
+type RemoteShareStatus = {
+  enabled: boolean;
+  code: string;
+};
+
+const REMOTE_SHARE_CODE_MAX_LENGTH = 8;
+const remoteShareIconTransition = {
+  duration: 0.22,
+  ease: [0.22, 1, 0.36, 1],
+} as const;
+
+function normalizeRemoteShareCodeInput(value: string) {
+  return value
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, "")
+    .slice(0, REMOTE_SHARE_CODE_MAX_LENGTH);
+}
+
+const remoteShareCodeInputProps = {
+  inputMode: "email" as const,
+  autoCapitalize: "characters" as const,
+  autoCorrect: "off" as const,
+  autoComplete: "off" as const,
+  spellCheck: false,
+  enterKeyHint: "done" as const,
+  lang: "en",
+  pattern: "[A-Za-z0-9]*",
+};
+
+async function invokeRemoteShareStatus() {
+  return invoke<RemoteShareStatus>("get_remote_share_status");
+}
+
+async function invokeRemoteShareEnabled(enabled: boolean) {
+  return invoke<RemoteShareStatus>("set_remote_share_enabled", { enabled });
+}
+
+async function invokeRemoteShareCode(code: string) {
+  return invoke<RemoteShareStatus>("set_remote_share_code", { code });
 }
 
 const CtrlButton = memo(function CtrlButtonComp({
@@ -53,6 +95,168 @@ const CtrlButton = memo(function CtrlButtonComp({
           </motion.span> */}
         </div>
       </div>
+    </div>
+  );
+});
+
+function RemoteShareSignalIcon({ enabled }: { enabled: boolean }) {
+  const toneClassName = enabled
+    ? "text-emerald-600 dark:text-emerald-300"
+    : "text-neutral-500 dark:text-neutral-500";
+  const RemoteShareIcon = enabled ? icons.wifi : icons.wifiOff;
+  const pathMotion = {
+    initial: { pathLength: 0, opacity: 0 },
+    animate: { pathLength: 1, opacity: 1 },
+    exit: { pathLength: 0, opacity: 0 },
+    transition: remoteShareIconTransition,
+  };
+
+  return (
+    <span className="relative block size-4.5">
+      <AnimatePresence initial={false} mode="wait">
+        <RemoteShareIcon
+          key={enabled ? "remote-share-enabled" : "remote-share-disabled"}
+          size={18}
+          className={cn("absolute inset-0 block", toneClassName)}
+          pathMotion={pathMotion}
+        />
+      </AnimatePresence>
+    </span>
+  );
+}
+
+const RemoteShareControl = memo(function RemoteShareControlComponent() {
+  const isVisible = useIsBarVisible();
+  const [status, setStatus] = useState<RemoteShareStatus>({
+    enabled: false,
+    code: "",
+  });
+  const [draftCode, setDraftCode] = useState("");
+  const [hovered, setHovered] = useState(false);
+  const [focused, setFocused] = useState(false);
+  const committingRef = useRef(false);
+  const codeComposingRef = useRef(false);
+
+  useEffect(() => {
+    let active = true;
+    void invokeRemoteShareStatus()
+      .then((nextStatus) => {
+        if (!active) return;
+        setStatus(nextStatus);
+        setDraftCode(nextStatus.code);
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  async function toggleEnabled() {
+    const nextEnabled = !status.enabled;
+    setStatus((current) => ({ ...current, enabled: nextEnabled }));
+    try {
+      const nextStatus = await invokeRemoteShareEnabled(nextEnabled);
+      setStatus(nextStatus);
+      setDraftCode(nextStatus.code);
+    } catch {
+      setStatus((current) => ({ ...current, enabled: !nextEnabled }));
+    }
+  }
+
+  async function commitCode() {
+    const normalized = normalizeRemoteShareCodeInput(draftCode);
+    setFocused(false);
+    if (!normalized) {
+      setDraftCode(status.code);
+      return;
+    }
+    if (normalized === status.code || committingRef.current) {
+      setDraftCode(normalized);
+      return;
+    }
+    committingRef.current = true;
+    setDraftCode(normalized);
+    try {
+      const nextStatus = await invokeRemoteShareCode(normalized);
+      setStatus(nextStatus);
+      setDraftCode(nextStatus.code);
+    } catch {
+      setDraftCode(status.code);
+    } finally {
+      committingRef.current = false;
+    }
+  }
+
+  return (
+    <div data-tauri-drag-region={!isVisible}>
+      <motion.div
+        className={cn([
+          "group/remote-share rounded-md cursor-default h-8 flex items-center justify-center overflow-hidden",
+          "opacity-70 hover:bg-black/5 dark:hover:bg-white/5 hover:opacity-100",
+          "transition duration-300 ease-in-out",
+          !isVisible && "opacity-0 pointer-events-none",
+        ])}
+        aria-label="Remote share"
+        onPointerEnter={() => setHovered(true)}
+        onPointerLeave={() => setHovered(false)}
+      >
+        <button
+          type="button"
+          className="flex size-8 shrink-0 items-center justify-center rounded-md"
+          aria-label={status.enabled ? "Disable remote share" : "Enable remote share"}
+          onClick={() => void toggleEnabled()}
+        >
+          <RemoteShareSignalIcon enabled={status.enabled} />
+        </button>
+        <motion.div
+          className="overflow-hidden"
+          initial={false}
+          animate={{
+            width: hovered || focused ? "auto" : 0,
+          }}
+          transition={{
+            duration: 0.24,
+            ease: [0.22, 1, 0.36, 1],
+          }}
+        >
+          <input
+            className={cn([
+              "h-8 w-18 bg-transparent pr-2 text-[11px] font-semibold tracking-normal outline-none",
+              "text-emerald-700 dark:text-emerald-200",
+              "placeholder:text-neutral-400 dark:placeholder:text-neutral-600",
+            ])}
+            value={draftCode}
+            {...remoteShareCodeInputProps}
+            maxLength={REMOTE_SHARE_CODE_MAX_LENGTH}
+            aria-label="Remote share code"
+            onFocus={() => setFocused(true)}
+            onBlur={() => void commitCode()}
+            onCompositionStart={() => {
+              codeComposingRef.current = true;
+            }}
+            onCompositionEnd={(event) => {
+              codeComposingRef.current = false;
+              setDraftCode(normalizeRemoteShareCodeInput(event.currentTarget.value));
+            }}
+            onChange={(event) => {
+              if (codeComposingRef.current) {
+                setDraftCode(event.currentTarget.value);
+                return;
+              }
+              setDraftCode(normalizeRemoteShareCodeInput(event.currentTarget.value));
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.currentTarget.blur();
+              }
+              if (event.key === "Escape") {
+                setDraftCode(status.code);
+                event.currentTarget.blur();
+              }
+            }}
+          />
+        </motion.div>
+      </motion.div>
     </div>
   );
 });
@@ -96,12 +300,7 @@ export const LeftControls = memo(function LeftControlsComponent({
               o="opacity-30"
             />
           )}
-          <CtrlButton
-            label="Remote share"
-            icon={<icons.stacksquare size={14} />}
-            className="text-emerald-600 dark:text-emerald-300"
-            o="opacity-70"
-          />
+          <RemoteShareControl />
         </>
       )}
     </div>
@@ -144,11 +343,7 @@ const MiddleControls = memo(function MiddleControlsComponent() {
   );
 });
 
-const TopBar = memo(function TopBarComponent({
-  surface = "support",
-}: {
-  surface?: TopBarSurface;
-}) {
+const TopBar = memo(function TopBarComponent({ surface = "support" }: { surface?: TopBarSurface }) {
   const windowFocused = useIsWindowFocus();
   const allowBarInteraction = true;
 

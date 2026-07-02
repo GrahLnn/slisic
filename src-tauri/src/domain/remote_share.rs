@@ -2,12 +2,20 @@ use crate::domain::player::model::PlaybackTrack;
 use crate::domain::player::service::{PlaybackLoudnessPlan, playback_loudness_plan_for_profile};
 use crate::domain::playlist_playback::service::{
     PlaylistPlaybackRecommendationMode, PlaylistPlaybackRecommendationRequest,
+};
+#[cfg(not(test))]
+use crate::domain::playlist_playback::service::{
     consume_prepared_playlist_initial_track, load_random_playlist_playback_tracks,
     propose_playlist_playback_queue_with_mode,
 };
 use crate::domain::playlists::model::PlayListListView;
 use crate::domain::playlists::repo as playlist_repo;
+use crate::utils::binaries::{ManagedBinary, acquire_managed_binary_usage, ensure_managed_binary};
 use anyhow::{Result, anyhow};
+use appdb::Store;
+use appdb::error::{DBError, classify_db_error};
+use appdb::model::meta::ModelMeta;
+use appdb::repository::Repo;
 use axum::body::Body;
 use axum::extract::{Path as AxumPath, State};
 use axum::http::header::{ACCEPT_RANGES, CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE, RANGE};
@@ -17,17 +25,28 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
+use rand::RngExt;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use specta::Type;
 use std::collections::{HashMap, VecDeque};
+use std::fs as std_fs;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant};
-use tauri::AppHandle;
+use std::time::{Duration, Instant, UNIX_EPOCH};
+use surrealdb::types::RecordId;
+use surrealdb_types::SurrealValue;
+use tauri::{AppHandle, Manager};
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
 use tokio::net::TcpListener;
+use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
+use tokio::task;
 use tokio::time::{MissedTickBehavior, interval, sleep};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
@@ -35,10 +54,17 @@ use tokio_util::io::ReaderStream;
 use tower_http::cors::{Any, CorsLayer};
 
 const REMOTE_SHARE_LOG_TARGET: &str = "remote_share";
-const DEV_PAIRING_CODE: &str = "123456";
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+const REMOTE_SHARE_SETTINGS_RECORD_KEY: &str = "singleton";
+const REMOTE_PAIRING_CODE_MAX_LEN: usize = 8;
+const REMOTE_PAIRING_CODE_ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
 const REMOTE_SHARE_PORT: u16 = 48_231;
-const REMOTE_AUDIO_CHUNK_SIZE: u64 = 64 * 1024;
+const REMOTE_AUDIO_CHUNK_SIZE: u64 = 256 * 1024;
+const REMOTE_AUDIO_CACHE_DIR: &str = "remote-audio";
+const REMOTE_AUDIO_GAIN_EPSILON_DB: f32 = 0.001;
 const REMOTE_CANDIDATE_WINDOW_LIMIT: usize = 96;
+const REMOTE_PREFETCH_FRONTIER_LIMIT: usize = 3;
 const REMOTE_RELAY_HOST_URL_ENV: &str = "SLISIC_REMOTE_RELAY_HOST_URL";
 const DEFAULT_REMOTE_RELAY_HOST_URL: &str = "wss://slisic-remote.grahlnn.com/ws/host";
 const REMOTE_RELAY_RECONNECT_DELAY: Duration = Duration::from_secs(5);
@@ -48,11 +74,60 @@ const DEFAULT_REMOTE_CLIENT_ID: &str = "local";
 
 static REMOTE_SHARE_RUNTIME: OnceLock<Arc<RemoteShareRuntime>> = OnceLock::new();
 type RemoteResult<T> = std::result::Result<T, RemoteShareError>;
+type RemoteRelayEventSender = UnboundedSender<String>;
 
 #[derive(Clone)]
 struct RemoteShareRuntime {
     app: AppHandle,
+    settings: Arc<Mutex<RemoteShareSettings>>,
     sessions: Arc<Mutex<RemoteShareSessions>>,
+    remote_audio_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
+}
+
+#[derive(Clone)]
+struct RemoteShareSettings {
+    enabled: bool,
+    code: String,
+    enabled_configured_by_user: bool,
+}
+
+impl Default for RemoteShareSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            code: generate_remote_pairing_code(),
+            enabled_configured_by_user: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue, Store)]
+struct PersistedRemoteShareSettings {
+    enabled: bool,
+    code: String,
+    #[serde(default)]
+    enabled_configured_by_user: bool,
+}
+
+impl From<PersistedRemoteShareSettings> for RemoteShareSettings {
+    fn from(value: PersistedRemoteShareSettings) -> Self {
+        Self {
+            enabled: value.enabled_configured_by_user && value.enabled,
+            code: normalize_remote_pairing_code(&value.code)
+                .unwrap_or_else(|_| generate_remote_pairing_code()),
+            enabled_configured_by_user: value.enabled_configured_by_user,
+        }
+    }
+}
+
+impl From<RemoteShareSettings> for PersistedRemoteShareSettings {
+    fn from(value: RemoteShareSettings) -> Self {
+        Self {
+            enabled: value.enabled,
+            code: value.code,
+            enabled_configured_by_user: value.enabled_configured_by_user,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -96,6 +171,13 @@ struct RemoteConnectRequest {
 #[serde(rename_all = "camelCase")]
 struct RemoteConnectResponse {
     connected: bool,
+    code: String,
+}
+
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteShareStatus {
+    enabled: bool,
     code: String,
 }
 
@@ -177,6 +259,10 @@ enum RemoteRelayOutbound {
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
+    SessionPrefetchReady {
+        client_id: String,
+        frontier: Vec<RemotePlaybackCargo>,
+    },
     HostPing {},
 }
 
@@ -194,7 +280,8 @@ struct RemoteBootstrapResponse {
 struct RemoteHealthResponse {
     service: &'static str,
     status: &'static str,
-    code: &'static str,
+    code: String,
+    enabled: bool,
     remote_page: &'static str,
 }
 
@@ -256,19 +343,29 @@ struct RemoteAudioRelayCargo {
     body: Vec<u8>,
 }
 
-pub fn initialize_runtime(app: AppHandle) {
+struct RemoteNextQueueCommit {
+    frontier: Vec<RemotePlaybackCargo>,
+    prewarm_tracks: Vec<PlaybackTrack>,
+}
+
+pub async fn initialize_runtime(app: AppHandle) -> Result<()> {
     install_remote_tls_crypto_provider();
+    let settings = ensure_remote_share_settings()
+        .await
+        .map_err(|error| anyhow!(error.message))?;
 
     let runtime = Arc::new(RemoteShareRuntime {
         app,
+        settings: Arc::new(Mutex::new(settings)),
         sessions: Arc::new(Mutex::new(RemoteShareSessions::default())),
+        remote_audio_locks: Arc::new(Mutex::new(HashMap::new())),
     });
     if REMOTE_SHARE_RUNTIME.set(Arc::clone(&runtime)).is_err() {
         log::warn!(
             target: REMOTE_SHARE_LOG_TARGET,
             "remote_share_runtime_init_skipped reason=already_initialized"
         );
-        return;
+        return Ok(());
     }
 
     let gateway_runtime = Arc::clone(&runtime);
@@ -283,6 +380,7 @@ pub fn initialize_runtime(app: AppHandle) {
     });
 
     tauri::async_runtime::spawn(run_remote_relay_host(runtime));
+    Ok(())
 }
 
 fn install_remote_tls_crypto_provider() {
@@ -305,13 +403,17 @@ async fn serve_remote_share_gateway(runtime: Arc<RemoteShareRuntime>) -> Result<
                 .allow_methods([Method::GET, Method::POST])
                 .allow_headers(Any),
         )
-        .with_state(runtime);
+        .with_state(Arc::clone(&runtime));
     let listener = TcpListener::bind(addr).await?;
     log::info!(
         target: REMOTE_SHARE_LOG_TARGET,
-        "remote_share_gateway_started addr=\"{}\" dev_code=\"{}\"",
+        "remote_share_gateway_started addr=\"{}\" code_len={}",
         addr,
-        DEV_PAIRING_CODE
+        runtime
+            .status()
+            .map_err(|error| anyhow!(error.message))?
+            .code
+            .len()
     );
     axum::serve(listener, app).await?;
     Ok(())
@@ -319,20 +421,38 @@ async fn serve_remote_share_gateway(runtime: Arc<RemoteShareRuntime>) -> Result<
 
 async fn run_remote_relay_host(runtime: Arc<RemoteShareRuntime>) {
     loop {
-        let url = remote_relay_host_url();
+        let status = match runtime.status() {
+            Ok(status) => status,
+            Err(error) => {
+                log::warn!(
+                    target: REMOTE_SHARE_LOG_TARGET,
+                    "remote_share_relay_state_failed error=\"{}\"",
+                    error.message
+                );
+                sleep(REMOTE_RELAY_RECONNECT_DELAY).await;
+                continue;
+            }
+        };
+        if !status.enabled {
+            sleep(REMOTE_RELAY_RECONNECT_DELAY).await;
+            continue;
+        }
+        let url = remote_relay_host_url(&status.code);
         log::info!(
             target: REMOTE_SHARE_LOG_TARGET,
             "remote_share_relay_connecting url=\"{}\"",
-            redact_remote_code_for_log(&url)
+            redact_remote_code_for_log(&url, &status.code)
         );
         match connect_async(&url).await {
             Ok((socket, _)) => {
                 log::info!(
                     target: REMOTE_SHARE_LOG_TARGET,
                     "remote_share_relay_connected url=\"{}\"",
-                    redact_remote_code_for_log(&url)
+                    redact_remote_code_for_log(&url, &status.code)
                 );
-                if let Err(error) = serve_remote_relay_socket(Arc::clone(&runtime), socket).await {
+                if let Err(error) =
+                    serve_remote_relay_socket(Arc::clone(&runtime), socket, status.code).await
+                {
                     log::warn!(
                         target: REMOTE_SHARE_LOG_TARGET,
                         "remote_share_relay_disconnected error=\"{}\"",
@@ -357,20 +477,35 @@ async fn serve_remote_relay_socket(
     socket: tokio_tungstenite::WebSocketStream<
         tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
     >,
+    active_code: String,
 ) -> Result<()> {
     let (mut sink, mut stream) = socket.split();
+    let (outbound_tx, mut outbound_rx) = unbounded_channel::<String>();
     let connected_at = Instant::now();
     let mut client_connected = false;
+    let mut last_logged_peer_state: Option<(bool, bool)> = None;
     let mut heartbeat = interval(REMOTE_RELAY_HEARTBEAT_INTERVAL);
     heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
     loop {
         tokio::select! {
             _ = heartbeat.tick() => {
+                if !runtime
+                    .relay_session_still_current(&active_code)
+                    .map_err(|error| anyhow!(error.message))?
+                {
+                    return Err(anyhow!("remote relay share state changed"));
+                }
                 if !client_connected && connected_at.elapsed() >= REMOTE_RELAY_IDLE_REFRESH_INTERVAL {
                     return Err(anyhow!("remote relay idle connection refresh requested"));
                 }
                 let ping = serde_json::to_string(&RemoteRelayOutbound::HostPing {})?;
                 sink.send(Message::Text(ping.into())).await?;
+            }
+            outbound = outbound_rx.recv() => {
+                let Some(outbound) = outbound else {
+                    return Err(anyhow!("remote relay outbound channel closed"));
+                };
+                sink.send(Message::Text(outbound.into())).await?;
             }
             message = stream.next() => {
                 let Some(message) = message else {
@@ -381,10 +516,24 @@ async fn serve_remote_relay_socket(
                     continue;
                 }
                 let text = message.into_text()?;
-                if let Some(next_client_connected) = remote_relay_peer_state_client_connected(&text) {
+                if let Some((host_connected, next_client_connected)) = remote_relay_peer_state(&text) {
                     client_connected = next_client_connected;
+                    let peer_state = (host_connected, next_client_connected);
+                    if last_logged_peer_state != Some(peer_state) {
+                        log::info!(
+                            target: REMOTE_SHARE_LOG_TARGET,
+                            "remote_share_relay_peer_state host_connected={} client_connected={}",
+                            host_connected,
+                            next_client_connected
+                        );
+                        last_logged_peer_state = Some(peer_state);
+                    }
                 }
-                let Some(response) = handle_remote_relay_message(Arc::clone(&runtime), &text).await else {
+                let Some(response) = handle_remote_relay_message(
+                    Arc::clone(&runtime),
+                    &text,
+                    outbound_tx.clone(),
+                ).await else {
                     continue;
                 };
                 sink.send(Message::Text(response.into())).await?;
@@ -393,11 +542,13 @@ async fn serve_remote_relay_socket(
     }
 }
 
-fn remote_relay_peer_state_client_connected(text: &str) -> Option<bool> {
+fn remote_relay_peer_state(text: &str) -> Option<(bool, bool)> {
     match serde_json::from_str::<RemoteRelayInbound>(text).ok()? {
         RemoteRelayInbound::PeerState {
-            client_connected, ..
-        } => Some(client_connected),
+            host_connected,
+            client_connected,
+            ..
+        } => Some((host_connected, client_connected)),
         _ => None,
     }
 }
@@ -405,6 +556,7 @@ fn remote_relay_peer_state_client_connected(text: &str) -> Option<bool> {
 async fn handle_remote_relay_message(
     runtime: Arc<RemoteShareRuntime>,
     text: &str,
+    relay_events: RemoteRelayEventSender,
 ) -> Option<String> {
     let inbound = match serde_json::from_str::<RemoteRelayInbound>(text) {
         Ok(inbound) => inbound,
@@ -428,16 +580,7 @@ async fn handle_remote_relay_message(
             );
             return None;
         }
-        RemoteRelayInbound::PeerState {
-            host_connected,
-            client_connected,
-        } => {
-            log::info!(
-                target: REMOTE_SHARE_LOG_TARGET,
-                "remote_share_relay_peer_state host_connected={} client_connected={}",
-                host_connected,
-                client_connected
-            );
+        RemoteRelayInbound::PeerState { .. } => {
             return None;
         }
         RemoteRelayInbound::RpcRequest {
@@ -445,7 +588,17 @@ async fn handle_remote_relay_message(
             method,
             client_id,
             params,
-        } => handle_remote_relay_rpc(Arc::clone(&runtime), id, method, client_id, params).await,
+        } => {
+            handle_remote_relay_rpc(
+                Arc::clone(&runtime),
+                id,
+                method,
+                client_id,
+                params,
+                relay_events,
+            )
+            .await
+        }
         RemoteRelayInbound::AudioRequest {
             id,
             client_id,
@@ -470,7 +623,9 @@ async fn handle_remote_relay_rpc(
     method: String,
     client_id: Option<String>,
     params: serde_json::Value,
+    relay_events: RemoteRelayEventSender,
 ) -> RemoteRelayOutbound {
+    let started = Instant::now();
     let client_id = normalize_remote_client_id(client_id.as_deref());
     log::info!(
         target: REMOTE_SHARE_LOG_TARGET,
@@ -483,11 +638,19 @@ async fn handle_remote_relay_rpc(
             .and_then(|request| relay_json(runtime.handle_connect(&client_id, request))),
         "bootstrap" => relay_json(runtime.handle_bootstrap(&client_id).await),
         "session.start" => match parse_relay_params(params) {
-            Ok(request) => relay_json(runtime.handle_start(&client_id, request).await),
+            Ok(request) => relay_json(
+                runtime
+                    .handle_start(&client_id, request, Some(relay_events))
+                    .await,
+            ),
             Err(error) => Err(error),
         },
         "session.next" => match parse_relay_params(params) {
-            Ok(request) => relay_json(runtime.handle_next(&client_id, request).await),
+            Ok(request) => relay_json(
+                runtime
+                    .handle_next(&client_id, request, Some(relay_events))
+                    .await,
+            ),
             Err(error) => Err(error),
         },
         "session.stop" => parse_relay_params(params)
@@ -497,7 +660,7 @@ async fn handle_remote_relay_rpc(
         ))),
     };
 
-    match result {
+    let outbound = match result {
         Ok(data) => RemoteRelayOutbound::RpcResponse {
             id,
             ok: true,
@@ -510,7 +673,15 @@ async fn handle_remote_relay_rpc(
             data: None,
             error: Some(error.message),
         },
-    }
+    };
+    log::info!(
+        target: REMOTE_SHARE_LOG_TARGET,
+        "remote_share_relay_rpc_finished method=\"{}\" ok={} elapsed_ms={}",
+        method,
+        matches!(outbound, RemoteRelayOutbound::RpcResponse { ok: true, .. }),
+        started.elapsed().as_millis()
+    );
+    outbound
 }
 
 async fn handle_remote_relay_audio(
@@ -558,24 +729,54 @@ fn parse_relay_params<T: DeserializeOwned>(params: serde_json::Value) -> RemoteR
         .map_err(|error| RemoteShareError::internal(format!("invalid relay params: {error}")))
 }
 
-fn remote_relay_host_url() -> String {
+fn remote_relay_host_url(code: &str) -> String {
     let base = std::env::var(REMOTE_RELAY_HOST_URL_ENV)
         .unwrap_or_else(|_| DEFAULT_REMOTE_RELAY_HOST_URL.to_string());
     let separator = if base.contains('?') { '&' } else { '?' };
-    format!("{base}{separator}code={DEV_PAIRING_CODE}")
+    format!("{base}{separator}code={code}")
 }
 
-fn redact_remote_code_for_log(url: &str) -> String {
-    url.replace(DEV_PAIRING_CODE, "******")
+fn redact_remote_code_for_log(url: &str, code: &str) -> String {
+    url.replace(code, "******")
 }
 
-async fn remote_share_health() -> Json<RemoteHealthResponse> {
-    Json(RemoteHealthResponse {
+async fn remote_share_health(
+    State(runtime): State<Arc<RemoteShareRuntime>>,
+) -> RemoteResult<Json<RemoteHealthResponse>> {
+    let status = runtime.status()?;
+    Ok(Json(RemoteHealthResponse {
         service: "slisic_remote_share",
         status: "ok",
-        code: DEV_PAIRING_CODE,
+        code: status.code,
+        enabled: status.enabled,
         remote_page: "http://127.0.0.1:4177/remote",
-    })
+    }))
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn get_remote_share_status() -> std::result::Result<RemoteShareStatus, String> {
+    remote_runtime()?.status().map_err(|error| error.message)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn set_remote_share_enabled(
+    enabled: bool,
+) -> std::result::Result<RemoteShareStatus, String> {
+    remote_runtime()?
+        .set_enabled(enabled)
+        .await
+        .map_err(|error| error.message)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn set_remote_share_code(code: String) -> std::result::Result<RemoteShareStatus, String> {
+    remote_runtime()?
+        .set_code(code)
+        .await
+        .map_err(|error| error.message)
 }
 
 async fn connect_remote_share(
@@ -601,7 +802,7 @@ async fn start_remote_session(
 ) -> RemoteResult<Json<RemotePlaybackResponse>> {
     Ok(Json(
         runtime
-            .handle_start(DEFAULT_REMOTE_CLIENT_ID, request)
+            .handle_start(DEFAULT_REMOTE_CLIENT_ID, request, None)
             .await?,
     ))
 }
@@ -612,7 +813,7 @@ async fn next_remote_track(
 ) -> RemoteResult<Json<RemotePlaybackResponse>> {
     Ok(Json(
         runtime
-            .handle_next(DEFAULT_REMOTE_CLIENT_ID, request)
+            .handle_next(DEFAULT_REMOTE_CLIENT_ID, request, None)
             .await?,
     ))
 }
@@ -631,20 +832,13 @@ async fn stream_remote_audio(
     AxumPath(token): AxumPath<String>,
     headers: HeaderMap,
 ) -> RemoteResult<Response> {
-    let token = {
-        let sessions = runtime.lock_sessions()?;
-        sessions
-            .by_client
-            .get(DEFAULT_REMOTE_CLIENT_ID)
-            .ok_or(RemoteShareError::not_found(
-                "remote client session not found",
-            ))?
-            .audio_tokens
-            .get(&token)
-            .cloned()
-            .ok_or(RemoteShareError::not_found("audio token not found"))?
-    };
-    stream_file_with_range(token.track.file_path, headers).await
+    if !runtime.status()?.enabled {
+        return Err(RemoteShareError::unauthorized("remote share is disabled"));
+    }
+    let audio_path = runtime
+        .materialized_audio_path_for_token(DEFAULT_REMOTE_CLIENT_ID, token)
+        .await?;
+    stream_file_with_range(audio_path, headers).await
 }
 
 async fn resolve_remote_initial_track(
@@ -691,11 +885,121 @@ async fn propose_remote_next_queue(
     })
 }
 
+#[cfg(test)]
+async fn consume_prepared_playlist_initial_track(
+    _app: &AppHandle,
+    _playlist_name: &str,
+) -> Result<Option<PlaybackTrack>> {
+    Ok(None)
+}
+
+#[cfg(test)]
+async fn load_random_playlist_playback_tracks(
+    _app: &AppHandle,
+    _playlist_name: &str,
+    _limit: usize,
+) -> Result<Vec<PlaybackTrack>> {
+    Ok(Vec::new())
+}
+
+#[cfg(test)]
+fn propose_playlist_playback_queue_with_mode(
+    _request: PlaylistPlaybackRecommendationRequest,
+    _mode: PlaylistPlaybackRecommendationMode,
+    _should_log_selection: bool,
+) -> Vec<PlaybackTrack> {
+    Vec::new()
+}
+
 impl RemoteShareRuntime {
+    fn lock_settings(&self) -> RemoteResult<std::sync::MutexGuard<'_, RemoteShareSettings>> {
+        self.settings
+            .lock()
+            .map_err(|_| RemoteShareError::internal("remote share settings lock is poisoned"))
+    }
+
     fn lock_sessions(&self) -> RemoteResult<std::sync::MutexGuard<'_, RemoteShareSessions>> {
         self.sessions
             .lock()
             .map_err(|_| RemoteShareError::internal("remote share sessions lock is poisoned"))
+    }
+
+    fn status(&self) -> RemoteResult<RemoteShareStatus> {
+        let settings = self.lock_settings()?;
+        Ok(RemoteShareStatus {
+            enabled: settings.enabled,
+            code: settings.code.clone(),
+        })
+    }
+
+    fn relay_session_still_current(&self, active_code: &str) -> RemoteResult<bool> {
+        let settings = self.lock_settings()?;
+        Ok(settings.enabled && settings.code == active_code)
+    }
+
+    async fn set_enabled(&self, enabled: bool) -> RemoteResult<RemoteShareStatus> {
+        let next_settings = {
+            let settings = self.lock_settings()?;
+            RemoteShareSettings {
+                enabled,
+                code: settings.code.clone(),
+                enabled_configured_by_user: true,
+            }
+        };
+        save_remote_share_settings(next_settings.clone()).await?;
+        {
+            let mut settings = self.lock_settings()?;
+            *settings = next_settings;
+        }
+        if !enabled {
+            self.clear_sessions()?;
+        }
+        self.status()
+    }
+
+    async fn set_code(&self, code: String) -> RemoteResult<RemoteShareStatus> {
+        let code = normalize_remote_pairing_code(&code)?;
+        let (next_settings, code_changed) = {
+            let settings = self.lock_settings()?;
+            (
+                RemoteShareSettings {
+                    enabled: settings.enabled,
+                    code: code.clone(),
+                    enabled_configured_by_user: settings.enabled_configured_by_user,
+                },
+                settings.code != code,
+            )
+        };
+        if code_changed {
+            save_remote_share_settings(next_settings.clone()).await?;
+            {
+                let mut settings = self.lock_settings()?;
+                *settings = next_settings;
+            }
+        };
+        if code_changed {
+            self.clear_sessions()?;
+        }
+        self.status()
+    }
+
+    fn clear_sessions(&self) -> RemoteResult<()> {
+        let mut sessions = self.lock_sessions()?;
+        sessions.by_client.clear();
+        Ok(())
+    }
+
+    fn ensure_code(&self, code: &str) -> RemoteResult<String> {
+        let code = normalize_remote_pairing_code(code)?;
+        let settings = self.lock_settings()?;
+        if !settings.enabled {
+            return Err(RemoteShareError::unauthorized("remote share is disabled"));
+        }
+        if settings.code == code {
+            Ok(settings.code.clone())
+        } else {
+            Err(RemoteShareError::unauthorized("invalid remote share code"))
+        }
     }
 
     fn session_view(&self, client_id: &str) -> RemoteResult<RemoteSessionView> {
@@ -712,7 +1016,7 @@ impl RemoteShareRuntime {
         client_id: &str,
         request: RemoteConnectRequest,
     ) -> RemoteResult<RemoteConnectResponse> {
-        ensure_dev_code(&request.code)?;
+        let code = self.ensure_code(&request.code)?;
         let mut sessions = self.lock_sessions()?;
         sessions
             .by_client
@@ -721,16 +1025,17 @@ impl RemoteShareRuntime {
             .connected = true;
         Ok(RemoteConnectResponse {
             connected: true,
-            code: DEV_PAIRING_CODE.to_string(),
+            code,
         })
     }
 
     async fn handle_bootstrap(&self, client_id: &str) -> RemoteResult<RemoteBootstrapResponse> {
         let playlists = playlist_repo::list_playlists().await?;
         let session = self.session_view(client_id)?;
+        let status = self.status()?;
         Ok(RemoteBootstrapResponse {
-            code: DEV_PAIRING_CODE.to_string(),
-            connected: session_connected(self, client_id)?,
+            code: status.code,
+            connected: status.enabled && session_connected(self, client_id)?,
             playlists,
             session,
         })
@@ -740,8 +1045,9 @@ impl RemoteShareRuntime {
         &self,
         client_id: &str,
         request: RemoteStartRequest,
+        relay_events: Option<RemoteRelayEventSender>,
     ) -> RemoteResult<RemotePlaybackResponse> {
-        ensure_dev_code(&request.code)?;
+        self.ensure_code(&request.code)?;
         {
             let mut sessions = self.lock_sessions()?;
             let session = sessions.by_client.entry(client_id.to_string()).or_default();
@@ -761,22 +1067,23 @@ impl RemoteShareRuntime {
                 return Err(error.into());
             }
         };
-        let queue = match propose_remote_next_queue(&self.app, &initial, &[]).await {
-            Ok(queue) => queue,
-            Err(error) => {
-                self.reset_to_ready(client_id)?;
-                return Err(error.into());
-            }
-        };
-        self.commit_playback(client_id, request.playlist_name, initial, queue)
+        let response = self.commit_playback(
+            client_id,
+            request.playlist_name,
+            initial.clone(),
+            Vec::new(),
+        )?;
+        self.spawn_remote_next_queue_fill(client_id.to_string(), initial, Vec::new(), relay_events);
+        Ok(response)
     }
 
     async fn handle_next(
         &self,
         client_id: &str,
         request: RemoteCodeRequest,
+        relay_events: Option<RemoteRelayEventSender>,
     ) -> RemoteResult<RemotePlaybackResponse> {
-        ensure_dev_code(&request.code)?;
+        self.ensure_code(&request.code)?;
         let (playlist_name, current, recent_history) = {
             let mut sessions = self.lock_sessions()?;
             let session = sessions.by_client.entry(client_id.to_string()).or_default();
@@ -798,8 +1105,15 @@ impl RemoteShareRuntime {
             (playlist_name, next, session.recently_played.clone())
         };
 
-        let queue = propose_remote_next_queue(&self.app, &current, &recent_history).await?;
-        self.commit_playback(client_id, playlist_name, current, queue)
+        let response =
+            self.commit_playback(client_id, playlist_name, current.clone(), Vec::new())?;
+        self.spawn_remote_next_queue_fill(
+            client_id.to_string(),
+            current,
+            recent_history,
+            relay_events,
+        );
+        Ok(response)
     }
 
     fn handle_stop(
@@ -807,7 +1121,7 @@ impl RemoteShareRuntime {
         client_id: &str,
         request: RemoteCodeRequest,
     ) -> RemoteResult<RemoteSessionView> {
-        ensure_dev_code(&request.code)?;
+        self.ensure_code(&request.code)?;
         let mut sessions = self.lock_sessions()?;
         let session = sessions.by_client.entry(client_id.to_string()).or_default();
         session.current = None;
@@ -823,6 +1137,23 @@ impl RemoteShareRuntime {
         token: String,
         range: Option<String>,
     ) -> RemoteResult<RemoteAudioRelayCargo> {
+        {
+            let settings = self.lock_settings()?;
+            if !settings.enabled {
+                return Err(RemoteShareError::unauthorized("remote share is disabled"));
+            }
+        }
+        let audio_path = self
+            .materialized_audio_path_for_token(client_id, token)
+            .await?;
+        read_file_relay_chunk(audio_path, range.as_deref()).await
+    }
+
+    async fn materialized_audio_path_for_token(
+        &self,
+        client_id: &str,
+        token: String,
+    ) -> RemoteResult<PathBuf> {
         let token = {
             let sessions = self.lock_sessions()?;
             sessions
@@ -836,7 +1167,109 @@ impl RemoteShareRuntime {
                 .cloned()
                 .ok_or(RemoteShareError::not_found("audio token not found"))?
         };
-        read_file_relay_chunk(token.track.file_path, range.as_deref()).await
+        self.materialize_remote_audio(&token.track).await
+    }
+
+    async fn materialize_remote_audio(&self, track: &PlaybackTrack) -> RemoteResult<PathBuf> {
+        materialize_remote_audio_for_track(&self.app, &self.remote_audio_locks, track).await
+    }
+
+    fn spawn_remote_audio_prewarm(&self, tracks: Vec<PlaybackTrack>) {
+        if tracks.is_empty() {
+            return;
+        }
+        let app = self.app.clone();
+        let locks = Arc::clone(&self.remote_audio_locks);
+        tauri::async_runtime::spawn(async move {
+            for track in tracks {
+                let title = track.music_name.clone();
+                if let Err(error) = materialize_remote_audio_for_track(&app, &locks, &track).await {
+                    log::warn!(
+                        target: REMOTE_SHARE_LOG_TARGET,
+                        "remote_audio_prewarm_failed title=\"{}\" error=\"{}\"",
+                        escape_remote_log_value(&title),
+                        escape_remote_log_value(&error.message)
+                    );
+                }
+            }
+        });
+    }
+
+    fn spawn_remote_next_queue_fill(
+        &self,
+        client_id: String,
+        current: PlaybackTrack,
+        recent_history: Vec<PlaybackTrack>,
+        relay_events: Option<RemoteRelayEventSender>,
+    ) {
+        let app = self.app.clone();
+        let sessions = Arc::clone(&self.sessions);
+        let locks = Arc::clone(&self.remote_audio_locks);
+        tauri::async_runtime::spawn(async move {
+            let title = current.music_name.clone();
+            let started = Instant::now();
+            let queue = match propose_remote_next_queue(&app, &current, &recent_history).await {
+                Ok(queue) => queue,
+                Err(error) => {
+                    log::warn!(
+                        target: REMOTE_SHARE_LOG_TARGET,
+                        "remote_next_queue_fill_failed title=\"{}\" error=\"{}\" elapsed_ms={}",
+                        escape_remote_log_value(&title),
+                        escape_remote_log_value(&error.to_string()),
+                        started.elapsed().as_millis()
+                    );
+                    return;
+                }
+            };
+            let commit = match commit_remote_next_queue_for_current(
+                &sessions, &client_id, &current, queue,
+            ) {
+                Ok(Some(commit)) => commit,
+                Ok(None) => {
+                    log::info!(
+                        target: REMOTE_SHARE_LOG_TARGET,
+                        "remote_next_queue_fill_discarded title=\"{}\" reason=stale_session elapsed_ms={}",
+                        escape_remote_log_value(&title),
+                        started.elapsed().as_millis()
+                    );
+                    return;
+                }
+                Err(error) => {
+                    log::warn!(
+                        target: REMOTE_SHARE_LOG_TARGET,
+                        "remote_next_queue_fill_commit_failed title=\"{}\" error=\"{}\" elapsed_ms={}",
+                        escape_remote_log_value(&title),
+                        escape_remote_log_value(&error.message),
+                        started.elapsed().as_millis()
+                    );
+                    return;
+                }
+            };
+            let prewarm_tracks = commit.prewarm_tracks;
+            let prefetch_count = commit.frontier.len();
+            if let Some(relay_events) = relay_events.as_ref() {
+                send_remote_relay_prefetch_ready(relay_events, &client_id, commit.frontier);
+            }
+            log::info!(
+                target: REMOTE_SHARE_LOG_TARGET,
+                "remote_next_queue_fill_finished title=\"{}\" prefetch_tracks={} prewarm_tracks={} elapsed_ms={}",
+                escape_remote_log_value(&title),
+                prefetch_count,
+                prewarm_tracks.len(),
+                started.elapsed().as_millis()
+            );
+            for track in prewarm_tracks {
+                let title = track.music_name.clone();
+                if let Err(error) = materialize_remote_audio_for_track(&app, &locks, &track).await {
+                    log::warn!(
+                        target: REMOTE_SHARE_LOG_TARGET,
+                        "remote_next_queue_prewarm_failed title=\"{}\" error=\"{}\"",
+                        escape_remote_log_value(&title),
+                        escape_remote_log_value(&error.message)
+                    );
+                }
+            }
+        });
     }
 
     fn reset_to_ready(&self, client_id: &str) -> RemoteResult<()> {
@@ -876,11 +1309,87 @@ impl RemoteShareRuntime {
             .chain(session.queue.front().cloned())
             .collect::<Vec<_>>();
         session.retain_audio_tokens_for_tracks(&retained_tracks);
+        self.spawn_remote_audio_prewarm(retained_tracks);
         Ok(RemotePlaybackResponse {
             session: session.view(),
             playback: Some(playback),
             prefetch,
         })
+    }
+}
+
+fn commit_remote_next_queue_for_current(
+    sessions: &Arc<Mutex<RemoteShareSessions>>,
+    client_id: &str,
+    current: &PlaybackTrack,
+    queue: Vec<PlaybackTrack>,
+) -> RemoteResult<Option<RemoteNextQueueCommit>> {
+    let mut sessions = sessions
+        .lock()
+        .map_err(|_| RemoteShareError::internal("remote share sessions lock is poisoned"))?;
+    let Some(session) = sessions.by_client.get_mut(client_id) else {
+        return Ok(None);
+    };
+    if session.state != RemotePlaybackState::Playing
+        || !session
+            .current
+            .as_ref()
+            .is_some_and(|active| same_remote_track(active, current))
+    {
+        return Ok(None);
+    }
+    session.queue = queue
+        .into_iter()
+        .filter(|track| !same_remote_track(track, current))
+        .collect();
+    let prewarm_tracks = session
+        .queue
+        .iter()
+        .take(REMOTE_PREFETCH_FRONTIER_LIMIT)
+        .cloned()
+        .collect::<Vec<_>>();
+    let frontier = prewarm_tracks
+        .iter()
+        .map(|track| session.create_playback_cargo(track))
+        .collect::<Vec<_>>();
+    let retained_tracks = std::iter::once(current.clone())
+        .chain(prewarm_tracks.iter().cloned())
+        .collect::<Vec<_>>();
+    session.retain_audio_tokens_for_tracks(&retained_tracks);
+    Ok(Some(RemoteNextQueueCommit {
+        frontier,
+        prewarm_tracks,
+    }))
+}
+
+fn send_remote_relay_prefetch_ready(
+    relay_events: &RemoteRelayEventSender,
+    client_id: &str,
+    frontier: Vec<RemotePlaybackCargo>,
+) {
+    if frontier.is_empty() {
+        return;
+    }
+    let event = RemoteRelayOutbound::SessionPrefetchReady {
+        client_id: client_id.to_string(),
+        frontier,
+    };
+    match serde_json::to_string(&event) {
+        Ok(frame) => {
+            if relay_events.send(frame).is_err() {
+                log::warn!(
+                    target: REMOTE_SHARE_LOG_TARGET,
+                    "remote_prefetch_event_send_failed reason=relay_closed"
+                );
+            }
+        }
+        Err(error) => {
+            log::warn!(
+                target: REMOTE_SHARE_LOG_TARGET,
+                "remote_prefetch_event_serialize_failed error=\"{}\"",
+                error
+            );
+        }
     }
 }
 
@@ -967,11 +1476,71 @@ fn session_connected(runtime: &RemoteShareRuntime, client_id: &str) -> RemoteRes
         .unwrap_or(false))
 }
 
-fn ensure_dev_code(code: &str) -> RemoteResult<()> {
-    if code == DEV_PAIRING_CODE {
-        Ok(())
+fn remote_runtime() -> std::result::Result<Arc<RemoteShareRuntime>, String> {
+    REMOTE_SHARE_RUNTIME
+        .get()
+        .cloned()
+        .ok_or_else(|| "remote share runtime is not initialized".to_string())
+}
+
+async fn get_remote_share_settings() -> RemoteResult<Option<RemoteShareSettings>> {
+    match Repo::<PersistedRemoteShareSettings>::get_record(remote_share_settings_record_id()).await
+    {
+        Ok(settings) => Ok(Some(settings.into())),
+        Err(error) => match classify_db_error(&error) {
+            DBError::NotFound | DBError::MissingTable(_) => Ok(None),
+            other => Err(RemoteShareError::internal(other.to_string())),
+        },
+    }
+}
+
+async fn save_remote_share_settings(
+    settings: RemoteShareSettings,
+) -> RemoteResult<RemoteShareSettings> {
+    let persisted = PersistedRemoteShareSettings::from(settings);
+    Repo::<PersistedRemoteShareSettings>::upsert_at(remote_share_settings_record_id(), persisted)
+        .await
+        .map(RemoteShareSettings::from)
+        .map_err(|error| RemoteShareError::internal(error.to_string()))
+}
+
+async fn ensure_remote_share_settings() -> RemoteResult<RemoteShareSettings> {
+    if let Some(settings) = get_remote_share_settings().await? {
+        return Ok(settings);
+    }
+    save_remote_share_settings(RemoteShareSettings::default()).await
+}
+
+fn remote_share_settings_record_id() -> RecordId {
+    RecordId::new(
+        PersistedRemoteShareSettings::table_name(),
+        REMOTE_SHARE_SETTINGS_RECORD_KEY,
+    )
+}
+
+fn generate_remote_pairing_code() -> String {
+    let mut rng = rand::rng();
+    (0..REMOTE_PAIRING_CODE_MAX_LEN)
+        .map(|_| {
+            let index = rng.random_range(0..REMOTE_PAIRING_CODE_ALPHABET.len());
+            REMOTE_PAIRING_CODE_ALPHABET[index] as char
+        })
+        .collect()
+}
+
+fn normalize_remote_pairing_code(code: &str) -> RemoteResult<String> {
+    let normalized = code
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .flat_map(|ch| ch.to_uppercase())
+        .take(REMOTE_PAIRING_CODE_MAX_LEN)
+        .collect::<String>();
+    if normalized.is_empty() {
+        Err(RemoteShareError::unauthorized(
+            "remote share code must contain at least one letter or digit",
+        ))
     } else {
-        Err(RemoteShareError::unauthorized("invalid remote share code"))
+        Ok(normalized)
     }
 }
 
@@ -998,6 +1567,225 @@ fn same_remote_track(left: &PlaybackTrack, right: &PlaybackTrack) -> bool {
         || (left.music_url == right.music_url
             && left.start_ms == right.start_ms
             && left.end_ms == right.end_ms)
+}
+
+struct RemoteAudioMaterializationDescriptor {
+    key: String,
+    app: AppHandle,
+    track: PlaybackTrack,
+    output_path: PathBuf,
+    gain_db: f32,
+}
+
+async fn remote_audio_materialization_descriptor(
+    app: &AppHandle,
+    track: &PlaybackTrack,
+) -> RemoteResult<RemoteAudioMaterializationDescriptor> {
+    let metadata = tokio::fs::metadata(&track.file_path)
+        .await
+        .map_err(|_| RemoteShareError::not_found("audio file not found"))?;
+    if metadata.len() == 0 {
+        return Err(RemoteShareError::internal("empty audio file"));
+    }
+
+    let gain_db = remote_audio_gain_db(track);
+    let modified_ms = metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis());
+    let key = remote_audio_materialization_key(track, gain_db, metadata.len(), modified_ms);
+    let output_path = remote_audio_cache_root(app)?.join(format!("{key}.m4a"));
+    Ok(RemoteAudioMaterializationDescriptor {
+        key,
+        app: app.clone(),
+        track: track.clone(),
+        output_path,
+        gain_db,
+    })
+}
+
+fn remote_audio_cache_root(app: &AppHandle) -> RemoteResult<PathBuf> {
+    let cache_dir = app
+        .path()
+        .app_cache_dir()
+        .map_err(|error| RemoteShareError::internal(error.to_string()))?
+        .join(REMOTE_AUDIO_CACHE_DIR);
+    std_fs::create_dir_all(&cache_dir)
+        .map_err(|error| RemoteShareError::internal(error.to_string()))?;
+    Ok(cache_dir)
+}
+
+fn remote_audio_gain_db(track: &PlaybackTrack) -> f32 {
+    track
+        .loudness_profile
+        .as_ref()
+        .and_then(playback_loudness_plan_for_profile)
+        .map(|plan| plan.final_gain_db)
+        .unwrap_or(0.0)
+}
+
+fn remote_audio_materialization_key(
+    track: &PlaybackTrack,
+    gain_db: f32,
+    file_len: u64,
+    modified_ms: Option<u128>,
+) -> String {
+    let gain_millidb = (gain_db * 1000.0).round() as i32;
+    let mut hasher = Sha256::new();
+    hasher.update(track.canonical_music_id.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(track.music_url.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(track.file_path.to_string_lossy().as_bytes());
+    hasher.update(b"\0");
+    hasher.update(track.start_ms.to_le_bytes());
+    hasher.update(track.end_ms.to_le_bytes());
+    hasher.update(file_len.to_le_bytes());
+    hasher.update(modified_ms.unwrap_or_default().to_le_bytes());
+    hasher.update(gain_millidb.to_le_bytes());
+    hex::encode(hasher.finalize())
+}
+
+async fn remote_audio_cache_file_is_ready(path: &PathBuf) -> bool {
+    tokio::fs::metadata(path)
+        .await
+        .map(|metadata| metadata.len() > 0)
+        .unwrap_or(false)
+}
+
+async fn materialize_remote_audio_for_track(
+    app: &AppHandle,
+    locks: &Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
+    track: &PlaybackTrack,
+) -> RemoteResult<PathBuf> {
+    let descriptor = remote_audio_materialization_descriptor(app, track).await?;
+    if remote_audio_cache_file_is_ready(&descriptor.output_path).await {
+        return Ok(descriptor.output_path);
+    }
+
+    let lock = remote_audio_materialization_lock_from(locks, &descriptor.key)?;
+    task::spawn_blocking(move || materialize_remote_audio_blocking(descriptor, lock))
+        .await
+        .map_err(|error| RemoteShareError::internal(error.to_string()))?
+}
+
+fn remote_audio_materialization_lock_from(
+    locks: &Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
+    key: &str,
+) -> RemoteResult<Arc<Mutex<()>>> {
+    let mut locks = locks
+        .lock()
+        .map_err(|_| RemoteShareError::internal("remote audio materialization lock is poisoned"))?;
+    Ok(Arc::clone(
+        locks
+            .entry(key.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(()))),
+    ))
+}
+
+fn materialize_remote_audio_blocking(
+    descriptor: RemoteAudioMaterializationDescriptor,
+    lock: Arc<Mutex<()>>,
+) -> RemoteResult<PathBuf> {
+    let _guard = lock
+        .lock()
+        .map_err(|_| RemoteShareError::internal("remote audio materialization lock is poisoned"))?;
+    if std_fs::metadata(&descriptor.output_path)
+        .map(|metadata| metadata.len() > 0)
+        .unwrap_or(false)
+    {
+        return Ok(descriptor.output_path);
+    }
+
+    let Some(parent) = descriptor.output_path.parent() else {
+        return Err(RemoteShareError::internal(
+            "remote audio cache path has no parent",
+        ));
+    };
+    std_fs::create_dir_all(parent)
+        .map_err(|error| RemoteShareError::internal(error.to_string()))?;
+    let temp_path = parent.join(format!("{}.tmp", descriptor.key));
+    let _ = std_fs::remove_file(&temp_path);
+
+    let ffmpeg_path = ensure_managed_binary(&descriptor.app, ManagedBinary::Ffmpeg)
+        .map_err(RemoteShareError::internal)?;
+    let _usage = acquire_managed_binary_usage(ManagedBinary::Ffmpeg, "remote_share_audio");
+    let mut command = Command::new(ffmpeg_path);
+    command
+        .arg("-y")
+        .arg("-hide_banner")
+        .arg("-loglevel")
+        .arg("error")
+        .arg("-ss")
+        .arg(format_remote_seconds(descriptor.track.start_ms))
+        .arg("-i")
+        .arg(&descriptor.track.file_path)
+        .arg("-t")
+        .arg(format_remote_seconds(
+            descriptor
+                .track
+                .end_ms
+                .saturating_sub(descriptor.track.start_ms),
+        ))
+        .arg("-map")
+        .arg("0:a:0")
+        .arg("-vn");
+    if descriptor.gain_db.abs() > REMOTE_AUDIO_GAIN_EPSILON_DB {
+        command
+            .arg("-af")
+            .arg(format!("volume={:.3}dB", descriptor.gain_db));
+    }
+    command
+        .arg("-c:a")
+        .arg("aac")
+        .arg("-b:a")
+        .arg("192k")
+        .arg("-movflags")
+        .arg("+faststart")
+        .arg("-f")
+        .arg("mp4")
+        .arg(&temp_path);
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    let output = command
+        .output()
+        .map_err(|error| RemoteShareError::internal(error.to_string()))?;
+    if !output.status.success() {
+        let _ = std_fs::remove_file(&temp_path);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(RemoteShareError::internal(format!(
+            "remote audio materialization failed: {}",
+            stderr.trim()
+        )));
+    }
+    if !std_fs::metadata(&temp_path)
+        .map(|metadata| metadata.len() > 0)
+        .unwrap_or(false)
+    {
+        let _ = std_fs::remove_file(&temp_path);
+        return Err(RemoteShareError::internal(
+            "remote audio materialization produced empty output",
+        ));
+    }
+    std_fs::rename(&temp_path, &descriptor.output_path)
+        .map_err(|error| RemoteShareError::internal(error.to_string()))?;
+    Ok(descriptor.output_path)
+}
+
+fn format_remote_seconds(ms: u32) -> String {
+    format!("{:.3}", f64::from(ms) / 1000.0)
+}
+
+fn escape_remote_log_value(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 async fn stream_file_with_range(path: PathBuf, headers: HeaderMap) -> RemoteResult<Response> {
@@ -1154,3 +1942,7 @@ impl IntoResponse for RemoteShareError {
         response
     }
 }
+
+#[cfg(test)]
+#[path = "remote_share.test.rs"]
+mod tests;
