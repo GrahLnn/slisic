@@ -23,12 +23,12 @@ use std::collections::{HashMap, VecDeque};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::AppHandle;
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
 use tokio::net::TcpListener;
-use tokio::time::sleep;
+use tokio::time::{MissedTickBehavior, interval, sleep};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_util::io::ReaderStream;
@@ -42,6 +42,8 @@ const REMOTE_CANDIDATE_WINDOW_LIMIT: usize = 96;
 const REMOTE_RELAY_HOST_URL_ENV: &str = "SLISIC_REMOTE_RELAY_HOST_URL";
 const DEFAULT_REMOTE_RELAY_HOST_URL: &str = "wss://slisic-remote.grahlnn.com/ws/host";
 const REMOTE_RELAY_RECONNECT_DELAY: Duration = Duration::from_secs(5);
+const REMOTE_RELAY_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
+const REMOTE_RELAY_IDLE_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 const DEFAULT_REMOTE_CLIENT_ID: &str = "local";
 
 static REMOTE_SHARE_RUNTIME: OnceLock<Arc<RemoteShareRuntime>> = OnceLock::new();
@@ -175,6 +177,7 @@ enum RemoteRelayOutbound {
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
+    HostPing {},
 }
 
 #[derive(Debug, Serialize)]
@@ -356,18 +359,47 @@ async fn serve_remote_relay_socket(
     >,
 ) -> Result<()> {
     let (mut sink, mut stream) = socket.split();
-    while let Some(message) = stream.next().await {
-        let message = message?;
-        if !message.is_text() {
-            continue;
+    let connected_at = Instant::now();
+    let mut client_connected = false;
+    let mut heartbeat = interval(REMOTE_RELAY_HEARTBEAT_INTERVAL);
+    heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            _ = heartbeat.tick() => {
+                if !client_connected && connected_at.elapsed() >= REMOTE_RELAY_IDLE_REFRESH_INTERVAL {
+                    return Err(anyhow!("remote relay idle connection refresh requested"));
+                }
+                let ping = serde_json::to_string(&RemoteRelayOutbound::HostPing {})?;
+                sink.send(Message::Text(ping.into())).await?;
+            }
+            message = stream.next() => {
+                let Some(message) = message else {
+                    return Ok(());
+                };
+                let message = message?;
+                if !message.is_text() {
+                    continue;
+                }
+                let text = message.into_text()?;
+                if let Some(next_client_connected) = remote_relay_peer_state_client_connected(&text) {
+                    client_connected = next_client_connected;
+                }
+                let Some(response) = handle_remote_relay_message(Arc::clone(&runtime), &text).await else {
+                    continue;
+                };
+                sink.send(Message::Text(response.into())).await?;
+            }
         }
-        let text = message.into_text()?;
-        let Some(response) = handle_remote_relay_message(Arc::clone(&runtime), &text).await else {
-            continue;
-        };
-        sink.send(Message::Text(response.into())).await?;
     }
-    Ok(())
+}
+
+fn remote_relay_peer_state_client_connected(text: &str) -> Option<bool> {
+    match serde_json::from_str::<RemoteRelayInbound>(text).ok()? {
+        RemoteRelayInbound::PeerState {
+            client_connected, ..
+        } => Some(client_connected),
+        _ => None,
+    }
 }
 
 async fn handle_remote_relay_message(
@@ -440,6 +472,12 @@ async fn handle_remote_relay_rpc(
     params: serde_json::Value,
 ) -> RemoteRelayOutbound {
     let client_id = normalize_remote_client_id(client_id.as_deref());
+    log::info!(
+        target: REMOTE_SHARE_LOG_TARGET,
+        "remote_share_relay_rpc_received method=\"{}\" client_id_len={}",
+        method,
+        client_id.len()
+    );
     let result = match method.as_str() {
         "connect" => parse_relay_params(params)
             .and_then(|request| relay_json(runtime.handle_connect(&client_id, request))),
