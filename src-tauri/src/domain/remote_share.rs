@@ -15,23 +15,34 @@ use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use base64::Engine;
+use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
+use serde::de::DeserializeOwned;
 use std::collections::{HashMap, VecDeque};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 use tauri::AppHandle;
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
 use tokio::net::TcpListener;
+use tokio::time::sleep;
 use tokio_util::io::ReaderStream;
 use tower_http::cors::{Any, CorsLayer};
+use tokio_tungstenite::connect_async;
+use tokio_tungstenite::tungstenite::Message;
 
 const REMOTE_SHARE_LOG_TARGET: &str = "remote_share";
 const DEV_PAIRING_CODE: &str = "123456";
 const REMOTE_SHARE_PORT: u16 = 48_231;
 const REMOTE_AUDIO_CHUNK_SIZE: u64 = 256 * 1024;
 const REMOTE_CANDIDATE_WINDOW_LIMIT: usize = 96;
+const REMOTE_RELAY_HOST_URL_ENV: &str = "SLISIC_REMOTE_RELAY_HOST_URL";
+const DEFAULT_REMOTE_RELAY_HOST_URL: &str =
+    "wss://slisic-remote.grahlnn.com/ws/host";
+const REMOTE_RELAY_RECONNECT_DELAY: Duration = Duration::from_secs(5);
 
 static REMOTE_SHARE_RUNTIME: OnceLock<Arc<RemoteShareRuntime>> = OnceLock::new();
 type RemoteResult<T> = std::result::Result<T, RemoteShareError>;
@@ -92,6 +103,61 @@ struct RemoteStartRequest {
 #[serde(rename_all = "camelCase")]
 struct RemoteCodeRequest {
     code: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", rename_all_fields = "camelCase")]
+enum RemoteRelayInbound {
+    Hello {
+        role: String,
+        code: String,
+    },
+    PeerState {
+        host_connected: bool,
+        client_connected: bool,
+    },
+    RpcRequest {
+        id: String,
+        method: String,
+        #[serde(default)]
+        params: serde_json::Value,
+    },
+    AudioRequest {
+        id: String,
+        token: String,
+        range: Option<String>,
+    },
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case", rename_all_fields = "camelCase")]
+enum RemoteRelayOutbound {
+    RpcResponse {
+        id: String,
+        ok: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        data: Option<serde_json::Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+    AudioResponse {
+        id: String,
+        ok: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        status: Option<u16>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        content_type: Option<&'static str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        content_length: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        content_range: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        accept_ranges: Option<&'static str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        body_base64: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -161,6 +227,15 @@ struct RemoteTrackView {
     duration_ms: u32,
 }
 
+struct RemoteAudioRelayCargo {
+    status: StatusCode,
+    content_type: &'static str,
+    content_length: u64,
+    content_range: Option<String>,
+    accept_ranges: &'static str,
+    body: Vec<u8>,
+}
+
 pub fn initialize_runtime(app: AppHandle) {
     let runtime = Arc::new(RemoteShareRuntime {
         app,
@@ -174,8 +249,9 @@ pub fn initialize_runtime(app: AppHandle) {
         return;
     }
 
+    let gateway_runtime = Arc::clone(&runtime);
     tauri::async_runtime::spawn(async move {
-        if let Err(error) = serve_remote_share_gateway(runtime).await {
+        if let Err(error) = serve_remote_share_gateway(gateway_runtime).await {
             log::error!(
                 target: REMOTE_SHARE_LOG_TARGET,
                 "remote_share_gateway_failed error=\"{}\"",
@@ -183,6 +259,8 @@ pub fn initialize_runtime(app: AppHandle) {
             );
         }
     });
+
+    tauri::async_runtime::spawn(run_remote_relay_host(runtime));
 }
 
 async fn serve_remote_share_gateway(runtime: Arc<RemoteShareRuntime>) -> Result<()> {
@@ -213,6 +291,215 @@ async fn serve_remote_share_gateway(runtime: Arc<RemoteShareRuntime>) -> Result<
     Ok(())
 }
 
+async fn run_remote_relay_host(runtime: Arc<RemoteShareRuntime>) {
+    loop {
+        let url = remote_relay_host_url();
+        log::info!(
+            target: REMOTE_SHARE_LOG_TARGET,
+            "remote_share_relay_connecting url=\"{}\"",
+            redact_remote_code_for_log(&url)
+        );
+        match connect_async(&url).await {
+            Ok((socket, _)) => {
+                log::info!(
+                    target: REMOTE_SHARE_LOG_TARGET,
+                    "remote_share_relay_connected url=\"{}\"",
+                    redact_remote_code_for_log(&url)
+                );
+                if let Err(error) = serve_remote_relay_socket(Arc::clone(&runtime), socket).await {
+                    log::warn!(
+                        target: REMOTE_SHARE_LOG_TARGET,
+                        "remote_share_relay_disconnected error=\"{}\"",
+                        error
+                    );
+                }
+            }
+            Err(error) => {
+                log::warn!(
+                    target: REMOTE_SHARE_LOG_TARGET,
+                    "remote_share_relay_connect_failed error=\"{}\"",
+                    error
+                );
+            }
+        }
+        sleep(REMOTE_RELAY_RECONNECT_DELAY).await;
+    }
+}
+
+async fn serve_remote_relay_socket(
+    runtime: Arc<RemoteShareRuntime>,
+    socket: tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+) -> Result<()> {
+    let (mut sink, mut stream) = socket.split();
+    while let Some(message) = stream.next().await {
+        let message = message?;
+        if !message.is_text() {
+            continue;
+        }
+        let text = message.into_text()?;
+        let Some(response) = handle_remote_relay_message(Arc::clone(&runtime), &text).await else {
+            continue;
+        };
+        sink.send(Message::Text(response.into())).await?;
+    }
+    Ok(())
+}
+
+async fn handle_remote_relay_message(
+    runtime: Arc<RemoteShareRuntime>,
+    text: &str,
+) -> Option<String> {
+    let inbound = match serde_json::from_str::<RemoteRelayInbound>(text) {
+        Ok(inbound) => inbound,
+        Err(error) => {
+            log::warn!(
+                target: REMOTE_SHARE_LOG_TARGET,
+                "remote_share_relay_message_ignored reason=invalid_json error=\"{}\"",
+                error
+            );
+            return None;
+        }
+    };
+
+    let outbound = match inbound {
+        RemoteRelayInbound::Hello { role, code } => {
+            log::info!(
+                target: REMOTE_SHARE_LOG_TARGET,
+                "remote_share_relay_hello role=\"{}\" code_len={}",
+                role,
+                code.len()
+            );
+            return None;
+        }
+        RemoteRelayInbound::PeerState {
+            host_connected,
+            client_connected,
+        } => {
+            log::info!(
+                target: REMOTE_SHARE_LOG_TARGET,
+                "remote_share_relay_peer_state host_connected={} client_connected={}",
+                host_connected,
+                client_connected
+            );
+            return None;
+        }
+        RemoteRelayInbound::RpcRequest { id, method, params } => {
+            handle_remote_relay_rpc(Arc::clone(&runtime), id, method, params).await
+        }
+        RemoteRelayInbound::AudioRequest { id, token, range } => {
+            handle_remote_relay_audio(runtime, id, token, range).await
+        }
+    };
+    Some(serde_json::to_string(&outbound).unwrap_or_else(|error| {
+        serde_json::json!({
+            "kind": "rpc_response",
+            "id": "serialization-error",
+            "ok": false,
+            "error": error.to_string(),
+        })
+        .to_string()
+    }))
+}
+
+async fn handle_remote_relay_rpc(
+    runtime: Arc<RemoteShareRuntime>,
+    id: String,
+    method: String,
+    params: serde_json::Value,
+) -> RemoteRelayOutbound {
+    let result = match method.as_str() {
+        "connect" => parse_relay_params(params).and_then(|request| {
+            relay_json(runtime.handle_connect(request))
+        }),
+        "bootstrap" => relay_json(runtime.handle_bootstrap().await),
+        "session.start" => match parse_relay_params(params) {
+            Ok(request) => relay_json(runtime.handle_start(request).await),
+            Err(error) => Err(error),
+        },
+        "session.next" => match parse_relay_params(params) {
+            Ok(request) => relay_json(runtime.handle_next(request).await),
+            Err(error) => Err(error),
+        },
+        "session.stop" => {
+            parse_relay_params(params).and_then(|request| relay_json(runtime.handle_stop(request)))
+        }
+        _ => Err(RemoteShareError::not_found(format!(
+            "unknown remote relay method `{method}`"
+        ))),
+    };
+
+    match result {
+        Ok(data) => RemoteRelayOutbound::RpcResponse {
+            id,
+            ok: true,
+            data: Some(data),
+            error: None,
+        },
+        Err(error) => RemoteRelayOutbound::RpcResponse {
+            id,
+            ok: false,
+            data: None,
+            error: Some(error.message),
+        },
+    }
+}
+
+async fn handle_remote_relay_audio(
+    runtime: Arc<RemoteShareRuntime>,
+    id: String,
+    token: String,
+    range: Option<String>,
+) -> RemoteRelayOutbound {
+    match runtime.handle_audio_relay(token, range).await {
+        Ok(cargo) => RemoteRelayOutbound::AudioResponse {
+            id,
+            ok: true,
+            status: Some(cargo.status.as_u16()),
+            content_type: Some(cargo.content_type),
+            content_length: Some(cargo.content_length),
+            content_range: cargo.content_range,
+            accept_ranges: Some(cargo.accept_ranges),
+            body_base64: Some(base64::engine::general_purpose::STANDARD.encode(cargo.body)),
+            error: None,
+        },
+        Err(error) => RemoteRelayOutbound::AudioResponse {
+            id,
+            ok: false,
+            status: Some(error.status.as_u16()),
+            content_type: None,
+            content_length: None,
+            content_range: None,
+            accept_ranges: None,
+            body_base64: None,
+            error: Some(error.message),
+        },
+    }
+}
+
+fn relay_json<T: Serialize>(result: RemoteResult<T>) -> RemoteResult<serde_json::Value> {
+    result.and_then(|data| {
+        serde_json::to_value(data).map_err(|error| RemoteShareError::internal(error.to_string()))
+    })
+}
+
+fn parse_relay_params<T: DeserializeOwned>(params: serde_json::Value) -> RemoteResult<T> {
+    serde_json::from_value(params)
+        .map_err(|error| RemoteShareError::internal(format!("invalid relay params: {error}")))
+}
+
+fn remote_relay_host_url() -> String {
+    let base = std::env::var(REMOTE_RELAY_HOST_URL_ENV)
+        .unwrap_or_else(|_| DEFAULT_REMOTE_RELAY_HOST_URL.to_string());
+    let separator = if base.contains('?') { '&' } else { '?' };
+    format!("{base}{separator}code={DEV_PAIRING_CODE}")
+}
+
+fn redact_remote_code_for_log(url: &str) -> String {
+    url.replace(DEV_PAIRING_CODE, "******")
+}
+
 async fn remote_share_health() -> Json<RemoteHealthResponse> {
     Json(RemoteHealthResponse {
         service: "slisic_remote_share",
@@ -226,103 +513,34 @@ async fn connect_remote_share(
     State(runtime): State<Arc<RemoteShareRuntime>>,
     Json(request): Json<RemoteConnectRequest>,
 ) -> RemoteResult<Json<RemoteConnectResponse>> {
-    ensure_dev_code(&request.code)?;
-    let mut session = runtime.lock_session()?;
-    session.connected = true;
-    Ok(Json(RemoteConnectResponse {
-        connected: true,
-        code: DEV_PAIRING_CODE.to_string(),
-    }))
+    Ok(Json(runtime.handle_connect(request)?))
 }
 
 async fn bootstrap_remote_share(
     State(runtime): State<Arc<RemoteShareRuntime>>,
 ) -> RemoteResult<Json<RemoteBootstrapResponse>> {
-    let playlists = playlist_repo::list_playlists().await?;
-    let session = runtime.session_view()?;
-    Ok(Json(RemoteBootstrapResponse {
-        code: DEV_PAIRING_CODE.to_string(),
-        connected: session_connected(&runtime)?,
-        playlists,
-        session,
-    }))
+    Ok(Json(runtime.handle_bootstrap().await?))
 }
 
 async fn start_remote_session(
     State(runtime): State<Arc<RemoteShareRuntime>>,
     Json(request): Json<RemoteStartRequest>,
 ) -> RemoteResult<Json<RemotePlaybackResponse>> {
-    ensure_dev_code(&request.code)?;
-    {
-        let mut session = runtime.lock_session()?;
-        session.connected = true;
-        session.playlist_name = Some(request.playlist_name.clone());
-        session.current = None;
-        session.queue.clear();
-        session.recently_played.clear();
-        session.state = RemotePlaybackState::Preparing;
-        session.audio_tokens.clear();
-    }
-
-    let initial = match resolve_remote_initial_track(&runtime.app, &request.playlist_name).await {
-        Ok(track) => track,
-        Err(error) => {
-            runtime.reset_to_ready()?;
-            return Err(error.into());
-        }
-    };
-    let queue = match propose_remote_next_queue(&runtime.app, &initial, &[]).await {
-        Ok(queue) => queue,
-        Err(error) => {
-            runtime.reset_to_ready()?;
-            return Err(error.into());
-        }
-    };
-    let playback = runtime.commit_playback(request.playlist_name, initial, queue)?;
-    Ok(Json(playback))
+    Ok(Json(runtime.handle_start(request).await?))
 }
 
 async fn next_remote_track(
     State(runtime): State<Arc<RemoteShareRuntime>>,
     Json(request): Json<RemoteCodeRequest>,
 ) -> RemoteResult<Json<RemotePlaybackResponse>> {
-    ensure_dev_code(&request.code)?;
-    let (playlist_name, current, recent_history) = {
-        let mut session = runtime.lock_session()?;
-        let Some(next) = session.queue.pop_front() else {
-            session.current = None;
-            session.state = RemotePlaybackState::Ready;
-            session.audio_tokens.clear();
-            let response = RemotePlaybackResponse {
-                session: session.view(),
-                playback: None,
-                prefetch: None,
-            };
-            return Ok(Json(response));
-        };
-        let playlist_name = next.playlist_name.clone();
-        session.current = Some(next.clone());
-        observe_remote_recent_track(&mut session.recently_played, next.clone());
-        session.state = RemotePlaybackState::Playing;
-        (playlist_name, next, session.recently_played.clone())
-    };
-
-    let queue = propose_remote_next_queue(&runtime.app, &current, &recent_history).await?;
-    let playback = runtime.commit_playback(playlist_name, current, queue)?;
-    Ok(Json(playback))
+    Ok(Json(runtime.handle_next(request).await?))
 }
 
 async fn stop_remote_session(
     State(runtime): State<Arc<RemoteShareRuntime>>,
     Json(request): Json<RemoteCodeRequest>,
 ) -> RemoteResult<Json<RemoteSessionView>> {
-    ensure_dev_code(&request.code)?;
-    let mut session = runtime.lock_session()?;
-    session.current = None;
-    session.queue.clear();
-    session.state = RemotePlaybackState::Ready;
-    session.audio_tokens.clear();
-    Ok(Json(session.view()))
+    Ok(Json(runtime.handle_stop(request)?))
 }
 
 async fn stream_remote_audio(
@@ -388,6 +606,112 @@ impl RemoteShareRuntime {
 
     fn session_view(&self) -> RemoteResult<RemoteSessionView> {
         Ok(self.lock_session()?.view())
+    }
+
+    fn handle_connect(&self, request: RemoteConnectRequest) -> RemoteResult<RemoteConnectResponse> {
+        ensure_dev_code(&request.code)?;
+        let mut session = self.lock_session()?;
+        session.connected = true;
+        Ok(RemoteConnectResponse {
+            connected: true,
+            code: DEV_PAIRING_CODE.to_string(),
+        })
+    }
+
+    async fn handle_bootstrap(&self) -> RemoteResult<RemoteBootstrapResponse> {
+        let playlists = playlist_repo::list_playlists().await?;
+        let session = self.session_view()?;
+        Ok(RemoteBootstrapResponse {
+            code: DEV_PAIRING_CODE.to_string(),
+            connected: session_connected(self)?,
+            playlists,
+            session,
+        })
+    }
+
+    async fn handle_start(
+        &self,
+        request: RemoteStartRequest,
+    ) -> RemoteResult<RemotePlaybackResponse> {
+        ensure_dev_code(&request.code)?;
+        {
+            let mut session = self.lock_session()?;
+            session.connected = true;
+            session.playlist_name = Some(request.playlist_name.clone());
+            session.current = None;
+            session.queue.clear();
+            session.recently_played.clear();
+            session.state = RemotePlaybackState::Preparing;
+            session.audio_tokens.clear();
+        }
+
+        let initial = match resolve_remote_initial_track(&self.app, &request.playlist_name).await {
+            Ok(track) => track,
+            Err(error) => {
+                self.reset_to_ready()?;
+                return Err(error.into());
+            }
+        };
+        let queue = match propose_remote_next_queue(&self.app, &initial, &[]).await {
+            Ok(queue) => queue,
+            Err(error) => {
+                self.reset_to_ready()?;
+                return Err(error.into());
+            }
+        };
+        self.commit_playback(request.playlist_name, initial, queue)
+    }
+
+    async fn handle_next(&self, request: RemoteCodeRequest) -> RemoteResult<RemotePlaybackResponse> {
+        ensure_dev_code(&request.code)?;
+        let (playlist_name, current, recent_history) = {
+            let mut session = self.lock_session()?;
+            let Some(next) = session.queue.pop_front() else {
+                session.current = None;
+                session.state = RemotePlaybackState::Ready;
+                session.audio_tokens.clear();
+                let response = RemotePlaybackResponse {
+                    session: session.view(),
+                    playback: None,
+                    prefetch: None,
+                };
+                return Ok(response);
+            };
+            let playlist_name = next.playlist_name.clone();
+            session.current = Some(next.clone());
+            observe_remote_recent_track(&mut session.recently_played, next.clone());
+            session.state = RemotePlaybackState::Playing;
+            (playlist_name, next, session.recently_played.clone())
+        };
+
+        let queue = propose_remote_next_queue(&self.app, &current, &recent_history).await?;
+        self.commit_playback(playlist_name, current, queue)
+    }
+
+    fn handle_stop(&self, request: RemoteCodeRequest) -> RemoteResult<RemoteSessionView> {
+        ensure_dev_code(&request.code)?;
+        let mut session = self.lock_session()?;
+        session.current = None;
+        session.queue.clear();
+        session.state = RemotePlaybackState::Ready;
+        session.audio_tokens.clear();
+        Ok(session.view())
+    }
+
+    async fn handle_audio_relay(
+        &self,
+        token: String,
+        range: Option<String>,
+    ) -> RemoteResult<RemoteAudioRelayCargo> {
+        let token = {
+            let session = self.lock_session()?;
+            session
+                .audio_tokens
+                .get(&token)
+                .cloned()
+                .ok_or(RemoteShareError::not_found("audio token not found"))?
+        };
+        read_file_relay_chunk(token.track.file_path, range.as_deref()).await
     }
 
     fn reset_to_ready(&self) -> RemoteResult<()> {
@@ -576,6 +900,53 @@ async fn stream_file_with_range(path: PathBuf, headers: HeaderMap) -> RemoteResu
     response
         .body(Body::from_stream(stream))
         .map_err(|error| RemoteShareError::internal(error.to_string()))
+}
+
+async fn read_file_relay_chunk(
+    path: PathBuf,
+    range: Option<&str>,
+) -> RemoteResult<RemoteAudioRelayCargo> {
+    let mut file = File::open(&path)
+        .await
+        .map_err(|_| RemoteShareError::not_found("audio file not found"))?;
+    let file_len = file
+        .metadata()
+        .await
+        .map_err(|error| RemoteShareError::internal(error.to_string()))?
+        .len();
+    if file_len == 0 {
+        return Err(RemoteShareError::internal("empty audio file"));
+    }
+
+    let parsed = range.and_then(|value| parse_single_http_range(value, file_len));
+    let (start, requested_end, range_requested) = match parsed {
+        Some((start, end)) => (start, end, true),
+        None => (0, file_len - 1, false),
+    };
+    let end = requested_end.min(start + REMOTE_AUDIO_CHUNK_SIZE - 1);
+    let len = end.saturating_sub(start).saturating_add(1);
+    file.seek(SeekFrom::Start(start))
+        .await
+        .map_err(|error| RemoteShareError::internal(error.to_string()))?;
+    let mut body = Vec::with_capacity(len as usize);
+    file.take(len)
+        .read_to_end(&mut body)
+        .await
+        .map_err(|error| RemoteShareError::internal(error.to_string()))?;
+    let partial = range_requested || end < file_len - 1 || start > 0;
+
+    Ok(RemoteAudioRelayCargo {
+        status: if partial {
+            StatusCode::PARTIAL_CONTENT
+        } else {
+            StatusCode::OK
+        },
+        content_type: "audio/mp4",
+        content_length: body.len() as u64,
+        content_range: partial.then(|| format!("bytes {start}-{end}/{file_len}")),
+        accept_ranges: "bytes",
+        body,
+    })
 }
 
 fn parse_single_http_range(value: &str, file_len: u64) -> Option<(u64, u64)> {
