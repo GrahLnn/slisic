@@ -438,26 +438,18 @@ async fn run_remote_relay_host(runtime: Arc<RemoteShareRuntime>) {
             continue;
         }
         let url = remote_relay_host_url(&status.code);
-        log::info!(
-            target: REMOTE_SHARE_LOG_TARGET,
-            "remote_share_relay_connecting url=\"{}\"",
-            redact_remote_code_for_log(&url, &status.code)
-        );
         match connect_async(&url).await {
             Ok((socket, _)) => {
-                log::info!(
-                    target: REMOTE_SHARE_LOG_TARGET,
-                    "remote_share_relay_connected url=\"{}\"",
-                    redact_remote_code_for_log(&url, &status.code)
-                );
-                if let Err(error) =
-                    serve_remote_relay_socket(Arc::clone(&runtime), socket, status.code).await
-                {
-                    log::warn!(
-                        target: REMOTE_SHARE_LOG_TARGET,
-                        "remote_share_relay_disconnected error=\"{}\"",
-                        error
-                    );
+                match serve_remote_relay_socket(Arc::clone(&runtime), socket, status.code).await {
+                    Ok(()) => {}
+                    Err(error) if is_expected_remote_relay_disconnect(&error) => {}
+                    Err(error) => {
+                        log::warn!(
+                            target: REMOTE_SHARE_LOG_TARGET,
+                            "remote_share_relay_disconnected error=\"{}\"",
+                            error
+                        );
+                    }
                 }
             }
             Err(error) => {
@@ -483,7 +475,6 @@ async fn serve_remote_relay_socket(
     let (outbound_tx, mut outbound_rx) = unbounded_channel::<String>();
     let connected_at = Instant::now();
     let mut client_connected = false;
-    let mut last_logged_peer_state: Option<(bool, bool)> = None;
     let mut heartbeat = interval(REMOTE_RELAY_HEARTBEAT_INTERVAL);
     heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
     loop {
@@ -516,18 +507,8 @@ async fn serve_remote_relay_socket(
                     continue;
                 }
                 let text = message.into_text()?;
-                if let Some((host_connected, next_client_connected)) = remote_relay_peer_state(&text) {
+                if let Some((_host_connected, next_client_connected)) = remote_relay_peer_state(&text) {
                     client_connected = next_client_connected;
-                    let peer_state = (host_connected, next_client_connected);
-                    if last_logged_peer_state != Some(peer_state) {
-                        log::info!(
-                            target: REMOTE_SHARE_LOG_TARGET,
-                            "remote_share_relay_peer_state host_connected={} client_connected={}",
-                            host_connected,
-                            next_client_connected
-                        );
-                        last_logged_peer_state = Some(peer_state);
-                    }
                 }
                 let Some(response) = handle_remote_relay_message(
                     Arc::clone(&runtime),
@@ -540,6 +521,14 @@ async fn serve_remote_relay_socket(
             }
         }
     }
+}
+
+fn is_expected_remote_relay_disconnect(error: &anyhow::Error) -> bool {
+    let message = error.to_string();
+    matches!(
+        message.as_str(),
+        "remote relay idle connection refresh requested" | "remote relay share state changed"
+    )
 }
 
 fn remote_relay_peer_state(text: &str) -> Option<(bool, bool)> {
@@ -572,12 +561,7 @@ async fn handle_remote_relay_message(
 
     let outbound = match inbound {
         RemoteRelayInbound::Hello { role, code } => {
-            log::info!(
-                target: REMOTE_SHARE_LOG_TARGET,
-                "remote_share_relay_hello role=\"{}\" code_len={}",
-                role,
-                code.len()
-            );
+            let _ = (role, code);
             return None;
         }
         RemoteRelayInbound::PeerState { .. } => {
@@ -734,10 +718,6 @@ fn remote_relay_host_url(code: &str) -> String {
         .unwrap_or_else(|_| DEFAULT_REMOTE_RELAY_HOST_URL.to_string());
     let separator = if base.contains('?') { '&' } else { '?' };
     format!("{base}{separator}code={code}")
-}
-
-fn redact_remote_code_for_log(url: &str, code: &str) -> String {
-    url.replace(code, "******")
 }
 
 async fn remote_share_health(
