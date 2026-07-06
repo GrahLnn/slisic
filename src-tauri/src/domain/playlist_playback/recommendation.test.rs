@@ -3,8 +3,11 @@ use super::recommendation::{
     AudioStylePlaylistPlaybackRecommender,
     acknowledge_audio_style_pending_training_input_file_for_test,
     audio_style_agreement_aware_continuity_for_test, audio_style_alternative_route_gate_for_test,
-    audio_style_semantic_continuity_gate_for_test, audio_style_source_repetition_gate_for_test,
-    audio_style_stream_continuation_gate_for_test,
+    audio_style_current_stable_adaptive_distance_u_probe_for_test,
+    audio_style_current_stable_predictive_topology_probe_for_test,
+    audio_style_programmatic_route_gate_for_named_basins_for_test,
+    audio_style_programmatic_route_gate_for_test, audio_style_semantic_continuity_gate_for_test,
+    audio_style_source_repetition_gate_for_test, audio_style_stream_continuation_gate_for_test,
     audio_style_training_inputs_covered_by_snapshot_for_test,
     audio_style_training_path_is_transient_for_test, audio_style_transition_fingerprint_for_test,
     balance_audio_style_candidate_field_basins_for_test,
@@ -22,7 +25,7 @@ use crate::domain::playlists::model::{
     AudioStyleTrainingTrackInput, CollectionGroupOwner, Group, LoudnessProfile, Music,
 };
 use crate::domain::playlists::repo::PlaylistPlaybackTrackSource;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -77,6 +80,191 @@ fn track_in_basin(basin: &str, name: &str) -> PlaybackTrack {
         file_path: PathBuf::from(format!("youtube/{basin}/{name}.m4a")),
         ..track(name)
     }
+}
+
+#[test]
+#[ignore = "requires the current local Slisic stable audio-style model"]
+fn current_stable_future_occupancy_reachability_controls_weak_attractor() {
+    let stable_path =
+        PathBuf::from(r"C:\Users\admin\AppData\Local\slisic\audio-style-stable-model\stable.json");
+    assert!(
+        stable_path.is_file(),
+        "current stable audio-style model is missing at {}",
+        stable_path.display()
+    );
+
+    let reports = [20260705_u64, 20260706]
+        .into_iter()
+        .map(|seed| {
+            audio_style_current_stable_predictive_topology_probe_for_test(&stable_path, seed)
+                .unwrap_or_else(|error| panic!("probe failed for seed {seed}: {error}"))
+        })
+        .collect::<Vec<_>>();
+    for report in &reports {
+        println!("{report:#?}");
+        assert_eq!(
+            report.verdict,
+            "stable_topology_reachability_controls_log_like_weak_attractor"
+        );
+        assert_eq!(
+            report.recommended_policy,
+            "future_occupancy_reachability_with_residency"
+        );
+    }
+
+    let mean_weak_delta = reports
+        .iter()
+        .map(|report| report.weak_attractor_pressure_delta_vs_support_only)
+        .sum::<f32>()
+        / reports.len() as f32;
+    let mean_tail_delta = reports
+        .iter()
+        .map(|report| report.tail_largest_basin_share_delta_vs_support_only)
+        .sum::<f32>()
+        / reports.len() as f32;
+    let mean_cosine_delta = reports
+        .iter()
+        .map(|report| report.mean_adjacent_cosine_delta_vs_support_only)
+        .sum::<f32>()
+        / reports.len() as f32;
+
+    assert!(
+        mean_weak_delta <= -0.025,
+        "weak attractor pressure did not fall enough: {mean_weak_delta}"
+    );
+    assert!(
+        mean_tail_delta <= 0.0,
+        "tail largest basin share did not fall: {mean_tail_delta}"
+    );
+    assert!(
+        mean_cosine_delta >= -0.025,
+        "adjacent cosine continuity regressed too much: {mean_cosine_delta}"
+    );
+}
+
+#[test]
+#[ignore = "requires the current local Slisic stable audio-style model"]
+fn current_stable_adaptive_distance_u_reproduces_episode_shift() {
+    let stable_path =
+        PathBuf::from(r"C:\Users\admin\AppData\Local\slisic\audio-style-stable-model\stable.json");
+    assert!(
+        stable_path.is_file(),
+        "current stable audio-style model is missing at {}",
+        stable_path.display()
+    );
+
+    let reports = [20260705_u64, 20260706, 20260707]
+        .into_iter()
+        .map(|seed| {
+            audio_style_current_stable_adaptive_distance_u_probe_for_test(
+                &stable_path,
+                seed,
+                256,
+                2,
+            )
+            .unwrap_or_else(|error| panic!("adaptive distance probe failed for seed {seed}: {error}"))
+        })
+        .collect::<Vec<_>>();
+
+    for report in &reports {
+        println!("{report:#?}");
+        assert_eq!(
+            report.verdict,
+            "stable_adaptive_distance_u_reproduces_programmatic_coverage_episode_shift"
+        );
+        assert_eq!(report.recommended_policy, "episodic_fatigue_u");
+    }
+
+    let episodic_reports = reports
+        .iter()
+        .map(|report| {
+            report
+                .policy_reports
+                .iter()
+                .find(|policy| policy.policy == "episodic_fatigue_u")
+                .expect("episodic policy report should exist")
+        })
+        .collect::<Vec<_>>();
+    let global_reports = reports
+        .iter()
+        .map(|report| {
+            report
+                .policy_reports
+                .iter()
+                .find(|policy| policy.policy == "global_calibrated")
+                .expect("global policy report should exist")
+        })
+        .collect::<Vec<_>>();
+    let window_reports = reports
+        .iter()
+        .map(|report| {
+            report
+                .policy_reports
+                .iter()
+                .find(|policy| policy.policy == "window_adaptive")
+                .expect("window policy report should exist")
+        })
+        .collect::<Vec<_>>();
+    let mean_continue_window_middle = episodic_reports
+        .iter()
+        .map(|report| report.continue_window_middle_distance_rate)
+        .sum::<f32>()
+        / episodic_reports.len() as f32;
+    let mean_shift_global_middle = episodic_reports
+        .iter()
+        .map(|report| report.shift_global_middle_distance_rate)
+        .sum::<f32>()
+        / episodic_reports.len() as f32;
+    let mean_episodic_global_middle = episodic_reports
+        .iter()
+        .map(|report| report.global_middle_distance_rate)
+        .sum::<f32>()
+        / episodic_reports.len() as f32;
+    let mean_episodic_window_middle = episodic_reports
+        .iter()
+        .map(|report| report.window_middle_distance_rate)
+        .sum::<f32>()
+        / episodic_reports.len() as f32;
+    let mean_global_window_middle = global_reports
+        .iter()
+        .map(|report| report.window_middle_distance_rate)
+        .sum::<f32>()
+        / global_reports.len() as f32;
+    let mean_unique_sample_rate = episodic_reports
+        .iter()
+        .map(|report| report.unique_sample_rate)
+        .sum::<f32>()
+        / episodic_reports.len() as f32;
+    let mean_warm_window_max = episodic_reports
+        .iter()
+        .map(|report| report.warm_window_largest_basin_share_max)
+        .sum::<f32>()
+        / episodic_reports.len() as f32;
+    let mean_baseline_warm_window_max = global_reports
+        .iter()
+        .zip(window_reports.iter())
+        .map(|(global, window)| {
+            global
+                .warm_window_largest_basin_share_max
+                .max(window.warm_window_largest_basin_share_max)
+        })
+        .sum::<f32>()
+        / reports.len() as f32;
+
+    assert_eq!(mean_unique_sample_rate, 1.0);
+    assert!(
+        mean_continue_window_middle > mean_episodic_global_middle,
+        "continuity episodes should prefer the local window middle over the global middle: continue={mean_continue_window_middle}, global={mean_episodic_global_middle}"
+    );
+    assert!(
+        mean_shift_global_middle > mean_episodic_window_middle
+            && mean_shift_global_middle > mean_global_window_middle,
+        "fatigue shifts should prefer the calibrated global middle over window-local behavior: shift={mean_shift_global_middle}, episodic_window={mean_episodic_window_middle}, global_window={mean_global_window_middle}"
+    );
+    assert!(
+        mean_warm_window_max <= mean_baseline_warm_window_max,
+        "warm windows should not collapse more than the single-policy baselines: episodic={mean_warm_window_max}, baseline={mean_baseline_warm_window_max}"
+    );
 }
 
 fn track_in_source_leaf(source: &str, leaf: &str, name: &str) -> PlaybackTrack {
@@ -427,7 +615,9 @@ fn audio_style_sampler_applies_continuous_attractor_basin_pressure() {
         &current,
         &[same_basin.clone(), other_basin.clone()],
         &recommender,
-        &[played_a, played_b, played_c, played_d, played_e, played_f, played_g],
+        &[
+            played_a, played_b, played_c, played_d, played_e, played_f, played_g,
+        ],
         0.55,
     );
 
@@ -547,10 +737,7 @@ fn audio_style_manifold_field_allows_local_residence_before_escape() {
         (same_a.clone(), dense_embedding(&[(0, 0.985), (1, 0.172)])),
         (same_b.clone(), dense_embedding(&[(0, 0.975), (2, 0.222)])),
         (open.clone(), dense_embedding(&[(0, 0.970), (128, 0.243)])),
-        (
-            open_neighbor,
-            dense_embedding(&[(0, 0.960), (128, 0.280)]),
-        ),
+        (open_neighbor, dense_embedding(&[(0, 0.960), (128, 0.280)])),
     ];
     embeddings.extend(
         recent
@@ -585,7 +772,10 @@ fn audio_style_manifold_field_escapes_mature_boundary_basin_without_far_jump() {
     let mut embeddings = vec![
         (current.clone(), dense_embedding(&[(0, 1.0)])),
         (sticky.clone(), dense_embedding(&[(0, 0.985), (1, 0.172)])),
-        (boundary.clone(), dense_embedding(&[(0, 0.975), (128, 0.222)])),
+        (
+            boundary.clone(),
+            dense_embedding(&[(0, 0.975), (128, 0.222)]),
+        ),
         (
             boundary_neighbor,
             dense_embedding(&[(0, 0.965), (128, 0.262)]),
@@ -1435,17 +1625,6 @@ fn audio_style_semantic_continuity_gate_suppresses_only_unforced_shock_jumps() {
 }
 
 #[test]
-fn audio_style_learned_novelty_gate_prefers_manageable_prediction_error() {
-    let gates =
-        audio_style_semantic_continuity_gate_for_test(&[-0.80, 0.00, 0.40, 0.80, 1.00], 1, 0);
-
-    assert!(gates[2] > gates[1]);
-    assert!(gates[2] > gates[3]);
-    assert!(gates[3] > gates[4]);
-    assert!(gates[0] < gates[1]);
-}
-
-#[test]
 fn audio_style_semantic_continuity_requires_channel_agreement_for_high_familiarity() {
     let single_axis = audio_style_agreement_aware_continuity_for_test([0.92, 0.16, 0.12, 0.10]);
     let consensus = audio_style_agreement_aware_continuity_for_test([0.86, 0.82, 0.78, 0.75]);
@@ -1567,70 +1746,6 @@ fn audio_style_typed_channels_keep_transition_neighbor_sampleable_under_scalar_s
 }
 
 #[test]
-fn audio_style_route_recovery_keeps_boundary_basin_flowing_in_narrow_candidate_pool() {
-    let current = track_in_basin("Current", "current");
-    let recent = (0..12)
-        .map(|index| track_in_basin("Current", &format!("recent_{index}")))
-        .collect::<Vec<_>>();
-    let same_a = track_in_basin("Current", "same_a");
-    let same_b = track_in_basin("Current", "same_b");
-    let boundary = track_in_basin("Boundary", "boundary");
-    let boundary_neighbor = track_in_basin("Boundary", "boundary_neighbor");
-    let far = track_in_basin("Far", "far");
-    let mut embeddings = vec![
-        (current.clone(), dense_embedding(&[(0, 1.0)])),
-        (same_a.clone(), dense_embedding(&[(0, 0.95), (3, 0.31)])),
-        (same_b.clone(), dense_embedding(&[(0, 0.95), (3, 0.31)])),
-        (boundary.clone(), dense_embedding(&[(0, 0.72), (10, 0.69)])),
-        (boundary_neighbor, dense_embedding(&[(0, 0.71), (10, 0.70)])),
-        (far.clone(), dense_embedding(&[(48, 1.0)])),
-    ];
-    embeddings.extend(
-        recent
-            .iter()
-            .cloned()
-            .map(|track| (track, dense_embedding(&[(0, 0.95), (3, 0.31)]))),
-    );
-    let recommender = AudioStylePlaylistPlaybackRecommender::from_test_embeddings(embeddings);
-
-    let without_history = choose_next_audio_style_candidate_with_recent_history_for_test(
-        &current,
-        &[
-            same_a.clone(),
-            same_b.clone(),
-            boundary.clone(),
-            far.clone(),
-        ],
-        &recommender,
-        &[],
-        0.68,
-    );
-    let with_history = choose_next_audio_style_candidate_with_recent_history_for_test(
-        &current,
-        &[
-            same_a.clone(),
-            same_b.clone(),
-            boundary.clone(),
-            far.clone(),
-        ],
-        &recommender,
-        &recent,
-        0.68,
-    );
-
-    assert_ne!(without_history.index, 3);
-    assert_eq!(with_history.index, 2);
-    assert!(with_history.probability > without_history.probability);
-    assert!(
-        with_history
-            .diagnostics
-            .bio_route
-            .is_some_and(|route| route.final_weight > 0.0),
-        "route recovery should preserve an existing boundary candidate without turning far jumps into exits"
-    );
-}
-
-#[test]
 fn audio_style_listener_recovery_gate_favors_short_term_perceptual_recovery() {
     let listener_state = [0.82, 0.78, 0.74, 0.70, 0.68, 0.76];
     let repeated_load = [0.86, 0.82, 0.78, 0.74, 0.70, 0.80];
@@ -1721,58 +1836,143 @@ fn audio_style_listener_recovery_keeps_bio_route_weight_positive() {
 }
 
 #[test]
-fn audio_style_basin_mass_homeostasis_flattens_weak_attractor_family() {
-    let dominant_recent = (0..8)
-        .map(|index| track_in_basin("Dominant", &format!("recent_{index}")))
-        .collect::<Vec<_>>();
-    let dominant = (0..4)
-        .map(|index| track_in_basin("Dominant", &format!("candidate_{index}")))
-        .collect::<Vec<_>>();
-    let open_a = track_in_basin("Open A", "candidate");
-    let open_b = track_in_basin("Open B", "candidate");
-    let candidates = [
-        dominant[0].clone(),
-        dominant[1].clone(),
-        dominant[2].clone(),
-        dominant[3].clone(),
-        open_a,
-        open_b,
-    ];
-    let base = [0.24, 0.22, 0.20, 0.18, 0.08, 0.08];
+fn audio_style_programmatic_route_prefers_inverted_u_novelty_band() {
+    let too_familiar = 0.95;
+    let manageable = 1.0 - 2.0 * 0.176;
+    let too_distant = 0.18;
 
-    let gate = super::recommendation::audio_style_basin_mass_homeostasis_gate_for_test(
-        &candidates,
-        &base,
-        &dominant_recent,
+    let gates = audio_style_programmatic_route_gate_for_test(
+        &[too_familiar, manageable, too_distant],
+        1,
+        0.34,
+        0.34,
+        0.33,
+        0,
     );
 
-    assert!(gate[0] < 0.85);
-    assert!(gate[1] < 0.85);
-    assert!(gate[4] > gate[0]);
-    assert!(gate[5] > gate[1]);
-    assert!(gate[4] >= 0.95);
-    assert!(gate[5] >= 0.95);
+    assert!(gates[1] > gates[0], "gates={gates:?}");
+    assert!(gates[1] > gates[2], "gates={gates:?}");
 }
 
 #[test]
-fn audio_style_basin_mass_homeostasis_preserves_balanced_candidate_field() {
-    let candidates = [
-        track_in_basin("Dominant", "candidate_0"),
-        track_in_basin("Dominant", "candidate_1"),
-        track_in_basin("Dominant", "candidate_2"),
-        track_in_basin("Dominant", "candidate_3"),
-        track_in_basin("Open A", "candidate"),
-        track_in_basin("Open B", "candidate"),
-    ];
-    let base = [0.125, 0.125, 0.125, 0.125, 0.25, 0.25];
-
-    let gate = super::recommendation::audio_style_basin_mass_homeostasis_gate_for_test(
-        &candidates,
-        &base,
-        &[],
+fn audio_style_programmatic_route_prefers_unvisited_candidates() {
+    let manageable = 1.0 - 2.0 * 0.176;
+    let gates = audio_style_programmatic_route_gate_for_test(
+        &[manageable, manageable, manageable],
+        1,
+        0.34,
+        0.34,
+        0.33,
+        1,
     );
 
-    assert!(gate.iter().all(|value| *value >= 0.95));
+    assert!(gates[1] > gates[0], "gates={gates:?}");
+}
+
+#[test]
+fn audio_style_programmatic_route_rebalances_overused_current_basin() {
+    let manageable = 1.0 - 2.0 * 0.176;
+    let gates = audio_style_programmatic_route_gate_for_test(
+        &[manageable, manageable, manageable],
+        8,
+        0.82,
+        0.34,
+        0.66,
+        8,
+    );
+
+    assert!(gates[2] > gates[0]);
+    assert!(gates[2] > gates[1]);
+}
+
+#[test]
+fn audio_style_programmatic_route_caps_temporal_basin_occupancy() {
+    let manageable = 1.0 - 2.0 * 0.176;
+    let gates = audio_style_programmatic_route_gate_for_named_basins_for_test(
+        &["Current", "Current", "Open"],
+        &[manageable, manageable, manageable],
+        &[
+            "Current", "Current", "Current", "Current", "Current", "Current", "Current", "Current",
+        ],
+    );
+
+    assert!(
+        gates[2] > gates[0] * 1.25,
+        "window capacity should prevent same-basin local occupancy from becoming a weak attractor: {gates:?}"
+    );
+    assert!(
+        gates[2] > gates[1] * 1.25,
+        "capacity envelope should apply to every candidate in the saturated basin: {gates:?}"
+    );
+}
+
+#[test]
+fn audio_style_programmatic_route_rebalances_future_remaining_collapse() {
+    let manageable = 1.0 - 2.0 * 0.176;
+    let gates = audio_style_programmatic_route_gate_for_named_basins_for_test(
+        &["Dominant", "Dominant", "Dominant", "Open"],
+        &[manageable, manageable, manageable, manageable],
+        &[
+            "Open", "Other A", "Other B", "Open", "Other A", "Other B", "Other C", "Open",
+        ],
+    );
+
+    let dominant_mean = (gates[0] + gates[1] + gates[2]) / 3.0;
+    assert!(
+        dominant_mean > gates[3],
+        "future rebalance bridge should consume a basin before it collapses into a tail-only run: {gates:?}"
+    );
+}
+
+#[test]
+fn audio_style_full_recent_history_epoch_traverses_every_candidate_once() {
+    let tracks = (0..18)
+        .map(|index| track_in_basin(&format!("Basin {}", index % 6), &format!("track_{index}")))
+        .collect::<Vec<_>>();
+    let embeddings = tracks
+        .iter()
+        .enumerate()
+        .map(|(index, track)| {
+            let terminal = index % 64;
+            let flow = 128 + ((index * 5) % 128);
+            let transition = 256 + ((index * 73) % (64 * 64));
+            (
+                track.clone(),
+                dense_embedding(&[(terminal, 1.0), (flow, 0.42), (transition, 0.31)]),
+            )
+        })
+        .collect::<Vec<_>>();
+    let recommender = AudioStylePlaylistPlaybackRecommender::from_test_embeddings(embeddings);
+
+    for epoch in 0..100 {
+        let mut current = tracks[epoch % tracks.len()].clone();
+        let mut recent = vec![current.clone()];
+        let mut visited = HashSet::from([current.canonical_music_id.clone()]);
+
+        for _ in 1..tracks.len() {
+            let queue = recommender.propose_queue_with_recent_history(
+                current.clone(),
+                tracks.clone(),
+                &recent,
+            );
+            assert_eq!(
+                queue.len(),
+                2,
+                "epoch should keep an unvisited candidate available"
+            );
+            let next = queue[1].clone();
+
+            assert!(
+                visited.insert(next.canonical_music_id.clone()),
+                "candidate repeated before full traversal in epoch {epoch}: {}",
+                next.canonical_music_id
+            );
+            recent.push(next.clone());
+            current = next;
+        }
+
+        assert_eq!(visited.len(), tracks.len());
+    }
 }
 
 #[test]

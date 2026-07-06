@@ -160,12 +160,18 @@ async fn playable_index_loudness_evidence_updates_prepared_first_slot_cargo_with
     let pending_source = source_without_loudness(3);
     refresh_playlist_now_for_test(selection("Focus"), Some(pending_source.clone()))
         .await
-        .expect("test snapshot should commit incomplete cargo as pending");
+        .expect("test snapshot should commit playable cargo before loudness evidence");
+    let initial = read_playlist_source("Focus")
+        .expect("index read should succeed")
+        .expect("first-slot cargo should be visible before loudness evidence");
     assert!(
-        read_playlist_source("Focus")
-            .expect("index read should succeed")
+        initial
+            .track
+            .as_ref()
+            .expect("prepared playback track should exist")
+            .loudness_profile
             .is_none(),
-        "first-slot pool must not expose incomplete cargo"
+        "missing loudness evidence must not hide playable first-slot cargo"
     );
     let request = loudness_request_for_source(&pending_source);
 
@@ -173,11 +179,11 @@ async fn playable_index_loudness_evidence_updates_prepared_first_slot_cargo_with
         &request,
         LoudnessProfile::from_integrated_lufs(-14.25).expect("test LUFS should be valid"),
     )
-    .expect("first-slot evidence should promote pending cargo");
+    .expect("first-slot evidence should update visible cargo");
 
     let updated = read_playlist_source("Focus")
         .expect("index read should succeed")
-        .expect("prepared source should be promoted after evidence arrives");
+        .expect("prepared source should remain visible after evidence arrives");
     let updated_track = updated
         .track
         .as_ref()
@@ -253,7 +259,7 @@ async fn playable_index_loudness_evidence_updates_only_matching_first_slot_ident
             .expect("first completed source should exist")
             .music
             .url,
-        second_source.music.url
+        first_source.music.url
     );
     assert_eq!(
         ready_first
@@ -263,7 +269,7 @@ async fn playable_index_loudness_evidence_updates_only_matching_first_slot_ident
             .loudness_profile
             .expect("first completed track should carry its own loudness")
             .integrated_lufs,
-        -20.5
+        -18.0
     );
 
     let mut wrong_range = loudness_request_for_source(&second_source);
@@ -284,7 +290,7 @@ async fn playable_index_loudness_evidence_updates_only_matching_first_slot_ident
             .loudness_profile
             .expect("completed second track should keep loudness profile")
             .integrated_lufs,
-        -20.5
+        -18.0
     );
     assert!(consume_playlist_source(&ready_first).expect("first completed source should consume"));
     let ready_second = read_playlist_source("Focus")
@@ -297,7 +303,7 @@ async fn playable_index_loudness_evidence_updates_only_matching_first_slot_ident
             .expect("second completed source should exist")
             .music
             .url,
-        first_source.music.url
+        second_source.music.url
     );
     assert_eq!(
         ready_second
@@ -307,7 +313,7 @@ async fn playable_index_loudness_evidence_updates_only_matching_first_slot_ident
             .loudness_profile
             .expect("second completed track should carry its own loudness")
             .integrated_lufs,
-        -18.0
+        -20.5
     );
 }
 
@@ -888,6 +894,32 @@ async fn playable_index_cache_round_trip_restores_three_first_slot_credentials()
             .music
             .url,
         "https://example.com/watch?v=5"
+    );
+}
+
+#[tokio::test]
+async fn playable_index_cache_round_trip_keeps_playable_cargo_without_loudness() {
+    let _guard = setup_playable_index_test();
+    refresh_playlist_now_for_test(selection("Focus"), Some(source_without_loudness(3)))
+        .await
+        .expect("playable first-slot cargo should commit before loudness evidence");
+    let payload = cache_file_json_for_test().expect("cache payload should encode");
+
+    reset_for_test();
+    initialize_runtime_for_test();
+    restore_cache_file_json_for_test(&payload).expect("cache payload should restore");
+
+    let restored = read_playlist_source("Focus")
+        .expect("index read should succeed")
+        .expect("restored playable source should exist");
+    let track = restored
+        .track
+        .as_ref()
+        .expect("restored playback track should exist");
+    assert_eq!(track.music_url, "https://example.com/watch?v=3");
+    assert!(
+        track.loudness_profile.is_none(),
+        "cache restore should preserve missing loudness without hiding playback cargo"
     );
 }
 

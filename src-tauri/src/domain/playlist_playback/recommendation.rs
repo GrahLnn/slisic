@@ -8,7 +8,9 @@ use crate::domain::playlists::model::{CollectionGroupOwner, Group, Music};
 use crate::domain::playlists::model::{CollectionGroupOwner, Group, Music};
 use crate::domain::playlists::repo::PlaylistPlaybackTrackSource;
 #[cfg(not(test))]
-use crate::utils::binaries::{ManagedBinary, acquire_managed_binary_usage};
+use crate::utils::binaries::{
+    ManagedBinary, acquire_managed_binary_usage, wait_for_managed_binary_foreground_release,
+};
 use anyhow::{Context, Result, anyhow};
 use appdb::{VectorDistance, VectorIndexType, impl_hnsw_index};
 use burn_ndarray::{NdArray, NdArrayDevice};
@@ -65,33 +67,17 @@ const AUDIO_STYLE_HOP_SIZE: usize = 256;
 const AUDIO_STYLE_DISTANCE_SOFTMIN_BETA: f32 = 6.0;
 const AUDIO_STYLE_BIO_ROUTE_FUTURE_WINDOW: f32 = 12.0;
 const AUDIO_STYLE_BIO_ROUTE_DAMPING_STRENGTH: f32 = 0.80;
-const AUDIO_STYLE_BIO_ROUTE_BASIN_ESCAPE_STRENGTH: f32 = 0.95;
-const AUDIO_STYLE_BIO_ROUTE_BASIN_ESCAPE_CAP: f32 = 2.10;
-const AUDIO_STYLE_BIO_ROUTE_RECOVERY_STRENGTH: f32 = 8.0;
-const AUDIO_STYLE_BIO_ROUTE_RECOVERY_CAP: f32 = 32.0;
 const AUDIO_STYLE_LIKED_RETAIN_WEIGHT_FLOOR: f32 = 1.0e-6;
 const AUDIO_STYLE_BIO_ROUTE_TOPOLOGY_TOP_FATIGUE_STRENGTH: f32 = 0.75;
 const AUDIO_STYLE_BIO_ROUTE_TOPOLOGY_TOP_FATIGUE_CAP: f32 = 1.75;
 const AUDIO_STYLE_BIO_ROUTE_SOURCE_FATIGUE_STRENGTH: f32 = 1.35;
 const AUDIO_STYLE_BIO_ROUTE_SOURCE_FATIGUE_FLOOR: f32 = 0.34;
-const AUDIO_STYLE_BIO_ROUTE_BASIN_MASS_HOMEOSTASIS_STRENGTH: f32 = 1.45;
-const AUDIO_STYLE_BIO_ROUTE_BASIN_MASS_HOMEOSTASIS_RECENT_STRENGTH: f32 = 0.70;
-const AUDIO_STYLE_BIO_ROUTE_BASIN_MASS_HOMEOSTASIS_FLOOR: f32 = 0.42;
-const AUDIO_STYLE_BIO_ROUTE_BASIN_MASS_HOMEOSTASIS_RESERVE_CAP: f32 = 1.45;
 const AUDIO_STYLE_SEMANTIC_CONTINUITY_FLOOR: f32 = -0.60;
 const AUDIO_STYLE_SEMANTIC_CONTINUITY_STRENGTH: f32 = 2.20;
 const AUDIO_STYLE_SEMANTIC_CONTINUITY_ESCAPE_RUN: usize = 3;
 const AUDIO_STYLE_SEMANTIC_CONTINUITY_HISTORY_GATE: usize = 1;
 const AUDIO_STYLE_SEMANTIC_CONTINUITY_FAMILIARITY_THRESHOLD: f32 = 0.55;
 const AUDIO_STYLE_SEMANTIC_CONTINUITY_DISAGREEMENT_STRENGTH: f32 = 1.40;
-const AUDIO_STYLE_LEARNED_NOVELTY_TARGET: f32 = 0.40;
-const AUDIO_STYLE_LEARNED_NOVELTY_LOW_WIDTH: f32 = 0.919;
-const AUDIO_STYLE_LEARNED_NOVELTY_HIGH_WIDTH: f32 = 0.456;
-const AUDIO_STYLE_LEARNED_NOVELTY_STRENGTH: f32 = 1.006;
-const AUDIO_STYLE_LEARNED_NOVELTY_LOW_SHOCK_WEIGHT: f32 = 2.0;
-const AUDIO_STYLE_LEARNED_NOVELTY_HIGH_FAMILIARITY_START: f32 = 0.72;
-const AUDIO_STYLE_LEARNED_NOVELTY_HIGH_FAMILIARITY_WEIGHT: f32 = 1.4;
-const AUDIO_STYLE_LEARNED_NOVELTY_GATE_FLOOR: f32 = 0.20;
 const AUDIO_STYLE_LISTENER_ADAPTATION_DECAY: f32 = 0.82;
 const AUDIO_STYLE_LISTENER_ADAPTATION_STRENGTH: f32 = 0.55;
 const AUDIO_STYLE_LISTENER_OVERLOAD_STRENGTH: f32 = 2.0;
@@ -100,12 +86,6 @@ const AUDIO_STYLE_LISTENER_UNDERLOAD_STRENGTH: f32 = 0.35;
 const AUDIO_STYLE_LISTENER_COMFORT_STRENGTH: f32 = 0.35;
 const AUDIO_STYLE_LISTENER_SHOCK_STRENGTH: f32 = 0.40;
 const AUDIO_STYLE_LISTENER_SHOCK_DISTANCE: f32 = 1.15;
-const AUDIO_STYLE_DISTRIBUTED_REPEAT_GATE_FLOOR: f32 = 0.08;
-const AUDIO_STYLE_DISTRIBUTED_LIKED_REPEAT_GATE_FLOOR: f32 = 0.34;
-const AUDIO_STYLE_DISTRIBUTED_FIELD_RELAXATION_STEPS: usize = 10;
-const AUDIO_STYLE_DISTRIBUTED_FIELD_RELAXATION_RATE: f32 = 0.28;
-const AUDIO_STYLE_DISTRIBUTED_FIELD_CROWDING_STRENGTH: f32 = 0.18;
-const AUDIO_STYLE_DISTRIBUTED_TAIL_SUPPORT_FLOOR: f32 = 0.62;
 const AUDIO_STYLE_LOCAL_DENSITY_TOP_K: usize = 10;
 const AUDIO_STYLE_SELF_SUPERVISED_BASIN_GAP_WEIGHT: f32 = 0.35;
 const AUDIO_STYLE_SELF_SUPERVISED_BASIN_SEPARATION_MIN: f32 = 0.55;
@@ -142,6 +122,34 @@ const AUDIO_STYLE_MANIFOLD_NEIGHBOR_TOP_K: usize = 24;
 const AUDIO_STYLE_MANIFOLD_ESCAPE_STRENGTH: f32 = 0.92;
 const AUDIO_STYLE_MANIFOLD_CONTINUITY_STRENGTH: f32 = 0.44;
 const AUDIO_STYLE_MANIFOLD_RESIDENCE_RANK_SCALE: f32 = 0.55;
+const AUDIO_STYLE_FUTURE_OCCUPANCY_NEIGHBOR_TOP_K: usize = 48;
+const AUDIO_STYLE_FUTURE_OCCUPANCY_REACHABILITY_STRENGTH: f32 = 1.05;
+const AUDIO_STYLE_FUTURE_OCCUPANCY_ENTROPY_STRENGTH: f32 = 0.48;
+const AUDIO_STYLE_FUTURE_OCCUPANCY_CONTINUITY_BAND_STRENGTH: f32 = 0.34;
+const AUDIO_STYLE_FUTURE_OCCUPANCY_MANIFOLD_LOAD_STRENGTH: f32 = 0.30;
+const AUDIO_STYLE_FUTURE_OCCUPANCY_SAME_BASIN_RUN_STRENGTH: f32 = 0.22;
+const AUDIO_STYLE_PROGRAMMATIC_DISTANCE_LOW_QUANTILE: f32 = 0.35;
+const AUDIO_STYLE_PROGRAMMATIC_DISTANCE_TARGET_QUANTILE: f32 = 0.50;
+const AUDIO_STYLE_PROGRAMMATIC_DISTANCE_HIGH_QUANTILE: f32 = 0.65;
+const AUDIO_STYLE_PROGRAMMATIC_DISTANCE_MIN_WIDTH: f32 = 0.030;
+const AUDIO_STYLE_PROGRAMMATIC_EPISODE_SHIFT_RUN: usize = 5;
+const AUDIO_STYLE_PROGRAMMATIC_EPISODE_FATIGUE_SHIFT: f32 = 2.35;
+const AUDIO_STYLE_PROGRAMMATIC_CONTINUE_SAME_BASIN_BONUS: f32 = 0.55;
+const AUDIO_STYLE_PROGRAMMATIC_SHIFT_SAME_BASIN_PENALTY: f32 = 0.35;
+const AUDIO_STYLE_PROGRAMMATIC_CONTINUE_NOVELTY_STRENGTH: f32 = 0.40;
+const AUDIO_STYLE_PROGRAMMATIC_SHIFT_NOVELTY_STRENGTH: f32 = 0.75;
+const AUDIO_STYLE_PROGRAMMATIC_NOVELTY_STRENGTH: f32 = 2.16;
+const AUDIO_STYLE_PROGRAMMATIC_HIGH_NOVELTY_OVERLOAD_STRENGTH: f32 = 2.20;
+const AUDIO_STYLE_PROGRAMMATIC_LOW_NOVELTY_STICKINESS_STRENGTH: f32 = 1.15;
+const AUDIO_STYLE_PROGRAMMATIC_COVERAGE_BONUS: f32 = 0.58;
+const AUDIO_STYLE_PROGRAMMATIC_MASS_DEFICIT_STRENGTH: f32 = 2.10;
+const AUDIO_STYLE_PROGRAMMATIC_MASS_OVERUSE_STRENGTH: f32 = 1.70;
+const AUDIO_STYLE_PROGRAMMATIC_SOURCE_MASS_DEFICIT_STRENGTH: f32 = 0.74;
+const AUDIO_STYLE_PROGRAMMATIC_ROUTE_CAPACITY_WINDOW: usize = 24;
+const AUDIO_STYLE_PROGRAMMATIC_ROUTE_CAPACITY_WARMUP: usize = 6;
+const AUDIO_STYLE_PROGRAMMATIC_WINDOW_CAPACITY_STRENGTH: f32 = 8.0;
+const AUDIO_STYLE_PROGRAMMATIC_FUTURE_REBALANCE_STRENGTH: f32 = 1.05;
+const AUDIO_STYLE_PROGRAMMATIC_REMAINING_COLLAPSE_STRENGTH: f32 = 2.0;
 const AUDIO_STYLE_MODEL_BASIN_SUPPORT_SINGLETON_GATE: f32 = 0.52;
 const AUDIO_STYLE_MODEL_BASIN_SUPPORT_PAIR_GATE: f32 = 0.88;
 const AUDIO_STYLE_BASIN_RUN_HAZARD_STRENGTH: f32 = 0.10;
@@ -150,14 +158,6 @@ const AUDIO_STYLE_BASIN_PENALTY_CAP: f32 = 2.0;
 const AUDIO_STYLE_BASIN_TARGET_COUNT_SHARE_WEIGHT: f32 = 0.72;
 const AUDIO_STYLE_BASIN_TARGET_ROOT_SHARE_WEIGHT: f32 = 0.28;
 const AUDIO_STYLE_ROUTE_RECENT_WINDOW: usize = 48;
-const AUDIO_STYLE_LOCAL_NEIGHBORHOOD_FATIGUE_FLOOR: f32 = 0.32;
-const AUDIO_STYLE_LOCAL_NEIGHBORHOOD_FATIGUE_DECAY: f32 = 0.84;
-const AUDIO_STYLE_LOCAL_NEIGHBORHOOD_FATIGUE_STRENGTH: f32 = 1.55;
-const AUDIO_STYLE_LOCAL_NEIGHBORHOOD_FATIGUE_SIMILARITY_FLOOR: f32 = 0.66;
-const AUDIO_STYLE_LOCAL_NEIGHBORHOOD_FATIGUE_CAP: f32 = 4.50;
-const AUDIO_STYLE_BROAD_NEIGHBORHOOD_FATIGUE_STRENGTH: f32 = 1.20;
-const AUDIO_STYLE_BROAD_NEIGHBORHOOD_FATIGUE_SIMILARITY_FLOOR: f32 = 0.18;
-const AUDIO_STYLE_BROAD_NEIGHBORHOOD_FATIGUE_WEIGHT_SCALE: f32 = 4.0;
 const AUDIO_STYLE_TYPED_CHANNEL_TERMINAL_RANGE: std::ops::Range<usize> =
     0..AUDIO_STYLE_TERMINAL_LATENT_WIDTH;
 const AUDIO_STYLE_TYPED_CHANNEL_FLOW_RANGE: std::ops::Range<usize> =
@@ -305,6 +305,28 @@ struct AudioStyleManifoldFieldDecision {
     route_caps: Vec<f32>,
 }
 
+struct AudioStyleFutureOccupancyReachabilityDecision {
+    gates: Vec<f32>,
+}
+
+struct AudioStyleProgrammaticRouteDecision {
+    gates: Vec<f32>,
+    novelty_gates: Vec<f32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AudioStyleProgrammaticDistancePhase {
+    Continue,
+    Shift,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AudioStyleProgrammaticDistanceBand {
+    low: f32,
+    target: f32,
+    high: f32,
+}
+
 struct AudioStylePerceptualChannelDecision {
     similarities: Vec<Option<f32>>,
     diagnostics: Vec<Option<AudioStylePerceptualChannelDiagnostics>>,
@@ -313,16 +335,6 @@ struct AudioStylePerceptualChannelDecision {
 struct AudioStyleSamplingDistribution {
     weights: Vec<f32>,
     total: f32,
-}
-
-#[derive(Clone)]
-struct AudioStyleLocalNeighborhoodPressure<'a> {
-    embeddings: &'a AudioStyleEmbeddingMap,
-    mean: &'a [f32],
-    recent_embeddings: Vec<(&'a AudioStyleEmbedding, f32)>,
-    broad_axis: Vec<f32>,
-    broad_axis_norm: f32,
-    broad_axis_weight: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -354,7 +366,6 @@ pub(crate) struct AudioStyleBioRouteDiagnostics {
     pub(crate) novelty_gate: f32,
     pub(crate) stream_gate: f32,
     pub(crate) damping: f32,
-    pub(crate) local_gate: f32,
     pub(crate) final_weight: f32,
 }
 
@@ -374,7 +385,6 @@ pub(crate) struct AudioStyleTopologyHealthDiagnostics {
     pub(crate) support_width: f32,
     pub(crate) support_entropy: f32,
     pub(crate) control_entropy: f32,
-    pub(crate) local_fatigue_mass: f32,
     pub(crate) basin_fatigue_mass: f32,
     pub(crate) prediction_error: f32,
     pub(crate) novelty: f32,
@@ -626,6 +636,7 @@ struct AudioStyleSamplingGeometry {
     mean: Vec<f32>,
     local_density: HashMap<PlaybackTrackKey, f32>,
     manifold: HashMap<PlaybackTrackKey, AudioStyleManifoldDescriptor>,
+    future_occupancy: HashMap<PlaybackTrackKey, AudioStyleFutureOccupancyDescriptor>,
     self_supervised_basins: HashMap<PlaybackTrackKey, PlaybackAttractorBasinKey>,
     similarity_low: f32,
     similarity_high: f32,
@@ -636,6 +647,13 @@ struct AudioStyleManifoldDescriptor {
     spectral_rank: f32,
     curvature: f32,
     boundary_pressure: f32,
+}
+
+#[derive(Clone, Copy)]
+struct AudioStyleFutureOccupancyDescriptor {
+    reachability: f32,
+    future_entropy: f32,
+    same_basin_neighbor_share: f32,
 }
 
 #[derive(Clone)]
@@ -986,7 +1004,9 @@ impl TryFrom<CachedAudioStyleModelState> for AudioStyleModelState {
         let neighbor_index = AudioStyleNeighborIndex::try_from(cached.neighbor_index, &embeddings)?;
         let sampling_geometry = cached
             .sampling_geometry
-            .map(|geometry| AudioStyleSamplingGeometry::try_from(geometry, &embeddings))
+            .map(|geometry| {
+                AudioStyleSamplingGeometry::try_from(geometry, &embeddings, &neighbor_index)
+            })
             .transpose()?;
         Ok(Self {
             embeddings,
@@ -1069,14 +1089,15 @@ impl From<&AudioStyleSamplingGeometry> for CachedAudioStyleSamplingGeometry {
             manifold: sorted_audio_style_manifold_keys(&geometry.manifold)
                 .into_iter()
                 .filter_map(|key| {
-                    geometry.manifold.get(&key).map(|value| {
-                        CachedAudioStyleManifoldDescriptor {
+                    geometry
+                        .manifold
+                        .get(&key)
+                        .map(|value| CachedAudioStyleManifoldDescriptor {
                             key: CachedPlaybackTrackKey::from(&key),
                             spectral_rank: value.spectral_rank,
                             curvature: value.curvature,
                             boundary_pressure: value.boundary_pressure,
-                        }
-                    })
+                        })
                 })
                 .collect(),
             self_supervised_basins: sorted_audio_style_basin_assignment_keys(
@@ -1102,6 +1123,7 @@ impl AudioStyleSamplingGeometry {
     fn try_from(
         cached: CachedAudioStyleSamplingGeometry,
         embeddings: &AudioStyleEmbeddingMap,
+        neighbor_index: &AudioStyleNeighborIndex,
     ) -> Result<Self, String> {
         if cached.mean.len() != AUDIO_STYLE_EMBEDDING_WIDTH {
             return Err("stable model sampling geometry has invalid mean width".to_string());
@@ -1141,15 +1163,29 @@ impl AudioStyleSamplingGeometry {
             return Err("stable model local density does not cover every embedding".to_string());
         }
         if manifold.len() != embeddings.len() {
-            return Err("stable model manifold descriptors do not cover every embedding".to_string());
+            return Err(
+                "stable model manifold descriptors do not cover every embedding".to_string(),
+            );
         }
         if self_supervised_basins.len() != embeddings.len() {
             return Err("stable model basin assignments do not cover every embedding".to_string());
+        }
+        let future_occupancy = audio_style_future_occupancy_descriptors_from_neighbors(
+            neighbor_index,
+            &self_supervised_basins,
+            &manifold,
+        );
+        if future_occupancy.len() != embeddings.len() && embeddings.len() >= 2 {
+            return Err(
+                "stable model future occupancy descriptors do not cover every embedding"
+                    .to_string(),
+            );
         }
         Ok(Self {
             mean: cached.mean,
             local_density,
             manifold,
+            future_occupancy,
             self_supervised_basins,
             similarity_low: cached.similarity_low,
             similarity_high: cached.similarity_high,
@@ -3549,10 +3585,16 @@ impl AudioStyleSamplingGeometry {
             &local_density,
             &self_supervised_basins,
         );
+        let future_occupancy = audio_style_future_occupancy_descriptors_from_neighbors(
+            neighbor_index,
+            &self_supervised_basins,
+            &manifold,
+        );
         Some(Self {
             mean,
             local_density,
             manifold,
+            future_occupancy,
             self_supervised_basins,
             similarity_low: neighbor_index.similarity_low,
             similarity_high: neighbor_index.similarity_high,
@@ -3602,148 +3644,13 @@ impl AudioStyleSamplingGeometry {
     fn manifold_for_key(&self, key: &PlaybackTrackKey) -> Option<AudioStyleManifoldDescriptor> {
         self.manifold.get(key).copied()
     }
-}
 
-impl<'a> AudioStyleLocalNeighborhoodPressure<'a> {
-    fn from_recent_history(
-        geometry: &'a AudioStyleSamplingGeometry,
-        embeddings: &'a AudioStyleEmbeddingMap,
-        recently_played_tracks: &[PlaybackTrack],
-    ) -> Self {
-        let mut recent_embeddings = Vec::new();
-        let mut decay = 1.0_f32;
-        for track in recently_played_tracks.iter().rev() {
-            let key = PlaybackTrackKey::from_track(track);
-            if let Some(embedding) = embeddings.get(&key) {
-                recent_embeddings.push((embedding.as_ref(), decay));
-                decay *= AUDIO_STYLE_LOCAL_NEIGHBORHOOD_FATIGUE_DECAY;
-            }
-        }
-        recent_embeddings.truncate(AUDIO_STYLE_ROUTE_RECENT_WINDOW);
-        let (broad_axis, broad_axis_norm, broad_axis_weight) =
-            broad_audio_style_neighborhood_axis(&recent_embeddings, &geometry.mean);
-
-        Self {
-            embeddings,
-            mean: &geometry.mean,
-            recent_embeddings,
-            broad_axis,
-            broad_axis_norm,
-            broad_axis_weight,
-        }
+    fn future_occupancy_for_key(
+        &self,
+        key: &PlaybackTrackKey,
+    ) -> Option<AudioStyleFutureOccupancyDescriptor> {
+        self.future_occupancy.get(key).copied()
     }
-
-    fn fatigue_for_track(&self, track: &PlaybackTrack) -> f32 {
-        if self.recent_embeddings.is_empty() {
-            return 0.0;
-        }
-        let key = PlaybackTrackKey::from_track(track);
-        let Some(candidate_embedding) = self.embeddings.get(&key) else {
-            return 0.0;
-        };
-        let mut fatigue = 0.0_f32;
-        for (recent_embedding, decay) in &self.recent_embeddings {
-            let Some(similarity) =
-                centered_cosine(candidate_embedding.as_ref(), recent_embedding, self.mean)
-            else {
-                continue;
-            };
-            let local_overlap = ((similarity
-                - AUDIO_STYLE_LOCAL_NEIGHBORHOOD_FATIGUE_SIMILARITY_FLOOR)
-                / (1.0 - AUDIO_STYLE_LOCAL_NEIGHBORHOOD_FATIGUE_SIMILARITY_FLOOR))
-                .clamp(0.0, 1.0);
-            fatigue += decay * local_overlap * local_overlap;
-        }
-
-        (fatigue * AUDIO_STYLE_LOCAL_NEIGHBORHOOD_FATIGUE_STRENGTH
-            + self
-                .broad_fatigue_for_embedding(candidate_embedding.as_ref())
-                .max(0.0))
-        .max(0.0)
-        .min(AUDIO_STYLE_LOCAL_NEIGHBORHOOD_FATIGUE_CAP)
-    }
-
-    fn broad_fatigue_for_embedding(&self, candidate_embedding: &AudioStyleEmbedding) -> f32 {
-        if self.broad_axis_norm <= 1.0e-6
-            || self.broad_axis.len() != AUDIO_STYLE_EMBEDDING_WIDTH
-            || self.mean.len() != AUDIO_STYLE_EMBEDDING_WIDTH
-        {
-            return 0.0;
-        }
-
-        let mut dot = 0.0_f32;
-        let mut candidate_norm = 0.0_f32;
-        for ((candidate_value, mean), axis_value) in candidate_embedding
-            .values
-            .iter()
-            .zip(self.mean.iter())
-            .zip(self.broad_axis.iter())
-        {
-            let centered = candidate_value - mean;
-            dot += centered * axis_value;
-            candidate_norm += centered * centered;
-        }
-        let denom = candidate_norm.sqrt() * self.broad_axis_norm;
-        if denom <= 1.0e-6 {
-            return 0.0;
-        }
-
-        let similarity = (dot / denom).clamp(-1.0, 1.0);
-        let broad_overlap = ((similarity
-            - AUDIO_STYLE_BROAD_NEIGHBORHOOD_FATIGUE_SIMILARITY_FLOOR)
-            / (1.0 - AUDIO_STYLE_BROAD_NEIGHBORHOOD_FATIGUE_SIMILARITY_FLOOR))
-            .max(0.0)
-            .min(1.0);
-        let memory_weight = (self.broad_axis_weight
-            / (self.broad_axis_weight + AUDIO_STYLE_BROAD_NEIGHBORHOOD_FATIGUE_WEIGHT_SCALE))
-            .clamp(0.0, 1.0);
-
-        broad_overlap
-            * broad_overlap
-            * memory_weight
-            * AUDIO_STYLE_BROAD_NEIGHBORHOOD_FATIGUE_STRENGTH
-    }
-}
-
-fn broad_audio_style_neighborhood_axis(
-    recent_embeddings: &[(&AudioStyleEmbedding, f32)],
-    mean: &[f32],
-) -> (Vec<f32>, f32, f32) {
-    if recent_embeddings.is_empty() || mean.len() != AUDIO_STYLE_EMBEDDING_WIDTH {
-        return (Vec::new(), 0.0, 0.0);
-    }
-
-    let mut axis = vec![0.0_f32; AUDIO_STYLE_EMBEDDING_WIDTH];
-    let mut total_weight = 0.0_f32;
-    for (embedding, decay) in recent_embeddings {
-        if embedding.values.len() != AUDIO_STYLE_EMBEDDING_WIDTH || !decay.is_finite() {
-            continue;
-        }
-        let weight = decay.max(0.0);
-        if weight <= 0.0 {
-            continue;
-        }
-        total_weight += weight;
-        for ((axis_value, embedding_value), mean_value) in axis
-            .iter_mut()
-            .zip(embedding.values.iter())
-            .zip(mean.iter())
-        {
-            *axis_value += (embedding_value - mean_value) * weight;
-        }
-    }
-    if total_weight <= 0.0 {
-        return (Vec::new(), 0.0, 0.0);
-    }
-    for value in &mut axis {
-        *value /= total_weight;
-    }
-    let norm = axis.iter().map(|value| value * value).sum::<f32>().sqrt();
-    if norm <= 1.0e-6 || !norm.is_finite() {
-        return (Vec::new(), 0.0, 0.0);
-    }
-
-    (axis, norm, total_weight)
 }
 
 fn audio_style_model_inputs_match_snapshot(
@@ -5113,6 +5020,90 @@ fn audio_style_manifold_descriptors_from_neighbors(
     result
 }
 
+fn audio_style_future_occupancy_descriptors_from_neighbors(
+    neighbor_index: &AudioStyleNeighborIndex,
+    basins: &HashMap<PlaybackTrackKey, PlaybackAttractorBasinKey>,
+    _manifold: &HashMap<PlaybackTrackKey, AudioStyleManifoldDescriptor>,
+) -> HashMap<PlaybackTrackKey, AudioStyleFutureOccupancyDescriptor> {
+    let basin_count = basins
+        .values()
+        .cloned()
+        .collect::<HashSet<_>>()
+        .len()
+        .max(1);
+    let entropy_scale = (basin_count.max(2) as f32).ln().max(1.0e-6);
+    let mut result = HashMap::with_capacity(basins.len());
+
+    for (key, basin) in basins {
+        let mut total = 0usize;
+        let mut same_basin = 0usize;
+        let mut basin_counts: HashMap<PlaybackAttractorBasinKey, usize> = HashMap::new();
+
+        for neighbor in neighbor_index
+            .neighbors
+            .get(key)
+            .into_iter()
+            .flatten()
+            .take(AUDIO_STYLE_FUTURE_OCCUPANCY_NEIGHBOR_TOP_K)
+        {
+            let Some(neighbor_basin) = basins.get(neighbor) else {
+                continue;
+            };
+            total += 1;
+            if neighbor_basin == basin {
+                same_basin += 1;
+            }
+            *basin_counts.entry(neighbor_basin.clone()).or_insert(0) += 1;
+        }
+
+        if total == 0 {
+            continue;
+        }
+
+        let entropy = basin_counts
+            .values()
+            .copied()
+            .map(|count| {
+                let probability = (count as f32 / total as f32).clamp(1.0e-8, 1.0);
+                -probability * probability.ln()
+            })
+            .sum::<f32>()
+            / entropy_scale;
+        let largest_share = basin_counts
+            .values()
+            .copied()
+            .max()
+            .map(|count| count as f32 / total as f32)
+            .unwrap_or(1.0);
+        let same_basin_neighbor_share = same_basin as f32 / total as f32;
+        let reachability = (0.58 * entropy.clamp(0.0, 1.0)
+            + 0.28 * (1.0 - same_basin_neighbor_share)
+            + 0.14 * (1.0 - largest_share))
+            .clamp(0.0, 1.0);
+
+        result.insert(
+            key.clone(),
+            AudioStyleFutureOccupancyDescriptor {
+                reachability,
+                future_entropy: entropy.clamp(0.0, 1.0),
+                same_basin_neighbor_share: same_basin_neighbor_share.clamp(0.0, 1.0),
+            },
+        );
+    }
+
+    for key in basins.keys() {
+        result
+            .entry(key.clone())
+            .or_insert(AudioStyleFutureOccupancyDescriptor {
+                reachability: 0.0,
+                future_entropy: 0.0,
+                same_basin_neighbor_share: 1.0,
+            });
+    }
+
+    result
+}
+
 fn audio_style_effective_rank_from_neighbor_similarities(
     similarities: impl IntoIterator<Item = f32>,
 ) -> f32 {
@@ -5135,7 +5126,9 @@ fn audio_style_effective_rank_from_neighbor_similarities(
             -probability * probability.ln()
         })
         .sum::<f32>();
-    entropy.exp().clamp(1.0, AUDIO_STYLE_MANIFOLD_NEIGHBOR_TOP_K as f32)
+    entropy
+        .exp()
+        .clamp(1.0, AUDIO_STYLE_MANIFOLD_NEIGHBOR_TOP_K as f32)
 }
 
 fn audio_style_curvature_from_neighbor_similarities(
@@ -6628,10 +6621,9 @@ impl PlaybackAttractorBasinPressure {
             * evidence;
         let usage_share = self.usage_share(&basin);
         let target_share = self.target_share.get(&basin).copied().unwrap_or(0.0);
-        let homeostatic =
-            (usage_share - target_share).max(0.0)
-                * AUDIO_STYLE_BASIN_HOMEOSTATIC_STRENGTH
-                * evidence;
+        let homeostatic = (usage_share - target_share).max(0.0)
+            * AUDIO_STYLE_BASIN_HOMEOSTATIC_STRENGTH
+            * evidence;
         let run_hazard = if self.current_basin.as_ref() == Some(&basin) {
             (self.current_basin_run as f32).max(1.0).ln() * AUDIO_STYLE_BASIN_RUN_HAZARD_STRENGTH
         } else {
@@ -6656,10 +6648,9 @@ impl PlaybackAttractorBasinPressure {
             * evidence;
         let usage_share = self.usage_share(basin);
         let target_share = self.target_share.get(basin).copied().unwrap_or(0.0);
-        let homeostatic =
-            (usage_share - target_share).max(0.0)
-                * AUDIO_STYLE_BASIN_HOMEOSTATIC_STRENGTH
-                * evidence;
+        let homeostatic = (usage_share - target_share).max(0.0)
+            * AUDIO_STYLE_BASIN_HOMEOSTATIC_STRENGTH
+            * evidence;
         let run_hazard = if self.current_basin.as_ref() == Some(basin) {
             (self.current_basin_run as f32).max(1.0).ln() * AUDIO_STYLE_BASIN_RUN_HAZARD_STRENGTH
         } else {
@@ -6788,23 +6779,21 @@ impl PlaybackAttractorBasinPressure {
                 + AUDIO_STYLE_ROUTE_EARLY_CONTINUITY_STRENGTH * early_continuity
                 - AUDIO_STYLE_STREAM_CONTINUATION_FATIGUE_STRENGTH * evidence * maturity * fatigue
                 - AUDIO_STYLE_STREAM_CONTINUATION_OVERUSE_STRENGTH * evidence * maturity * overuse
-                - AUDIO_STYLE_STREAM_CONTINUATION_RUN_STRENGTH
-                    * maturity
-                    * run_pressure.ln_1p());
+                - AUDIO_STYLE_STREAM_CONTINUATION_RUN_STRENGTH * maturity * run_pressure.ln_1p());
 
         let gate = continuation.clamp(-3.2, 3.2).exp().clamp(0.04, 12.0);
         if quality_margin < 0.0 {
-            let relative_loss_gate =
-                (AUDIO_STYLE_STREAM_CONTINUATION_RELATIVE_LOSS_STRENGTH * quality_margin)
-                    .exp()
-                    .clamp(0.06, 1.0);
+            let relative_loss_gate = (AUDIO_STYLE_STREAM_CONTINUATION_RELATIVE_LOSS_STRENGTH
+                * quality_margin)
+                .exp()
+                .clamp(0.06, 1.0);
             return gate.min(relative_loss_gate);
         }
         if quality_floor < 0.0 {
-            let low_quality_gate =
-                (AUDIO_STYLE_STREAM_CONTINUATION_LOW_QUALITY_STRENGTH * quality_floor)
-                    .exp()
-                    .clamp(0.12, 1.0);
+            let low_quality_gate = (AUDIO_STYLE_STREAM_CONTINUATION_LOW_QUALITY_STRENGTH
+                * quality_floor)
+                .exp()
+                .clamp(0.12, 1.0);
             return gate.min(low_quality_gate);
         }
         gate
@@ -6873,9 +6862,7 @@ impl PlaybackAttractorBasinPressure {
                     * evidence
                     * maturity
                     * current_overuse
-                + AUDIO_STYLE_STREAM_CONTINUATION_RUN_STRENGTH
-                    * maturity
-                    * run_pressure.ln_1p()
+                + AUDIO_STYLE_STREAM_CONTINUATION_RUN_STRENGTH * maturity * run_pressure.ln_1p()
                 + AUDIO_STYLE_ROUTE_ALTERNATIVE_UNDERUSE_STRENGTH * candidate_underuse
                 - AUDIO_STYLE_ROUTE_ALTERNATIVE_FATIGUE_STRENGTH * candidate_fatigue
                 - AUDIO_STYLE_ROUTE_ALTERNATIVE_SWITCH_INERTIA * (1.0 - escape_readiness.min(1.0)));
@@ -7600,8 +7587,8 @@ impl AudioStyleManifoldFieldDecision {
         };
 
         let capacity = audio_style_manifold_residence_capacity(anchor_manifold);
-        let maturity =
-            ((basin_pressure.current_basin_run.saturating_sub(1) as f32) / capacity).clamp(0.0, 1.0);
+        let maturity = ((basin_pressure.current_basin_run.saturating_sub(1) as f32) / capacity)
+            .clamp(0.0, 1.0);
         let current_overuse = basin_pressure.usage_share(current_basin);
         let escape_pressure = (maturity
             * (0.42 * (anchor_manifold.boundary_pressure * 1.35).clamp(0.0, 1.0)
@@ -7614,9 +7601,7 @@ impl AudioStyleManifoldFieldDecision {
             .enumerate()
             .map(|(index, candidate)| {
                 let key = PlaybackTrackKey::from_track(candidate);
-                let candidate_manifold = geometry
-                    .manifold_for_key(&key)
-                    .unwrap_or(anchor_manifold);
+                let candidate_manifold = geometry.manifold_for_key(&key).unwrap_or(anchor_manifold);
                 let Some(candidate_basin) = basin_resolver.basin_for_track(candidate) else {
                     return (1.0, 1.0);
                 };
@@ -7625,7 +7610,11 @@ impl AudioStyleManifoldFieldDecision {
                     * AUDIO_STYLE_MANIFOLD_RESIDENCE_RANK_SCALE)
                     .clamp(0.0, 1.0);
                 let density_delta = (geometry.local_density.get(&key).copied().unwrap_or(0.0)
-                    - geometry.local_density.get(anchor_key).copied().unwrap_or(0.0))
+                    - geometry
+                        .local_density
+                        .get(anchor_key)
+                        .copied()
+                        .unwrap_or(0.0))
                 .max(0.0);
                 let curvature_penalty =
                     (candidate_manifold.curvature - anchor_manifold.curvature).max(0.0);
@@ -7666,6 +7655,419 @@ impl AudioStyleManifoldFieldDecision {
     }
 }
 
+impl AudioStyleFutureOccupancyReachabilityDecision {
+    fn from_support(
+        candidates: &[PlaybackTrack],
+        support: &AudioStyleCandidateSupport,
+        geometry: &AudioStyleSamplingGeometry,
+        basin_pressure: &PlaybackAttractorBasinPressure,
+        basin_resolver: AudioStyleBasinResolver<'_>,
+    ) -> Self {
+        if candidates.is_empty() {
+            return Self { gates: Vec::new() };
+        }
+
+        let denom = candidates.len().saturating_sub(1).max(1) as f32;
+        let mut raw_scores = candidates
+            .iter()
+            .enumerate()
+            .map(|(index, candidate)| {
+                let key = PlaybackTrackKey::from_track(candidate);
+                let descriptor = geometry.future_occupancy_for_key(&key).unwrap_or(
+                    AudioStyleFutureOccupancyDescriptor {
+                        reachability: 0.0,
+                        future_entropy: 0.0,
+                        same_basin_neighbor_share: 1.0,
+                    },
+                );
+                let manifold_load = geometry
+                    .manifold_for_key(&key)
+                    .map(|manifold| {
+                        0.38 * manifold.boundary_pressure.clamp(0.0, 1.0)
+                            + 0.32 * manifold.curvature.clamp(0.0, 1.0)
+                            + 0.30 / manifold.spectral_rank.max(1.0).sqrt()
+                    })
+                    .unwrap_or(0.30);
+                let rank_position = index as f32 / denom;
+                let continuity_band =
+                    (1.0 - ((rank_position - 0.64) / 0.42).powi(2)).clamp(-1.0, 1.0);
+                let semantic_continuity = support
+                    .similarities
+                    .get(index)
+                    .and_then(|value| *value)
+                    .unwrap_or(0.0)
+                    .clamp(-1.0, 1.0);
+                let semantic_viability = ((semantic_continuity
+                    - AUDIO_STYLE_SEMANTIC_CONTINUITY_FLOOR)
+                    / (1.0 - AUDIO_STYLE_SEMANTIC_CONTINUITY_FLOOR).max(1.0e-6))
+                .clamp(0.0, 1.0);
+                let same_basin_run_penalty = basin_resolver
+                    .basin_for_track(candidate)
+                    .and_then(|candidate_basin| {
+                        basin_pressure
+                            .current_basin
+                            .as_ref()
+                            .filter(|current_basin| **current_basin == candidate_basin)
+                    })
+                    .map(|_| {
+                        AUDIO_STYLE_FUTURE_OCCUPANCY_SAME_BASIN_RUN_STRENGTH
+                            * (basin_pressure.current_basin_run.max(1) as f32).ln_1p()
+                            * descriptor.same_basin_neighbor_share
+                    })
+                    .unwrap_or(0.0);
+
+                AUDIO_STYLE_FUTURE_OCCUPANCY_REACHABILITY_STRENGTH
+                    * (descriptor.reachability - 0.60)
+                    + AUDIO_STYLE_FUTURE_OCCUPANCY_ENTROPY_STRENGTH
+                        * (descriptor.future_entropy - 0.50)
+                    + AUDIO_STYLE_FUTURE_OCCUPANCY_CONTINUITY_BAND_STRENGTH
+                        * continuity_band
+                        * semantic_viability
+                    - AUDIO_STYLE_FUTURE_OCCUPANCY_MANIFOLD_LOAD_STRENGTH * manifold_load
+                    - same_basin_run_penalty
+            })
+            .collect::<Vec<_>>();
+
+        let center = if raw_scores.is_empty() {
+            0.0
+        } else {
+            raw_scores.iter().copied().sum::<f32>() / raw_scores.len() as f32
+        };
+        let gates = raw_scores
+            .drain(..)
+            .map(|score| (score - center).clamp(-1.20, 1.10).exp().clamp(0.22, 3.00))
+            .collect();
+
+        Self { gates }
+    }
+}
+
+impl AudioStyleProgrammaticRouteDecision {
+    fn from_support(
+        candidates: &[PlaybackTrack],
+        support: &AudioStyleCandidateSupport,
+        basin_pressure: &PlaybackAttractorBasinPressure,
+        source_basin_pressure: &PlaybackAttractorBasinPressure,
+        recently_played_tracks: &[PlaybackTrack],
+        basin_resolver: AudioStyleBasinResolver<'_>,
+    ) -> Self {
+        if candidates.is_empty() {
+            return Self {
+                gates: Vec::new(),
+                novelty_gates: Vec::new(),
+            };
+        }
+
+        let novelty_values = support
+            .similarities
+            .iter()
+            .filter_map(|similarity| similarity.filter(|value| value.is_finite()))
+            .map(|continuity| ((1.0 - continuity.clamp(-1.0, 1.0)) * 0.5).clamp(0.0, 1.0))
+            .collect::<Vec<_>>();
+        let distance_band = audio_style_programmatic_adaptive_distance_band(&novelty_values);
+        let distance_phase =
+            audio_style_programmatic_distance_phase(basin_pressure, source_basin_pressure);
+        let recent_keys = recently_played_tracks
+            .iter()
+            .rev()
+            .take(AUDIO_STYLE_ROUTE_RECENT_WINDOW)
+            .map(PlaybackTrackKey::from_track)
+            .collect::<HashSet<_>>();
+        let has_unvisited_candidate = candidates
+            .iter()
+            .any(|candidate| !recent_keys.contains(&PlaybackTrackKey::from_track(candidate)));
+        let recent_window_basins = recently_played_tracks
+            .iter()
+            .rev()
+            .take(AUDIO_STYLE_PROGRAMMATIC_ROUTE_CAPACITY_WINDOW)
+            .filter_map(|track| basin_resolver.basin_for_track(track))
+            .collect::<Vec<_>>();
+        let recent_window_counts = basin_counts_from_keys(recent_window_basins.iter().cloned());
+        let route_support_share =
+            route_epoch_support_share(candidates, recently_played_tracks, basin_resolver);
+        let remaining_share =
+            remaining_candidate_basin_share(candidates, &recent_keys, basin_resolver);
+        let dominant_remaining = dominant_remaining_basin(&remaining_share, &route_support_share);
+        let source_resolver = PlaybackSourceBasinResolver;
+        let mut novelty_gates = Vec::with_capacity(candidates.len());
+        let scores = candidates
+            .iter()
+            .enumerate()
+            .map(|(index, candidate)| {
+                let continuity = support
+                    .similarities
+                    .get(index)
+                    .and_then(|value| *value)
+                    .unwrap_or(-1.0)
+                    .clamp(-1.0, 1.0);
+                let novelty = ((1.0 - continuity) * 0.5).clamp(0.0, 1.0);
+                let novelty_score = distance_band
+                    .map(|band| audio_style_programmatic_inverted_u_score(novelty, band))
+                    .unwrap_or(0.0);
+                let novelty_gate = distance_band
+                    .map(|_| audio_style_programmatic_novelty_gate(novelty_score))
+                    .unwrap_or(1.0);
+                novelty_gates.push(novelty_gate);
+                let mut score = match distance_phase {
+                    AudioStyleProgrammaticDistancePhase::Continue => {
+                        AUDIO_STYLE_PROGRAMMATIC_CONTINUE_NOVELTY_STRENGTH * novelty_score
+                    }
+                    AudioStyleProgrammaticDistancePhase::Shift => {
+                        AUDIO_STYLE_PROGRAMMATIC_SHIFT_NOVELTY_STRENGTH * novelty_score
+                    }
+                };
+
+                if has_unvisited_candidate
+                    && !recent_keys.contains(&PlaybackTrackKey::from_track(candidate))
+                {
+                    score += AUDIO_STYLE_PROGRAMMATIC_COVERAGE_BONUS;
+                }
+
+                if let Some(basin) = basin_resolver.basin_for_track(candidate) {
+                    let same_basin = basin_pressure.current_basin.as_ref() == Some(&basin);
+                    match distance_phase {
+                        AudioStyleProgrammaticDistancePhase::Continue if same_basin => {
+                            score += AUDIO_STYLE_PROGRAMMATIC_CONTINUE_SAME_BASIN_BONUS;
+                        }
+                        AudioStyleProgrammaticDistancePhase::Shift if same_basin => {
+                            score -= AUDIO_STYLE_PROGRAMMATIC_SHIFT_SAME_BASIN_PENALTY;
+                        }
+                        _ => {}
+                    }
+                    let target = basin_pressure
+                        .target_share
+                        .get(&basin)
+                        .copied()
+                        .unwrap_or(0.0);
+                    let usage = basin_pressure.usage_share(&basin);
+                    score +=
+                        AUDIO_STYLE_PROGRAMMATIC_MASS_DEFICIT_STRENGTH * (target - usage).max(0.0);
+                    score -=
+                        AUDIO_STYLE_PROGRAMMATIC_MASS_OVERUSE_STRENGTH * (usage - target).max(0.0);
+
+                    let support = route_support_share
+                        .get(&basin)
+                        .copied()
+                        .unwrap_or(target)
+                        .clamp(0.0, 1.0);
+                    score -= AUDIO_STYLE_PROGRAMMATIC_WINDOW_CAPACITY_STRENGTH
+                        * projected_route_capacity_violation(
+                            &recent_window_counts,
+                            recent_window_basins.len(),
+                            &basin,
+                            support,
+                        );
+                    if let Some((dominant_basin, pressure)) = dominant_remaining.as_ref() {
+                        let current_basin = basin_pressure.current_basin.as_ref();
+                        if &basin == dominant_basin && current_basin != Some(dominant_basin) {
+                            score += AUDIO_STYLE_PROGRAMMATIC_FUTURE_REBALANCE_STRENGTH
+                                * (0.75 + *pressure);
+                        } else if &basin != dominant_basin {
+                            score -=
+                                AUDIO_STYLE_PROGRAMMATIC_REMAINING_COLLAPSE_STRENGTH * *pressure;
+                        }
+                    }
+                }
+
+                if let Some(source_basin) = source_resolver.basin_for_track(candidate) {
+                    let source_target = source_basin_pressure
+                        .target_share
+                        .get(&source_basin)
+                        .copied()
+                        .unwrap_or(0.0);
+                    let source_usage = source_basin_pressure.usage_share(&source_basin);
+                    score += AUDIO_STYLE_PROGRAMMATIC_SOURCE_MASS_DEFICIT_STRENGTH
+                        * (source_target - source_usage).max(0.0);
+                }
+
+                score
+            })
+            .collect::<Vec<_>>();
+        let gates = scores
+            .into_iter()
+            .map(|score| score.clamp(-3.20, 1.90).exp().clamp(0.04, 6.70))
+            .collect();
+        Self {
+            gates,
+            novelty_gates,
+        }
+    }
+}
+
+fn basin_counts_from_keys(
+    basins: impl IntoIterator<Item = PlaybackAttractorBasinKey>,
+) -> HashMap<PlaybackAttractorBasinKey, usize> {
+    let mut counts = HashMap::new();
+    for basin in basins {
+        *counts.entry(basin).or_insert(0) += 1;
+    }
+    counts
+}
+
+fn basin_share_from_counts(
+    counts: HashMap<PlaybackAttractorBasinKey, usize>,
+) -> HashMap<PlaybackAttractorBasinKey, f32> {
+    let total = counts.values().sum::<usize>().max(1) as f32;
+    counts
+        .into_iter()
+        .map(|(basin, count)| (basin, count as f32 / total))
+        .collect()
+}
+
+fn route_epoch_support_share(
+    candidates: &[PlaybackTrack],
+    recently_played_tracks: &[PlaybackTrack],
+    basin_resolver: AudioStyleBasinResolver<'_>,
+) -> HashMap<PlaybackAttractorBasinKey, f32> {
+    basin_share_from_counts(basin_counts_from_keys(
+        candidates
+            .iter()
+            .filter_map(|candidate| basin_resolver.basin_for_track(candidate))
+            .chain(
+                recently_played_tracks
+                    .iter()
+                    .rev()
+                    .take(AUDIO_STYLE_ROUTE_RECENT_WINDOW)
+                    .filter_map(|track| basin_resolver.basin_for_track(track)),
+            ),
+    ))
+}
+
+fn remaining_candidate_basin_share(
+    candidates: &[PlaybackTrack],
+    recent_keys: &HashSet<PlaybackTrackKey>,
+    basin_resolver: AudioStyleBasinResolver<'_>,
+) -> HashMap<PlaybackAttractorBasinKey, f32> {
+    basin_share_from_counts(basin_counts_from_keys(candidates.iter().filter_map(
+        |candidate| {
+            if recent_keys.contains(&PlaybackTrackKey::from_track(candidate)) {
+                return None;
+            }
+            basin_resolver.basin_for_track(candidate)
+        },
+    )))
+}
+
+fn dominant_remaining_basin(
+    remaining_share: &HashMap<PlaybackAttractorBasinKey, f32>,
+    support_share: &HashMap<PlaybackAttractorBasinKey, f32>,
+) -> Option<(PlaybackAttractorBasinKey, f32)> {
+    remaining_share
+        .iter()
+        .filter_map(|(basin, share)| {
+            let support = support_share.get(basin).copied().unwrap_or(0.0);
+            let slack = support.max(1.0e-6).sqrt() * 0.35;
+            let pressure = (*share - support - slack).max(0.0);
+            (pressure > 0.0).then_some((basin.clone(), pressure))
+        })
+        .max_by(|left, right| left.1.total_cmp(&right.1))
+}
+
+fn route_window_capacity_share(support_share: f32, window_len: usize) -> f32 {
+    if window_len == 0 {
+        return 1.0;
+    }
+    let expected = window_len as f32 * support_share.clamp(0.0, 1.0);
+    let capacity = (expected + expected.max(1.0).sqrt() + 1.0) / window_len as f32;
+    capacity.clamp(2.0 / window_len as f32, 0.62)
+}
+
+fn projected_route_capacity_violation(
+    recent_window_counts: &HashMap<PlaybackAttractorBasinKey, usize>,
+    recent_window_len: usize,
+    candidate_basin: &PlaybackAttractorBasinKey,
+    support_share: f32,
+) -> f32 {
+    if recent_window_len < AUDIO_STYLE_PROGRAMMATIC_ROUTE_CAPACITY_WARMUP {
+        return 0.0;
+    }
+    let projected_len = (recent_window_len + 1).min(AUDIO_STYLE_PROGRAMMATIC_ROUTE_CAPACITY_WINDOW);
+    let projected_count = recent_window_counts
+        .get(candidate_basin)
+        .copied()
+        .unwrap_or(0)
+        + 1;
+    let projected_share = projected_count as f32 / projected_len.max(1) as f32;
+    (projected_share - route_window_capacity_share(support_share, projected_len)).max(0.0)
+}
+
+fn audio_style_programmatic_distance_phase(
+    basin_pressure: &PlaybackAttractorBasinPressure,
+    source_basin_pressure: &PlaybackAttractorBasinPressure,
+) -> AudioStyleProgrammaticDistancePhase {
+    let basin_fatigue = basin_pressure
+        .current_basin
+        .as_ref()
+        .and_then(|basin| basin_pressure.fatigue.get(basin).copied())
+        .unwrap_or(0.0);
+    let source_fatigue = source_basin_pressure
+        .current_basin
+        .as_ref()
+        .and_then(|basin| source_basin_pressure.fatigue.get(basin).copied())
+        .unwrap_or(0.0);
+    if basin_pressure.current_basin_run >= AUDIO_STYLE_PROGRAMMATIC_EPISODE_SHIFT_RUN
+        || source_basin_pressure.current_basin_run >= AUDIO_STYLE_PROGRAMMATIC_EPISODE_SHIFT_RUN
+        || basin_fatigue.max(source_fatigue) >= AUDIO_STYLE_PROGRAMMATIC_EPISODE_FATIGUE_SHIFT
+    {
+        AudioStyleProgrammaticDistancePhase::Shift
+    } else {
+        AudioStyleProgrammaticDistancePhase::Continue
+    }
+}
+
+fn audio_style_programmatic_adaptive_distance_band(
+    novelty_values: &[f32],
+) -> Option<AudioStyleProgrammaticDistanceBand> {
+    let mut values = novelty_values
+        .iter()
+        .copied()
+        .filter(|value| value.is_finite())
+        .collect::<Vec<_>>();
+    if values.is_empty() {
+        return None;
+    }
+    values.sort_by(|left, right| left.total_cmp(right));
+    let mut band = AudioStyleProgrammaticDistanceBand {
+        low: sorted_quantile(
+            &values,
+            AUDIO_STYLE_PROGRAMMATIC_DISTANCE_LOW_QUANTILE,
+        ),
+        target: sorted_quantile(
+            &values,
+            AUDIO_STYLE_PROGRAMMATIC_DISTANCE_TARGET_QUANTILE,
+        ),
+        high: sorted_quantile(
+            &values,
+            AUDIO_STYLE_PROGRAMMATIC_DISTANCE_HIGH_QUANTILE,
+        ),
+    };
+    if band.high - band.low < AUDIO_STYLE_PROGRAMMATIC_DISTANCE_MIN_WIDTH {
+        let half_width = AUDIO_STYLE_PROGRAMMATIC_DISTANCE_MIN_WIDTH * 0.5;
+        band.low = (band.target - half_width).clamp(0.0, 1.0);
+        band.high = (band.target + half_width).clamp(0.0, 1.0);
+    }
+    Some(band)
+}
+
+fn audio_style_programmatic_inverted_u_score(
+    novelty: f32,
+    band: AudioStyleProgrammaticDistanceBand,
+) -> f32 {
+    let novelty = novelty.clamp(0.0, 1.0);
+    let half_width = ((band.high - band.low) * 0.5).max(1.0e-6);
+    let target_affinity =
+        (1.0 - ((novelty - band.target).abs() / half_width).powi(2)).clamp(-1.0, 1.0);
+    let high_penalty = -AUDIO_STYLE_PROGRAMMATIC_HIGH_NOVELTY_OVERLOAD_STRENGTH
+        * ((novelty - band.high).max(0.0) / half_width).powi(2);
+    let low_penalty = -AUDIO_STYLE_PROGRAMMATIC_LOW_NOVELTY_STICKINESS_STRENGTH
+        * ((band.low - novelty).max(0.0) / half_width).powi(2);
+    AUDIO_STYLE_PROGRAMMATIC_NOVELTY_STRENGTH * target_affinity + high_penalty + low_penalty
+}
+
+fn audio_style_programmatic_novelty_gate(score: f32) -> f32 {
+    score.clamp(-3.20, 1.90).exp().clamp(0.04, 6.70)
+}
+
 fn audio_style_manifold_residence_capacity(manifold: AudioStyleManifoldDescriptor) -> f32 {
     let spectral = manifold.spectral_rank.max(1.0);
     let boundary = manifold.boundary_pressure.clamp(0.0, 1.0);
@@ -7680,25 +8082,18 @@ impl AudioStyleListeningAdaptationDecision {
         anchor_key: &PlaybackTrackKey,
         basin_pressure: &PlaybackAttractorBasinPressure,
         source_basin_pressure: &PlaybackAttractorBasinPressure,
-        local_neighborhood_pressure: Option<&AudioStyleLocalNeighborhoodPressure<'_>>,
         embeddings: &AudioStyleEmbeddingMap,
         geometry: &AudioStyleSamplingGeometry,
         recently_played_tracks: &[PlaybackTrack],
         basin_resolver: AudioStyleBasinResolver<'_>,
     ) -> Self {
-        let local_fatigue = local_neighborhood_pressure
-            .map(|pressure| audio_style_local_neighborhood_fatigue(candidates, pressure))
-            .unwrap_or_else(|| vec![0.0; candidates.len()]);
         let listener_recovery = audio_style_listener_recovery_gate(
             candidates,
             embeddings,
             recently_played_tracks,
             basin_pressure,
         );
-        let repeat_gate = audio_style_distributed_repeat_gate(candidates, recently_played_tracks);
         let source_gate = audio_style_source_repetition_gate(candidates, source_basin_pressure);
-        let basin_escape =
-            audio_style_basin_escape_gate(candidates, basin_pressure, basin_resolver);
         let anchor_basin = basin_resolver.basin_for_key(anchor_key);
         let route_field = AudioStyleRouteFieldDecision::from_recent_history(
             candidates,
@@ -7715,6 +8110,21 @@ impl AudioStyleListeningAdaptationDecision {
             support,
             geometry,
             basin_pressure,
+            basin_resolver,
+        );
+        let future_occupancy = AudioStyleFutureOccupancyReachabilityDecision::from_support(
+            candidates,
+            support,
+            geometry,
+            basin_pressure,
+            basin_resolver,
+        );
+        let programmatic_route = AudioStyleProgrammaticRouteDecision::from_support(
+            candidates,
+            support,
+            basin_pressure,
+            source_basin_pressure,
+            recently_played_tracks,
             basin_resolver,
         );
         let model_basin_support =
@@ -7739,8 +8149,6 @@ impl AudioStyleListeningAdaptationDecision {
                 .get(index)
                 .copied()
                 .unwrap_or(1.0);
-            let local_fatigue_value = local_fatigue.get(index).copied().unwrap_or(0.0);
-            let local_gate = local_neighborhood_fatigue_gate(local_fatigue_value);
             let basin_penalty =
                 basin_pressure.penalty_for_track(&candidates[index], basin_resolver);
             let mut source_penalty = source_basin_pressure
@@ -7748,7 +8156,7 @@ impl AudioStyleListeningAdaptationDecision {
             if candidates[index].liked {
                 source_penalty *= 0.25;
             }
-            let damping = basin_penalty + source_penalty + local_fatigue_value;
+            let damping = basin_penalty + source_penalty;
             let fatigue_gate = audio_style_listening_fatigue_gate(&candidates[index], damping);
             let continuity = support
                 .similarities
@@ -7757,7 +8165,6 @@ impl AudioStyleListeningAdaptationDecision {
                 .unwrap_or(-1.0)
                 .clamp(-1.0, 1.0);
             let novelty = ((1.0 - continuity) * 0.5).clamp(0.0, 1.0);
-            let novelty_gate = audio_style_learned_novelty_gate(continuity);
             let route_drive =
                 basin_pressure.future_deficit_for_track(&candidates[index], basin_resolver);
             let model_support = model_basin_support.get(index).copied().unwrap_or(1.0);
@@ -7771,19 +8178,8 @@ impl AudioStyleListeningAdaptationDecision {
                 .get(index)
                 .copied()
                 .unwrap_or(1.0);
-            let manifold_route_cap = manifold_field
-                .route_caps
-                .get(index)
-                .copied()
-                .unwrap_or(1.0);
-            let route_recovery = audio_style_route_bonus_gate(
-                audio_style_route_recovery_gate(
-                    route_drive,
-                    basin_pressure,
-                    source_basin_pressure,
-                ),
-                route_capture_support,
-            );
+            let manifold_route_cap = manifold_field.route_caps.get(index).copied().unwrap_or(1.0);
+            let future_occupancy_gate = future_occupancy.gates.get(index).copied().unwrap_or(1.0);
             let stream_continuation = audio_style_route_bonus_gate(
                 basin_pressure.route_field_gate(
                     anchor_basin.as_ref(),
@@ -7797,23 +8193,16 @@ impl AudioStyleListeningAdaptationDecision {
             );
             let stream_continuation =
                 (stream_continuation * manifold_stream_gate).clamp(0.02, 18.0);
-            let basin_escape_gate = audio_style_route_bonus_gate(
-                basin_escape.get(index).copied().unwrap_or(1.0),
-                route_capture_support,
-            );
             let weight = base
                 * control
-                * local_gate
-                * novelty_gate
                 * stream_continuation
                 * route_field.gates.get(index).copied().unwrap_or(1.0)
                 * manifold_route_cap
+                * future_occupancy_gate
+                * programmatic_route.gates.get(index).copied().unwrap_or(1.0)
                 * model_support
-                * route_recovery
                 * listener_recovery.get(index).copied().unwrap_or(1.0)
-                * repeat_gate.get(index).copied().unwrap_or(1.0)
                 * source_gate.get(index).copied().unwrap_or(1.0)
-                * basin_escape_gate
                 * fatigue_gate;
             let weight = if weight.is_finite() {
                 weight.max(0.0)
@@ -7827,30 +8216,27 @@ impl AudioStyleListeningAdaptationDecision {
                 control_gate: control,
                 semantic_gate,
                 novelty,
-                novelty_gate,
+                novelty_gate: programmatic_route
+                    .novelty_gates
+                    .get(index)
+                    .copied()
+                    .unwrap_or(1.0),
                 stream_gate: stream_continuation,
                 damping,
-                local_gate,
                 final_weight: weight,
             }));
         }
 
-        let basin_homeostasis = audio_style_basin_mass_homeostasis_gate(
-            candidates,
-            &pre_homeostatic,
-            basin_pressure,
-            basin_resolver,
-        );
-        let mut gates = Vec::with_capacity(candidates.len());
-        for index in 0..candidates.len() {
-            let gate = pre_homeostatic.get(index).copied().unwrap_or(0.0)
-                * basin_homeostasis.get(index).copied().unwrap_or(1.0);
-            gates.push(if gate.is_finite() { gate.max(0.0) } else { 0.0 });
-            if let Some(Some(diagnostic)) = diagnostics.get_mut(index) {
-                diagnostic.final_weight = gates[index];
-            }
-        }
-        let gates = audio_style_relaxed_distributed_candidate_field(gates);
+        let gates = pre_homeostatic
+            .into_iter()
+            .map(|weight| {
+                if weight.is_finite() {
+                    weight.max(0.0)
+                } else {
+                    0.0
+                }
+            })
+            .collect::<Vec<_>>();
         for (index, weight) in gates.iter().copied().enumerate() {
             if let Some(Some(diagnostic)) = diagnostics.get_mut(index) {
                 diagnostic.final_weight = weight;
@@ -7861,7 +8247,6 @@ impl AudioStyleListeningAdaptationDecision {
             &support.weights,
             &control_gate.gates,
             &gates,
-            &local_fatigue,
             basin_pressure,
             embeddings,
             geometry,
@@ -7995,7 +8380,6 @@ fn audio_style_support_topology_health(
     base_support: &[f32],
     control_gate: &[f32],
     final_support: &[f32],
-    local_fatigue: &[f32],
     basin_pressure: &PlaybackAttractorBasinPressure,
     embeddings: &AudioStyleEmbeddingMap,
     geometry: &AudioStyleSamplingGeometry,
@@ -8018,11 +8402,6 @@ fn audio_style_support_topology_health(
             .collect(),
     );
     let control_entropy = audio_style_weight_entropy(&control_weights);
-    let local_fatigue_mass = normalized
-        .iter()
-        .zip(local_fatigue.iter().copied())
-        .map(|(weight, fatigue)| weight * fatigue.max(0.0))
-        .sum::<f32>();
     let mut basin_fatigue_mass = 0.0_f32;
     for (candidate, weight) in candidates.iter().zip(normalized.iter().copied()) {
         let Some(basin) = basin_resolver.basin_for_track(candidate) else {
@@ -8061,7 +8440,6 @@ fn audio_style_support_topology_health(
         support_width,
         support_entropy,
         control_entropy,
-        local_fatigue_mass,
         basin_fatigue_mass,
         prediction_error,
         novelty,
@@ -8322,11 +8700,6 @@ fn select_next_audio_style_candidate(
         &basin_pressure,
         &source_basin_pressure,
     );
-    let local_neighborhood_pressure = AudioStyleLocalNeighborhoodPressure::from_recent_history(
-        geometry,
-        embeddings,
-        recently_played_tracks,
-    );
     let adaptation = AudioStyleListeningAdaptationDecision::from_support(
         candidates,
         &support,
@@ -8334,7 +8707,6 @@ fn select_next_audio_style_candidate(
         anchor_key,
         &basin_pressure,
         &source_basin_pressure,
-        Some(&local_neighborhood_pressure),
         embeddings,
         geometry,
         recently_played_tracks,
@@ -8484,7 +8856,6 @@ fn select_centerless_audio_style_candidate(
         &PlaybackTrackKey::empty_anchor(),
         &basin_pressure,
         &source_basin_pressure,
-        None,
         embeddings,
         geometry,
         &[],
@@ -8594,82 +8965,11 @@ fn audio_style_distance_softmin_weights(
     AudioStyleTensorRuntime::new().softmin_weights(&liked_flags, similarities, basin_penalties)
 }
 
-fn audio_style_distributed_repeat_gate(
-    candidates: &[PlaybackTrack],
-    recently_played_tracks: &[PlaybackTrack],
-) -> Vec<f32> {
-    if recently_played_tracks.is_empty() {
-        return vec![1.0; candidates.len()];
-    }
-    let recent_keys = recently_played_tracks
-        .iter()
-        .rev()
-        .take(24)
-        .map(PlaybackTrackKey::from_track)
-        .collect::<HashSet<_>>();
-    candidates
-        .iter()
-        .map(|candidate| {
-            if recent_keys.contains(&PlaybackTrackKey::from_track(candidate)) {
-                if candidate.liked {
-                    AUDIO_STYLE_DISTRIBUTED_LIKED_REPEAT_GATE_FLOOR
-                } else {
-                    AUDIO_STYLE_DISTRIBUTED_REPEAT_GATE_FLOOR
-                }
-            } else {
-                1.0
-            }
-        })
-        .collect()
-}
-
-fn audio_style_local_neighborhood_fatigue(
-    candidates: &[PlaybackTrack],
-    pressure: &AudioStyleLocalNeighborhoodPressure<'_>,
-) -> Vec<f32> {
-    candidates
-        .iter()
-        .map(|candidate| pressure.fatigue_for_track(candidate))
-        .collect()
-}
-
 fn audio_style_listening_fatigue_gate(_candidate: &PlaybackTrack, damping: f32) -> f32 {
     if damping <= 0.0 || !damping.is_finite() {
         return 1.0;
     }
     (1.0 / (1.0 + AUDIO_STYLE_BIO_ROUTE_DAMPING_STRENGTH * damping.max(0.0))).clamp(0.05, 1.0)
-}
-
-fn local_neighborhood_fatigue_gate(fatigue: f32) -> f32 {
-    if fatigue <= 0.0 || !fatigue.is_finite() {
-        return 1.0;
-    }
-    (1.0 / (1.0 + fatigue * 1.35)).clamp(AUDIO_STYLE_LOCAL_NEIGHBORHOOD_FATIGUE_FLOOR, 1.0)
-}
-
-fn audio_style_basin_escape_gate(
-    candidates: &[PlaybackTrack],
-    basin_pressure: &PlaybackAttractorBasinPressure,
-    basin_resolver: AudioStyleBasinResolver<'_>,
-) -> Vec<f32> {
-    if candidates.len() <= 1 || basin_pressure.current_basin_run <= 1 {
-        return vec![1.0; candidates.len()];
-    }
-
-    let run_drive = (basin_pressure.current_basin_run.saturating_sub(1) as f32).ln_1p()
-        * AUDIO_STYLE_BIO_ROUTE_BASIN_ESCAPE_STRENGTH;
-    candidates
-        .iter()
-        .map(|candidate| {
-            let Some(candidate_basin) = basin_resolver.basin_for_track(candidate) else {
-                return 1.0;
-            };
-            if basin_pressure.current_basin.as_ref() == Some(&candidate_basin) {
-                return 1.0;
-            }
-            (1.0 + run_drive).min(AUDIO_STYLE_BIO_ROUTE_BASIN_ESCAPE_CAP)
-        })
-        .collect()
 }
 
 fn audio_style_model_basin_support_gate(
@@ -8722,26 +9022,6 @@ fn audio_style_route_bonus_gate(gate: f32, capture_support: f32) -> f32 {
         return gate;
     }
     1.0 + (gate - 1.0) * capture_support.clamp(0.0, 1.0)
-}
-
-fn audio_style_route_recovery_gate(
-    route_drive: f32,
-    basin_pressure: &PlaybackAttractorBasinPressure,
-    source_basin_pressure: &PlaybackAttractorBasinPressure,
-) -> f32 {
-    if route_drive <= 0.0 || !route_drive.is_finite() {
-        return 1.0;
-    }
-    let run = basin_pressure
-        .current_basin_run
-        .max(source_basin_pressure.current_basin_run);
-    if run < AUDIO_STYLE_SEMANTIC_CONTINUITY_ESCAPE_RUN {
-        return 1.0;
-    }
-    let run_drive =
-        (run.saturating_sub(AUDIO_STYLE_SEMANTIC_CONTINUITY_ESCAPE_RUN) as f32).ln_1p() + 1.0;
-    (1.0 + AUDIO_STYLE_BIO_ROUTE_RECOVERY_STRENGTH * route_drive.max(0.0) * run_drive)
-        .clamp(1.0, AUDIO_STYLE_BIO_ROUTE_RECOVERY_CAP)
 }
 
 fn audio_style_typed_continuity_scores(
@@ -8831,27 +9111,9 @@ fn audio_style_semantic_continuity_gate(
             } else {
                 (-strength * deficit).exp().clamp(0.05, 1.0)
             };
-            floor_gate * audio_style_learned_novelty_gate(continuity)
+            floor_gate
         })
         .collect()
-}
-
-fn audio_style_learned_novelty_gate(continuity: f32) -> f32 {
-    let continuity = continuity.clamp(-1.0, 1.0);
-    let low = ((AUDIO_STYLE_LEARNED_NOVELTY_TARGET - continuity).max(0.0)
-        / AUDIO_STYLE_LEARNED_NOVELTY_LOW_WIDTH.max(1.0e-6))
-    .powi(2);
-    let high = ((continuity - AUDIO_STYLE_LEARNED_NOVELTY_TARGET).max(0.0)
-        / AUDIO_STYLE_LEARNED_NOVELTY_HIGH_WIDTH.max(1.0e-6))
-    .powi(2);
-    let shock = (AUDIO_STYLE_SEMANTIC_CONTINUITY_FLOOR - continuity).max(0.0)
-        * AUDIO_STYLE_LEARNED_NOVELTY_LOW_SHOCK_WEIGHT;
-    let familiar = (continuity - AUDIO_STYLE_LEARNED_NOVELTY_HIGH_FAMILIARITY_START).max(0.0)
-        * AUDIO_STYLE_LEARNED_NOVELTY_HIGH_FAMILIARITY_WEIGHT;
-    let energy = low + high + shock.powi(2) + familiar.powi(2);
-    (-AUDIO_STYLE_LEARNED_NOVELTY_STRENGTH * energy)
-        .exp()
-        .clamp(AUDIO_STYLE_LEARNED_NOVELTY_GATE_FLOOR, 1.0)
 }
 
 #[cfg(test)]
@@ -8879,6 +9141,134 @@ pub(crate) fn audio_style_semantic_continuity_gate_for_test(
         target_share: HashMap::new(),
     };
     audio_style_semantic_continuity_gate(continuity_scores, &basin_pressure, &source_basin_pressure)
+}
+
+#[cfg(test)]
+pub(crate) fn audio_style_programmatic_route_gate_for_test(
+    continuities: &[f32],
+    current_run: usize,
+    current_usage_share: f32,
+    current_target_share: f32,
+    alternative_target_share: f32,
+    recently_played_current_count: usize,
+) -> Vec<f32> {
+    let current_basin = PlaybackAttractorBasinKey {
+        value: "current".to_string(),
+    };
+    let alternative_basin = PlaybackAttractorBasinKey {
+        value: "alternative".to_string(),
+    };
+    let mut candidates = (0..continuities.len().saturating_sub(1))
+        .map(|index| track_for_programmatic_route_test("current", &format!("current_{index}")))
+        .collect::<Vec<_>>();
+    candidates.push(track_for_programmatic_route_test(
+        "alternative",
+        "alternative",
+    ));
+    let support = AudioStyleCandidateSupport {
+        weights: vec![1.0; candidates.len()],
+        similarities: continuities.iter().copied().map(Some).collect(),
+        diagnostics: vec![None; candidates.len()],
+    };
+    let recently_played_tracks = (0..recently_played_current_count)
+        .map(|index| track_for_programmatic_route_test("current", &format!("current_{index}")))
+        .collect::<Vec<_>>();
+    let mut basin_pressure = PlaybackAttractorBasinPressure {
+        current_basin: Some(current_basin.clone()),
+        current_basin_run: current_run,
+        recent_evidence_count: current_run,
+        fatigue: HashMap::new(),
+        usage: HashMap::new(),
+        candidate_top_pressure: HashMap::new(),
+        target_share: HashMap::new(),
+    };
+    basin_pressure
+        .usage
+        .insert(current_basin.clone(), current_usage_share.max(0.0));
+    basin_pressure.usage.insert(
+        alternative_basin.clone(),
+        (1.0 - current_usage_share).max(0.0),
+    );
+    basin_pressure
+        .target_share
+        .insert(current_basin.clone(), current_target_share.max(0.0));
+    basin_pressure
+        .target_share
+        .insert(alternative_basin.clone(), alternative_target_share.max(0.0));
+    let source_basin_pressure =
+        PlaybackAttractorBasinPressure::from_recent_history_and_source_candidates(
+            &recently_played_tracks,
+            &candidates,
+        );
+    AudioStyleProgrammaticRouteDecision::from_support(
+        &candidates,
+        &support,
+        &basin_pressure,
+        &source_basin_pressure,
+        &recently_played_tracks,
+        AudioStyleBasinResolver::new(None),
+    )
+    .gates
+}
+
+#[cfg(test)]
+pub(crate) fn audio_style_programmatic_route_gate_for_named_basins_for_test(
+    candidate_basins: &[&str],
+    continuities: &[f32],
+    recent_basins: &[&str],
+) -> Vec<f32> {
+    let candidates = candidate_basins
+        .iter()
+        .enumerate()
+        .map(|(index, basin)| {
+            track_for_programmatic_route_test(basin, &format!("candidate_{index}"))
+        })
+        .collect::<Vec<_>>();
+    let support = AudioStyleCandidateSupport {
+        weights: vec![1.0; candidates.len()],
+        similarities: continuities.iter().copied().map(Some).collect(),
+        diagnostics: vec![None; candidates.len()],
+    };
+    let recently_played_tracks = recent_basins
+        .iter()
+        .enumerate()
+        .map(|(index, basin)| track_for_programmatic_route_test(basin, &format!("recent_{index}")))
+        .collect::<Vec<_>>();
+    let basin_pressure = PlaybackAttractorBasinPressure::from_recent_history_and_candidates(
+        &recently_played_tracks,
+        &candidates,
+        AudioStyleBasinResolver::new(None),
+    );
+    let source_basin_pressure =
+        PlaybackAttractorBasinPressure::from_recent_history_and_source_candidates(
+            &recently_played_tracks,
+            &candidates,
+        );
+    AudioStyleProgrammaticRouteDecision::from_support(
+        &candidates,
+        &support,
+        &basin_pressure,
+        &source_basin_pressure,
+        &recently_played_tracks,
+        AudioStyleBasinResolver::new(None),
+    )
+    .gates
+}
+
+#[cfg(test)]
+fn track_for_programmatic_route_test(basin: &str, name: &str) -> PlaybackTrack {
+    PlaybackTrack {
+        playlist_name: "Test".to_string(),
+        music_name: name.to_string(),
+        canonical_music_id: format!("source:https://example.com/{basin}/{name}:0:60000"),
+        music_url: format!("https://example.com/{basin}/{name}"),
+        file_path: PathBuf::from(format!("youtube/{basin}/{name}.m4a")),
+        start_ms: 0,
+        end_ms: 60_000,
+        source_music: None,
+        liked: false,
+        loudness_profile: None,
+    }
 }
 
 fn audio_style_source_repetition_gate(
@@ -8953,84 +9343,6 @@ fn audio_style_listener_recovery_gate(
             audio_style_listener_recovery_gate_for_load(&listener_state, &load, gate_drive)
         })
         .collect()
-}
-
-fn audio_style_basin_mass_homeostasis_gate(
-    candidates: &[PlaybackTrack],
-    base: &[f32],
-    basin_pressure: &PlaybackAttractorBasinPressure,
-    basin_resolver: AudioStyleBasinResolver<'_>,
-) -> Vec<f32> {
-    if candidates.len() <= 1 {
-        return vec![1.0; candidates.len()];
-    }
-    let normalized = normalize_positive_weights(base.to_vec());
-    if normalized.iter().all(|weight| *weight <= 0.0) {
-        return vec![1.0; candidates.len()];
-    }
-
-    let mut basin_mass = HashMap::<PlaybackAttractorBasinKey, f32>::new();
-    let mut basin_count = HashMap::<PlaybackAttractorBasinKey, usize>::new();
-    for (candidate, weight) in candidates.iter().zip(normalized.iter().copied()) {
-        let Some(basin) = basin_resolver.basin_for_track(candidate) else {
-            continue;
-        };
-        *basin_mass.entry(basin.clone()).or_insert(0.0) += weight.max(0.0);
-        *basin_count.entry(basin).or_insert(0) += 1;
-    }
-    if basin_mass.len() <= 1 {
-        return vec![1.0; candidates.len()];
-    }
-
-    let capacity_total = basin_count
-        .values()
-        .map(|count| (*count as f32).sqrt())
-        .sum::<f32>();
-    if capacity_total <= 0.0 || !capacity_total.is_finite() {
-        return vec![1.0; candidates.len()];
-    }
-
-    candidates
-        .iter()
-        .map(|candidate| {
-            let Some(basin) = basin_resolver.basin_for_track(candidate) else {
-                return 1.0;
-            };
-            let count = basin_count.get(&basin).copied().unwrap_or(0);
-            if count == 0 {
-                return 1.0;
-            }
-            let target = (count as f32).sqrt() / capacity_total;
-            let mass = basin_mass.get(&basin).copied().unwrap_or(0.0);
-            let excess = (mass - target).max(0.0);
-            let deficit = (target - mass).max(0.0);
-            let recent_excess = (basin_pressure.usage_share(&basin) - target).max(0.0);
-            let reserve =
-                (1.0 + deficit).min(AUDIO_STYLE_BIO_ROUTE_BASIN_MASS_HOMEOSTASIS_RESERVE_CAP);
-            let damping = 1.0
-                + AUDIO_STYLE_BIO_ROUTE_BASIN_MASS_HOMEOSTASIS_STRENGTH * excess
-                + AUDIO_STYLE_BIO_ROUTE_BASIN_MASS_HOMEOSTASIS_RECENT_STRENGTH * recent_excess;
-            (reserve / damping).clamp(
-                AUDIO_STYLE_BIO_ROUTE_BASIN_MASS_HOMEOSTASIS_FLOOR,
-                AUDIO_STYLE_BIO_ROUTE_BASIN_MASS_HOMEOSTASIS_RESERVE_CAP,
-            )
-        })
-        .collect()
-}
-
-#[cfg(test)]
-pub(crate) fn audio_style_basin_mass_homeostasis_gate_for_test(
-    candidates: &[PlaybackTrack],
-    base: &[f32],
-    recently_played_tracks: &[PlaybackTrack],
-) -> Vec<f32> {
-    let basin_resolver = AudioStyleBasinResolver::new(None);
-    let pressure = PlaybackAttractorBasinPressure::from_recent_history_and_candidates(
-        recently_played_tracks,
-        candidates,
-        basin_resolver,
-    );
-    audio_style_basin_mass_homeostasis_gate(candidates, base, &pressure, basin_resolver)
 }
 
 fn audio_style_listener_state_from_recent_history(
@@ -9216,43 +9528,6 @@ pub(crate) fn audio_style_listener_recovery_gate_for_load_for_test(
     gate_drive: f32,
 ) -> f32 {
     audio_style_listener_recovery_gate_for_load(listener_state, candidate_load, gate_drive)
-}
-
-fn audio_style_relaxed_distributed_candidate_field(values: Vec<f32>) -> Vec<f32> {
-    if values.len() <= 1 {
-        return values;
-    }
-    let normalized_base = normalize_positive_weights(values.clone());
-    let mut state = normalized_base.clone();
-    if state.iter().all(|value| *value <= 0.0) {
-        return values;
-    }
-    let strongest = normalized_base.iter().copied().fold(0.0_f32, f32::max);
-    for _ in 0..AUDIO_STYLE_DISTRIBUTED_FIELD_RELAXATION_STEPS {
-        let target = state
-            .iter()
-            .zip(normalized_base.iter())
-            .map(|(state_value, base_value)| {
-                let crowding = (*state_value * state.len() as f32).min(0.35);
-                let support = if strongest > 0.0 {
-                    (*base_value / strongest).clamp(AUDIO_STYLE_DISTRIBUTED_TAIL_SUPPORT_FLOOR, 1.0)
-                } else {
-                    1.0
-                };
-                base_value * support
-                    / (1.0 + AUDIO_STYLE_DISTRIBUTED_FIELD_CROWDING_STRENGTH * crowding)
-            })
-            .collect::<Vec<_>>();
-        let target = normalize_positive_weights(target);
-        if target.iter().all(|value| *value <= 0.0) {
-            break;
-        }
-        for (state_value, target_value) in state.iter_mut().zip(target.iter()) {
-            *state_value = (1.0 - AUDIO_STYLE_DISTRIBUTED_FIELD_RELAXATION_RATE) * *state_value
-                + AUDIO_STYLE_DISTRIBUTED_FIELD_RELAXATION_RATE * *target_value;
-        }
-    }
-    state
 }
 
 fn normalize_positive_weights(mut values: Vec<f32>) -> Vec<f32> {
@@ -9451,6 +9726,7 @@ fn decode_audio_style_embedding(
 
 #[cfg(not(test))]
 fn acquire_audio_style_ffmpeg_usage() -> crate::utils::binaries::ManagedBinaryUsageGuard {
+    wait_for_managed_binary_foreground_release(ManagedBinary::Ffmpeg);
     acquire_managed_binary_usage(ManagedBinary::Ffmpeg, "audio_style")
 }
 
@@ -10063,6 +10339,1383 @@ pub(crate) fn read_audio_style_stable_model_for_test(
     path: &Path,
 ) -> Result<AudioStyleModelSnapshot, String> {
     read_audio_style_stable_model(path)
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone)]
+pub(crate) struct AudioStylePredictiveTopologyProbePolicyReport {
+    pub(crate) policy: &'static str,
+    pub(crate) tail_largest_basin_share: f32,
+    pub(crate) tail_basin_entropy_norm: f32,
+    pub(crate) basin_run_p95: f32,
+    pub(crate) basin_run_p99: f32,
+    pub(crate) same_basin_transition_rate: f32,
+    pub(crate) revisit_basin_transition_rate: f32,
+    pub(crate) mean_adjacent_cosine: f32,
+    pub(crate) mean_selected_reachability: f32,
+    pub(crate) mean_selected_future_entropy: f32,
+    pub(crate) weak_attractor_pressure: f32,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone)]
+pub(crate) struct AudioStylePredictiveTopologyProbeReport {
+    pub(crate) record_count: usize,
+    pub(crate) basin_count: usize,
+    pub(crate) generation: u64,
+    pub(crate) policy_reports: Vec<AudioStylePredictiveTopologyProbePolicyReport>,
+    pub(crate) recommended_policy: &'static str,
+    pub(crate) weak_attractor_pressure_delta_vs_support_only: f32,
+    pub(crate) tail_largest_basin_share_delta_vs_support_only: f32,
+    pub(crate) mean_adjacent_cosine_delta_vs_support_only: f32,
+    pub(crate) verdict: &'static str,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone)]
+pub(crate) struct AudioStyleAdaptiveDistanceUProbePolicyReport {
+    pub(crate) policy: &'static str,
+    pub(crate) unique_sample_rate: f32,
+    pub(crate) sample_count_gini_proxy: f32,
+    pub(crate) same_basin_transition_rate: f32,
+    pub(crate) max_basin_run_length: f32,
+    pub(crate) warm_window_largest_basin_share_p90: f32,
+    pub(crate) warm_window_largest_basin_share_max: f32,
+    pub(crate) global_middle_distance_rate: f32,
+    pub(crate) window_middle_distance_rate: f32,
+    pub(crate) window_nearest_edge_rate: f32,
+    pub(crate) window_farthest_edge_rate: f32,
+    pub(crate) shift_transition_rate: f32,
+    pub(crate) continue_window_middle_distance_rate: f32,
+    pub(crate) shift_global_middle_distance_rate: f32,
+    pub(crate) episode_length_mean: f32,
+    pub(crate) episode_length_p90: f32,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone)]
+pub(crate) struct AudioStyleAdaptiveDistanceUProbeReport {
+    pub(crate) record_count: usize,
+    pub(crate) basin_count: usize,
+    pub(crate) generation: u64,
+    pub(crate) global_distance_band: (f32, f32, f32),
+    pub(crate) policy_reports: Vec<AudioStyleAdaptiveDistanceUProbePolicyReport>,
+    pub(crate) recommended_policy: &'static str,
+    pub(crate) verdict: &'static str,
+}
+
+#[cfg(test)]
+pub(crate) fn audio_style_current_stable_predictive_topology_probe_for_test(
+    path: &Path,
+    seed: u64,
+) -> Result<AudioStylePredictiveTopologyProbeReport, String> {
+    const POLICIES: [&str; 4] = [
+        "support_only",
+        "residency_penalty",
+        "future_occupancy_reachability",
+        "future_occupancy_reachability_with_residency",
+    ];
+    let snapshot = read_audio_style_stable_model(path)?;
+    let state = snapshot.state.as_ref();
+    let geometry = state
+        .sampling_geometry
+        .as_ref()
+        .ok_or_else(|| "stable model has no sampling geometry".to_string())?;
+    let keys = sorted_audio_style_embedding_keys(&state.embeddings);
+    if keys.len() < 2 {
+        return Err("stable model has too few embeddings for topology probe".to_string());
+    }
+
+    let key_to_index = keys
+        .iter()
+        .cloned()
+        .enumerate()
+        .map(|(index, key)| (key, index))
+        .collect::<HashMap<_, _>>();
+    let embeddings = keys
+        .iter()
+        .map(|key| {
+            state
+                .embeddings
+                .get(key)
+                .ok_or_else(|| "stable model key is missing its embedding".to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let embedding_norms = embeddings
+        .iter()
+        .map(|embedding| {
+            embedding
+                .values
+                .iter()
+                .map(|value| value * value)
+                .sum::<f32>()
+                .sqrt()
+        })
+        .collect::<Vec<_>>();
+
+    let basin_ids = audio_style_probe_basin_ids(&keys, geometry);
+    let basin_count = basin_ids.iter().copied().collect::<HashSet<_>>().len();
+    let candidate_rows =
+        audio_style_probe_candidate_rows(&keys, &key_to_index, &state.neighbor_index);
+    let mut similarity_rows: HashMap<usize, Vec<(usize, f32)>> = HashMap::new();
+    let reports = POLICIES
+        .iter()
+        .enumerate()
+        .map(|(policy_index, policy)| {
+            audio_style_simulate_predictive_topology_policy_for_test(
+                policy,
+                policy_index,
+                seed,
+                &keys,
+                &embeddings,
+                &embedding_norms,
+                &candidate_rows,
+                &mut similarity_rows,
+                &basin_ids,
+                basin_count,
+                geometry,
+            )
+        })
+        .collect::<Vec<_>>();
+
+    let support_only = reports
+        .iter()
+        .find(|report| report.policy == "support_only")
+        .ok_or_else(|| "probe did not produce support_only report".to_string())?;
+    let recommended = reports
+        .iter()
+        .min_by(|left, right| {
+            left.weak_attractor_pressure
+                .total_cmp(&right.weak_attractor_pressure)
+                .then_with(|| {
+                    right
+                        .tail_basin_entropy_norm
+                        .total_cmp(&left.tail_basin_entropy_norm)
+                })
+                .then_with(|| {
+                    right
+                        .mean_selected_reachability
+                        .total_cmp(&left.mean_selected_reachability)
+                })
+        })
+        .ok_or_else(|| "probe did not produce policy reports".to_string())?;
+    let weak_delta = recommended.weak_attractor_pressure - support_only.weak_attractor_pressure;
+    let tail_delta = recommended.tail_largest_basin_share - support_only.tail_largest_basin_share;
+    let cosine_delta = recommended.mean_adjacent_cosine - support_only.mean_adjacent_cosine;
+    let recommended_policy = recommended.policy;
+    let verdict = if recommended.policy == "future_occupancy_reachability_with_residency"
+        && weak_delta <= -0.025
+        && tail_delta <= 0.0
+        && cosine_delta >= -0.025
+    {
+        "stable_topology_reachability_controls_log_like_weak_attractor"
+    } else {
+        "stable_topology_still_has_log_like_weak_attractor_risk"
+    };
+
+    Ok(AudioStylePredictiveTopologyProbeReport {
+        record_count: keys.len(),
+        basin_count,
+        generation: snapshot.generation(),
+        policy_reports: reports,
+        recommended_policy,
+        weak_attractor_pressure_delta_vs_support_only: weak_delta,
+        tail_largest_basin_share_delta_vs_support_only: tail_delta,
+        mean_adjacent_cosine_delta_vs_support_only: cosine_delta,
+        verdict,
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn audio_style_current_stable_adaptive_distance_u_probe_for_test(
+    path: &Path,
+    seed: u64,
+    max_tracks: usize,
+    run_count: usize,
+) -> Result<AudioStyleAdaptiveDistanceUProbeReport, String> {
+    const POLICIES: [&str; 3] = [
+        "global_calibrated",
+        "window_adaptive",
+        "episodic_fatigue_u",
+    ];
+    let snapshot = read_audio_style_stable_model(path)?;
+    let state = snapshot.state.as_ref();
+    let geometry = state
+        .sampling_geometry
+        .as_ref()
+        .ok_or_else(|| "stable model has no sampling geometry".to_string())?;
+    let mut keys = sorted_audio_style_embedding_keys(&state.embeddings);
+    keys.truncate(max_tracks.max(2));
+    if keys.len() < 2 {
+        return Err("stable model has too few embeddings for adaptive distance probe".to_string());
+    }
+
+    let key_to_index = keys
+        .iter()
+        .cloned()
+        .enumerate()
+        .map(|(index, key)| (key, index))
+        .collect::<HashMap<_, _>>();
+    let embeddings = keys
+        .iter()
+        .map(|key| {
+            state
+                .embeddings
+                .get(key)
+                .ok_or_else(|| "stable model key is missing its embedding".to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let embedding_norms = embeddings
+        .iter()
+        .map(|embedding| {
+            embedding
+                .values
+                .iter()
+                .map(|value| value * value)
+                .sum::<f32>()
+                .sqrt()
+        })
+        .collect::<Vec<_>>();
+    let basin_ids = audio_style_probe_basin_ids(&keys, geometry);
+    let basin_count = basin_ids.iter().copied().collect::<HashSet<_>>().len();
+    let candidate_rows =
+        audio_style_probe_candidate_rows(&keys, &key_to_index, &state.neighbor_index);
+    let mut similarity_rows = HashMap::new();
+    let global_distribution = audio_style_adaptive_probe_global_distribution(
+        &embeddings,
+        &embedding_norms,
+        &candidate_rows,
+        &mut similarity_rows,
+    );
+    if global_distribution.is_empty() {
+        return Err("stable model has no measurable adaptive distance distribution".to_string());
+    }
+    let global_band = audio_style_adaptive_probe_quantile_band(&global_distribution);
+
+    let policy_reports = POLICIES
+        .iter()
+        .enumerate()
+        .map(|(policy_index, policy)| {
+            audio_style_adaptive_probe_policy_report(
+                policy,
+                policy_index,
+                seed,
+                run_count,
+                &keys,
+                &embeddings,
+                &embedding_norms,
+                &candidate_rows,
+                &mut similarity_rows,
+                &basin_ids,
+                &global_distribution,
+                global_band,
+            )
+        })
+        .collect::<Vec<_>>();
+    let episodic = policy_reports
+        .iter()
+        .find(|report| report.policy == "episodic_fatigue_u")
+        .ok_or_else(|| "adaptive probe did not produce episodic report".to_string())?;
+    let global = policy_reports
+        .iter()
+        .find(|report| report.policy == "global_calibrated")
+        .ok_or_else(|| "adaptive probe did not produce global report".to_string())?;
+    let window = policy_reports
+        .iter()
+        .find(|report| report.policy == "window_adaptive")
+        .ok_or_else(|| "adaptive probe did not produce window report".to_string())?;
+    let recommended_policy = episodic.policy;
+    let verdict = if episodic.unique_sample_rate >= 1.0
+        && episodic.sample_count_gini_proxy <= 0.0
+        && episodic.continue_window_middle_distance_rate > episodic.global_middle_distance_rate
+        && episodic.shift_global_middle_distance_rate > episodic.window_middle_distance_rate
+        && episodic.shift_global_middle_distance_rate > global.window_middle_distance_rate
+        && episodic.episode_length_p90 <= AUDIO_STYLE_PROGRAMMATIC_EPISODE_SHIFT_RUN as f32
+        && episodic.warm_window_largest_basin_share_max
+            <= global
+                .warm_window_largest_basin_share_max
+                .max(window.warm_window_largest_basin_share_max)
+    {
+        "stable_adaptive_distance_u_reproduces_programmatic_coverage_episode_shift"
+    } else {
+        "stable_adaptive_distance_u_did_not_reproduce_programmatic_coverage_episode_shift"
+    };
+
+    Ok(AudioStyleAdaptiveDistanceUProbeReport {
+        record_count: keys.len(),
+        basin_count,
+        generation: snapshot.generation(),
+        global_distance_band: (global_band.low, global_band.target, global_band.high),
+        policy_reports,
+        recommended_policy,
+        verdict,
+    })
+}
+
+#[cfg(test)]
+fn audio_style_probe_basin_ids(
+    keys: &[PlaybackTrackKey],
+    geometry: &AudioStyleSamplingGeometry,
+) -> Vec<usize> {
+    let mut basin_to_id = HashMap::new();
+    let mut next_id = 0usize;
+    keys.iter()
+        .map(|key| {
+            let basin = geometry.self_supervised_basins.get(key).cloned().unwrap_or(
+                PlaybackAttractorBasinKey {
+                    value: "audio-basin:unknown".to_string(),
+                },
+            );
+            *basin_to_id.entry(basin).or_insert_with(|| {
+                let id = next_id;
+                next_id += 1;
+                id
+            })
+        })
+        .collect()
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy)]
+struct AudioStyleAdaptiveProbeRunMetrics {
+    unique_sample_rate: f32,
+    sample_count_gini_proxy: f32,
+    same_basin_transition_rate: f32,
+    max_basin_run_length: f32,
+    warm_window_largest_basin_share_p90: f32,
+    warm_window_largest_basin_share_max: f32,
+    global_middle_distance_rate: f32,
+    window_middle_distance_rate: f32,
+    window_nearest_edge_rate: f32,
+    window_farthest_edge_rate: f32,
+    shift_transition_rate: f32,
+    continue_window_middle_distance_rate: f32,
+    shift_global_middle_distance_rate: f32,
+    episode_length_mean: f32,
+    episode_length_p90: f32,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AudioStyleAdaptiveProbePhase {
+    Flat,
+    Continue,
+    Shift,
+}
+
+#[cfg(test)]
+fn audio_style_adaptive_probe_global_distribution(
+    embeddings: &[&Arc<AudioStyleEmbedding>],
+    embedding_norms: &[f32],
+    candidate_rows: &[Vec<usize>],
+    similarity_rows: &mut HashMap<usize, Vec<(usize, f32)>>,
+) -> Vec<f32> {
+    let mut values = Vec::new();
+    for current in 0..embeddings.len() {
+        let row = audio_style_probe_similarity_row(
+            current,
+            embeddings,
+            embedding_norms,
+            candidate_rows,
+            similarity_rows,
+        );
+        values.extend(
+            row.into_iter()
+                .map(|(_candidate, similarity)| ((1.0 - similarity) * 0.5).clamp(0.0, 1.0)),
+        );
+    }
+    values.sort_by(|left, right| left.total_cmp(right));
+    values
+}
+
+#[cfg(test)]
+fn audio_style_adaptive_probe_quantile_band(
+    sorted_values: &[f32],
+) -> AudioStyleProgrammaticDistanceBand {
+    let mut band = AudioStyleProgrammaticDistanceBand {
+        low: sorted_quantile(
+            sorted_values,
+            AUDIO_STYLE_PROGRAMMATIC_DISTANCE_LOW_QUANTILE,
+        ),
+        target: sorted_quantile(
+            sorted_values,
+            AUDIO_STYLE_PROGRAMMATIC_DISTANCE_TARGET_QUANTILE,
+        ),
+        high: sorted_quantile(
+            sorted_values,
+            AUDIO_STYLE_PROGRAMMATIC_DISTANCE_HIGH_QUANTILE,
+        ),
+    };
+    if band.high - band.low < AUDIO_STYLE_PROGRAMMATIC_DISTANCE_MIN_WIDTH {
+        let half_width = AUDIO_STYLE_PROGRAMMATIC_DISTANCE_MIN_WIDTH * 0.5;
+        band.low = (band.target - half_width).clamp(0.0, 1.0);
+        band.high = (band.target + half_width).clamp(0.0, 1.0);
+    }
+    band
+}
+
+#[cfg(test)]
+fn audio_style_adaptive_probe_policy_report(
+    policy: &'static str,
+    policy_index: usize,
+    seed: u64,
+    run_count: usize,
+    keys: &[PlaybackTrackKey],
+    embeddings: &[&Arc<AudioStyleEmbedding>],
+    embedding_norms: &[f32],
+    candidate_rows: &[Vec<usize>],
+    similarity_rows: &mut HashMap<usize, Vec<(usize, f32)>>,
+    basin_ids: &[usize],
+    global_distribution: &[f32],
+    global_band: AudioStyleProgrammaticDistanceBand,
+) -> AudioStyleAdaptiveDistanceUProbePolicyReport {
+    let metrics = (0..run_count.max(1))
+        .map(|run_index| {
+            audio_style_adaptive_probe_run(
+                policy,
+                seed.wrapping_add(1_000_003 * run_index as u64)
+                    .wrapping_add(1019 * policy_index as u64),
+                keys,
+                embeddings,
+                embedding_norms,
+                candidate_rows,
+                similarity_rows,
+                basin_ids,
+                global_distribution,
+                global_band,
+            )
+        })
+        .collect::<Vec<_>>();
+    AudioStyleAdaptiveDistanceUProbePolicyReport {
+        policy,
+        unique_sample_rate: audio_style_adaptive_probe_mean_metric(&metrics, |m| {
+            m.unique_sample_rate
+        }),
+        sample_count_gini_proxy: audio_style_adaptive_probe_mean_metric(&metrics, |m| {
+            m.sample_count_gini_proxy
+        }),
+        same_basin_transition_rate: audio_style_adaptive_probe_mean_metric(&metrics, |m| {
+            m.same_basin_transition_rate
+        }),
+        max_basin_run_length: audio_style_adaptive_probe_mean_metric(&metrics, |m| {
+            m.max_basin_run_length
+        }),
+        warm_window_largest_basin_share_p90: audio_style_adaptive_probe_mean_metric(
+            &metrics,
+            |m| m.warm_window_largest_basin_share_p90,
+        ),
+        warm_window_largest_basin_share_max: audio_style_adaptive_probe_mean_metric(
+            &metrics,
+            |m| m.warm_window_largest_basin_share_max,
+        ),
+        global_middle_distance_rate: audio_style_adaptive_probe_mean_metric(&metrics, |m| {
+            m.global_middle_distance_rate
+        }),
+        window_middle_distance_rate: audio_style_adaptive_probe_mean_metric(&metrics, |m| {
+            m.window_middle_distance_rate
+        }),
+        window_nearest_edge_rate: audio_style_adaptive_probe_mean_metric(&metrics, |m| {
+            m.window_nearest_edge_rate
+        }),
+        window_farthest_edge_rate: audio_style_adaptive_probe_mean_metric(&metrics, |m| {
+            m.window_farthest_edge_rate
+        }),
+        shift_transition_rate: audio_style_adaptive_probe_mean_metric(&metrics, |m| {
+            m.shift_transition_rate
+        }),
+        continue_window_middle_distance_rate: audio_style_adaptive_probe_mean_metric(
+            &metrics,
+            |m| m.continue_window_middle_distance_rate,
+        ),
+        shift_global_middle_distance_rate: audio_style_adaptive_probe_mean_metric(&metrics, |m| {
+            m.shift_global_middle_distance_rate
+        }),
+        episode_length_mean: audio_style_adaptive_probe_mean_metric(&metrics, |m| {
+            m.episode_length_mean
+        }),
+        episode_length_p90: audio_style_adaptive_probe_mean_metric(&metrics, |m| {
+            m.episode_length_p90
+        }),
+    }
+}
+
+#[cfg(test)]
+fn audio_style_adaptive_probe_run(
+    policy: &str,
+    seed: u64,
+    keys: &[PlaybackTrackKey],
+    embeddings: &[&Arc<AudioStyleEmbedding>],
+    embedding_norms: &[f32],
+    candidate_rows: &[Vec<usize>],
+    similarity_rows: &mut HashMap<usize, Vec<(usize, f32)>>,
+    basin_ids: &[usize],
+    global_distribution: &[f32],
+    global_band: AudioStyleProgrammaticDistanceBand,
+) -> AudioStyleAdaptiveProbeRunMetrics {
+    let mut rng = seed;
+    let mut current = audio_style_probe_rng_index(&mut rng, keys.len());
+    let mut remaining = vec![true; keys.len()];
+    remaining[current] = false;
+    let mut order = vec![current];
+    let mut selected_novelties = Vec::with_capacity(keys.len().saturating_sub(1));
+    let mut selected_global_percentiles = Vec::with_capacity(keys.len().saturating_sub(1));
+    let mut selected_window_percentiles = Vec::with_capacity(keys.len().saturating_sub(1));
+    let mut phases = Vec::with_capacity(keys.len().saturating_sub(1));
+    let mut episode_age = 1usize;
+    let mut fatigue = 0.0_f32;
+
+    while remaining.iter().any(|value| *value) {
+        let shift_phase = policy == "episodic_fatigue_u"
+            && (episode_age >= AUDIO_STYLE_PROGRAMMATIC_EPISODE_SHIFT_RUN
+                || fatigue >= AUDIO_STYLE_PROGRAMMATIC_EPISODE_FATIGUE_SHIFT);
+        let pool = audio_style_adaptive_probe_candidate_pool(
+            current,
+            shift_phase,
+            &remaining,
+            embeddings,
+            embedding_norms,
+            candidate_rows,
+            similarity_rows,
+            global_band.target,
+        );
+        if pool.is_empty() {
+            break;
+        }
+        let pool_novelties = pool
+            .iter()
+            .map(|candidate| {
+                audio_style_probe_raw_cosine(
+                    embeddings[current].as_ref(),
+                    embeddings[*candidate].as_ref(),
+                    embedding_norms[current],
+                    embedding_norms[*candidate],
+                )
+                .map(|similarity| ((1.0 - similarity) * 0.5).clamp(0.0, 1.0))
+                .unwrap_or(1.0)
+            })
+            .collect::<Vec<_>>();
+        let mut sorted_pool_novelties = pool_novelties.clone();
+        sorted_pool_novelties.sort_by(|left, right| left.total_cmp(right));
+        let window_band = audio_style_adaptive_probe_quantile_band(&sorted_pool_novelties);
+        let active_band = match policy {
+            "global_calibrated" => global_band,
+            "window_adaptive" => window_band,
+            "episodic_fatigue_u" if shift_phase => global_band,
+            "episodic_fatigue_u" => window_band,
+            _ => window_band,
+        };
+        let scores = pool
+            .iter()
+            .zip(pool_novelties.iter())
+            .map(|(candidate, novelty)| {
+                let same_basin = basin_ids[*candidate] == basin_ids[current];
+                let mut score = match policy {
+                    "episodic_fatigue_u" if shift_phase => {
+                        AUDIO_STYLE_PROGRAMMATIC_SHIFT_NOVELTY_STRENGTH
+                            * audio_style_programmatic_inverted_u_score(*novelty, active_band)
+                            - if same_basin {
+                                AUDIO_STYLE_PROGRAMMATIC_SHIFT_SAME_BASIN_PENALTY
+                            } else {
+                                0.0
+                            }
+                    }
+                    "episodic_fatigue_u" => {
+                        AUDIO_STYLE_PROGRAMMATIC_CONTINUE_NOVELTY_STRENGTH
+                            * audio_style_programmatic_inverted_u_score(*novelty, active_band)
+                            + if same_basin {
+                                AUDIO_STYLE_PROGRAMMATIC_CONTINUE_SAME_BASIN_BONUS
+                            } else {
+                                0.0
+                            }
+                    }
+                    _ => {
+                        AUDIO_STYLE_PROGRAMMATIC_CONTINUE_NOVELTY_STRENGTH
+                            * audio_style_programmatic_inverted_u_score(*novelty, active_band)
+                            + if same_basin { 0.20 } else { 0.0 }
+                    }
+                };
+                score -= AUDIO_STYLE_PROGRAMMATIC_WINDOW_CAPACITY_STRENGTH
+                    * audio_style_adaptive_probe_capacity_violation(
+                        basin_ids,
+                        &order,
+                        *candidate,
+                    );
+                score += AUDIO_STYLE_PROGRAMMATIC_FUTURE_REBALANCE_STRENGTH
+                    * audio_style_adaptive_probe_remaining_collapse_pressure(
+                        basin_ids, &remaining, *candidate,
+                    );
+                (*candidate, score)
+            })
+            .collect::<Vec<_>>();
+        let selected = audio_style_adaptive_probe_weighted_choice(&scores, &mut rng);
+        let selected_novelty = audio_style_probe_raw_cosine(
+            embeddings[current].as_ref(),
+            embeddings[selected].as_ref(),
+            embedding_norms[current],
+            embedding_norms[selected],
+        )
+        .map(|similarity| ((1.0 - similarity) * 0.5).clamp(0.0, 1.0))
+        .unwrap_or(1.0);
+        let same_selected_basin = basin_ids[selected] == basin_ids[current];
+        selected_novelties.push(selected_novelty);
+        selected_global_percentiles.push(audio_style_adaptive_probe_percentile(
+            global_distribution,
+            selected_novelty,
+        ));
+        selected_window_percentiles.push(audio_style_adaptive_probe_percentile(
+            &sorted_pool_novelties,
+            selected_novelty,
+        ));
+        phases.push(if policy == "episodic_fatigue_u" {
+            if shift_phase {
+                AudioStyleAdaptiveProbePhase::Shift
+            } else {
+                AudioStyleAdaptiveProbePhase::Continue
+            }
+        } else {
+            AudioStyleAdaptiveProbePhase::Flat
+        });
+        if policy == "episodic_fatigue_u" {
+            if shift_phase {
+                episode_age = 1;
+                fatigue = 0.0;
+            } else {
+                episode_age += 1;
+                fatigue += (0.235 - selected_novelty).max(0.0) * 4.0
+                    + if same_selected_basin { 0.24 } else { 0.05 };
+            }
+        }
+        current = selected;
+        remaining[selected] = false;
+        order.push(selected);
+    }
+
+    audio_style_adaptive_probe_order_metrics(
+        &order,
+        basin_ids,
+        &selected_global_percentiles,
+        &selected_window_percentiles,
+        &phases,
+    )
+}
+
+#[cfg(test)]
+fn audio_style_adaptive_probe_candidate_pool(
+    current: usize,
+    shift_phase: bool,
+    remaining: &[bool],
+    embeddings: &[&Arc<AudioStyleEmbedding>],
+    embedding_norms: &[f32],
+    candidate_rows: &[Vec<usize>],
+    similarity_rows: &mut HashMap<usize, Vec<(usize, f32)>>,
+    target_novelty: f32,
+) -> Vec<usize> {
+    const CANDIDATE_COUNT: usize = 96;
+    let row = audio_style_probe_similarity_row(
+        current,
+        embeddings,
+        embedding_norms,
+        candidate_rows,
+        similarity_rows,
+    );
+    let mut scored = row
+        .into_iter()
+        .filter(|(candidate, _)| remaining.get(*candidate).copied().unwrap_or(false))
+        .map(|(candidate, similarity)| {
+            let novelty = ((1.0 - similarity) * 0.5).clamp(0.0, 1.0);
+            let score = if shift_phase {
+                -((novelty - target_novelty).abs())
+            } else {
+                similarity
+            };
+            (score, candidate)
+        })
+        .collect::<Vec<_>>();
+    if scored.len() < CANDIDATE_COUNT {
+        for candidate in 0..remaining.len() {
+            if !remaining[candidate] || scored.iter().any(|(_, existing)| *existing == candidate) {
+                continue;
+            }
+            let Some(similarity) = audio_style_probe_raw_cosine(
+                embeddings[current].as_ref(),
+                embeddings[candidate].as_ref(),
+                embedding_norms[current],
+                embedding_norms[candidate],
+            ) else {
+                continue;
+            };
+            let novelty = ((1.0 - similarity) * 0.5).clamp(0.0, 1.0);
+            let score = if shift_phase {
+                -((novelty - target_novelty).abs())
+            } else {
+                similarity
+            };
+            scored.push((score, candidate));
+            if scored.len() >= CANDIDATE_COUNT {
+                break;
+            }
+        }
+    }
+    scored.sort_by(|left, right| {
+        right
+            .0
+            .total_cmp(&left.0)
+            .then_with(|| left.1.cmp(&right.1))
+    });
+    scored
+        .into_iter()
+        .take(CANDIDATE_COUNT)
+        .map(|(_, candidate)| candidate)
+        .collect()
+}
+
+#[cfg(test)]
+fn audio_style_adaptive_probe_capacity_violation(
+    basin_ids: &[usize],
+    order: &[usize],
+    candidate: usize,
+) -> f32 {
+    if order.len() < AUDIO_STYLE_PROGRAMMATIC_ROUTE_CAPACITY_WARMUP {
+        return 0.0;
+    }
+    let candidate_basin = basin_ids[candidate];
+    let recent_start = order
+        .len()
+        .saturating_sub(AUDIO_STYLE_PROGRAMMATIC_ROUTE_CAPACITY_WINDOW);
+    let recent = &order[recent_start..];
+    let projected_len = (recent.len() + 1).min(AUDIO_STYLE_PROGRAMMATIC_ROUTE_CAPACITY_WINDOW);
+    let projected_count =
+        recent
+            .iter()
+            .filter(|index| basin_ids[**index] == candidate_basin)
+            .count()
+            + 1;
+    let support_share = basin_ids
+        .iter()
+        .filter(|basin| **basin == candidate_basin)
+        .count() as f32
+        / basin_ids.len().max(1) as f32;
+    let projected_share = projected_count as f32 / projected_len.max(1) as f32;
+    (projected_share - route_window_capacity_share(support_share, projected_len)).max(0.0)
+}
+
+#[cfg(test)]
+fn audio_style_adaptive_probe_remaining_collapse_pressure(
+    basin_ids: &[usize],
+    remaining: &[bool],
+    candidate: usize,
+) -> f32 {
+    let remaining_count = remaining.iter().filter(|value| **value).count();
+    if remaining_count == 0 {
+        return 0.0;
+    }
+    let mut counts = HashMap::<usize, usize>::new();
+    for (index, is_remaining) in remaining.iter().copied().enumerate() {
+        if is_remaining {
+            *counts.entry(basin_ids[index]).or_insert(0) += 1;
+        }
+    }
+    let Some((dominant_basin, dominant_count)) = counts
+        .into_iter()
+        .max_by(|left, right| left.1.cmp(&right.1).then_with(|| left.0.cmp(&right.0)))
+    else {
+        return 0.0;
+    };
+    let remaining_share = dominant_count as f32 / remaining_count.max(1) as f32;
+    let support_share = basin_ids
+        .iter()
+        .filter(|basin| **basin == dominant_basin)
+        .count() as f32
+        / basin_ids.len().max(1) as f32;
+    let slack = (remaining_count as f32 * support_share).max(1.0).sqrt() / remaining_count as f32;
+    let pressure = (remaining_share - support_share - slack).max(0.0);
+    if pressure <= 0.0 {
+        0.0
+    } else if basin_ids[candidate] == dominant_basin {
+        pressure
+    } else {
+        -pressure
+    }
+}
+
+#[cfg(test)]
+fn audio_style_adaptive_probe_weighted_choice(scored: &[(usize, f32)], rng: &mut u64) -> usize {
+    let weights = scored
+        .iter()
+        .map(|(_, score)| score.clamp(-4.0, 3.0).exp())
+        .collect::<Vec<_>>();
+    let total = weights.iter().copied().sum::<f32>();
+    if total <= 0.0 || !total.is_finite() {
+        return scored.first().map(|(index, _)| *index).unwrap_or(0);
+    }
+    let mut cursor = audio_style_probe_rng_unit(rng) * total;
+    for ((index, _), weight) in scored.iter().zip(weights.iter().copied()) {
+        cursor -= weight;
+        if cursor <= 0.0 {
+            return *index;
+        }
+    }
+    scored.last().map(|(index, _)| *index).unwrap_or(0)
+}
+
+#[cfg(test)]
+fn audio_style_adaptive_probe_percentile(sorted_values: &[f32], value: f32) -> f32 {
+    if sorted_values.is_empty() {
+        return 0.0;
+    }
+    let mut lo = 0usize;
+    let mut hi = sorted_values.len();
+    while lo < hi {
+        let mid = (lo + hi) / 2;
+        if sorted_values[mid] <= value {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    lo as f32 / sorted_values.len().max(1) as f32
+}
+
+#[cfg(test)]
+fn audio_style_adaptive_probe_order_metrics(
+    order: &[usize],
+    basin_ids: &[usize],
+    global_percentiles: &[f32],
+    window_percentiles: &[f32],
+    phases: &[AudioStyleAdaptiveProbePhase],
+) -> AudioStyleAdaptiveProbeRunMetrics {
+    let basin_order = order
+        .iter()
+        .map(|index| basin_ids[*index])
+        .collect::<Vec<_>>();
+    let mut runs = Vec::new();
+    let mut start = 0usize;
+    while start < basin_order.len() {
+        let mut end = start + 1;
+        while end < basin_order.len() && basin_order[end] == basin_order[start] {
+            end += 1;
+        }
+        runs.push((end - start) as f32);
+        start = end;
+    }
+    let mut window_shares = Vec::new();
+    for index in 0..basin_order.len() {
+        let start = (index + 1).saturating_sub(AUDIO_STYLE_PROGRAMMATIC_ROUTE_CAPACITY_WINDOW);
+        let mut counts = HashMap::<usize, usize>::new();
+        for basin in &basin_order[start..=index] {
+            *counts.entry(*basin).or_insert(0) += 1;
+        }
+        window_shares.push(
+            counts.values().copied().max().unwrap_or(0) as f32 / (index - start + 1) as f32,
+        );
+    }
+    let warm_window_shares = window_shares
+        .iter()
+        .copied()
+        .skip(AUDIO_STYLE_PROGRAMMATIC_ROUTE_CAPACITY_WINDOW.saturating_sub(1))
+        .collect::<Vec<_>>();
+    let mut sample_counts = HashMap::<usize, usize>::new();
+    for index in order {
+        *sample_counts.entry(*index).or_insert(0) += 1;
+    }
+    let min_count = sample_counts.values().copied().min().unwrap_or(0);
+    let max_count = sample_counts.values().copied().max().unwrap_or(0);
+    let continue_positions = phases
+        .iter()
+        .enumerate()
+        .filter_map(|(index, phase)| (*phase == AudioStyleAdaptiveProbePhase::Continue).then_some(index))
+        .collect::<Vec<_>>();
+    let shift_positions = phases
+        .iter()
+        .enumerate()
+        .filter_map(|(index, phase)| (*phase == AudioStyleAdaptiveProbePhase::Shift).then_some(index))
+        .collect::<Vec<_>>();
+    let mut episode_lengths = Vec::new();
+    let mut current_episode_len = 1usize;
+    for phase in phases {
+        if *phase == AudioStyleAdaptiveProbePhase::Shift {
+            episode_lengths.push(current_episode_len as f32);
+            current_episode_len = 1;
+        } else {
+            current_episode_len += 1;
+        }
+    }
+    episode_lengths.push(current_episode_len as f32);
+
+    AudioStyleAdaptiveProbeRunMetrics {
+        unique_sample_rate: sample_counts.len() as f32 / basin_ids.len().max(1) as f32,
+        sample_count_gini_proxy: max_count.saturating_sub(min_count) as f32,
+        same_basin_transition_rate: basin_order
+            .windows(2)
+            .filter(|pair| pair[0] == pair[1])
+            .count() as f32
+            / basin_order.len().saturating_sub(1).max(1) as f32,
+        max_basin_run_length: runs.iter().copied().fold(0.0, f32::max),
+        warm_window_largest_basin_share_p90: audio_style_probe_percentile_f32(
+            &warm_window_shares,
+            0.90,
+        ),
+        warm_window_largest_basin_share_max: warm_window_shares.iter().copied().fold(0.0, f32::max),
+        global_middle_distance_rate: audio_style_adaptive_probe_rate(global_percentiles, |value| {
+            (0.35..=0.65).contains(&value)
+        }),
+        window_middle_distance_rate: audio_style_adaptive_probe_rate(window_percentiles, |value| {
+            (0.35..=0.65).contains(&value)
+        }),
+        window_nearest_edge_rate: audio_style_adaptive_probe_rate(window_percentiles, |value| {
+            value < 0.15
+        }),
+        window_farthest_edge_rate: audio_style_adaptive_probe_rate(window_percentiles, |value| {
+            value > 0.85
+        }),
+        shift_transition_rate: shift_positions.len() as f32 / phases.len().max(1) as f32,
+        continue_window_middle_distance_rate: audio_style_adaptive_probe_indexed_rate(
+            window_percentiles,
+            &continue_positions,
+            |value| (0.35..=0.65).contains(&value),
+        ),
+        shift_global_middle_distance_rate: audio_style_adaptive_probe_indexed_rate(
+            global_percentiles,
+            &shift_positions,
+            |value| (0.35..=0.65).contains(&value),
+        ),
+        episode_length_mean: audio_style_probe_mean(&episode_lengths),
+        episode_length_p90: audio_style_probe_percentile_f32(&episode_lengths, 0.90),
+    }
+}
+
+#[cfg(test)]
+fn audio_style_adaptive_probe_rate(values: &[f32], predicate: impl Fn(f32) -> bool) -> f32 {
+    values
+        .iter()
+        .copied()
+        .filter(|value| predicate(*value))
+        .count() as f32
+        / values.len().max(1) as f32
+}
+
+#[cfg(test)]
+fn audio_style_adaptive_probe_indexed_rate(
+    values: &[f32],
+    indices: &[usize],
+    predicate: impl Fn(f32) -> bool,
+) -> f32 {
+    indices
+        .iter()
+        .filter(|index| values.get(**index).copied().is_some_and(&predicate))
+        .count() as f32
+        / indices.len().max(1) as f32
+}
+
+#[cfg(test)]
+fn audio_style_adaptive_probe_mean_metric(
+    metrics: &[AudioStyleAdaptiveProbeRunMetrics],
+    selector: impl Fn(AudioStyleAdaptiveProbeRunMetrics) -> f32,
+) -> f32 {
+    metrics
+        .iter()
+        .copied()
+        .map(selector)
+        .sum::<f32>()
+        / metrics.len().max(1) as f32
+}
+
+#[cfg(test)]
+fn audio_style_probe_percentile_f32(values: &[f32], q: f32) -> f32 {
+    if values.is_empty() {
+        return 0.0;
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_by(|left, right| left.total_cmp(right));
+    sorted_quantile(&sorted, q)
+}
+
+#[cfg(test)]
+fn audio_style_probe_candidate_rows(
+    keys: &[PlaybackTrackKey],
+    key_to_index: &HashMap<PlaybackTrackKey, usize>,
+    neighbor_index: &AudioStyleNeighborIndex,
+) -> Vec<Vec<usize>> {
+    keys.iter()
+        .enumerate()
+        .map(|(index, key)| {
+            let mut row = neighbor_index
+                .neighbors
+                .get(key)
+                .into_iter()
+                .flatten()
+                .filter_map(|neighbor| key_to_index.get(neighbor).copied())
+                .filter(|neighbor_index| *neighbor_index != index)
+                .take(128)
+                .collect::<Vec<_>>();
+            if row.is_empty() {
+                row = (0..keys.len())
+                    .filter(|candidate_index| *candidate_index != index)
+                    .take(128)
+                    .collect();
+            }
+            row
+        })
+        .collect()
+}
+
+#[cfg(test)]
+fn audio_style_simulate_predictive_topology_policy_for_test(
+    policy: &'static str,
+    policy_index: usize,
+    seed: u64,
+    keys: &[PlaybackTrackKey],
+    embeddings: &[&Arc<AudioStyleEmbedding>],
+    embedding_norms: &[f32],
+    candidate_rows: &[Vec<usize>],
+    similarity_rows: &mut HashMap<usize, Vec<(usize, f32)>>,
+    basin_ids: &[usize],
+    basin_count: usize,
+    geometry: &AudioStyleSamplingGeometry,
+) -> AudioStylePredictiveTopologyProbePolicyReport {
+    let mut rng = seed.wrapping_add(1009 * policy_index as u64);
+    let mut selected_basins = Vec::with_capacity(96 * 120);
+    let mut adjacent_cosines = Vec::with_capacity(96 * 120);
+    let mut selected_reachability = Vec::with_capacity(96 * 120);
+    let mut selected_future_entropy = Vec::with_capacity(96 * 120);
+    let mut run_lengths = Vec::with_capacity(96 * 121);
+    let mut same_basin_transitions = 0usize;
+    let mut revisit_transitions = 0usize;
+    let mut transitions = 0usize;
+
+    for _ in 0..96 {
+        let mut current = audio_style_probe_rng_index(&mut rng, keys.len());
+        let mut recent_basins = VecDeque::with_capacity(24);
+        let mut basin_usage = vec![0.0_f32; basin_count.max(1)];
+        let mut current_basin = basin_ids[current];
+        let mut current_basin_run = 1usize;
+        run_lengths.push(current_basin_run);
+
+        for _ in 0..120 {
+            let row = audio_style_probe_similarity_row(
+                current,
+                embeddings,
+                embedding_norms,
+                candidate_rows,
+                similarity_rows,
+            );
+            if row.is_empty() {
+                current = audio_style_probe_rng_index(&mut rng, keys.len());
+                current_basin = basin_ids[current];
+                current_basin_run = 1;
+                continue;
+            }
+            let probabilities = audio_style_probe_candidate_probabilities(
+                policy,
+                current,
+                &row,
+                keys,
+                basin_ids,
+                &basin_usage,
+                current_basin_run,
+                geometry,
+            );
+            let choice_offset = audio_style_probe_select_weighted_index(
+                &probabilities,
+                audio_style_probe_rng_unit(&mut rng),
+            );
+            let (choice, adjacent_cosine) = row[choice_offset];
+            let choice_basin = basin_ids[choice];
+            let descriptor = geometry.future_occupancy_for_key(&keys[choice]).unwrap_or(
+                AudioStyleFutureOccupancyDescriptor {
+                    reachability: 0.0,
+                    future_entropy: 0.0,
+                    same_basin_neighbor_share: 1.0,
+                },
+            );
+
+            adjacent_cosines.push(adjacent_cosine);
+            selected_reachability.push(descriptor.reachability);
+            selected_future_entropy.push(descriptor.future_entropy);
+            if choice_basin == current_basin {
+                same_basin_transitions += 1;
+                current_basin_run += 1;
+            } else {
+                current_basin_run = 1;
+            }
+            if recent_basins.contains(&choice_basin) {
+                revisit_transitions += 1;
+            }
+            transitions += 1;
+
+            for usage in &mut basin_usage {
+                *usage *= 0.90;
+            }
+            if let Some(usage) = basin_usage.get_mut(choice_basin) {
+                *usage += 1.0;
+            }
+            if recent_basins.len() == 24 {
+                recent_basins.pop_front();
+            }
+            recent_basins.push_back(choice_basin);
+            selected_basins.push(choice_basin);
+            run_lengths.push(current_basin_run);
+            current = choice;
+            current_basin = choice_basin;
+        }
+    }
+
+    let _basin_counts = audio_style_probe_counts(&selected_basins);
+    let tail_start = ((selected_basins.len() as f32) * 0.70) as usize;
+    let tail_counts = audio_style_probe_counts(&selected_basins[tail_start..]);
+    let tail_total = selected_basins.len().saturating_sub(tail_start).max(1);
+    let tail_largest_basin_share =
+        tail_counts.values().copied().max().unwrap_or(0) as f32 / tail_total as f32;
+    let tail_basin_entropy_norm = audio_style_probe_entropy_norm(&tail_counts);
+    let revisit_rate = revisit_transitions as f32 / transitions.max(1) as f32;
+    let weak_attractor_pressure = 1.45 * (tail_largest_basin_share - 0.075).max(0.0)
+        + 0.78 * (0.74 - tail_basin_entropy_norm).max(0.0)
+        + 0.24 * (audio_style_probe_percentile_usize(&run_lengths, 0.95) - 3.0).max(0.0) / 6.0
+        + 0.54 * (revisit_rate - 0.26).max(0.0);
+
+    AudioStylePredictiveTopologyProbePolicyReport {
+        policy,
+        tail_largest_basin_share,
+        tail_basin_entropy_norm,
+        basin_run_p95: audio_style_probe_percentile_usize(&run_lengths, 0.95),
+        basin_run_p99: audio_style_probe_percentile_usize(&run_lengths, 0.99),
+        same_basin_transition_rate: same_basin_transitions as f32 / transitions.max(1) as f32,
+        revisit_basin_transition_rate: revisit_rate,
+        mean_adjacent_cosine: audio_style_probe_mean(&adjacent_cosines),
+        mean_selected_reachability: audio_style_probe_mean(&selected_reachability),
+        mean_selected_future_entropy: audio_style_probe_mean(&selected_future_entropy),
+        weak_attractor_pressure,
+    }
+}
+
+#[cfg(test)]
+fn audio_style_probe_similarity_row(
+    current: usize,
+    embeddings: &[&Arc<AudioStyleEmbedding>],
+    embedding_norms: &[f32],
+    candidate_rows: &[Vec<usize>],
+    similarity_rows: &mut HashMap<usize, Vec<(usize, f32)>>,
+) -> Vec<(usize, f32)> {
+    if let Some(row) = similarity_rows.get(&current) {
+        return row.clone();
+    }
+    let row = candidate_rows
+        .get(current)
+        .into_iter()
+        .flatten()
+        .copied()
+        .filter_map(|candidate| {
+            let similarity = audio_style_probe_raw_cosine(
+                embeddings[current].as_ref(),
+                embeddings[candidate].as_ref(),
+                embedding_norms[current],
+                embedding_norms[candidate],
+            )?;
+            Some((candidate, similarity))
+        })
+        .collect::<Vec<_>>();
+    similarity_rows.insert(current, row.clone());
+    row
+}
+
+#[cfg(test)]
+fn audio_style_probe_raw_cosine(
+    left: &AudioStyleEmbedding,
+    right: &AudioStyleEmbedding,
+    left_norm: f32,
+    right_norm: f32,
+) -> Option<f32> {
+    if left_norm <= 1.0e-6 || right_norm <= 1.0e-6 {
+        return None;
+    }
+    let dot = left
+        .values
+        .iter()
+        .zip(right.values.iter())
+        .map(|(left, right)| left * right)
+        .sum::<f32>();
+    Some((dot / (left_norm * right_norm)).clamp(-1.0, 1.0))
+}
+
+#[cfg(test)]
+fn audio_style_probe_candidate_probabilities(
+    policy: &str,
+    current: usize,
+    candidates: &[(usize, f32)],
+    keys: &[PlaybackTrackKey],
+    basin_ids: &[usize],
+    basin_usage: &[f32],
+    current_basin_run: usize,
+    geometry: &AudioStyleSamplingGeometry,
+) -> Vec<f32> {
+    let current_basin = basin_ids[current];
+    let usage_total = basin_usage.iter().copied().sum::<f32>().max(1.0);
+    let mut scores = candidates
+        .iter()
+        .map(|(candidate, similarity)| {
+            let candidate_basin = basin_ids[*candidate];
+            let mut score = 9.0 * *similarity;
+            if matches!(
+                policy,
+                "residency_penalty" | "future_occupancy_reachability_with_residency"
+            ) {
+                let basin_pressure =
+                    basin_usage.get(candidate_basin).copied().unwrap_or(0.0) / usage_total;
+                let same_basin = if candidate_basin == current_basin {
+                    1.0
+                } else {
+                    0.0
+                };
+                score -= 1.35 * basin_pressure;
+                score -= 0.38 * same_basin * (current_basin_run as f32).ln_1p();
+            }
+            score
+        })
+        .collect::<Vec<_>>();
+
+    if matches!(
+        policy,
+        "future_occupancy_reachability" | "future_occupancy_reachability_with_residency"
+    ) {
+        let denom = candidates.len().saturating_sub(1).max(1) as f32;
+        let future_scores = candidates
+            .iter()
+            .enumerate()
+            .map(|(rank, (candidate, _))| {
+                let candidate_basin = basin_ids[*candidate];
+                let descriptor = geometry
+                    .future_occupancy_for_key(&keys[*candidate])
+                    .unwrap_or(AudioStyleFutureOccupancyDescriptor {
+                        reachability: 0.0,
+                        future_entropy: 0.0,
+                        same_basin_neighbor_share: 1.0,
+                    });
+                let rank_position = rank as f32 / denom;
+                let continuity_band =
+                    (1.0 - ((rank_position - 0.64) / 0.42).powi(2)).clamp(-1.0, 1.0);
+                let manifold_load = geometry
+                    .manifold_for_key(&keys[*candidate])
+                    .map(|manifold| {
+                        0.38 * manifold.boundary_pressure.clamp(0.0, 1.0)
+                            + 0.32 * manifold.curvature.clamp(0.0, 1.0)
+                            + 0.30 / manifold.spectral_rank.max(1.0).sqrt()
+                    })
+                    .unwrap_or(0.30);
+                let same_basin_run_penalty = if candidate_basin == current_basin {
+                    AUDIO_STYLE_FUTURE_OCCUPANCY_SAME_BASIN_RUN_STRENGTH
+                        * (current_basin_run.max(1) as f32).ln_1p()
+                        * descriptor.same_basin_neighbor_share
+                } else {
+                    0.0
+                };
+
+                AUDIO_STYLE_FUTURE_OCCUPANCY_REACHABILITY_STRENGTH
+                    * (descriptor.reachability - 0.60)
+                    + AUDIO_STYLE_FUTURE_OCCUPANCY_ENTROPY_STRENGTH
+                        * (descriptor.future_entropy - 0.50)
+                    + AUDIO_STYLE_FUTURE_OCCUPANCY_CONTINUITY_BAND_STRENGTH * continuity_band
+                    - AUDIO_STYLE_FUTURE_OCCUPANCY_MANIFOLD_LOAD_STRENGTH * manifold_load
+                    - same_basin_run_penalty
+            })
+            .collect::<Vec<_>>();
+        let center = future_scores.iter().copied().sum::<f32>() / future_scores.len().max(1) as f32;
+        for (score, future_score) in scores.iter_mut().zip(future_scores.into_iter()) {
+            *score += (future_score - center).clamp(-1.20, 1.10);
+        }
+    }
+
+    let max_score = scores.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    let mut total = 0.0_f32;
+    for score in &mut scores {
+        *score = (*score - max_score).clamp(-80.0, 40.0).exp();
+        total += *score;
+    }
+    if total <= 1.0e-8 || !total.is_finite() {
+        return vec![1.0 / candidates.len().max(1) as f32; candidates.len()];
+    }
+    let floor = 0.006 / candidates.len().max(1) as f32;
+    scores
+        .into_iter()
+        .map(|weight| (1.0 - 0.006) * (weight / total) + floor)
+        .collect()
+}
+
+#[cfg(test)]
+fn audio_style_probe_select_weighted_index(weights: &[f32], draw_unit: f32) -> usize {
+    let total = weights.iter().copied().sum::<f32>();
+    let mut cursor = draw_unit.clamp(0.0, 0.999_999) * total;
+    for (index, weight) in weights.iter().copied().enumerate() {
+        if cursor <= weight {
+            return index;
+        }
+        cursor -= weight;
+    }
+    weights.len().saturating_sub(1)
+}
+
+#[cfg(test)]
+fn audio_style_probe_rng_next(state: &mut u64) -> u64 {
+    *state = state
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
+    *state
+}
+
+#[cfg(test)]
+fn audio_style_probe_rng_unit(state: &mut u64) -> f32 {
+    ((audio_style_probe_rng_next(state) >> 40) as f32) / ((1u64 << 24) as f32)
+}
+
+#[cfg(test)]
+fn audio_style_probe_rng_index(state: &mut u64, len: usize) -> usize {
+    (audio_style_probe_rng_next(state) as usize) % len.max(1)
+}
+
+#[cfg(test)]
+fn audio_style_probe_counts(values: &[usize]) -> HashMap<usize, usize> {
+    let mut counts = HashMap::new();
+    for value in values {
+        *counts.entry(*value).or_insert(0) += 1;
+    }
+    counts
+}
+
+#[cfg(test)]
+fn audio_style_probe_entropy_norm(counts: &HashMap<usize, usize>) -> f32 {
+    let total = counts.values().copied().sum::<usize>();
+    if total == 0 || counts.len() <= 1 {
+        return 0.0;
+    }
+    let entropy = counts
+        .values()
+        .copied()
+        .map(|count| {
+            let probability = count as f32 / total as f32;
+            -probability * probability.max(1.0e-12).ln()
+        })
+        .sum::<f32>();
+    entropy / (counts.len() as f32).ln().max(1.0e-6)
+}
+
+#[cfg(test)]
+fn audio_style_probe_percentile_usize(values: &[usize], q: f32) -> f32 {
+    if values.is_empty() {
+        return 0.0;
+    }
+    let mut ordered = values.to_vec();
+    ordered.sort_unstable();
+    let index = (((ordered.len() - 1) as f32) * q)
+        .round()
+        .clamp(0.0, (ordered.len() - 1) as f32) as usize;
+    ordered[index] as f32
+}
+
+#[cfg(test)]
+fn audio_style_probe_mean(values: &[f32]) -> f32 {
+    if values.is_empty() {
+        return 0.0;
+    }
+    values.iter().copied().sum::<f32>() / values.len() as f32
 }
 
 fn write_audio_style_stable_model(

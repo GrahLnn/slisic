@@ -8,8 +8,8 @@ use crate::domain::player::event::{PlaybackDiagnosticTraceDetail, PlaybackDiagno
 use crate::domain::player::model::{PlaybackTrack, PlaybackTrackPayload};
 #[cfg(not(test))]
 use crate::domain::playlist_playback::recommendation::{
-    AudioStyleCenterlessSourceStatus, published_audio_style_centerless_source_from_candidates,
-    published_audio_style_model_snapshot,
+    AudioStyleCandidateSelection, AudioStyleCenterlessSourceStatus,
+    published_audio_style_centerless_source_from_candidates, published_audio_style_model_snapshot,
 };
 #[cfg(not(test))]
 use crate::domain::playlist_playback::service as playlist_playback_service;
@@ -739,8 +739,11 @@ fn promote_completed_pending_first_slot_cargo(
     promoted
 }
 
-fn prepared_first_slot_cargo_is_complete(credential: &PreparedPlaylistSourceCredential) -> bool {
-    credential.track.loudness_profile.is_some()
+fn prepared_first_slot_cargo_is_complete(_credential: &PreparedPlaylistSourceCredential) -> bool {
+    // First-slot cargo is a playback-start contract. Loudness evidence can refine
+    // gain later, but it must not decide whether an already projected local file
+    // is visible to ready->play or persisted into the startup cache.
+    true
 }
 
 fn move_playlist_source_pool(
@@ -2238,20 +2241,21 @@ async fn refresh_all(
         "global",
         committed,
     );
-    if !spawn_pending_global_refresh(app.clone(), &runtime) {
-        for playlist_name in refill_playlists {
-            spawn_refresh_playlist(
-                app.clone(),
-                playlist_name,
-                PlayableIndexRefreshReason::SlotVacancy,
-            );
-        }
-    } else if !refill_playlists.is_empty() {
+    let spawned_pending_global_refresh = spawn_pending_global_refresh(app.clone(), &runtime);
+    let refill_playlist_count = refill_playlists.len();
+    for playlist_name in refill_playlists {
+        spawn_refresh_playlist(
+            app.clone(),
+            playlist_name,
+            PlayableIndexRefreshReason::SlotVacancy,
+        );
+    }
+    if spawned_pending_global_refresh && refill_playlist_count > 0 {
         log::info!(
             target: PLAYABLE_INDEX_LOG_TARGET,
-            "first_slot_global_refill_deferred reason={} refill_playlists={} pending_global_refresh={}",
+            "first_slot_global_refill_dispatched_with_pending_global reason={} refill_playlists={} pending_global_refresh={}",
             reason.as_str(),
-            refill_playlists.len(),
+            refill_playlist_count,
             has_pending_global_refresh
         );
     }
@@ -2538,6 +2542,56 @@ async fn prepare_playlist_source(
 }
 
 #[cfg(not(test))]
+fn prepared_audio_style_source_from_selection(
+    selection: &PlaylistPlaybackSelection,
+    source: PlaylistPlaybackTrackSource,
+    track: PlaybackTrack,
+    selection_trace: AudioStyleCandidateSelection,
+    slot_index: usize,
+    target_count: usize,
+) -> PreparedPlaylistSource {
+    let selected_basin = selection_trace
+        .diagnostics
+        .selected_basin
+        .as_ref()
+        .map(|basin| escape_log_value(basin))
+        .unwrap_or_else(|| "none".to_string());
+    let candidate_basin_top = format_audio_style_candidate_basins_for_log(
+        &selection_trace.diagnostics.top_candidate_basins,
+    );
+    let perceptual_channels =
+        format_audio_style_perceptual_channels(selection_trace.diagnostics.perceptual_channels);
+    let topology_health =
+        format_audio_style_topology_health(selection_trace.diagnostics.topology_health);
+    log::info!(
+        target: PLAYABLE_INDEX_LOG_TARGET,
+        "first_slot_source_prepared playlist=\"{}\" source={} selection_reason={} slot_index={} target_count={} probability={:.6} candidates={} model_generation={} title=\"{}\" collection=\"{}\" selected_basin=\"{}\" candidate_basin_top=\"{}\" perceptual_channels=\"{}\" topology_health=\"{}\"",
+        escape_log_value(&selection.playlist_name),
+        selection_trace.source.as_str(),
+        selection_trace.reason.unwrap_or("none"),
+        slot_index,
+        target_count,
+        selection_trace.probability,
+        selection_trace.candidate_count,
+        selection_trace
+            .model_generation
+            .map(|generation| generation.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        escape_log_value(&track.music_name),
+        escape_log_value(&source.collection_folder),
+        selected_basin,
+        candidate_basin_top,
+        perceptual_channels,
+        topology_health
+    );
+    PreparedPlaylistSource {
+        source,
+        track,
+        source_kind: PlaylistPlayableIndexSourceKind::AudioStyle,
+    }
+}
+
+#[cfg(not(test))]
 async fn prepare_audio_style_candidate_tracks(
     app: &tauri::AppHandle,
     selection: &PlaylistPlaybackSelection,
@@ -2584,7 +2638,72 @@ async fn prepare_playlist_sources(
     let mut prepared_sources = Vec::with_capacity(target_count);
     let mut seen = excluded_source_keys.clone();
 
+    if target_count > 0 && published_audio_style_model_snapshot().is_some() {
+        let mut candidates = prepare_audio_style_candidate_tracks(app, selection, &seen).await?;
+        while prepared_sources.len() < target_count && !candidates.is_empty() {
+            let candidate_view = candidates
+                .iter()
+                .filter(|(source, _)| !seen.contains(&playlist_source_key(source)))
+                .cloned()
+                .collect::<Vec<_>>();
+            if candidate_view.is_empty() {
+                break;
+            }
+            match published_audio_style_centerless_source_from_candidates(candidate_view) {
+                AudioStyleCenterlessSourceStatus::Ready(source, track, selection_trace) => {
+                    let source_key = playlist_source_key(&source);
+                    if !seen.insert(source_key.clone()) {
+                        candidates.retain(|(candidate_source, _)| {
+                            playlist_source_key(candidate_source) != source_key
+                        });
+                        continue;
+                    }
+                    let prepared = prepared_audio_style_source_from_selection(
+                        selection,
+                        source,
+                        track,
+                        selection_trace,
+                        prepared_sources.len(),
+                        target_count,
+                    );
+                    #[cfg(not(test))]
+                    emit_index_runtime_trace(
+                        "playlist-playable-index-prepare-step",
+                        Some(&selection.playlist_name),
+                        None,
+                        Some(prepared_sources.len() + 1),
+                        None,
+                        "prepared",
+                        vec![
+                            index_trace_detail("targetCount", target_count),
+                            index_trace_detail("attemptIndex", prepared_sources.len()),
+                            index_trace_detail(
+                                "sourceKind",
+                                source_kind_as_str(prepared.source_kind),
+                            ),
+                            index_trace_detail("musicUrl", &prepared.source.music.url),
+                            index_trace_detail("musicName", &prepared.source.music.alias),
+                            index_trace_detail(
+                                "path",
+                                prepared.source.music.path.as_deref().unwrap_or("none"),
+                            ),
+                        ],
+                    );
+                    candidates.retain(|(candidate_source, _)| {
+                        playlist_source_key(candidate_source) != source_key
+                    });
+                    prepared_sources.push(prepared);
+                }
+                AudioStyleCenterlessSourceStatus::ModelUnavailable
+                | AudioStyleCenterlessSourceStatus::NoScopedCandidate => break,
+            }
+        }
+    }
+
     for attempt_index in 0..target_count {
+        if prepared_sources.len() >= target_count {
+            break;
+        }
         let Some(prepared) = prepare_playlist_source(app, selection, &seen).await? else {
             #[cfg(not(test))]
             emit_index_runtime_trace(
