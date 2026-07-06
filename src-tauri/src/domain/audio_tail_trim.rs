@@ -4,8 +4,6 @@ use super::downloads::model::CollectionSourceKind;
 #[cfg(not(test))]
 use super::loudness_evidence::{self, LoudnessEvidenceRequest};
 #[cfg(not(test))]
-use super::player::model::PlaybackTrack;
-#[cfg(not(test))]
 use super::player::service as player_service;
 #[cfg(not(test))]
 use super::player::track_identity_substitution::PlaybackTrackIdentityUpdate;
@@ -16,7 +14,10 @@ use super::playlists::model::{AudioStyleTrainingTrackInput, Collection, Music};
 use super::playlists::repo as playlists_repo;
 use super::playlists::repo::MusicEndTrim;
 #[cfg(not(test))]
-use crate::utils::binaries::{ManagedBinary, acquire_managed_binary_usage, ensure_managed_binary};
+use crate::utils::binaries::{
+    ManagedBinary, acquire_managed_binary_usage, ensure_managed_binary,
+    wait_for_managed_binary_foreground_release,
+};
 use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 #[cfg(not(test))]
@@ -171,7 +172,6 @@ enum AudioTailTrimSource {
     PendingStore,
     DownloadedLeaf,
     DownloadedLeafForeground,
-    PlaybackCurrent,
 }
 
 impl AudioTailTrimSource {
@@ -180,7 +180,6 @@ impl AudioTailTrimSource {
             Self::PendingStore => "pending_store",
             Self::DownloadedLeaf => "downloaded_leaf",
             Self::DownloadedLeafForeground => "downloaded_leaf_foreground",
-            Self::PlaybackCurrent => "playback_current",
         }
     }
 
@@ -189,7 +188,6 @@ impl AudioTailTrimSource {
             Self::PendingStore => 0,
             Self::DownloadedLeaf => 1,
             Self::DownloadedLeafForeground => 2,
-            Self::PlaybackCurrent => 3,
         }
     }
 
@@ -200,10 +198,7 @@ impl AudioTailTrimSource {
 
     #[cfg(not(test))]
     fn coalesces_active(self) -> bool {
-        matches!(
-            self,
-            Self::DownloadedLeaf | Self::DownloadedLeafForeground | Self::PlaybackCurrent
-        )
+        matches!(self, Self::DownloadedLeaf | Self::DownloadedLeafForeground)
     }
 
     fn requires_active_rerun(self) -> bool {
@@ -384,67 +379,6 @@ pub(crate) fn request_downloaded_leaf_foreground_audio_tail_trim(request: AudioT
         request,
         AudioTailTrimSource::DownloadedLeafForeground,
     );
-}
-
-#[cfg(not(test))]
-pub(crate) fn request_playback_current_audio_tail_trim(track: &PlaybackTrack) {
-    let Some(music) = track.source_music.as_deref() else {
-        log::info!(
-            target: AUDIO_TAIL_TRIM_LOG_TARGET,
-            "audio_tail_trim_request_skipped source=playback_current reason=missing_source_music title=\"{}\"",
-            track.music_name
-        );
-        return;
-    };
-
-    let collection_url = music.group.collection.url.clone();
-    if collection_url.trim().is_empty() {
-        log::info!(
-            target: AUDIO_TAIL_TRIM_LOG_TARGET,
-            "audio_tail_trim_request_skipped source=playback_current reason=missing_collection_url title=\"{}\"",
-            track.music_name
-        );
-        return;
-    }
-    let Some(runtime) = AUDIO_TAIL_TRIM_RUNTIME.get().cloned() else {
-        log::warn!(
-            target: AUDIO_TAIL_TRIM_LOG_TARGET,
-            "audio_tail_trim_request_skipped source=playback_current reason=runtime_uninitialized collection=\"{}\" title=\"{}\"",
-            collection_url,
-            track.music_name
-        );
-        return;
-    };
-
-    let collection_key = AudioTailTrimCollectionKey {
-        collection_url,
-        scope_group_url: normalized_optional_url(Some(&music.group.url)),
-    };
-    let Some(mut request) =
-        explicit_audio_tail_trim_request_for_key(runtime.as_ref(), &collection_key)
-    else {
-        log::info!(
-            target: AUDIO_TAIL_TRIM_LOG_TARGET,
-            "audio_tail_trim_request_skipped source=playback_current reason=no_explicit_task collection=\"{}\" title=\"{}\"",
-            collection_key.as_log_key(),
-            track.music_name
-        );
-        return;
-    };
-
-    request.focus_music = Some(AudioTailTrimFocusMusic {
-        url: music.url.clone(),
-        path: normalize_path_text(music.path.as_deref().unwrap_or_default()),
-        start_ms: music.start_ms,
-        end_ms: music.end_ms,
-    });
-    log::info!(
-        target: AUDIO_TAIL_TRIM_LOG_TARGET,
-        "audio_tail_trim_request_received source=playback_current reason=explicit_task_found collection=\"{}\" title=\"{}\"",
-        collection_key.as_log_key(),
-        track.music_name
-    );
-    enqueue_audio_tail_trim(runtime, request, AudioTailTrimSource::PlaybackCurrent);
 }
 
 pub(crate) fn collect_audio_tail_trim_candidates(
@@ -1414,69 +1348,10 @@ fn push_audio_tail_trim_queue(
     }
 
     if queue.len() >= MAX_AUDIO_TAIL_TRIM_QUEUE_LEN {
-        match audio_tail_trim_queue_overflow_action(queued.source) {
-            AudioTailTrimQueueOverflowAction::DropTail => {
-                queue.pop_back();
-            }
-            AudioTailTrimQueueOverflowAction::Defer => return false,
-        }
+        return false;
     }
     insert_audio_tail_trim_queue(&mut queue, queued);
     true
-}
-
-#[cfg(not(test))]
-fn explicit_audio_tail_trim_request_for_key(
-    runtime: &AudioTailTrimRuntime,
-    collection_key: &AudioTailTrimCollectionKey,
-) -> Option<AudioTailTrimRequest> {
-    if let Some(request) = active_explicit_audio_tail_trim_request_for_key(runtime, collection_key)
-    {
-        return Some(request);
-    }
-    if let Some(request) = queued_explicit_audio_tail_trim_request_for_key(runtime, collection_key)
-    {
-        return Some(request);
-    }
-    pending_explicit_audio_tail_trim_request_for_key(runtime, collection_key)
-}
-
-#[cfg(not(test))]
-fn active_explicit_audio_tail_trim_request_for_key(
-    runtime: &AudioTailTrimRuntime,
-    collection_key: &AudioTailTrimCollectionKey,
-) -> Option<AudioTailTrimRequest> {
-    let active = runtime.active_collections.lock().ok()?;
-    active
-        .contains(collection_key)
-        .then(|| pending_explicit_audio_tail_trim_request_for_key(runtime, collection_key))
-        .flatten()
-}
-
-#[cfg(not(test))]
-fn queued_explicit_audio_tail_trim_request_for_key(
-    runtime: &AudioTailTrimRuntime,
-    collection_key: &AudioTailTrimCollectionKey,
-) -> Option<AudioTailTrimRequest> {
-    runtime.queue.lock().ok()?.iter().find_map(|queued| {
-        if queued.source == AudioTailTrimSource::PlaybackCurrent {
-            return None;
-        }
-        (AudioTailTrimCollectionKey::from_request(&queued.request) == *collection_key)
-            .then(|| queued.request.clone())
-    })
-}
-
-#[cfg(not(test))]
-fn pending_explicit_audio_tail_trim_request_for_key(
-    runtime: &AudioTailTrimRuntime,
-    collection_key: &AudioTailTrimCollectionKey,
-) -> Option<AudioTailTrimRequest> {
-    let _guard = runtime.pending_task_file_lock.lock().ok()?;
-    read_audio_tail_trim_pending_task_file(&runtime.pending_task_path)
-        .ok()?
-        .into_iter()
-        .find(|request| AudioTailTrimCollectionKey::from_request(request) == *collection_key)
 }
 
 #[cfg(not(test))]
@@ -1507,23 +1382,6 @@ fn audio_tail_trim_queue_insert_index(
         .unwrap_or(current_len)
 }
 
-fn audio_tail_trim_queue_overflow_action(
-    source: AudioTailTrimSource,
-) -> AudioTailTrimQueueOverflowAction {
-    match source {
-        AudioTailTrimSource::PlaybackCurrent => AudioTailTrimQueueOverflowAction::DropTail,
-        AudioTailTrimSource::PendingStore
-        | AudioTailTrimSource::DownloadedLeaf
-        | AudioTailTrimSource::DownloadedLeafForeground => AudioTailTrimQueueOverflowAction::Defer,
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AudioTailTrimQueueOverflowAction {
-    Defer,
-    DropTail,
-}
-
 #[cfg(test)]
 pub(crate) fn request_downloaded_leaf_audio_tail_trim(_request: AudioTailTrimRequest) {}
 
@@ -1543,14 +1401,6 @@ pub(crate) fn audio_tail_trim_queue_insert_index_for_test(
         current_sources.len(),
         audio_tail_trim_source_for_test(source),
     )
-}
-
-#[cfg(test)]
-pub(crate) fn audio_tail_trim_queue_overflow_action_for_test(source: &str) -> &'static str {
-    match audio_tail_trim_queue_overflow_action(audio_tail_trim_source_for_test(source)) {
-        AudioTailTrimQueueOverflowAction::Defer => "defer",
-        AudioTailTrimQueueOverflowAction::DropTail => "drop_tail",
-    }
 }
 
 #[cfg(test)]
@@ -1582,7 +1432,6 @@ fn audio_tail_trim_source_for_test(source: &str) -> AudioTailTrimSource {
         "pending_store" => AudioTailTrimSource::PendingStore,
         "downloaded_leaf" => AudioTailTrimSource::DownloadedLeaf,
         "downloaded_leaf_foreground" => AudioTailTrimSource::DownloadedLeafForeground,
-        "playback_current" => AudioTailTrimSource::PlaybackCurrent,
         other => panic!("unknown audio tail trim source `{other}`"),
     }
 }
@@ -2206,6 +2055,7 @@ async fn analyze_candidate_tail_signature(
 ) -> Result<TailEvidenceSignature> {
     let duration_ms = candidate.playable_duration_ms().min(TAIL_SEARCH_MS);
     let start_ms = candidate.end_ms.saturating_sub(duration_ms);
+    wait_for_managed_binary_foreground_release(ManagedBinary::Ffmpeg);
     let _guard = acquire_managed_binary_usage(ManagedBinary::Ffmpeg, "audio_tail_trim");
     task::spawn_blocking(move || {
         let mut request = ffplayr::AudioTailFingerprintAnalysisRequest::new(candidate.file_path);

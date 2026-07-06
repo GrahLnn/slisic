@@ -71,6 +71,7 @@ const INITIAL_PARALLEL_LEAF_DOWNLOADS: usize = 4;
 const MAX_PARALLEL_LEAF_DOWNLOADS: usize = 8;
 const LEAF_PREPARE_CPU_BUDGET_NUMERATOR: usize = 2;
 const LEAF_PREPARE_CPU_BUDGET_DENOMINATOR: usize = 3;
+const MAX_PARALLEL_LEAF_PREPARES: usize = 4;
 const MAX_PARALLEL_LEAF_FINALIZATIONS: usize = 4;
 #[cfg(not(test))]
 const MAX_PARALLEL_EXISTING_FILE_DURATION_PROBES: usize = 4;
@@ -351,6 +352,7 @@ pub(crate) fn leaf_prepare_cpu_budget(cpu_parallelism: usize) -> usize {
         .checked_div(LEAF_PREPARE_CPU_BUDGET_DENOMINATOR)
         .unwrap_or(0)
         .max(1)
+        .min(MAX_PARALLEL_LEAF_PREPARES)
 }
 
 #[cfg(not(test))]

@@ -203,6 +203,11 @@ fn leaf_metadata_probe_args_do_not_select_download_format() {
     assert!(args.iter().any(|arg| arg == "-J"));
     assert!(args.iter().any(|arg| arg == "--no-playlist"));
     assert!(
+        args.windows(2)
+            .any(|window| window[0] == "--sleep-requests" && window[1] == "1.5"),
+        "metadata probing should avoid bursty extractor requests"
+    );
+    assert!(
         !args.iter().any(|arg| arg == "--format"),
         "metadata probing must not fail because an audio download format is unavailable"
     );

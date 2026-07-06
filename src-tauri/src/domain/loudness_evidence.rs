@@ -7,7 +7,10 @@ use super::playlists::model::LoudnessProfile;
 #[cfg(not(test))]
 use super::playlists::repo as playlists_repo;
 #[cfg(not(test))]
-use crate::utils::binaries::{ManagedBinary, acquire_managed_binary_usage, ensure_managed_binary};
+use crate::utils::binaries::{
+    ManagedBinary, acquire_managed_binary_usage, ensure_managed_binary,
+    wait_for_managed_binary_foreground_release,
+};
 #[cfg(not(test))]
 use anyhow::bail;
 use anyhow::{Context, Result, anyhow};
@@ -40,7 +43,9 @@ const LOUDNESS_REQUEST_REBIND_ATTEMPT_LIMIT: usize = 3;
 const LOUDNESS_MEASUREMENT_WORKER_CAP: usize = 4;
 #[cfg(not(test))]
 const LOUDNESS_MEASUREMENT_WORKER_MIN_PARALLELISM: usize = 2;
-const LOUDNESS_FOREGROUND_WORKER_RESERVE: usize = 1;
+const LOUDNESS_FIRST_SLOT_WORKER_RESERVE: usize = 1;
+const LOUDNESS_SESSION_NEXT_WORKER_RESERVE: usize = 2;
+const LOUDNESS_DIRECT_REQUEST_WORKER_RESERVE: usize = 2;
 pub(crate) const LOUDNESS_PENDING_TASK_FILE_NAME: &str = "loudness-evidence-pending.json";
 const LOUDNESS_PENDING_TASK_FILE_VERSION: &str = "loudness-evidence-pending.v1";
 
@@ -159,20 +164,6 @@ pub(crate) fn initialize_runtime(app: AppHandle) {
 }
 
 #[cfg(not(test))]
-pub(crate) fn request_track_loudness_evidence(request: LoudnessEvidenceRequest) {
-    let Some(runtime) = LOUDNESS_EVIDENCE_RUNTIME.get().cloned() else {
-        log::warn!(
-            target: LOUDNESS_EVIDENCE_LOG_TARGET,
-            "loudness_evidence_request_skipped reason=runtime_uninitialized canonical_music_id=\"{}\"",
-            request.canonical_music_id
-        );
-        return;
-    };
-
-    enqueue_loudness_measurement(runtime, request, LoudnessEvidenceSource::DirectRequest);
-}
-
-#[cfg(not(test))]
 pub(crate) fn request_downloaded_leaf_loudness_evidence(request: LoudnessEvidenceRequest) {
     let Some(runtime) = LOUDNESS_EVIDENCE_RUNTIME.get().cloned() else {
         log::warn!(
@@ -221,12 +212,20 @@ pub(crate) fn request_audio_tail_trim_loudness_evidence(request: LoudnessEvidenc
 }
 
 #[cfg(not(test))]
-pub(crate) fn request_playback_track_loudness_evidence(track: &PlaybackTrack) {
+pub(crate) fn request_session_next_playback_track_loudness_evidence(track: &PlaybackTrack) {
     let Some(request) = loudness_request_from_playback_track(track) else {
         return;
     };
+    let Some(runtime) = LOUDNESS_EVIDENCE_RUNTIME.get().cloned() else {
+        log::warn!(
+            target: LOUDNESS_EVIDENCE_LOG_TARGET,
+            "loudness_evidence_request_skipped reason=runtime_uninitialized source=session_next canonical_music_id=\"{}\"",
+            request.canonical_music_id
+        );
+        return;
+    };
 
-    request_track_loudness_evidence(request);
+    enqueue_loudness_measurement(runtime, request, LoudnessEvidenceSource::SessionNext);
 }
 
 #[cfg(not(test))]
@@ -294,9 +293,6 @@ fn loudness_request_from_playback_track(track: &PlaybackTrack) -> Option<Loudnes
 }
 
 #[cfg(test)]
-pub(crate) fn request_track_loudness_evidence(_request: LoudnessEvidenceRequest) {}
-
-#[cfg(test)]
 pub(crate) fn request_downloaded_leaf_loudness_evidence(_request: LoudnessEvidenceRequest) {}
 
 #[cfg(test)]
@@ -306,7 +302,7 @@ pub(crate) fn request_downloaded_leaf_foreground_loudness_evidence(
 }
 
 #[cfg(test)]
-pub(crate) fn request_playback_track_loudness_evidence(
+pub(crate) fn request_session_next_playback_track_loudness_evidence(
     _track: &super::player::model::PlaybackTrack,
 ) {
 }
@@ -331,6 +327,7 @@ enum LoudnessEvidenceSource {
     DownloadedLeafForeground,
     AudioTailTrim,
     DirectRequest,
+    SessionNext,
     FirstSlot,
 }
 
@@ -343,6 +340,7 @@ impl LoudnessEvidenceSource {
             Self::DownloadedLeafForeground => "downloaded_leaf_foreground",
             Self::AudioTailTrim => "audio_tail_trim",
             Self::DirectRequest => "direct_request",
+            Self::SessionNext => "session_next",
             Self::FirstSlot => "first_slot",
         }
     }
@@ -353,8 +351,9 @@ impl LoudnessEvidenceSource {
             Self::DownloadedLeaf => 1,
             Self::AudioTailTrim => 1,
             Self::DownloadedLeafForeground => 2,
-            Self::FirstSlot => 2,
-            Self::DirectRequest => 3,
+            Self::FirstSlot => 3,
+            Self::SessionNext => 4,
+            Self::DirectRequest => 5,
         }
     }
 
@@ -365,12 +364,25 @@ impl LoudnessEvidenceSource {
                 | Self::DownloadedLeafForeground
                 | Self::AudioTailTrim
                 | Self::DirectRequest
+                | Self::SessionNext
                 | Self::FirstSlot
         )
     }
 
     fn needs_foreground_worker(self) -> bool {
-        matches!(self, Self::DirectRequest | Self::FirstSlot)
+        self.foreground_worker_reserve() > 0
+    }
+
+    fn foreground_worker_reserve(self) -> usize {
+        match self {
+            Self::DirectRequest => LOUDNESS_DIRECT_REQUEST_WORKER_RESERVE,
+            Self::SessionNext => LOUDNESS_SESSION_NEXT_WORKER_RESERVE,
+            Self::FirstSlot => LOUDNESS_FIRST_SLOT_WORKER_RESERVE,
+            Self::PendingStore
+            | Self::DownloadedLeaf
+            | Self::DownloadedLeafForeground
+            | Self::AudioTailTrim => 0,
+        }
     }
 }
 
@@ -481,6 +493,14 @@ fn enqueue_loudness_measurement(
         return;
     }
 
+    if source.needs_foreground_worker() {
+        log::info!(
+            target: LOUDNESS_EVIDENCE_LOG_TARGET,
+            "loudness_evidence_request_enqueued source={} canonical_music_id=\"{}\"",
+            source.as_str(),
+            request.canonical_music_id
+        );
+    }
     if source.persists_pending() {
         persist_pending_loudness_request(&runtime, &request);
     }
@@ -547,7 +567,9 @@ fn push_loudness_queue(
             | LoudnessEvidenceSource::DownloadedLeaf
             | LoudnessEvidenceSource::DownloadedLeafForeground
             | LoudnessEvidenceSource::AudioTailTrim => return false,
-            LoudnessEvidenceSource::DirectRequest | LoudnessEvidenceSource::FirstSlot => {
+            LoudnessEvidenceSource::DirectRequest
+            | LoudnessEvidenceSource::SessionNext
+            | LoudnessEvidenceSource::FirstSlot => {
                 queue.pop_back();
             }
         }
@@ -678,11 +700,7 @@ fn loudness_measurement_worker_budget_for_source(
     base: usize,
     source: LoudnessEvidenceSource,
 ) -> usize {
-    if source.needs_foreground_worker() {
-        base.saturating_add(LOUDNESS_FOREGROUND_WORKER_RESERVE)
-    } else {
-        base
-    }
+    base.saturating_add(source.foreground_worker_reserve())
 }
 
 #[cfg(not(test))]
@@ -1110,6 +1128,7 @@ async fn measure_and_persist_loudness(
             return Ok(persisted.integrated_lufs);
         }
 
+        wait_for_managed_binary_foreground_release(ManagedBinary::Ffmpeg);
         let _guard = acquire_managed_binary_usage(ManagedBinary::Ffmpeg, "loudness_evidence");
         let ffmpeg_path = ensure_managed_binary(&runtime.app, ManagedBinary::Ffmpeg)
             .map_err(|error| anyhow!(error))?;

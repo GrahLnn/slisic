@@ -6,12 +6,12 @@ use super::recommendation::{
 use super::service::{
     PlaylistInitialTrackRelease, PlaylistPlaybackRecentHistory, PlaylistPlaybackRecommendationMode,
     PlaylistPlaybackRecommendationRequest, PlaylistPlaybackRecommender,
-    PlaylistQueueRecommendationReadiness, PlaylistTrackQueueRefreshOutcome,
-    RandomPlaylistPlaybackRecommender, apply_initial_track_loudness_profile,
-    audio_style_playlist_playback_proposal_is_complete, create_exclude_current_cargo_queue,
-    create_start_anchor_playback_queue, exclude_current_next_cargo_queue,
-    initial_track_release_requires_loudness_gate, place_track_at_queue_start,
-    playlist_playback_proposal_contains_next_track,
+    PlaylistQueueFillDemandWake, PlaylistQueueRecommendationReadiness,
+    PlaylistTrackQueueRefreshOutcome, RandomPlaylistPlaybackRecommender,
+    apply_initial_track_loudness_profile, audio_style_playlist_playback_proposal_is_complete,
+    create_exclude_current_cargo_queue, create_start_anchor_playback_queue,
+    exclude_current_next_cargo_queue, initial_track_release_requires_loudness_gate,
+    place_track_at_queue_start, playlist_playback_proposal_contains_next_track,
     playlist_playback_queue_contains_next_track_after_anchor,
     playlist_selection_has_relevant_active_downloads, playlist_track_needs_loudness_evidence,
     prepared_first_track_can_replace_excluded_current,
@@ -21,6 +21,7 @@ use super::service::{
     should_commit_playlist_queue_refresh, should_refresh_playlist_queue_for_anchor_after_startup,
     should_refresh_playlist_queue_for_same_anchor, should_retry_playlist_queue_fill_after_refresh,
     should_seed_playlist_next_from_prepared_pool, shuffle_playback_tracks,
+    wait_for_playlist_queue_fill_revision_or_poll,
 };
 use crate::domain::downloads::model::{
     DownloadLeaf, DownloadLeafStatus, DownloadTask, DownloadTaskStatus, DownloadTrigger,
@@ -1051,6 +1052,15 @@ fn playlist_queue_fill_uses_prepared_first_slot_only_after_proposal_misses_next(
     assert!(!should_seed_playlist_next_from_prepared_pool(true));
 }
 
+#[tokio::test]
+async fn playlist_queue_fill_wait_polls_when_revision_signal_was_missed() {
+    let outcome =
+        wait_for_playlist_queue_fill_revision_or_poll(std::future::pending::<Result<(), ()>>(), 1)
+            .await;
+
+    assert_eq!(outcome, PlaylistQueueFillDemandWake::PollElapsed);
+}
+
 #[test]
 fn playlist_queue_fill_retries_immediately_when_refresh_result_is_stale_anchor() {
     assert!(should_retry_playlist_queue_fill_after_refresh(
@@ -1108,14 +1118,14 @@ fn initial_first_slot_release_waits_for_loudness_evidence() {
             PlaylistInitialTrackRelease::DirectFirstSlot,
             &track,
         ),
-        "prepared FirstSlot cargo is not playable until its normalization evidence is ready"
+        "prepared FirstSlot cargo is not release-ready until its normalization evidence is ready"
     );
     assert!(
         initial_track_release_requires_loudness_gate(
             PlaylistInitialTrackRelease::PreparingFirstSlot,
             &track,
         ),
-        "preparing owns the wait because no cargo has been released to player yet"
+        "preparing owns the wait because no normalized cargo has been released to player yet"
     );
 
     std::fs::remove_dir_all(root).expect("temp root should be removed");

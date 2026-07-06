@@ -294,6 +294,8 @@ pub(crate) fn build_leaf_metadata_probe_args(url: &str) -> Vec<String> {
         "--no-warnings",
         "--ignore-errors",
         "--no-playlist",
+        "--sleep-requests",
+        "1.5",
         url,
     ]
     .into_iter()

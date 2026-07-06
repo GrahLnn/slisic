@@ -176,13 +176,13 @@ fn leaf_pipeline_uses_independent_finalization_slots() {
 #[test]
 fn leaf_prepare_parallelism_uses_cpu_budget_without_eating_all_cores() {
     assert_eq!(leaf_prepare_cpu_budget(1), 1);
-    assert_eq!(leaf_prepare_cpu_budget(8), 5);
-    assert_eq!(leaf_prepare_cpu_budget(24), 16);
+    assert_eq!(leaf_prepare_cpu_budget(8), 4);
+    assert_eq!(leaf_prepare_cpu_budget(24), 4);
 
     assert_eq!(leaf_prepare_parallelism_for_cpu(0, 24), 0);
     assert_eq!(leaf_prepare_parallelism_for_cpu(3, 24), 3);
-    assert_eq!(leaf_prepare_parallelism_for_cpu(100, 8), 5);
-    assert_eq!(leaf_prepare_parallelism_for_cpu(100, 24), 16);
+    assert_eq!(leaf_prepare_parallelism_for_cpu(100, 8), 4);
+    assert_eq!(leaf_prepare_parallelism_for_cpu(100, 24), 4);
     assert_eq!(leaf_finalization_parallelism(100), 4);
 }
 

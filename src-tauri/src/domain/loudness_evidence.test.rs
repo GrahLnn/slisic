@@ -201,6 +201,19 @@ fn loudness_queue_insert_index_prioritizes_playback_cargo_without_reversing_sour
         loudness_queue_insert_index(
             [
                 LoudnessEvidenceSource::DirectRequest,
+                LoudnessEvidenceSource::FirstSlot,
+                LoudnessEvidenceSource::PendingStore,
+            ],
+            3,
+            LoudnessEvidenceSource::SessionNext,
+        ),
+        1,
+        "session-next evidence should stay behind current playback cargo but outrank startup prewarm"
+    );
+    assert_eq!(
+        loudness_queue_insert_index(
+            [
+                LoudnessEvidenceSource::DirectRequest,
                 LoudnessEvidenceSource::DownloadedLeaf,
                 LoudnessEvidenceSource::PendingStore,
             ],
@@ -253,6 +266,20 @@ fn loudness_queue_insert_index_prioritizes_playback_cargo_without_reversing_sour
             [
                 LoudnessEvidenceSource::DirectRequest,
                 LoudnessEvidenceSource::FirstSlot,
+                LoudnessEvidenceSource::DownloadedLeafForeground,
+                LoudnessEvidenceSource::PendingStore,
+            ],
+            4,
+            LoudnessEvidenceSource::FirstSlot,
+        ),
+        2,
+        "prepared FirstSlot evidence should outrank downloaded foreground work while preserving first-slot FIFO"
+    );
+    assert_eq!(
+        loudness_queue_insert_index(
+            [
+                LoudnessEvidenceSource::DirectRequest,
+                LoudnessEvidenceSource::FirstSlot,
                 LoudnessEvidenceSource::PendingStore,
             ],
             3,
@@ -282,6 +309,10 @@ fn all_explicit_loudness_cargo_sources_are_pending_restorable() {
         "direct playback requests can be retried from pending after transient failures"
     );
     assert!(
+        LoudnessEvidenceSource::SessionNext.persists_pending(),
+        "session-next requests are explicit playback cargo and must survive queue pressure"
+    );
+    assert!(
         LoudnessEvidenceSource::FirstSlot.persists_pending(),
         "first-slot requests can be retried from pending without scanning the library"
     );
@@ -306,9 +337,14 @@ fn foreground_loudness_sources_receive_reserved_worker_capacity() {
         "prepared first-slot analysis must be able to wake one reserved foreground worker"
     );
     assert_eq!(
+        loudness_measurement_worker_budget_for_source(base, LoudnessEvidenceSource::SessionNext),
+        base + 2,
+        "session-next analysis must wake an independent reserve before the current track ends"
+    );
+    assert_eq!(
         loudness_measurement_worker_budget_for_source(base, LoudnessEvidenceSource::DirectRequest),
-        base + 1,
-        "current playback requests share the same foreground lane as first-slot startup cargo"
+        base + 2,
+        "current playback release must stay in the strongest foreground lane"
     );
 }
 

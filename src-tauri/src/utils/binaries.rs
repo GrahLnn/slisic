@@ -10,6 +10,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{LazyLock, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -29,6 +30,9 @@ static BINARY_OPERATION_LOCKS: LazyLock<[Mutex<()>; 2]> =
     LazyLock::new(|| [Mutex::new(()), Mutex::new(())]);
 static BINARY_USAGE_TRACKERS: LazyLock<[Mutex<BTreeMap<&'static str, usize>>; 2]> =
     LazyLock::new(|| [Mutex::new(BTreeMap::new()), Mutex::new(BTreeMap::new())]);
+static BINARY_FOREGROUND_USAGE: LazyLock<[AtomicUsize; 2]> =
+    LazyLock::new(|| [AtomicUsize::new(0), AtomicUsize::new(0)]);
+const FOREGROUND_RELEASE_WAIT_MS: u64 = 25;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ManagedBinary {
@@ -83,6 +87,10 @@ pub(crate) struct ManagedBinaryUsageOwnerSnapshot {
 pub(crate) struct ManagedBinaryUsageGuard {
     kind: ManagedBinary,
     owner: &'static str,
+}
+
+pub(crate) struct ManagedBinaryForegroundUsageGuard {
+    kind: ManagedBinary,
 }
 
 #[derive(Debug, Deserialize)]
@@ -166,11 +174,30 @@ impl Drop for ManagedBinaryUsageGuard {
     }
 }
 
+impl Drop for ManagedBinaryForegroundUsageGuard {
+    fn drop(&mut self) {
+        binary_foreground_usage(self.kind).fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 pub(crate) fn acquire_managed_binary_usage(
     kind: ManagedBinary,
     owner: &'static str,
 ) -> ManagedBinaryUsageGuard {
     ManagedBinaryUsageGuard::new(kind, owner)
+}
+
+pub(crate) fn acquire_managed_binary_foreground_usage(
+    kind: ManagedBinary,
+) -> ManagedBinaryForegroundUsageGuard {
+    binary_foreground_usage(kind).fetch_add(1, Ordering::SeqCst);
+    ManagedBinaryForegroundUsageGuard { kind }
+}
+
+pub(crate) fn wait_for_managed_binary_foreground_release(kind: ManagedBinary) {
+    while binary_foreground_usage(kind).load(Ordering::SeqCst) > 0 {
+        thread::sleep(Duration::from_millis(FOREGROUND_RELEASE_WAIT_MS));
+    }
 }
 
 pub(crate) fn managed_binary_usage_snapshot(kind: ManagedBinary) -> ManagedBinaryUsageSnapshot {
@@ -186,6 +213,13 @@ pub(crate) fn managed_binary_usage_snapshot(kind: ManagedBinary) -> ManagedBinar
                 count: *count,
             })
             .collect(),
+    }
+}
+
+fn binary_foreground_usage(kind: ManagedBinary) -> &'static AtomicUsize {
+    match kind {
+        ManagedBinary::Ffmpeg => &BINARY_FOREGROUND_USAGE[0],
+        ManagedBinary::YtDlp => &BINARY_FOREGROUND_USAGE[1],
     }
 }
 

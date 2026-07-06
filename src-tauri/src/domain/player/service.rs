@@ -22,12 +22,13 @@ use super::track_identity_substitution::{
 #[cfg(not(test))]
 use super::waveform::{self, TrackWaveform, TrackWaveformSummary, TrackWaveformTile};
 #[cfg(not(test))]
-use crate::domain::audio_tail_trim;
-#[cfg(not(test))]
 use crate::domain::loudness_evidence::{self, LoudnessEvidenceRequest};
 use crate::domain::playlists::model::LoudnessProfile;
 #[cfg(not(test))]
-use crate::utils::binaries::{ManagedBinary, acquire_managed_binary_usage, ensure_managed_binary};
+use crate::utils::binaries::{
+    ManagedBinary, acquire_managed_binary_foreground_usage, acquire_managed_binary_usage,
+    ensure_managed_binary,
+};
 #[cfg(not(test))]
 use anyhow::{Context, Result, anyhow, bail};
 #[cfg(not(test))]
@@ -44,7 +45,7 @@ use tauri::{AppHandle, Manager};
 #[cfg(not(test))]
 use tauri_specta::Event;
 #[cfg(not(test))]
-use tokio::sync::watch;
+use tokio::sync::{oneshot, watch};
 
 #[cfg(not(test))]
 static PLAYER_RUNTIME: OnceLock<Arc<PlayerRuntime>> = OnceLock::new();
@@ -527,6 +528,7 @@ async fn play_tracks_with_initial_track(
     let shared_tracks = Arc::new(RwLock::new(tracks));
     let (track_revision, _) = watch::channel(0);
     let shared_strategy = Arc::new(Mutex::new(PlaybackStrategySet::new()));
+    let should_wait_for_initial_start = initial_track.is_some();
     runtime.replace_active_session(
         playlist_name.clone(),
         playback_run_generation,
@@ -570,6 +572,12 @@ async fn play_tracks_with_initial_track(
     let runtime_for_task = Arc::clone(runtime);
     let playback_for_task = playback.clone();
     let task_playlist_name = playlist_name.clone();
+    let (initial_start_ack_tx, initial_start_ack_rx) = if should_wait_for_initial_start {
+        let (sender, receiver) = oneshot::channel();
+        (Some(sender), Some(receiver))
+    } else {
+        (None, None)
+    };
 
     tauri::async_runtime::spawn(async move {
         let _active_binary_task = active_binary_task;
@@ -578,12 +586,31 @@ async fn play_tracks_with_initial_track(
             playback_for_task,
             playback_run_generation,
             session,
+            initial_start_ack_tx,
         )
         .await
         {
             eprintln!("[player] playback session failed for `{task_playlist_name}`: {error}");
         }
     });
+
+    if let Some(initial_start_ack_rx) = initial_start_ack_rx {
+        emit_player_trace(
+            "player-session-initial-start-wait",
+            PlayerTrace::new(&runtime.app)
+                .playlist_name(&playlist_name)
+                .elapsed(trace_start),
+        );
+        initial_start_ack_rx
+            .await
+            .map_err(|_| anyhow!("initial playback session ended before audio start"))??;
+        emit_player_trace(
+            "player-session-initial-start-ok",
+            PlayerTrace::new(&runtime.app)
+                .playlist_name(&playlist_name)
+                .elapsed(trace_start),
+        );
+    }
 
     Ok(PlaybackSessionHandle {
         playlist_name,
@@ -841,6 +868,7 @@ pub async fn play_track_in_current_session(
             playback_for_task,
             playback_run_generation,
             session,
+            None,
         )
         .await
         {
@@ -2183,6 +2211,7 @@ async fn run_playback_session(
     playback: Playback,
     generation: u64,
     mut session: PlaybackSession,
+    mut initial_start_ack: Option<oneshot::Sender<Result<()>>>,
 ) -> Result<()> {
     let trace_start = Instant::now();
     let mut track_revision = session.subscribe_track_revision();
@@ -2229,7 +2258,7 @@ async fn run_playback_session(
                 .await?
             }
         };
-        let Some(track) = track else {
+        let Some(mut track) = track else {
             if runtime.playback_run_generation.load(Ordering::SeqCst) != generation {
                 emit_player_trace(
                     "player-run-session-generation-ended-before-track",
@@ -2300,6 +2329,14 @@ async fn run_playback_session(
                 start_ms: track.start_ms,
                 end_ms: track.end_ms,
             });
+        track = wait_for_session_track_loudness_before_playback(
+            &runtime,
+            &session,
+            generation,
+            track,
+            trace_start,
+        )
+        .await?;
         let replaced_track = runtime.active_request_track_snapshot()?;
         let replaced_range = runtime.active_playback_range_snapshot()?;
         let request = playback_request_for_track_range(&track, active_range);
@@ -2309,8 +2346,6 @@ async fn run_playback_session(
             .loudness_profile
             .as_ref()
             .and_then(playback_loudness_plan_for_profile);
-        loudness_evidence::request_playback_track_loudness_evidence(&track);
-        audio_tail_trim::request_playback_current_audio_tail_trim(&track);
         emit_player_trace(
             "player-run-play-request-start",
             PlayerTrace::new(&runtime.app)
@@ -2318,6 +2353,8 @@ async fn run_playback_session(
                 .track(Some(&track))
                 .elapsed(trace_start),
         );
+        let _foreground_binary_usage =
+            acquire_managed_binary_foreground_usage(ManagedBinary::Ffmpeg);
         match playback.play_request(request).await {
             Ok(_) => {
                 runtime.set_active_request_track(track.clone())?;
@@ -2410,8 +2447,12 @@ async fn run_playback_session(
                         .track(Some(&track))
                         .elapsed(trace_start),
                 );
+                if let Some(sender) = initial_start_ack.take() {
+                    let _ = sender.send(Ok(()));
+                }
             }
             Err(error) => {
+                let message = format!("failed to play `{}`: {error}", track.music_name);
                 emit_player_trace(
                     "player-run-play-request-error",
                     PlayerTrace::new(&runtime.app)
@@ -2420,7 +2461,10 @@ async fn run_playback_session(
                         .elapsed(trace_start)
                         .error(&error),
                 );
-                return Err(anyhow!("failed to play `{}`: {error}", track.music_name));
+                if let Some(sender) = initial_start_ack.take() {
+                    let _ = sender.send(Err(anyhow!(message.clone())));
+                }
+                return Err(anyhow!(message));
             }
         }
         if runtime.playback_run_generation.load(Ordering::SeqCst) != generation {
@@ -2479,6 +2523,62 @@ async fn run_playback_session(
         );
         wait_until_track_finishes(&runtime, &playback, generation, &track.file_path).await?;
     }
+}
+
+#[cfg(not(test))]
+async fn wait_for_session_track_loudness_before_playback(
+    runtime: &PlayerRuntime,
+    session: &PlaybackSession,
+    generation: u64,
+    mut track: PlaybackTrack,
+    trace_start: Instant,
+) -> Result<PlaybackTrack> {
+    if track.loudness_profile.is_some()
+        || track.start_ms >= track.end_ms
+        || !track.file_path.is_file()
+    {
+        return Ok(track);
+    }
+
+    emit_player_trace(
+        "player-run-track-loudness-wait",
+        PlayerTrace::new(&runtime.app)
+            .playlist_name(&session.playlist_name)
+            .track(Some(&track))
+            .elapsed(trace_start)
+            .details(vec![trace_detail("generation", generation)]),
+    );
+    let profile = loudness_evidence::wait_for_playback_track_loudness_profile(&track)
+        .await?
+        .ok_or_else(|| {
+            anyhow!(
+                "playback loudness evidence was not ready for {}",
+                track.canonical_music_id
+            )
+        })?;
+    if !profile.is_valid() {
+        bail!(
+            "playback loudness evidence must be finite and include non-zero integrated LUFS for {}",
+            track.canonical_music_id
+        );
+    }
+    if runtime.playback_run_generation.load(Ordering::SeqCst) != generation {
+        return Err(PlaybackStartRequestSuperseded.into());
+    }
+
+    track.loudness_profile = Some(profile);
+    sync_playback_track_source_music(&mut track);
+    replace_session_track_loudness(&session.tracks, &track)?;
+    notify_playback_track_revision(&session.track_revision);
+    emit_player_trace(
+        "player-run-track-loudness-ready",
+        PlayerTrace::new(&runtime.app)
+            .playlist_name(&session.playlist_name)
+            .track(Some(&track))
+            .elapsed(trace_start)
+            .details(vec![trace_detail("generation", generation)]),
+    );
+    Ok(track)
 }
 
 #[cfg(not(test))]

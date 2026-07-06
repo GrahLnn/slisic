@@ -65,7 +65,6 @@ const PLAYLIST_PLAYBACK_RANDOM_WINDOW_LIMIT: usize = 96;
 #[cfg(not(test))]
 const PLAYLIST_PLAYBACK_AUDIO_STYLE_PROBE_WINDOW_LIMIT: usize =
     PLAYLIST_PLAYBACK_RANDOM_WINDOW_LIMIT * 4;
-#[cfg(not(test))]
 const PLAYLIST_PLAYBACK_QUEUE_REFRESH_INTERVAL_MS: u64 = 250;
 #[cfg(not(test))]
 const PLAYLIST_PLAYBACK_LIKED_CANDIDATE_LIMIT: usize = 128;
@@ -998,15 +997,17 @@ fn seed_playlist_session_next_from_prepared_pool(
             .source_kind
             .map(playable_index::source_kind_as_str)
             .unwrap_or("unknown");
+        let loudness_requested = request_session_next_track_loudness_evidence(&next);
         consume_playlist_initial_prepared_source(&Some(snapshot));
         log::info!(
             target: PLAYLIST_PLAYBACK_LOG_TARGET,
-            "next track seeded source=prepared_first_slot_pool prepared_source={} mode=keep_current playlist=\"{}\" anchor_title=\"{}\" title=\"{}\" generation={}",
+            "next track seeded source=prepared_first_slot_pool prepared_source={} mode=keep_current playlist=\"{}\" anchor_title=\"{}\" title=\"{}\" generation={} loudness_requested={}",
             source_kind,
             escape_log_value(playlist_name),
             escape_log_value(&anchor.music_name),
             escape_log_value(&next.music_name),
-            generation
+            generation,
+            loudness_requested
         );
     } else {
         log::warn!(
@@ -1502,10 +1503,38 @@ pub(crate) enum PlaylistTrackQueueRefreshOutcome {
     MissingNext,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PlaylistQueueFillDemandWake {
+    RevisionChanged,
+    RevisionClosed,
+    PollElapsed,
+}
+
 pub(crate) fn should_retry_playlist_queue_fill_after_refresh(
     outcome: PlaylistTrackQueueRefreshOutcome,
 ) -> bool {
     outcome == PlaylistTrackQueueRefreshOutcome::StaleAnchor
+}
+
+pub(crate) async fn wait_for_playlist_queue_fill_revision_or_poll<F, E>(
+    revision_changed: F,
+    poll_interval_ms: u64,
+) -> PlaylistQueueFillDemandWake
+where
+    F: std::future::Future<Output = Result<(), E>>,
+{
+    tokio::select! {
+        result = revision_changed => {
+            if result.is_ok() {
+                PlaylistQueueFillDemandWake::RevisionChanged
+            } else {
+                PlaylistQueueFillDemandWake::RevisionClosed
+            }
+        }
+        _ = tokio::time::sleep(std::time::Duration::from_millis(poll_interval_ms)) => {
+            PlaylistQueueFillDemandWake::PollElapsed
+        }
+    }
 }
 
 #[cfg(not(test))]
@@ -1517,9 +1546,16 @@ async fn wait_for_playlist_queue_fill_demand(
     else {
         return Ok(());
     };
-    match track_revision.changed().await {
-        Ok(()) => Ok(()),
-        Err(_) => {
+    match wait_for_playlist_queue_fill_revision_or_poll(
+        track_revision.changed(),
+        PLAYLIST_PLAYBACK_QUEUE_REFRESH_INTERVAL_MS,
+    )
+    .await
+    {
+        PlaylistQueueFillDemandWake::RevisionChanged | PlaylistQueueFillDemandWake::PollElapsed => {
+            Ok(())
+        }
+        PlaylistQueueFillDemandWake::RevisionClosed => {
             log::info!(
                 target: PLAYLIST_PLAYBACK_LOG_TARGET,
                 "next queue fill worker revision wait ended playlist=\"{}\" reason=track_revision_closed session_generation={}",
@@ -1902,10 +1938,12 @@ pub(crate) async fn load_random_playlist_playback_tracks(
     playlist_name: &str,
     limit: usize,
 ) -> Result<Vec<PlaybackTrack>> {
-    Ok(load_random_playlist_track_resolution_window(app, playlist_name, limit)
-        .await?
-        .resolution
-        .tracks)
+    Ok(
+        load_random_playlist_track_resolution_window(app, playlist_name, limit)
+            .await?
+            .resolution
+            .tracks,
+    )
 }
 
 #[cfg(not(test))]
@@ -2047,9 +2085,16 @@ fn request_next_track_loudness_evidence(
     let Some(next_track) = next_track_for_recommendation_mode(mode, tracks) else {
         return;
     };
-    if playlist_track_needs_loudness_evidence(next_track) {
-        loudness_evidence::request_playback_track_loudness_evidence(next_track);
+    request_session_next_track_loudness_evidence(next_track);
+}
+
+#[cfg(not(test))]
+fn request_session_next_track_loudness_evidence(track: &PlaybackTrack) -> bool {
+    if !playlist_track_needs_loudness_evidence(track) {
+        return false;
     }
+    loudness_evidence::request_session_next_playback_track_loudness_evidence(track);
+    true
 }
 
 pub(crate) fn playlist_track_needs_loudness_evidence(track: &PlaybackTrack) -> bool {
@@ -2336,7 +2381,7 @@ fn format_audio_style_bio_route(
     diagnostics
         .map(|diagnostics| {
             format!(
-                "distance_base:{:.6},route_drive:{:.3},control_gate:{:.3},semantic_gate:{:.3},novelty:{:.3},novelty_gate:{:.3},stream_gate:{:.3},damping:{:.3},local_gate:{:.3},final_weight:{:.6}",
+                "distance_base:{:.6},route_drive:{:.3},control_gate:{:.3},semantic_gate:{:.3},novelty:{:.3},novelty_gate:{:.3},stream_gate:{:.3},damping:{:.3},final_weight:{:.6}",
                 diagnostics.distance_base,
                 diagnostics.route_drive,
                 diagnostics.control_gate,
@@ -2345,7 +2390,6 @@ fn format_audio_style_bio_route(
                 diagnostics.novelty_gate,
                 diagnostics.stream_gate,
                 diagnostics.damping,
-                diagnostics.local_gate,
                 diagnostics.final_weight
             )
         })
@@ -2379,11 +2423,10 @@ pub(crate) fn format_audio_style_topology_health(
     diagnostics
         .map(|diagnostics| {
             format!(
-                "support_width:{:.3},support_entropy:{:.3},control_entropy:{:.3},local_fatigue_mass:{:.3},basin_fatigue_mass:{:.3},prediction_error:{:.3},novelty:{:.3},novelty_gate:{:.3},density_owner_best_vote_count:{}",
+                "support_width:{:.3},support_entropy:{:.3},control_entropy:{:.3},basin_fatigue_mass:{:.3},prediction_error:{:.3},novelty:{:.3},novelty_gate:{:.3},density_owner_best_vote_count:{}",
                 diagnostics.support_width,
                 diagnostics.support_entropy,
                 diagnostics.control_entropy,
-                diagnostics.local_fatigue_mass,
                 diagnostics.basin_fatigue_mass,
                 diagnostics.prediction_error,
                 diagnostics.novelty,

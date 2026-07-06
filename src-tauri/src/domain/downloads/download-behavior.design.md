@@ -390,12 +390,11 @@ Playback current track -> Audio tail trim priority cargo:
   scanned, the active worker may read the coalesced focus cargo before choosing
   the next candidate. This changes scan order only; it never grants playback
   authority to infer or write tail trims.
-- Linear consumption: pure `playback_current` cargo coalesced during an active
-  scan is absorbed by that scan and removed from the pending store when the scan
-  reaches an applied or no-op outcome. `downloaded_leaf` cargo remains
-  rerun-required because it may describe a changed collection snapshot that the
-  active scan did not observe. Restored pending cargo is replayed as
-  `pending_store`, not as a second semantic source.
+- Linear consumption: foreground release-ready cargo is produced before playback
+  consumes a track. Playback does not create tail-trim cargo. `downloaded_leaf`
+  cargo remains rerun-required because it may describe a changed collection
+  snapshot that the active scan did not observe. Restored pending cargo is
+  replayed as `pending_store`, not as a second semantic source.
 - Rejection: missing source music or collection owner is logged and does not
   alter playback.
 
