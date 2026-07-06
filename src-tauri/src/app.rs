@@ -162,6 +162,11 @@ pub fn run() {
                 .rotation_strategy(RotationStrategy::KeepSome(5))
                 .max_file_size(5_000_000)
                 .level(LevelFilter::Info)
+                .level_for("webrtc", LevelFilter::Error)
+                .level_for("webrtc_ice", LevelFilter::Error)
+                .level_for("webrtc_mdns", LevelFilter::Error)
+                .level_for("cubecl_wgpu", LevelFilter::Warn)
+                .level_for("wgpu_hal", LevelFilter::Warn)
                 .clear_format()
                 .targets([
                     Target::new(TargetKind::Stdout).format(colorized_stdout_log_format),

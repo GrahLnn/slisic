@@ -1,5 +1,7 @@
 use crate::domain::player::model::PlaybackTrack;
 use crate::domain::player::service::{PlaybackLoudnessPlan, playback_loudness_plan_for_profile};
+#[cfg(not(test))]
+use crate::domain::playlist_playback::playable_index;
 use crate::domain::playlist_playback::service::{
     PlaylistPlaybackRecommendationMode, PlaylistPlaybackRecommendationRequest,
 };
@@ -52,6 +54,14 @@ use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_util::io::ReaderStream;
 use tower_http::cors::{Any, CorsLayer};
+use webrtc::api::APIBuilder;
+use webrtc::data_channel::RTCDataChannel;
+use webrtc::data_channel::data_channel_message::DataChannelMessage;
+use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
+use webrtc::ice_transport::ice_server::RTCIceServer;
+use webrtc::peer_connection::RTCPeerConnection;
+use webrtc::peer_connection::configuration::RTCConfiguration;
+use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
 const REMOTE_SHARE_LOG_TARGET: &str = "remote_share";
 #[cfg(windows)]
@@ -61,9 +71,12 @@ const REMOTE_PAIRING_CODE_MAX_LEN: usize = 8;
 const REMOTE_PAIRING_CODE_ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
 const REMOTE_SHARE_PORT: u16 = 48_231;
 const REMOTE_AUDIO_CHUNK_SIZE: u64 = 256 * 1024;
+const REMOTE_P2P_AUDIO_CHUNK_SIZE: u64 = 16 * 1024;
+const REMOTE_P2P_DATA_CHANNEL_LABEL: &str = "slisic.audio.v1";
 const REMOTE_AUDIO_CACHE_DIR: &str = "remote-audio";
 const REMOTE_AUDIO_GAIN_EPSILON_DB: f32 = 0.001;
 const REMOTE_CANDIDATE_WINDOW_LIMIT: usize = 96;
+const REMOTE_FIRST_SLOT_PREWARM_LIMIT: usize = 12;
 const REMOTE_PREFETCH_FRONTIER_LIMIT: usize = 3;
 const REMOTE_RELAY_HOST_URL_ENV: &str = "SLISIC_REMOTE_RELAY_HOST_URL";
 const DEFAULT_REMOTE_RELAY_HOST_URL: &str = "wss://slisic-remote.grahlnn.com/ws/host";
@@ -82,6 +95,8 @@ struct RemoteShareRuntime {
     settings: Arc<Mutex<RemoteShareSettings>>,
     sessions: Arc<Mutex<RemoteShareSessions>>,
     remote_audio_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
+    remote_p2p_peers: Arc<Mutex<HashMap<String, Arc<RTCPeerConnection>>>>,
+    remote_ice_servers: Arc<Mutex<Vec<RTCIceServer>>>,
 }
 
 #[derive(Clone)]
@@ -194,6 +209,37 @@ struct RemoteCodeRequest {
     code: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RemoteIceServerConfig {
+    #[serde(default)]
+    urls: Vec<String>,
+    #[serde(default)]
+    username: String,
+    #[serde(default)]
+    credential: String,
+}
+
+impl RemoteIceServerConfig {
+    fn into_rtc_ice_server(self) -> Option<RTCIceServer> {
+        let urls = self
+            .urls
+            .into_iter()
+            .map(|url| url.trim().to_string())
+            .filter(|url| !url.is_empty())
+            .collect::<Vec<_>>();
+        if urls.is_empty() {
+            return None;
+        }
+        Some(RTCIceServer {
+            urls,
+            username: self.username,
+            credential: self.credential,
+            ..Default::default()
+        })
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(
     tag = "kind",
@@ -204,10 +250,14 @@ enum RemoteRelayInbound {
     Hello {
         role: String,
         code: String,
+        #[serde(default)]
+        ice_servers: Vec<RemoteIceServerConfig>,
     },
     PeerState {
         host_connected: bool,
         client_connected: bool,
+        #[serde(default)]
+        ice_servers: Vec<RemoteIceServerConfig>,
     },
     RpcRequest {
         id: String,
@@ -223,6 +273,11 @@ enum RemoteRelayInbound {
         client_id: Option<String>,
         token: String,
         range: Option<String>,
+    },
+    P2pSignal {
+        #[serde(default)]
+        client_id: Option<String>,
+        signal: RemoteP2pSignal,
     },
 }
 
@@ -263,7 +318,59 @@ enum RemoteRelayOutbound {
         client_id: String,
         frontier: Vec<RemotePlaybackCargo>,
     },
+    P2pSignal {
+        client_id: String,
+        signal: RemoteP2pSignal,
+    },
     HostPing {},
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(
+    tag = "type",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+enum RemoteP2pSignal {
+    Offer { sdp: String },
+    Answer { sdp: String },
+    Candidate { candidate: RTCIceCandidateInit },
+    Close { reason: Option<String> },
+    Error { reason: String },
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", rename_all_fields = "camelCase")]
+enum RemoteP2pDataChannelRequest {
+    AudioRequest {
+        id: String,
+        token: String,
+        start: u64,
+        length: u64,
+    },
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case", rename_all_fields = "camelCase")]
+enum RemoteP2pDataChannelResponse {
+    AudioResponse {
+        id: String,
+        ok: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        status: Option<u16>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        content_type: Option<&'static str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        total: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        start: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        end: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        body_base64: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -359,6 +466,8 @@ pub async fn initialize_runtime(app: AppHandle) -> Result<()> {
         settings: Arc::new(Mutex::new(settings)),
         sessions: Arc::new(Mutex::new(RemoteShareSessions::default())),
         remote_audio_locks: Arc::new(Mutex::new(HashMap::new())),
+        remote_p2p_peers: Arc::new(Mutex::new(HashMap::new())),
+        remote_ice_servers: Arc::new(Mutex::new(default_remote_ice_servers())),
     });
     if REMOTE_SHARE_RUNTIME.set(Arc::clone(&runtime)).is_err() {
         log::warn!(
@@ -560,11 +669,17 @@ async fn handle_remote_relay_message(
     };
 
     let outbound = match inbound {
-        RemoteRelayInbound::Hello { role, code } => {
+        RemoteRelayInbound::Hello {
+            role,
+            code,
+            ice_servers,
+        } => {
             let _ = (role, code);
+            runtime.update_remote_ice_servers(ice_servers, "hello");
             return None;
         }
-        RemoteRelayInbound::PeerState { .. } => {
+        RemoteRelayInbound::PeerState { ice_servers, .. } => {
+            runtime.update_remote_ice_servers(ice_servers, "peer_state");
             return None;
         }
         RemoteRelayInbound::RpcRequest {
@@ -573,7 +688,7 @@ async fn handle_remote_relay_message(
             client_id,
             params,
         } => {
-            handle_remote_relay_rpc(
+            Some(handle_remote_relay_rpc(
                 Arc::clone(&runtime),
                 id,
                 method,
@@ -581,15 +696,19 @@ async fn handle_remote_relay_message(
                 params,
                 relay_events,
             )
-            .await
+            .await)
         }
         RemoteRelayInbound::AudioRequest {
             id,
             client_id,
             token,
             range,
-        } => handle_remote_relay_audio(runtime, id, client_id, token, range).await,
+        } => Some(handle_remote_relay_audio(runtime, id, client_id, token, range).await),
+        RemoteRelayInbound::P2pSignal { client_id, signal } => {
+            handle_remote_relay_p2p_signal(runtime, client_id, signal, relay_events).await
+        }
     };
+    let outbound = outbound?;
     Some(serde_json::to_string(&outbound).unwrap_or_else(|error| {
         serde_json::json!({
             "kind": "rpc_response",
@@ -611,7 +730,7 @@ async fn handle_remote_relay_rpc(
 ) -> RemoteRelayOutbound {
     let started = Instant::now();
     let client_id = normalize_remote_client_id(client_id.as_deref());
-    log::info!(
+    log::debug!(
         target: REMOTE_SHARE_LOG_TARGET,
         "remote_share_relay_rpc_received method=\"{}\" client_id_len={}",
         method,
@@ -658,13 +777,30 @@ async fn handle_remote_relay_rpc(
             error: Some(error.message),
         },
     };
-    log::info!(
-        target: REMOTE_SHARE_LOG_TARGET,
-        "remote_share_relay_rpc_finished method=\"{}\" ok={} elapsed_ms={}",
-        method,
-        matches!(outbound, RemoteRelayOutbound::RpcResponse { ok: true, .. }),
-        started.elapsed().as_millis()
-    );
+    let ok = matches!(outbound, RemoteRelayOutbound::RpcResponse { ok: true, .. });
+    let elapsed_ms = started.elapsed().as_millis();
+    if ok && elapsed_ms < 1000 {
+        log::debug!(
+            target: REMOTE_SHARE_LOG_TARGET,
+            "remote_share_relay_rpc_finished method=\"{}\" ok=true elapsed_ms={}",
+            method,
+            elapsed_ms
+        );
+    } else if ok {
+        log::info!(
+            target: REMOTE_SHARE_LOG_TARGET,
+            "remote_share_relay_rpc_finished method=\"{}\" ok=true elapsed_ms={}",
+            method,
+            elapsed_ms
+        );
+    } else {
+        log::warn!(
+            target: REMOTE_SHARE_LOG_TARGET,
+            "remote_share_relay_rpc_finished method=\"{}\" ok=false elapsed_ms={}",
+            method,
+            elapsed_ms
+        );
+    }
     outbound
 }
 
@@ -699,6 +835,45 @@ async fn handle_remote_relay_audio(
             body_base64: None,
             error: Some(error.message),
         },
+    }
+}
+
+async fn handle_remote_relay_p2p_signal(
+    runtime: Arc<RemoteShareRuntime>,
+    client_id: Option<String>,
+    signal: RemoteP2pSignal,
+    relay_events: RemoteRelayEventSender,
+) -> Option<RemoteRelayOutbound> {
+    let client_id = normalize_remote_client_id(client_id.as_deref());
+    match signal {
+        RemoteP2pSignal::Offer { sdp } => {
+            let signal = match runtime
+                .create_remote_p2p_answer(&client_id, sdp, relay_events)
+                .await
+            {
+                Ok(answer) => RemoteP2pSignal::Answer { sdp: answer.sdp },
+                Err(error) => RemoteP2pSignal::Error {
+                    reason: error.message,
+                },
+            };
+            Some(RemoteRelayOutbound::P2pSignal { client_id, signal })
+        }
+        RemoteP2pSignal::Candidate { candidate } => {
+            if let Err(error) = runtime.add_remote_p2p_candidate(&client_id, candidate).await {
+                return Some(RemoteRelayOutbound::P2pSignal {
+                    client_id,
+                    signal: RemoteP2pSignal::Error {
+                        reason: error.message,
+                    },
+                });
+            }
+            None
+        }
+        RemoteP2pSignal::Close { reason } => {
+            runtime.close_remote_p2p_peer(&client_id, reason.as_deref()).await;
+            None
+        }
+        RemoteP2pSignal::Answer { .. } | RemoteP2pSignal::Error { .. } => None,
     }
 }
 
@@ -904,6 +1079,57 @@ impl RemoteShareRuntime {
             .map_err(|_| RemoteShareError::internal("remote share sessions lock is poisoned"))
     }
 
+    fn lock_p2p_peers(
+        &self,
+    ) -> RemoteResult<std::sync::MutexGuard<'_, HashMap<String, Arc<RTCPeerConnection>>>> {
+        self.remote_p2p_peers
+            .lock()
+            .map_err(|_| RemoteShareError::internal("remote p2p peer lock is poisoned"))
+    }
+
+    fn lock_ice_servers(&self) -> RemoteResult<std::sync::MutexGuard<'_, Vec<RTCIceServer>>> {
+        self.remote_ice_servers
+            .lock()
+            .map_err(|_| RemoteShareError::internal("remote ice server lock is poisoned"))
+    }
+
+    fn update_remote_ice_servers(&self, ice_servers: Vec<RemoteIceServerConfig>, source: &str) {
+        let ice_servers = ice_servers
+            .into_iter()
+            .filter_map(RemoteIceServerConfig::into_rtc_ice_server)
+            .collect::<Vec<_>>();
+        if ice_servers.is_empty() {
+            return;
+        }
+        let has_turn = ice_servers.iter().any(remote_ice_server_has_turn);
+        let count = ice_servers.len();
+        let Ok(mut current) = self.lock_ice_servers() else {
+            return;
+        };
+        if *current == ice_servers {
+            return;
+        }
+        *current = ice_servers;
+        log::info!(
+            target: REMOTE_SHARE_LOG_TARGET,
+            "remote_p2p_ice_servers_updated source=\"{}\" count={} has_turn={}",
+            source,
+            count,
+            has_turn
+        );
+    }
+
+    fn remote_p2p_configuration(&self) -> RTCConfiguration {
+        let ice_servers = self
+            .lock_ice_servers()
+            .map(|servers| servers.clone())
+            .unwrap_or_else(|_| default_remote_ice_servers());
+        RTCConfiguration {
+            ice_servers,
+            ..Default::default()
+        }
+    }
+
     fn status(&self) -> RemoteResult<RemoteShareStatus> {
         let settings = self.lock_settings()?;
         Ok(RemoteShareStatus {
@@ -966,6 +1192,15 @@ impl RemoteShareRuntime {
     fn clear_sessions(&self) -> RemoteResult<()> {
         let mut sessions = self.lock_sessions()?;
         sessions.by_client.clear();
+        let peers = {
+            let mut peers = self.lock_p2p_peers()?;
+            peers.drain().map(|(_, peer)| peer).collect::<Vec<_>>()
+        };
+        for peer in peers {
+            task::spawn(async move {
+                let _ = peer.close().await;
+            });
+        }
         Ok(())
     }
 
@@ -1011,6 +1246,7 @@ impl RemoteShareRuntime {
 
     async fn handle_bootstrap(&self, client_id: &str) -> RemoteResult<RemoteBootstrapResponse> {
         let playlists = playlist_repo::list_playlists().await?;
+        self.spawn_remote_first_slot_audio_prewarm(&playlists);
         let session = self.session_view(client_id)?;
         let status = self.status()?;
         Ok(RemoteBootstrapResponse {
@@ -1129,6 +1365,116 @@ impl RemoteShareRuntime {
         read_file_relay_chunk(audio_path, range.as_deref()).await
     }
 
+    async fn create_remote_p2p_answer(
+        &self,
+        client_id: &str,
+        sdp: String,
+        relay_events: RemoteRelayEventSender,
+    ) -> RemoteResult<RTCSessionDescription> {
+        {
+            let settings = self.lock_settings()?;
+            if !settings.enabled {
+                return Err(RemoteShareError::unauthorized("remote share is disabled"));
+            }
+        }
+
+        let offer = RTCSessionDescription::offer(sdp)
+            .map_err(|error| RemoteShareError::internal(error.to_string()))?;
+        let api = APIBuilder::new().build();
+        let peer = Arc::new(
+            api.new_peer_connection(self.remote_p2p_configuration())
+                .await
+                .map_err(|error| RemoteShareError::internal(error.to_string()))?,
+        );
+
+        let candidate_client_id = client_id.to_string();
+        let candidate_relay_events = relay_events.clone();
+        peer.on_ice_candidate(Box::new(move |candidate| {
+            let candidate_client_id = candidate_client_id.clone();
+            let candidate_relay_events = candidate_relay_events.clone();
+            Box::pin(async move {
+                let Some(candidate) = candidate else {
+                    return;
+                };
+                let Ok(candidate) = candidate.to_json() else {
+                    return;
+                };
+                let outbound = RemoteRelayOutbound::P2pSignal {
+                    client_id: candidate_client_id,
+                    signal: RemoteP2pSignal::Candidate { candidate },
+                };
+                if let Ok(text) = serde_json::to_string(&outbound) {
+                    let _ = candidate_relay_events.send(text);
+                }
+            })
+        }));
+
+        let channel_runtime = Arc::new(self.clone());
+        let channel_client_id = client_id.to_string();
+        peer.on_data_channel(Box::new(move |channel: Arc<RTCDataChannel>| {
+            let runtime = Arc::clone(&channel_runtime);
+            let client_id = channel_client_id.clone();
+            Box::pin(async move {
+                attach_remote_p2p_audio_channel(runtime, client_id, channel);
+            })
+        }));
+
+        peer.set_remote_description(offer)
+            .await
+            .map_err(|error| RemoteShareError::internal(error.to_string()))?;
+        let answer = peer
+            .create_answer(None)
+            .await
+            .map_err(|error| RemoteShareError::internal(error.to_string()))?;
+        peer.set_local_description(answer.clone())
+            .await
+            .map_err(|error| RemoteShareError::internal(error.to_string()))?;
+
+        let previous = {
+            let mut peers = self.lock_p2p_peers()?;
+            peers.insert(client_id.to_string(), Arc::clone(&peer))
+        };
+        if let Some(previous) = previous {
+            task::spawn(async move {
+                let _ = previous.close().await;
+            });
+        }
+
+        Ok(answer)
+    }
+
+    async fn add_remote_p2p_candidate(
+        &self,
+        client_id: &str,
+        candidate: RTCIceCandidateInit,
+    ) -> RemoteResult<()> {
+        let peer = {
+            let peers = self.lock_p2p_peers()?;
+            peers.get(client_id).cloned()
+        }
+        .ok_or(RemoteShareError::not_found("remote p2p peer not found"))?;
+        peer.add_ice_candidate(candidate)
+            .await
+            .map_err(|error| RemoteShareError::internal(error.to_string()))
+    }
+
+    async fn close_remote_p2p_peer(&self, client_id: &str, reason: Option<&str>) {
+        let peer = self
+            .lock_p2p_peers()
+            .ok()
+            .and_then(|mut peers| peers.remove(client_id));
+        if let Some(peer) = peer {
+            let reason = reason.unwrap_or("remote closed");
+            log::info!(
+                target: REMOTE_SHARE_LOG_TARGET,
+                "remote_p2p_peer_closed client_id_len={} reason=\"{}\"",
+                client_id.len(),
+                escape_remote_log_value(reason)
+            );
+            let _ = peer.close().await;
+        }
+    }
+
     async fn materialized_audio_path_for_token(
         &self,
         client_id: &str,
@@ -1153,6 +1499,33 @@ impl RemoteShareRuntime {
     async fn materialize_remote_audio(&self, track: &PlaybackTrack) -> RemoteResult<PathBuf> {
         materialize_remote_audio_for_track(&self.app, &self.remote_audio_locks, track).await
     }
+
+    #[cfg(not(test))]
+    fn spawn_remote_first_slot_audio_prewarm(&self, playlists: &[PlayListListView]) {
+        let tracks = playlists
+            .iter()
+            .take(REMOTE_FIRST_SLOT_PREWARM_LIMIT)
+            .filter_map(
+                |playlist| match playable_index::read_playlist_source(&playlist.name) {
+                    Ok(Some(snapshot)) => snapshot.track,
+                    Ok(None) => None,
+                    Err(error) => {
+                        log::warn!(
+                            target: REMOTE_SHARE_LOG_TARGET,
+                            "remote_first_slot_prewarm_source_failed playlist=\"{}\" error=\"{}\"",
+                            escape_remote_log_value(&playlist.name),
+                            escape_remote_log_value(&error.to_string())
+                        );
+                        None
+                    }
+                },
+            )
+            .collect::<Vec<_>>();
+        self.spawn_remote_audio_prewarm(tracks);
+    }
+
+    #[cfg(test)]
+    fn spawn_remote_first_slot_audio_prewarm(&self, _playlists: &[PlayListListView]) {}
 
     fn spawn_remote_audio_prewarm(&self, tracks: Vec<PlaybackTrack>) {
         if tracks.is_empty() {
@@ -1806,6 +2179,118 @@ async fn stream_file_with_range(path: PathBuf, headers: HeaderMap) -> RemoteResu
     response
         .body(Body::from_stream(stream))
         .map_err(|error| RemoteShareError::internal(error.to_string()))
+}
+
+fn default_remote_ice_servers() -> Vec<RTCIceServer> {
+    vec![RTCIceServer {
+        urls: vec!["stun:stun.l.google.com:19302".to_string()],
+        ..Default::default()
+    }]
+}
+
+fn remote_ice_server_has_turn(server: &RTCIceServer) -> bool {
+    server
+        .urls
+        .iter()
+        .any(|url| url.to_ascii_lowercase().starts_with("turn:"))
+}
+
+fn attach_remote_p2p_audio_channel(
+    runtime: Arc<RemoteShareRuntime>,
+    client_id: String,
+    channel: Arc<RTCDataChannel>,
+) {
+    if channel.label() != REMOTE_P2P_DATA_CHANNEL_LABEL {
+        return;
+    }
+    let message_channel = Arc::clone(&channel);
+    channel.on_message(Box::new(move |message: DataChannelMessage| {
+        let runtime = Arc::clone(&runtime);
+        let client_id = client_id.clone();
+        let message_channel = Arc::clone(&message_channel);
+        Box::pin(async move {
+            if !message.is_string {
+                return;
+            }
+            let text = match String::from_utf8(message.data.to_vec()) {
+                Ok(text) => text,
+                Err(_) => return,
+            };
+            let request = match serde_json::from_str::<RemoteP2pDataChannelRequest>(&text) {
+                Ok(request) => request,
+                Err(_) => return,
+            };
+            let response = match request {
+                RemoteP2pDataChannelRequest::AudioRequest {
+                    id,
+                    token,
+                    start,
+                    length,
+                } => remote_p2p_audio_response(runtime, client_id, id, token, start, length).await,
+            };
+            if let Ok(text) = serde_json::to_string(&response) {
+                let _ = message_channel.send_text(text).await;
+            }
+        })
+    }));
+}
+
+async fn remote_p2p_audio_response(
+    runtime: Arc<RemoteShareRuntime>,
+    client_id: String,
+    id: String,
+    token: String,
+    start: u64,
+    length: u64,
+) -> RemoteP2pDataChannelResponse {
+    let length = length.clamp(1, REMOTE_P2P_AUDIO_CHUNK_SIZE);
+    let end = start.saturating_add(length).saturating_sub(1);
+    let range = Some(format!("bytes={start}-{end}"));
+    match runtime.handle_audio_relay(&client_id, token, range).await {
+        Ok(cargo) => {
+            let (start, end, total) = cargo
+                .content_range
+                .as_deref()
+                .and_then(parse_remote_content_range)
+                .unwrap_or_else(|| {
+                    let end = cargo.content_length.saturating_sub(1);
+                    (0, end, cargo.content_length)
+                });
+            RemoteP2pDataChannelResponse::AudioResponse {
+                id,
+                ok: true,
+                status: Some(cargo.status.as_u16()),
+                content_type: Some(cargo.content_type),
+                total: Some(total),
+                start: Some(start),
+                end: Some(end),
+                body_base64: Some(base64::engine::general_purpose::STANDARD.encode(cargo.body)),
+                error: None,
+            }
+        }
+        Err(error) => RemoteP2pDataChannelResponse::AudioResponse {
+            id,
+            ok: false,
+            status: Some(error.status.as_u16()),
+            content_type: None,
+            total: None,
+            start: None,
+            end: None,
+            body_base64: None,
+            error: Some(error.message),
+        },
+    }
+}
+
+fn parse_remote_content_range(value: &str) -> Option<(u64, u64, u64)> {
+    let value = value.strip_prefix("bytes ")?;
+    let (range, total) = value.split_once('/')?;
+    let (start, end) = range.split_once('-')?;
+    Some((
+        start.parse().ok()?,
+        end.parse().ok()?,
+        total.parse().ok()?,
+    ))
 }
 
 async fn read_file_relay_chunk(

@@ -101,7 +101,7 @@ const CtrlButton = memo(function CtrlButtonComp({
 
 function RemoteShareSignalIcon({ enabled }: { enabled: boolean }) {
   const toneClassName = enabled
-    ? "text-emerald-600 dark:text-emerald-300"
+    ? undefined
     : "text-neutral-500 dark:text-neutral-500";
   const RemoteShareIcon = enabled ? icons.wifi : icons.wifiOff;
   const pathMotion = {
@@ -222,7 +222,6 @@ const RemoteShareControl = memo(function RemoteShareControlComponent() {
           <input
             className={cn([
               "h-8 w-18 bg-transparent pr-2 text-[11px] font-semibold tracking-normal outline-none",
-              "text-emerald-700 dark:text-emerald-200",
               "placeholder:text-neutral-400 dark:placeholder:text-neutral-600",
             ])}
             value={draftCode}
