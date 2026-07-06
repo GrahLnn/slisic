@@ -1308,6 +1308,138 @@ fn trim_collection_music_end_moves_identity_and_clears_loudness_profile() {
 }
 
 #[test]
+fn tail_trim_repairs_duplicate_group_owner_edges_before_hydrating_music() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+        bootstrap_collection_write_schema().await;
+
+        let collection = grouped_collection("https://example.com/music-tail-trim-duplicate-group");
+        let saved = upsert_collection(&collection)
+            .await
+            .expect("collection should save before duplicate grouped edge repair");
+        let original = saved.musics[0].clone();
+        let music_record = original
+            .resolve_record_id()
+            .await
+            .expect("music record should resolve by occurrence id");
+        let group_record = original
+            .group
+            .resolve_record_id()
+            .await
+            .expect("group record should resolve by url");
+        insert_group_edges(&group_record, std::slice::from_ref(&music_record)).await;
+
+        let trimmed = trim_collection_music_ends_by_identity(
+            &saved.url,
+            &[MusicEndTrim {
+                url: original.url.clone(),
+                start_ms: original.start_ms,
+                end_ms: original.end_ms,
+                next_end_ms: 132_750,
+            }],
+        )
+        .await
+        .expect("tail trim should normalize duplicate grouped edges")
+        .expect("collection should still exist");
+
+        assert_eq!(trimmed.musics[0].end_ms, 132_750);
+        assert_eq!(trimmed.musics[0].group.url, original.group.url);
+
+        reset_db();
+    });
+}
+
+#[test]
+fn tail_trim_repairs_duplicate_collection_group_owner_edges_before_hydrating_music() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+        bootstrap_collection_write_schema().await;
+
+        let collection =
+            grouped_collection("https://example.com/music-tail-trim-duplicate-collection-group");
+        let saved = upsert_collection(&collection)
+            .await
+            .expect("collection should save before duplicate include edge repair");
+        let collection_record = saved
+            .resolve_record_id()
+            .await
+            .expect("collection record should resolve by url");
+        let original = saved.musics[0].clone();
+        let group_record = original
+            .group
+            .resolve_record_id()
+            .await
+            .expect("group record should resolve by url");
+        insert_collection_group_edge(&collection_record, &group_record).await;
+
+        let trimmed = trim_collection_music_ends_by_identity(
+            &saved.url,
+            &[MusicEndTrim {
+                url: original.url.clone(),
+                start_ms: original.start_ms,
+                end_ms: original.end_ms,
+                next_end_ms: 132_750,
+            }],
+        )
+        .await
+        .expect("tail trim should normalize duplicate collection-group edges")
+        .expect("collection should still exist");
+
+        assert_eq!(trimmed.musics[0].end_ms, 132_750);
+        assert_eq!(trimmed.musics[0].group.collection.url, saved.url);
+
+        reset_db();
+    });
+}
+
+#[test]
+fn get_collection_repairs_duplicate_music_owner_edges_before_hydrating() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+        bootstrap_collection_write_schema().await;
+
+        let collection = grouped_collection("https://example.com/collection-duplicate-owner");
+        let saved = upsert_collection(&collection)
+            .await
+            .expect("collection should save before duplicate owner repair");
+        let collection_record = saved
+            .resolve_record_id()
+            .await
+            .expect("collection record should resolve by url");
+        let original = saved.musics[0].clone();
+        let music_record = original
+            .resolve_record_id()
+            .await
+            .expect("music record should resolve by occurrence id");
+        let group_record = original
+            .group
+            .resolve_record_id()
+            .await
+            .expect("group record should resolve by url");
+
+        insert_group_edges(&group_record, std::slice::from_ref(&music_record)).await;
+        insert_collection_group_edge(&collection_record, &group_record).await;
+
+        let loaded = get_collection_by_url(&saved.url)
+            .await
+            .expect("collection lookup should repair duplicate owner edges")
+            .expect("collection should exist");
+
+        assert_eq!(loaded.musics.len(), saved.musics.len());
+        assert_eq!(loaded.musics[0].group.url, original.group.url);
+        assert_eq!(loaded.musics[0].group.collection.url, saved.url);
+
+        reset_db();
+    });
+}
+
+#[test]
 fn tail_trim_mutation_does_not_overwrite_current_alias_or_liked_state() {
     let _guard = acquire_db_test_lock();
 
@@ -1452,6 +1584,12 @@ fn tail_trim_absorbs_existing_target_occurrence_without_unique_index_conflict() 
             .find(|music| music.end_ms == 180_000)
             .expect("longer music should exist before trim")
             .clone();
+        let existing_target = saved
+            .musics
+            .iter()
+            .find(|music| music.end_ms == 132_750)
+            .expect("shorter target music should exist before trim")
+            .clone();
         let expected_occurrence_id = music_occurrence_id(
             &original.group.url,
             &original.url,
@@ -1471,6 +1609,21 @@ fn tail_trim_absorbs_existing_target_occurrence_without_unique_index_conflict() 
         add_exclude(original.clone())
             .await
             .expect("longer music exclude should save before tail trim");
+        let collection_record = saved
+            .resolve_record_id()
+            .await
+            .expect("collection record should resolve by url");
+        let target_record = existing_target
+            .resolve_record_id()
+            .await
+            .expect("shorter target record should resolve by occurrence id");
+        let target_group_record = existing_target
+            .group
+            .resolve_record_id()
+            .await
+            .expect("shorter target group record should resolve by url");
+        insert_group_edges(&target_group_record, std::slice::from_ref(&target_record)).await;
+        insert_collection_group_edge(&collection_record, &target_group_record).await;
 
         let trimmed = trim_collection_music_ends_by_identity(
             &saved.url,
@@ -3479,6 +3632,72 @@ fn upsert_playlist_persists_extra_and_config_view_hydrates_music() {
             extra_music.canonical_music_id
         );
         assert_eq!(config.extra[0].path, extra_music.path);
+
+        reset_db();
+    });
+}
+
+#[test]
+fn get_playlist_config_repairs_duplicate_extra_music_owner_edges_before_hydrating() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+        bootstrap_collection_write_schema().await;
+
+        let collection_url = "https://example.com/config-extra-duplicate-owner";
+        let group = collection_group("Disc 1", &format!("{collection_url}#disc-1"), "Disc 1");
+        let extra_music = named_music("Config Extra", group, "Disc 1/Config Extra.m4a");
+        let collection = collection_with_musics(
+            collection_url,
+            "youtube/config-extra-duplicate-owner",
+            Some(false),
+            vec![extra_music.clone()],
+        );
+        let saved_collection = upsert_collection(&collection)
+            .await
+            .expect("extra source collection should exist before playlist save");
+        let saved_extra_music = saved_collection.musics[0].clone();
+        let collection_record = saved_collection
+            .resolve_record_id()
+            .await
+            .expect("collection record should resolve by url");
+        let music_record = saved_extra_music
+            .resolve_record_id()
+            .await
+            .expect("extra music record should resolve by occurrence id");
+        let group_record = saved_extra_music
+            .group
+            .resolve_record_id()
+            .await
+            .expect("group record should resolve by url");
+
+        insert_group_edges(&group_record, std::slice::from_ref(&music_record)).await;
+        insert_collection_group_edge(&collection_record, &group_record).await;
+
+        let playlist = PlayList {
+            name: "Config Extra Playlist".to_string(),
+            collections: vec![],
+            groups: vec![],
+            extra: vec![saved_extra_music.clone()],
+            created_at: AutoFill::pending(),
+        };
+        upsert_playlist(&playlist, None)
+            .await
+            .expect("playlist with extra should save");
+
+        let config = get_playlist_config_by_name(&playlist.name)
+            .await
+            .expect("playlist config should repair duplicate owner edges")
+            .expect("playlist config should exist");
+
+        assert_eq!(config.extra.len(), 1);
+        assert_eq!(
+            config.extra[0].canonical_music_id,
+            saved_extra_music.canonical_music_id
+        );
+        assert_eq!(config.extra[0].group.url, saved_extra_music.group.url);
+        assert_eq!(config.extra[0].group.collection.url, collection_url);
 
         reset_db();
     });

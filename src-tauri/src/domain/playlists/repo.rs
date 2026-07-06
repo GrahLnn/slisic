@@ -379,6 +379,7 @@ pub async fn get_collection_by_url(url: &str) -> Result<Option<Collection>> {
     else {
         return Ok(None);
     };
+    normalize_collection_music_required_owner_edges(&record).await?;
 
     Ok(Some(Collection::get_record(record).await?))
 }
@@ -390,6 +391,7 @@ pub async fn get_collection_by_name(name: &str) -> Result<Option<Collection>> {
     else {
         return Ok(None);
     };
+    normalize_collection_music_required_owner_edges(&record).await?;
 
     Ok(Some(Collection::get_record(record).await?))
 }
@@ -408,7 +410,13 @@ pub async fn get_playlist_by_name(name: &str) -> Result<Option<PlayList>> {
 pub async fn get_playlist_config_by_name(name: &str) -> Result<Option<PlayListConfigView>> {
     ensure_collection_graph_schema().await?;
 
-    match PlayListConfigView::find_one("name", name).await {
+    let Some(record) = find_unique_record_id_by_string_field::<PlayList>("name", name).await?
+    else {
+        return Ok(None);
+    };
+    normalize_playlist_extra_required_owner_edges(&record).await?;
+
+    match PlayListConfigView::get_record(record).await {
         Ok(playlist) => Ok(Some(playlist)),
         Err(error) => match classify_db_error(&error) {
             DBError::MissingTable(_) | DBError::NotFound => Ok(None),
@@ -999,7 +1007,8 @@ pub async fn update_music(
     let mut previous_musics = Vec::with_capacity(records.len());
 
     for record in records {
-        let previous_music = Music::get_record(record.clone()).await?;
+        let previous_music =
+            get_music_record_after_normalizing_required_owner_edges(&record).await?;
         let updated = apply_music_mutation_to_record(
             &record,
             MusicMutation::DisplayIdentity {
@@ -1102,7 +1111,7 @@ async fn apply_music_mutation_to_record(
                 .bind(("liked", liked))
                 .await?
                 .check()?;
-            Music::get_record(record.clone()).await
+            get_music_record_after_normalizing_required_owner_edges(record).await
         }
         MusicMutation::DisplayIdentity {
             alias,
@@ -1112,7 +1121,7 @@ async fn apply_music_mutation_to_record(
             if start_ms >= end_ms {
                 bail!("music start_ms must be less than end_ms");
             }
-            let current = Music::get_record(record.clone()).await?;
+            let current = get_music_record_after_normalizing_required_owner_edges(record).await?;
             let canonical_music_id = canonical_music_id_for_source(&current.url, start_ms, end_ms);
             let occurrence_id =
                 music_occurrence_id(&current.group.url, &current.url, start_ms, end_ms);
@@ -1133,10 +1142,10 @@ async fn apply_music_mutation_to_record(
             .bind(("occurrence_id", occurrence_id))
             .await?
             .check()?;
-            Music::get_record(record.clone()).await
+            get_music_record_after_normalizing_required_owner_edges(record).await
         }
         MusicMutation::EndTrim { next_end_ms } => {
-            let current = Music::get_record(record.clone()).await?;
+            let current = get_music_record_after_normalizing_required_owner_edges(record).await?;
             if current.start_ms >= next_end_ms || next_end_ms >= current.end_ms {
                 bail!("trimmed music end must stay inside the original playable range");
             }
@@ -1162,7 +1171,7 @@ async fn apply_music_mutation_to_record(
             .bind(("occurrence_id", occurrence_id))
             .await?
             .check()?;
-            Music::get_record(record.clone()).await
+            get_music_record_after_normalizing_required_owner_edges(record).await
         }
     }
 }
@@ -1216,7 +1225,10 @@ pub(crate) async fn trim_collection_music_ends_by_identity_with_applied_trims(
     let mut changed = false;
     let mut applied = Vec::new();
     for record in music_records {
-        let music = Music::get_record(record.clone()).await?;
+        if normalize_music_required_owner_edges(&record).await? {
+            changed = true;
+        }
+        let music = get_music_record_after_normalizing_required_owner_edges(&record).await?;
         let Some(proposals) = trims_by_identity.get(&(music.url.clone(), music.start_ms)) else {
             continue;
         };
@@ -1269,6 +1281,87 @@ pub(crate) async fn trim_collection_music_ends_by_identity_with_applied_trims(
         .map(|collection| (collection, applied)))
 }
 
+async fn get_music_record_after_normalizing_required_owner_edges(
+    record: &RecordId,
+) -> Result<Music> {
+    normalize_music_required_owner_edges(record).await?;
+    Music::get_record(record.clone()).await
+}
+
+async fn normalize_music_required_owner_edges(record: &RecordId) -> Result<bool> {
+    let (mut changed, group_record) = normalize_required_owner_relation_edges(
+        "grouped",
+        record,
+        Group::table_name(),
+        "music_group_owner_edges_normalized",
+    )
+    .await?;
+    if let Some(group_record) = group_record {
+        let (group_changed, _) = normalize_required_owner_relation_edges(
+            "include",
+            &group_record,
+            Collection::table_name(),
+            "group_collection_owner_edges_normalized",
+        )
+        .await?;
+        changed |= group_changed;
+    }
+
+    Ok(changed)
+}
+
+async fn normalize_playlist_extra_required_owner_edges(record: &RecordId) -> Result<bool> {
+    let extra = load_playlist_extra_record_ids(record).await?;
+    let mut changed = false;
+    for music_record in unique_record_ids(extra.iter()) {
+        changed |= normalize_music_required_owner_edges(&music_record).await?;
+    }
+
+    Ok(changed)
+}
+
+async fn normalize_collection_music_required_owner_edges(record: &RecordId) -> Result<bool> {
+    let music_records = load_collection_music_ids(record).await?;
+    let mut changed = false;
+    for music_record in unique_record_ids(music_records.iter()) {
+        changed |= normalize_music_required_owner_edges(&music_record).await?;
+    }
+
+    Ok(changed)
+}
+
+async fn normalize_required_owner_relation_edges(
+    relation: &str,
+    record: &RecordId,
+    owner_table: &str,
+    event: &str,
+) -> Result<(bool, Option<RecordId>)> {
+    let mut edges = load_relation_in_edges(relation, record, owner_table).await?;
+    if edges.len() <= 1 {
+        return Ok((false, edges.first().map(|edge| edge.owner.clone())));
+    }
+
+    edges.sort_by(|left, right| {
+        left.position
+            .cmp(&right.position)
+            .then_with(|| left.owner.key.to_sql().cmp(&right.owner.key.to_sql()))
+    });
+    let Some(primary) = edges.first().cloned() else {
+        return Ok((false, None));
+    };
+
+    delete_music_relation_edges(relation, record).await?;
+    replace_relation_edge(relation, &primary.owner, record, primary.position).await?;
+    log::warn!(
+        target: "playlists",
+        "{event} relation={relation} record={:?} retained_owner={:?} duplicate_edges={}",
+        record,
+        primary.owner,
+        edges.len().saturating_sub(1)
+    );
+    Ok((true, Some(primary.owner)))
+}
+
 pub(crate) async fn acquire_collection_write_composition_lock()
 -> tokio::sync::MutexGuard<'static, ()> {
     COLLECTION_WRITE_COMPOSITION_LOCK.lock().await
@@ -1280,7 +1373,8 @@ async fn absorb_music_record_into_existing_occurrence(
     target_record: &RecordId,
     next_end_ms: u32,
 ) -> Result<()> {
-    let target_music = Music::get_record(target_record.clone()).await?;
+    let target_music =
+        get_music_record_after_normalizing_required_owner_edges(target_record).await?;
     if target_music.group.url != source_music.group.url
         || target_music.url != source_music.url
         || target_music.start_ms != source_music.start_ms
@@ -1290,7 +1384,8 @@ async fn absorb_music_record_into_existing_occurrence(
     }
 
     merge_absorbed_music_semantics(source_music, &target_music, target_record).await?;
-    let merged_target_music = Music::get_record(target_record.clone()).await?;
+    let merged_target_music =
+        get_music_record_after_normalizing_required_owner_edges(target_record).await?;
     move_music_relation_edges(
         "includes",
         source_record,
@@ -1299,6 +1394,7 @@ async fn absorb_music_record_into_existing_occurrence(
     )
     .await?;
     move_music_relation_edges("grouped", source_record, target_record, Group::table_name()).await?;
+    normalize_music_required_owner_edges(target_record).await?;
     replace_playlist_extra_record_refs(source_record, target_record).await?;
     let excluded_identity_replaced =
         replace_excluded_music_identity(source_music, &merged_target_music).await?;
@@ -1503,7 +1599,7 @@ pub async fn delete_music(url: &str, start_ms: u32, end_ms: u32) -> Result<bool>
     }
 
     for record in records {
-        let music = Music::get_record(record.clone()).await?;
+        let music = get_music_record_after_normalizing_required_owner_edges(&record).await?;
         let parent_collections = load_music_parent_collection_ids(&record).await?;
         let parent_groups = load_music_group_ids(&record).await?;
         delete_music_parent_edges(&record).await?;
@@ -3651,6 +3747,7 @@ async fn resolve_playlist_foreign_record_ids(
         let record = with_music_occurrence_id(music.clone())
             .resolve_record_id()
             .await?;
+        normalize_music_required_owner_edges(&record).await?;
         if seen_extra.insert(record.clone()) {
             extra.push(record);
         }
@@ -3891,6 +3988,7 @@ struct CollectionEdgeRow {
 struct RelationInEdgeRow {
     #[serde(deserialize_with = "appdb::serde_utils::id::deserialize_record_id_or_compat_string")]
     owner: RecordId,
+    #[serde(default)]
     position: i64,
 }
 
