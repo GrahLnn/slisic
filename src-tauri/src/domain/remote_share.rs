@@ -71,7 +71,7 @@ const REMOTE_PAIRING_CODE_MAX_LEN: usize = 8;
 const REMOTE_PAIRING_CODE_ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
 const REMOTE_SHARE_PORT: u16 = 48_231;
 const REMOTE_AUDIO_CHUNK_SIZE: u64 = 256 * 1024;
-const REMOTE_P2P_AUDIO_CHUNK_SIZE: u64 = REMOTE_AUDIO_CHUNK_SIZE;
+const REMOTE_P2P_AUDIO_CHUNK_SIZE: u64 = 32 * 1024;
 const REMOTE_P2P_DATA_CHANNEL_LABEL: &str = "slisic.audio.v1";
 const REMOTE_AUDIO_CACHE_DIR: &str = "remote-audio";
 const REMOTE_AUDIO_GAIN_EPSILON_DB: f32 = 0.001;
@@ -2229,7 +2229,13 @@ fn attach_remote_p2p_audio_channel(
                 } => remote_p2p_audio_response(runtime, client_id, id, token, start, length).await,
             };
             if let Ok(text) = serde_json::to_string(&response) {
-                let _ = message_channel.send_text(text).await;
+                if let Err(error) = message_channel.send_text(text).await {
+                    log::warn!(
+                        target: REMOTE_SHARE_LOG_TARGET,
+                        "remote_p2p_audio_response_send_failed error=\"{}\"",
+                        error
+                    );
+                }
             }
         })
     }));
