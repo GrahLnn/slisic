@@ -1,5 +1,6 @@
 use super::*;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 const TEST_CLIENT_ID: &str = "client-a";
 
@@ -29,6 +30,8 @@ fn playing_sessions(current: PlaybackTrack) -> Arc<Mutex<RemoteShareSessions>> {
         audio_tokens: HashMap::new(),
         stream_token: None,
         hls_timeline: Vec::new(),
+        hls_priming_started_at: None,
+        hls_priming_published_segments: 0,
         next_token_id: 0,
     };
     session.create_audio_token(current);
@@ -162,6 +165,8 @@ fn remote_hls_timeline_starts_at_current_track() {
         audio_tokens: HashMap::new(),
         stream_token: None,
         hls_timeline: Vec::new(),
+        hls_priming_started_at: None,
+        hls_priming_published_segments: 0,
         next_token_id: 0,
     };
 
@@ -186,6 +191,8 @@ fn remote_hls_stream_url_is_stable_for_the_session() {
         audio_tokens: HashMap::new(),
         stream_token: None,
         hls_timeline: Vec::new(),
+        hls_priming_started_at: None,
+        hls_priming_published_segments: 0,
         next_token_id: 0,
     };
 
@@ -217,6 +224,8 @@ fn remote_hls_playlist_can_prime_before_current_track_exists() {
         audio_tokens: HashMap::new(),
         stream_token: None,
         hls_timeline: Vec::new(),
+        hls_priming_started_at: None,
+        hls_priming_published_segments: 0,
         next_token_id: 0,
     };
     session.create_stream_url();
@@ -258,6 +267,21 @@ fn remote_hls_priming_segment_is_a_transport_stream() {
 }
 
 #[test]
+fn remote_hls_priming_window_extends_until_real_prefix_is_ready() {
+    let mut session = RemoteShareSession::default();
+    session.reset_for_hls_prepare("playlist".to_string());
+    session.hls_priming_started_at = Some(Instant::now() - Duration::from_secs(12));
+
+    let waiting_segments = session.advance_hls_priming_window(false);
+    assert!(waiting_segments >= 18);
+
+    session.hls_priming_started_at = Some(Instant::now() - Duration::from_secs(30));
+    let ready_segments = session.advance_hls_priming_window(true);
+
+    assert_eq!(ready_segments, waiting_segments);
+}
+
+#[test]
 fn remote_hls_timeline_appends_new_queue_without_replacing_the_stream() {
     let current = test_track("current");
     let first_next = test_track("first-next");
@@ -272,6 +296,8 @@ fn remote_hls_timeline_appends_new_queue_without_replacing_the_stream() {
         audio_tokens: HashMap::new(),
         stream_token: None,
         hls_timeline: Vec::new(),
+        hls_priming_started_at: None,
+        hls_priming_published_segments: 0,
         next_token_id: 0,
     };
 
@@ -315,6 +341,8 @@ fn remote_hls_stream_token_survives_track_token_retention() {
         audio_tokens: HashMap::new(),
         stream_token: None,
         hls_timeline: vec![current.clone(), next.clone()],
+        hls_priming_started_at: None,
+        hls_priming_published_segments: 0,
         next_token_id: 0,
     };
 
