@@ -142,7 +142,7 @@ fn remote_next_queue_refill_discards_stale_session_results() {
         RemoteAudioToken::Track(track) | RemoteAudioToken::HlsSegment { track, .. } => {
             !same_remote_track(track, &stale_next)
         }
-        RemoteAudioToken::HlsPlaylist => true,
+        RemoteAudioToken::HlsPlaylist | RemoteAudioToken::HlsPrimingSegment => true,
     }));
 }
 
@@ -203,6 +203,15 @@ fn remote_hls_stream_url_is_stable_for_the_session() {
         session.audio_tokens.get(first_token),
         Some(RemoteAudioToken::HlsPlaylist)
     ));
+}
+
+#[test]
+fn remote_hls_priming_segment_is_a_transport_stream() {
+    let cargo = remote_hls_priming_segment_cargo().expect("priming segment should decode");
+
+    assert_eq!(cargo.content_type, "video/mp2t");
+    assert!(cargo.content_length > 0);
+    assert!(!cargo.body.is_empty());
 }
 
 #[test]
