@@ -282,6 +282,32 @@ fn remote_hls_priming_window_extends_until_real_prefix_is_ready() {
 }
 
 #[test]
+fn remote_hls_reader_accepts_partial_event_playlist_without_endlist() {
+    let hls_dir =
+        std::env::temp_dir().join(format!("slisic-remote-hls-partial-{}", std::process::id()));
+    let _ = std_fs::remove_dir_all(&hls_dir);
+    std_fs::create_dir_all(&hls_dir).expect("hls fixture dir should be created");
+    let segment_path = hls_dir.join("segment00000.ts");
+    std_fs::write(&segment_path, [0x47, 0x40, 0x11, 0x10])
+        .expect("hls fixture segment should be written");
+    let playlist_path = hls_dir.join("playlist.m3u8");
+    std_fs::write(
+        &playlist_path,
+        "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:2\n#EXT-X-PLAYLIST-TYPE:EVENT\n#EXTINF:2.000,\nsegment00000.ts\n",
+    )
+    .expect("hls fixture playlist should be written");
+
+    let asset = parse_remote_hls_track_asset(&playlist_path, &hls_dir)
+        .expect("partial event hls should parse");
+
+    assert_eq!(asset.target_duration, 2);
+    assert_eq!(asset.segments.len(), 1);
+    assert_eq!(asset.segments[0].duration_seconds, 2.0);
+
+    let _ = std_fs::remove_dir_all(&hls_dir);
+}
+
+#[test]
 fn remote_hls_timeline_appends_new_queue_without_replacing_the_stream() {
     let current = test_track("current");
     let first_next = test_track("first-next");

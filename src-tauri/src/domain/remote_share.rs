@@ -73,7 +73,7 @@ const REMOTE_AUDIO_CHUNK_SIZE: u64 = 256 * 1024;
 const REMOTE_P2P_AUDIO_CHUNK_SIZE: u64 = 32 * 1024;
 const REMOTE_P2P_DATA_CHANNEL_LABEL: &str = "slisic.audio.v1";
 const REMOTE_AUDIO_CACHE_DIR: &str = "remote-audio";
-const REMOTE_HLS_SEGMENT_SECONDS: u32 = 6;
+const REMOTE_HLS_SEGMENT_SECONDS: u32 = 2;
 const REMOTE_HLS_PRIMING_SEGMENT_SECONDS: f32 = 1.0;
 const REMOTE_HLS_PRIMING_TARGET_DURATION: u32 = 1;
 const REMOTE_HLS_PRIMING_LOOKAHEAD_SEGMENTS: usize = 6;
@@ -84,7 +84,7 @@ const REMOTE_HLS_PRIMING_SEGMENTS: [&[u8]; 4] = [
     include_bytes!("remote_hls_prime_3.ts"),
 ];
 const REMOTE_HLS_PLAYLIST_TRACK_LIMIT: usize = 4;
-const REMOTE_HLS_MATERIALIZATION_VERSION: &str = "hls-v2";
+const REMOTE_HLS_MATERIALIZATION_VERSION: &str = "hls-v3";
 const REMOTE_AUDIO_GAIN_EPSILON_DB: f32 = 0.001;
 const REMOTE_CANDIDATE_WINDOW_LIMIT: usize = 96;
 const REMOTE_FIRST_SLOT_PREWARM_LIMIT: usize = 12;
@@ -2641,23 +2641,14 @@ fn materialize_remote_hls_blocking(
         }
     }
 
-    let Some(parent) = descriptor.hls_dir.parent() else {
-        return Err(RemoteShareError::internal(
-            "remote hls cache path has no parent",
-        ));
-    };
-    std_fs::create_dir_all(parent)
-        .map_err(|error| RemoteShareError::internal(error.to_string()))?;
-    let temp_dir = parent.join(format!("{}.hls.tmp", descriptor.key));
-    let _ = std_fs::remove_dir_all(&temp_dir);
-    std_fs::create_dir_all(&temp_dir)
+    let _ = std_fs::remove_dir_all(&descriptor.hls_dir);
+    std_fs::create_dir_all(&descriptor.hls_dir)
         .map_err(|error| RemoteShareError::internal(error.to_string()))?;
 
     let ffmpeg_path = ensure_managed_binary(&descriptor.app, ManagedBinary::Ffmpeg)
         .map_err(RemoteShareError::internal)?;
     let _usage = acquire_managed_binary_usage(ManagedBinary::Ffmpeg, "remote_share_hls");
-    let segment_pattern = temp_dir.join("segment%05d.ts");
-    let temp_playlist = temp_dir.join("playlist.m3u8");
+    let segment_pattern = descriptor.hls_dir.join("segment%05d.ts");
     let mut command = Command::new(ffmpeg_path);
     command
         .arg("-y")
@@ -2693,10 +2684,10 @@ fn materialize_remote_hls_blocking(
         .arg("-hls_time")
         .arg(REMOTE_HLS_SEGMENT_SECONDS.to_string())
         .arg("-hls_playlist_type")
-        .arg("vod")
+        .arg("event")
         .arg("-hls_segment_filename")
         .arg(&segment_pattern)
-        .arg(&temp_playlist);
+        .arg(&descriptor.playlist_path);
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -2710,7 +2701,7 @@ fn materialize_remote_hls_blocking(
         .output()
         .map_err(|error| RemoteShareError::internal(error.to_string()))?;
     if !output.status.success() {
-        let _ = std_fs::remove_dir_all(&temp_dir);
+        let _ = std_fs::remove_dir_all(&descriptor.hls_dir);
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(RemoteShareError::internal(format!(
             "remote hls materialization failed: {}",
@@ -2718,16 +2709,13 @@ fn materialize_remote_hls_blocking(
         )));
     }
 
-    let asset = parse_remote_hls_track_asset(&temp_playlist, &temp_dir)?;
+    let asset = parse_remote_hls_track_asset(&descriptor.playlist_path, &descriptor.hls_dir)?;
     if asset.segments.is_empty() {
-        let _ = std_fs::remove_dir_all(&temp_dir);
+        let _ = std_fs::remove_dir_all(&descriptor.hls_dir);
         return Err(RemoteShareError::internal(
             "remote hls materialization produced no segments",
         ));
     }
-    let _ = std_fs::remove_dir_all(&descriptor.hls_dir);
-    std_fs::rename(&temp_dir, &descriptor.hls_dir)
-        .map_err(|error| RemoteShareError::internal(error.to_string()))?;
     parse_remote_hls_track_asset(&descriptor.playlist_path, &descriptor.hls_dir)
 }
 
