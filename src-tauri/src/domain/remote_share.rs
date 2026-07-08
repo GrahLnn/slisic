@@ -75,6 +75,7 @@ const REMOTE_P2P_DATA_CHANNEL_LABEL: &str = "slisic.audio.v1";
 const REMOTE_AUDIO_CACHE_DIR: &str = "remote-audio";
 const REMOTE_HLS_SEGMENT_SECONDS: u32 = 6;
 const REMOTE_HLS_PLAYLIST_TRACK_LIMIT: usize = 4;
+const REMOTE_HLS_MATERIALIZATION_VERSION: &str = "hls-v2";
 const REMOTE_AUDIO_GAIN_EPSILON_DB: f32 = 0.001;
 const REMOTE_CANDIDATE_WINDOW_LIMIT: usize = 96;
 const REMOTE_FIRST_SLOT_PREWARM_LIMIT: usize = 12;
@@ -1493,7 +1494,7 @@ impl RemoteShareRuntime {
         playlist.push_str("#EXT-X-VERSION:3\n");
         playlist.push_str(&format!("#EXT-X-TARGETDURATION:{target_duration}\n"));
         playlist.push_str("#EXT-X-MEDIA-SEQUENCE:0\n");
-        playlist.push_str("#EXT-X-PLAYLIST-TYPE:EVENT\n");
+        playlist.push_str("#EXT-X-PLAYLIST-TYPE:VOD\n");
         playlist.push_str("#EXT-X-ALLOW-CACHE:NO\n");
         {
             let mut sessions = self.lock_sessions()?;
@@ -1517,6 +1518,7 @@ impl RemoteShareRuntime {
                 }
             }
         }
+        playlist.push_str("#EXT-X-ENDLIST\n");
         Ok(remote_text_relay_cargo(
             "application/vnd.apple.mpegurl",
             playlist.into_bytes(),
@@ -2333,11 +2335,16 @@ fn materialize_remote_audio_blocking(
         .arg("0:a:0")
         .arg("-vn");
     if descriptor.gain_db.abs() > REMOTE_AUDIO_GAIN_EPSILON_DB {
-        command
-            .arg("-af")
-            .arg(format!("volume={:.3}dB", descriptor.gain_db));
+        command.arg("-af").arg(format!(
+            "volume={:.3}dB,asetpts=PTS-STARTPTS",
+            descriptor.gain_db
+        ));
+    } else {
+        command.arg("-af").arg("asetpts=PTS-STARTPTS");
     }
     command
+        .arg("-avoid_negative_ts")
+        .arg("make_zero")
         .arg("-c:a")
         .arg("aac")
         .arg("-b:a")
@@ -2406,10 +2413,11 @@ async fn remote_hls_materialization_descriptor(
 ) -> RemoteResult<RemoteHlsMaterializationDescriptor> {
     let audio = remote_audio_materialization_descriptor(app, track).await?;
     let cache_root = remote_audio_cache_root(app)?;
-    let hls_dir = cache_root.join(format!("{}.hls", audio.key));
+    let key = format!("{}-{}", REMOTE_HLS_MATERIALIZATION_VERSION, audio.key);
+    let hls_dir = cache_root.join(format!("{key}.hls"));
     let playlist_path = hls_dir.join("playlist.m3u8");
     Ok(RemoteHlsMaterializationDescriptor {
-        key: audio.key,
+        key,
         app: audio.app,
         track: audio.track,
         hls_dir,
