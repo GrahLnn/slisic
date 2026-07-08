@@ -27,6 +27,7 @@ fn playing_sessions(current: PlaybackTrack) -> Arc<Mutex<RemoteShareSessions>> {
         recently_played: vec![current.clone()],
         state: RemotePlaybackState::Playing,
         audio_tokens: HashMap::new(),
+        stream_token: None,
         next_token_id: 0,
     };
     session.create_audio_token(current);
@@ -77,19 +78,19 @@ fn remote_next_queue_refill_updates_only_the_current_track_session() {
         session
             .audio_tokens
             .values()
-            .any(|token| same_remote_track(&token.track, &current))
+            .any(|token| matches!(token, RemoteAudioToken::Track(track) if same_remote_track(track, &current)))
     );
     assert!(
         session
             .audio_tokens
             .values()
-            .any(|token| same_remote_track(&token.track, &first_next))
+            .any(|token| matches!(token, RemoteAudioToken::Track(track) if same_remote_track(track, &first_next)))
     );
     assert!(
         session
             .audio_tokens
             .values()
-            .any(|token| same_remote_track(&token.track, &second_next))
+            .any(|token| matches!(token, RemoteAudioToken::Track(track) if same_remote_track(track, &second_next)))
     );
 }
 
@@ -136,10 +137,51 @@ fn remote_next_queue_refill_discards_stale_session_results() {
             .map(|track| track.music_name.as_str()),
         Some(new_current.music_name.as_str())
     );
-    assert!(
-        session
-            .audio_tokens
-            .values()
-            .all(|token| !same_remote_track(&token.track, &stale_next))
-    );
+    assert!(session.audio_tokens.values().all(|token| match token {
+        RemoteAudioToken::Track(track) | RemoteAudioToken::HlsSegment { track, .. } => {
+            !same_remote_track(track, &stale_next)
+        }
+        RemoteAudioToken::HlsPlaylist => true,
+    }));
+}
+
+#[test]
+fn remote_hls_stream_token_survives_track_token_retention() {
+    let current = test_track("current");
+    let next = test_track("next");
+    let mut session = RemoteShareSession {
+        connected: true,
+        playlist_name: Some(current.playlist_name.clone()),
+        current: Some(current.clone()),
+        queue: VecDeque::from([next.clone()]),
+        recently_played: vec![current.clone()],
+        state: RemotePlaybackState::Playing,
+        audio_tokens: HashMap::new(),
+        stream_token: None,
+        next_token_id: 0,
+    };
+
+    let stream_url = session.create_stream_url();
+    let current_segment = session.create_hls_segment_token(&current, PathBuf::from("current.ts"));
+    let next_segment = session.create_hls_segment_token(&next, PathBuf::from("next.ts"));
+    session.create_audio_token(current.clone());
+    session.create_audio_token(next.clone());
+
+    session.retain_audio_tokens_for_tracks(&[current.clone(), next.clone()]);
+
+    let stream_token = stream_url
+        .strip_prefix("/api/audio/")
+        .expect("stream url should expose its token");
+    assert!(matches!(
+        session.audio_tokens.get(stream_token),
+        Some(RemoteAudioToken::HlsPlaylist)
+    ));
+    assert!(matches!(
+        session.audio_tokens.get(&current_segment),
+        Some(RemoteAudioToken::HlsSegment { track, .. }) if same_remote_track(track, &current)
+    ));
+    assert!(matches!(
+        session.audio_tokens.get(&next_segment),
+        Some(RemoteAudioToken::HlsSegment { track, .. }) if same_remote_track(track, &next)
+    ));
 }
