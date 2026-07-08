@@ -1342,7 +1342,7 @@ impl RemoteShareRuntime {
         let mut sessions = self.lock_sessions()?;
         let session = sessions.by_client.entry(client_id.to_string()).or_default();
         session.reset_for_hls_prepare(request.playlist_name);
-        let stream_url = session.create_stream_url();
+        let stream_url = session.create_fresh_stream_url();
         Ok(RemoteHlsStreamResponse {
             session: session.view(),
             stream_url,
@@ -2028,6 +2028,8 @@ impl RemoteShareSession {
         if let Some(token) = self.stream_token.take() {
             self.audio_tokens.remove(&token);
         }
+        self.audio_tokens
+            .retain(|_, token| !matches!(token, RemoteAudioToken::HlsPrimingSegment { .. }));
         self.next_token_id = self.next_token_id.saturating_add(1);
         let token = format!("hls-{}", self.next_token_id);
         self.audio_tokens

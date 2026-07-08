@@ -256,6 +256,35 @@ fn remote_hls_prepare_preserves_stream_and_priming_tokens() {
 }
 
 #[test]
+fn remote_hls_fresh_prepare_replaces_previous_stream_tokens() {
+    let current = test_track("current");
+    let mut session = RemoteShareSession::default();
+    let old_stream_url = session.create_stream_url();
+    let old_priming_token = session.create_hls_priming_segment_token(0);
+    let track_token = session.create_audio_token(current.clone());
+    let segment_token = session.create_hls_segment_token(&current, PathBuf::from("current.ts"));
+
+    session.reset_for_hls_prepare("playlist".to_string());
+    let new_stream_url = session.create_fresh_stream_url();
+    let old_stream_token = old_stream_url
+        .strip_prefix("/api/audio/")
+        .expect("old stream url should expose its token");
+    let new_stream_token = new_stream_url
+        .strip_prefix("/api/audio/")
+        .expect("new stream url should expose its token");
+
+    assert_ne!(old_stream_url, new_stream_url);
+    assert!(!session.audio_tokens.contains_key(old_stream_token));
+    assert!(!session.audio_tokens.contains_key(&old_priming_token));
+    assert!(!session.audio_tokens.contains_key(&track_token));
+    assert!(!session.audio_tokens.contains_key(&segment_token));
+    assert!(matches!(
+        session.audio_tokens.get(new_stream_token),
+        Some(RemoteAudioToken::HlsPlaylist)
+    ));
+}
+
+#[test]
 fn remote_hls_priming_segment_is_a_transport_stream() {
     for index in 0..REMOTE_HLS_PRIMING_SEGMENTS.len() {
         let cargo = remote_hls_priming_segment_cargo(index).expect("priming segment should decode");
