@@ -214,6 +214,13 @@ struct RemoteStartRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct RemotePrepareHlsRequest {
+    code: String,
+    playlist_name: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct RemoteCodeRequest {
     code: String,
 }
@@ -430,6 +437,13 @@ struct RemotePlaybackResponse {
     playback: Option<RemotePlaybackCargo>,
     prefetch: Option<RemotePlaybackCargo>,
     stream_url: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RemoteHlsStreamResponse {
+    session: RemoteSessionView,
+    stream_url: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -784,6 +798,10 @@ async fn handle_remote_relay_rpc(
         "connect" => parse_relay_params(params)
             .and_then(|request| relay_json(runtime.handle_connect(&client_id, request))),
         "bootstrap" => relay_json(runtime.handle_bootstrap(&client_id).await),
+        "session.prepare_hls" => match parse_relay_params(params) {
+            Ok(request) => relay_json(runtime.handle_prepare_hls(&client_id, request)),
+            Err(error) => Err(error),
+        },
         "session.start" => match parse_relay_params(params) {
             Ok(request) => relay_json(
                 runtime
@@ -1311,6 +1329,22 @@ impl RemoteShareRuntime {
         })
     }
 
+    fn handle_prepare_hls(
+        &self,
+        client_id: &str,
+        request: RemotePrepareHlsRequest,
+    ) -> RemoteResult<RemoteHlsStreamResponse> {
+        self.ensure_code(&request.code)?;
+        let mut sessions = self.lock_sessions()?;
+        let session = sessions.by_client.entry(client_id.to_string()).or_default();
+        session.reset_for_hls_prepare(request.playlist_name);
+        let stream_url = session.create_stream_url();
+        Ok(RemoteHlsStreamResponse {
+            session: session.view(),
+            stream_url,
+        })
+    }
+
     async fn handle_start(
         &self,
         client_id: &str,
@@ -1321,15 +1355,7 @@ impl RemoteShareRuntime {
         {
             let mut sessions = self.lock_sessions()?;
             let session = sessions.by_client.entry(client_id.to_string()).or_default();
-            session.connected = true;
-            session.playlist_name = Some(request.playlist_name.clone());
-            session.current = None;
-            session.queue.clear();
-            session.recently_played.clear();
-            session.state = RemotePlaybackState::Preparing;
-            session.audio_tokens.clear();
-            session.stream_token = None;
-            session.hls_timeline.clear();
+            session.reset_for_hls_prepare(request.playlist_name.clone());
         }
 
         let initial = match resolve_remote_initial_track(&self.app, &request.playlist_name).await {
@@ -1991,6 +2017,22 @@ impl RemoteShareSession {
         }
     }
 
+    fn reset_for_hls_prepare(&mut self, playlist_name: String) {
+        self.connected = true;
+        self.playlist_name = Some(playlist_name);
+        self.current = None;
+        self.queue.clear();
+        self.recently_played.clear();
+        self.state = RemotePlaybackState::Preparing;
+        self.hls_timeline.clear();
+        let stream_token = self.stream_token.clone();
+        self.audio_tokens.retain(|token_id, token| match token {
+            RemoteAudioToken::HlsPlaylist => stream_token.as_deref() == Some(token_id.as_str()),
+            RemoteAudioToken::HlsPrimingSegment => stream_token.is_some(),
+            RemoteAudioToken::Track(_) | RemoteAudioToken::HlsSegment { .. } => false,
+        });
+    }
+
     fn stream_url(&self) -> Option<String> {
         self.stream_token
             .as_ref()
@@ -2228,9 +2270,7 @@ fn remote_hls_playlist_tracks(
     session: &mut RemoteShareSession,
 ) -> RemoteResult<Vec<PlaybackTrack>> {
     let Some(current) = session.current.clone() else {
-        return Err(RemoteShareError::not_found(
-            "remote session has no current track",
-        ));
+        return Ok(Vec::new());
     };
     push_unique_remote_track(&mut session.hls_timeline, current.clone());
     let current_index = session

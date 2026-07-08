@@ -206,6 +206,47 @@ fn remote_hls_stream_url_is_stable_for_the_session() {
 }
 
 #[test]
+fn remote_hls_playlist_can_prime_before_current_track_exists() {
+    let mut session = RemoteShareSession {
+        connected: true,
+        playlist_name: Some("playlist".to_string()),
+        current: None,
+        queue: VecDeque::new(),
+        recently_played: Vec::new(),
+        state: RemotePlaybackState::Preparing,
+        audio_tokens: HashMap::new(),
+        stream_token: None,
+        hls_timeline: Vec::new(),
+        next_token_id: 0,
+    };
+    session.create_stream_url();
+
+    let tracks = remote_hls_playlist_tracks(&mut session).expect("priming hls should be available");
+
+    assert!(tracks.is_empty());
+}
+
+#[test]
+fn remote_hls_prepare_preserves_stream_and_priming_tokens() {
+    let current = test_track("current");
+    let mut session = RemoteShareSession::default();
+    let stream_url = session.create_stream_url();
+    let priming_token = session.create_hls_priming_segment_token();
+    let track_token = session.create_audio_token(current.clone());
+    let segment_token = session.create_hls_segment_token(&current, PathBuf::from("current.ts"));
+
+    session.reset_for_hls_prepare("playlist".to_string());
+
+    assert_eq!(session.stream_url().as_deref(), Some(stream_url.as_str()));
+    assert!(matches!(
+        session.audio_tokens.get(&priming_token),
+        Some(RemoteAudioToken::HlsPrimingSegment)
+    ));
+    assert!(!session.audio_tokens.contains_key(&track_token));
+    assert!(!session.audio_tokens.contains_key(&segment_token));
+}
+
+#[test]
 fn remote_hls_priming_segment_is_a_transport_stream() {
     let cargo = remote_hls_priming_segment_cargo().expect("priming segment should decode");
 
