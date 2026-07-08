@@ -396,3 +396,43 @@ fn remote_hls_stream_token_survives_track_token_retention() {
         Some(RemoteAudioToken::HlsSegment { track, .. }) if same_remote_track(track, &next)
     ));
 }
+
+#[test]
+fn remote_hls_segment_token_does_not_imply_playback_transition() {
+    let current = test_track("current");
+    let next = test_track("next");
+    let mut session = RemoteShareSession {
+        connected: true,
+        playlist_name: Some(current.playlist_name.clone()),
+        current: Some(current.clone()),
+        queue: VecDeque::from([next.clone()]),
+        recently_played: vec![current.clone()],
+        state: RemotePlaybackState::Playing,
+        audio_tokens: HashMap::new(),
+        stream_token: None,
+        hls_timeline: vec![current.clone(), next.clone()],
+        hls_priming_started_at: None,
+        hls_priming_published_segments: 0,
+        next_token_id: 0,
+    };
+
+    session.create_hls_segment_token(&next, PathBuf::from("next.ts"));
+
+    assert_eq!(
+        session
+            .current
+            .as_ref()
+            .map(|track| track.music_name.as_str()),
+        Some("current")
+    );
+    assert_eq!(session.queue.len(), 1);
+    assert_eq!(session.queue[0].music_name, next.music_name);
+    assert_eq!(
+        session
+            .recently_played
+            .iter()
+            .map(|track| track.music_name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["current"]
+    );
+}

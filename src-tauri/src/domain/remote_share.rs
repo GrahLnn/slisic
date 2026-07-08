@@ -343,11 +343,6 @@ enum RemoteRelayOutbound {
         client_id: String,
         frontier: Vec<RemotePlaybackCargo>,
     },
-    SessionPlaybackUpdated {
-        client_id: String,
-        session: RemoteSessionView,
-        playback: RemotePlaybackCargo,
-    },
     P2pSignal {
         client_id: String,
         signal: RemoteP2pSignal,
@@ -1452,7 +1447,7 @@ impl RemoteShareRuntime {
         client_id: &str,
         token: String,
         range: Option<String>,
-        relay_events: Option<RemoteRelayEventSender>,
+        _relay_events: Option<RemoteRelayEventSender>,
     ) -> RemoteResult<RemoteAudioRelayCargo> {
         {
             let settings = self.lock_settings()?;
@@ -1482,9 +1477,8 @@ impl RemoteShareRuntime {
             RemoteAudioToken::HlsPrimingSegment { index } => {
                 remote_hls_priming_segment_cargo(index)
             }
-            RemoteAudioToken::HlsSegment { track, path } => {
-                self.observe_remote_hls_segment_request(client_id, &track, relay_events)
-                    .await;
+            RemoteAudioToken::HlsSegment { track: _, path } => {
+                self.observe_remote_hls_segment_request(client_id).await;
                 read_file_relay_chunk_with_content_type(
                     path,
                     range.as_deref(),
@@ -1577,56 +1571,10 @@ impl RemoteShareRuntime {
         ))
     }
 
-    async fn observe_remote_hls_segment_request(
-        &self,
-        client_id: &str,
-        track: &PlaybackTrack,
-        relay_events: Option<RemoteRelayEventSender>,
-    ) {
-        let transition = {
-            let Ok(mut sessions) = self.lock_sessions() else {
-                return;
-            };
-            let Some(session) = sessions.by_client.get_mut(client_id) else {
-                return;
-            };
-            if session
-                .current
-                .as_ref()
-                .is_some_and(|current| same_remote_track(current, track))
-            {
-                return;
-            }
-            session.current = Some(track.clone());
-            session
-                .queue
-                .retain(|queued| !same_remote_track(queued, track));
-            observe_remote_recent_track(&mut session.recently_played, track.clone());
-            session.state = RemotePlaybackState::Playing;
-            let playback = session.create_playback_cargo(track);
-            let session_view = session.view();
-            let recent_history = session.recently_played.clone();
-            Some((session_view, playback, recent_history))
-        };
-        let Some((session_view, playback, recent_history)) = transition else {
-            return;
-        };
-        if let Some(events) = relay_events.as_ref() {
-            let event = RemoteRelayOutbound::SessionPlaybackUpdated {
-                client_id: client_id.to_string(),
-                session: session_view,
-                playback,
-            };
-            if let Ok(frame) = serde_json::to_string(&event) {
-                let _ = events.send(frame);
-            }
-        }
-        self.spawn_remote_next_queue_fill(
-            client_id.to_string(),
-            track.clone(),
-            recent_history,
-            relay_events,
-        );
+    async fn observe_remote_hls_segment_request(&self, _client_id: &str) {
+        // HLS segment requests are transport/cache observations. Safari can prefetch or
+        // re-request segments out of audible order, so playback state advances only through
+        // explicit session commands.
     }
     async fn create_remote_p2p_answer(
         &self,
