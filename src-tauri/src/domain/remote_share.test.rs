@@ -146,6 +146,64 @@ fn remote_next_queue_refill_discards_stale_session_results() {
 }
 
 #[test]
+fn remote_hls_window_starts_at_current_track() {
+    let old = test_track("old");
+    let current = test_track("current");
+    let duplicate_current = current.clone();
+    let next = test_track("next");
+    let session = RemoteShareSession {
+        connected: true,
+        playlist_name: Some(current.playlist_name.clone()),
+        current: Some(current.clone()),
+        queue: VecDeque::from([duplicate_current, next.clone()]),
+        recently_played: vec![old.clone(), current.clone()],
+        state: RemotePlaybackState::Playing,
+        audio_tokens: HashMap::new(),
+        stream_token: None,
+        next_token_id: 0,
+    };
+
+    let tracks = remote_hls_window_tracks(&session).expect("hls window should be available");
+
+    assert_eq!(tracks.len(), 2);
+    assert_eq!(tracks[0].music_name, current.music_name);
+    assert_eq!(tracks[1].music_name, next.music_name);
+    assert!(tracks.iter().all(|track| !same_remote_track(track, &old)));
+}
+
+#[test]
+fn remote_hls_fresh_stream_url_replaces_previous_playlist_token() {
+    let current = test_track("current");
+    let mut session = RemoteShareSession {
+        connected: true,
+        playlist_name: Some(current.playlist_name.clone()),
+        current: Some(current),
+        queue: VecDeque::new(),
+        recently_played: Vec::new(),
+        state: RemotePlaybackState::Playing,
+        audio_tokens: HashMap::new(),
+        stream_token: None,
+        next_token_id: 0,
+    };
+
+    let first_url = session.create_fresh_stream_url();
+    let second_url = session.create_fresh_stream_url();
+    let first_token = first_url
+        .strip_prefix("/api/audio/")
+        .expect("first stream url should expose its token");
+    let second_token = second_url
+        .strip_prefix("/api/audio/")
+        .expect("second stream url should expose its token");
+
+    assert_ne!(first_token, second_token);
+    assert!(!session.audio_tokens.contains_key(first_token));
+    assert!(matches!(
+        session.audio_tokens.get(second_token),
+        Some(RemoteAudioToken::HlsPlaylist)
+    ));
+}
+
+#[test]
 fn remote_hls_stream_token_survives_track_token_retention() {
     let current = test_track("current");
     let next = test_track("next");
