@@ -162,6 +162,7 @@ struct RemoteShareSession {
     state: RemotePlaybackState,
     audio_tokens: HashMap<String, RemoteAudioToken>,
     stream_token: Option<String>,
+    hls_timeline: Vec<PlaybackTrack>,
     next_token_id: u64,
 }
 
@@ -1325,6 +1326,7 @@ impl RemoteShareRuntime {
             session.state = RemotePlaybackState::Preparing;
             session.audio_tokens.clear();
             session.stream_token = None;
+            session.hls_timeline.clear();
         }
 
         let initial = match resolve_remote_initial_track(&self.app, &request.playlist_name).await {
@@ -1358,6 +1360,8 @@ impl RemoteShareRuntime {
                 session.current = None;
                 session.state = RemotePlaybackState::Ready;
                 session.audio_tokens.clear();
+                session.stream_token = None;
+                session.hls_timeline.clear();
                 let response = RemotePlaybackResponse {
                     session: session.view(),
                     playback: None,
@@ -1397,6 +1401,7 @@ impl RemoteShareRuntime {
         session.state = RemotePlaybackState::Ready;
         session.audio_tokens.clear();
         session.stream_token = None;
+        session.hls_timeline.clear();
         Ok(session.view())
     }
 
@@ -1451,14 +1456,14 @@ impl RemoteShareRuntime {
         client_id: &str,
     ) -> RemoteResult<RemoteAudioRelayCargo> {
         let tracks = {
-            let sessions = self.lock_sessions()?;
+            let mut sessions = self.lock_sessions()?;
             let session = sessions
                 .by_client
-                .get(client_id)
+                .get_mut(client_id)
                 .ok_or(RemoteShareError::not_found(
                     "remote client session not found",
                 ))?;
-            remote_hls_window_tracks(session)?
+            remote_hls_playlist_tracks(session)?
         };
         let mut assets = Vec::new();
         for track in tracks {
@@ -1478,7 +1483,7 @@ impl RemoteShareRuntime {
         playlist.push_str("#EXT-X-VERSION:3\n");
         playlist.push_str(&format!("#EXT-X-TARGETDURATION:{target_duration}\n"));
         playlist.push_str("#EXT-X-MEDIA-SEQUENCE:0\n");
-        playlist.push_str("#EXT-X-PLAYLIST-TYPE:VOD\n");
+        playlist.push_str("#EXT-X-PLAYLIST-TYPE:EVENT\n");
         playlist.push_str("#EXT-X-ALLOW-CACHE:NO\n");
         {
             let mut sessions = self.lock_sessions()?;
@@ -1502,7 +1507,6 @@ impl RemoteShareRuntime {
                 }
             }
         }
-        playlist.push_str("#EXT-X-ENDLIST\n");
         Ok(remote_text_relay_cargo(
             "application/vnd.apple.mpegurl",
             playlist.into_bytes(),
@@ -1806,6 +1810,8 @@ impl RemoteShareRuntime {
         session.queue.clear();
         session.state = RemotePlaybackState::Ready;
         session.audio_tokens.clear();
+        session.stream_token = None;
+        session.hls_timeline.clear();
         Ok(())
     }
 
@@ -1827,7 +1833,7 @@ impl RemoteShareRuntime {
         observe_remote_recent_track(&mut session.recently_played, current.clone());
         session.state = RemotePlaybackState::Playing;
         let playback = session.create_playback_cargo(&current);
-        let stream_url = session.create_fresh_stream_url();
+        let stream_url = session.create_stream_url();
         let prefetch = session
             .queue
             .front()
@@ -2011,11 +2017,20 @@ impl RemoteShareSession {
 
     fn retain_audio_tokens_for_tracks(&mut self, retained_tracks: &[PlaybackTrack]) {
         let stream_token = self.stream_token.clone();
+        let hls_timeline = self.hls_timeline.clone();
         self.audio_tokens.retain(|token_id, token| match token {
-            RemoteAudioToken::Track(track) | RemoteAudioToken::HlsSegment { track, .. } => {
+            RemoteAudioToken::Track(track) => {
                 retained_tracks
                     .iter()
                     .any(|retained| same_remote_track(retained, track))
+            }
+            RemoteAudioToken::HlsSegment { track, .. } => {
+                retained_tracks
+                    .iter()
+                    .any(|retained| same_remote_track(retained, track))
+                    || hls_timeline
+                        .iter()
+                        .any(|retained| same_remote_track(retained, track))
             }
             RemoteAudioToken::HlsPlaylist => stream_token.as_deref() == Some(token_id.as_str()),
         });
@@ -2152,21 +2167,35 @@ fn same_remote_track(left: &PlaybackTrack, right: &PlaybackTrack) -> bool {
             && left.end_ms == right.end_ms)
 }
 
-fn remote_hls_window_tracks(session: &RemoteShareSession) -> RemoteResult<Vec<PlaybackTrack>> {
+fn remote_hls_playlist_tracks(session: &mut RemoteShareSession) -> RemoteResult<Vec<PlaybackTrack>> {
     let Some(current) = session.current.clone() else {
         return Err(RemoteShareError::not_found(
             "remote session has no current track",
         ));
     };
-    let mut tracks = Vec::new();
-    push_unique_remote_track(&mut tracks, current);
+    push_unique_remote_track(&mut session.hls_timeline, current.clone());
+    let current_index = session
+        .hls_timeline
+        .iter()
+        .position(|track| same_remote_track(track, &current))
+        .unwrap_or_else(|| session.hls_timeline.len().saturating_sub(1));
+    let mut available_from_current = session.hls_timeline.len().saturating_sub(current_index);
     for track in session.queue.iter() {
-        push_unique_remote_track(&mut tracks, track.clone());
-        if tracks.len() >= REMOTE_HLS_PLAYLIST_TRACK_LIMIT {
+        if available_from_current >= REMOTE_HLS_PLAYLIST_TRACK_LIMIT {
             break;
         }
+        let before = session.hls_timeline.len();
+        push_unique_remote_track(&mut session.hls_timeline, track.clone());
+        if session.hls_timeline.len() > before {
+            available_from_current = available_from_current.saturating_add(1);
+        }
     }
-    Ok(tracks)
+    if session.hls_timeline.is_empty() {
+        return Err(RemoteShareError::not_found(
+            "remote session has no hls timeline tracks",
+        ));
+    }
+    Ok(session.hls_timeline.clone())
 }
 
 fn push_unique_remote_track(tracks: &mut Vec<PlaybackTrack>, track: PlaybackTrack) {

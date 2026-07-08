@@ -28,6 +28,7 @@ fn playing_sessions(current: PlaybackTrack) -> Arc<Mutex<RemoteShareSessions>> {
         state: RemotePlaybackState::Playing,
         audio_tokens: HashMap::new(),
         stream_token: None,
+        hls_timeline: Vec::new(),
         next_token_id: 0,
     };
     session.create_audio_token(current);
@@ -146,12 +147,12 @@ fn remote_next_queue_refill_discards_stale_session_results() {
 }
 
 #[test]
-fn remote_hls_window_starts_at_current_track() {
+fn remote_hls_timeline_starts_at_current_track() {
     let old = test_track("old");
     let current = test_track("current");
     let duplicate_current = current.clone();
     let next = test_track("next");
-    let session = RemoteShareSession {
+    let mut session = RemoteShareSession {
         connected: true,
         playlist_name: Some(current.playlist_name.clone()),
         current: Some(current.clone()),
@@ -160,10 +161,11 @@ fn remote_hls_window_starts_at_current_track() {
         state: RemotePlaybackState::Playing,
         audio_tokens: HashMap::new(),
         stream_token: None,
+        hls_timeline: Vec::new(),
         next_token_id: 0,
     };
 
-    let tracks = remote_hls_window_tracks(&session).expect("hls window should be available");
+    let tracks = remote_hls_playlist_tracks(&mut session).expect("hls window should be available");
 
     assert_eq!(tracks.len(), 2);
     assert_eq!(tracks[0].music_name, current.music_name);
@@ -172,7 +174,7 @@ fn remote_hls_window_starts_at_current_track() {
 }
 
 #[test]
-fn remote_hls_fresh_stream_url_replaces_previous_playlist_token() {
+fn remote_hls_stream_url_is_stable_for_the_session() {
     let current = test_track("current");
     let mut session = RemoteShareSession {
         connected: true,
@@ -183,11 +185,12 @@ fn remote_hls_fresh_stream_url_replaces_previous_playlist_token() {
         state: RemotePlaybackState::Playing,
         audio_tokens: HashMap::new(),
         stream_token: None,
+        hls_timeline: Vec::new(),
         next_token_id: 0,
     };
 
-    let first_url = session.create_fresh_stream_url();
-    let second_url = session.create_fresh_stream_url();
+    let first_url = session.create_stream_url();
+    let second_url = session.create_stream_url();
     let first_token = first_url
         .strip_prefix("/api/audio/")
         .expect("first stream url should expose its token");
@@ -195,12 +198,55 @@ fn remote_hls_fresh_stream_url_replaces_previous_playlist_token() {
         .strip_prefix("/api/audio/")
         .expect("second stream url should expose its token");
 
-    assert_ne!(first_token, second_token);
-    assert!(!session.audio_tokens.contains_key(first_token));
+    assert_eq!(first_token, second_token);
     assert!(matches!(
-        session.audio_tokens.get(second_token),
+        session.audio_tokens.get(first_token),
         Some(RemoteAudioToken::HlsPlaylist)
     ));
+}
+
+#[test]
+fn remote_hls_timeline_appends_new_queue_without_replacing_the_stream() {
+    let current = test_track("current");
+    let first_next = test_track("first-next");
+    let second_next = test_track("second-next");
+    let mut session = RemoteShareSession {
+        connected: true,
+        playlist_name: Some(current.playlist_name.clone()),
+        current: Some(current.clone()),
+        queue: VecDeque::from([first_next.clone()]),
+        recently_played: vec![current.clone()],
+        state: RemotePlaybackState::Playing,
+        audio_tokens: HashMap::new(),
+        stream_token: None,
+        hls_timeline: Vec::new(),
+        next_token_id: 0,
+    };
+
+    let stream_url = session.create_stream_url();
+    let first_window =
+        remote_hls_playlist_tracks(&mut session).expect("first hls window should be available");
+    assert_eq!(
+        first_window
+            .iter()
+            .map(|track| track.music_name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["current", "first-next"]
+    );
+
+    session.current = Some(first_next.clone());
+    session.queue = VecDeque::from([second_next.clone()]);
+    let second_window =
+        remote_hls_playlist_tracks(&mut session).expect("second hls window should be available");
+
+    assert_eq!(session.create_stream_url(), stream_url);
+    assert_eq!(
+        second_window
+            .iter()
+            .map(|track| track.music_name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["current", "first-next", "second-next"]
+    );
 }
 
 #[test]
@@ -216,6 +262,7 @@ fn remote_hls_stream_token_survives_track_token_retention() {
         state: RemotePlaybackState::Playing,
         audio_tokens: HashMap::new(),
         stream_token: None,
+        hls_timeline: vec![current.clone(), next.clone()],
         next_token_id: 0,
     };
 
