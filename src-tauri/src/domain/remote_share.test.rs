@@ -142,7 +142,7 @@ fn remote_next_queue_refill_discards_stale_session_results() {
         RemoteAudioToken::Track(track) | RemoteAudioToken::HlsSegment { track, .. } => {
             !same_remote_track(track, &stale_next)
         }
-        RemoteAudioToken::HlsPlaylist | RemoteAudioToken::HlsPrimingSegment => true,
+        RemoteAudioToken::HlsPlaylist | RemoteAudioToken::HlsPrimingSegment { .. } => true,
     }));
 }
 
@@ -231,7 +231,7 @@ fn remote_hls_prepare_preserves_stream_and_priming_tokens() {
     let current = test_track("current");
     let mut session = RemoteShareSession::default();
     let stream_url = session.create_stream_url();
-    let priming_token = session.create_hls_priming_segment_token();
+    let priming_token = session.create_hls_priming_segment_token(0);
     let track_token = session.create_audio_token(current.clone());
     let segment_token = session.create_hls_segment_token(&current, PathBuf::from("current.ts"));
 
@@ -240,7 +240,7 @@ fn remote_hls_prepare_preserves_stream_and_priming_tokens() {
     assert_eq!(session.stream_url().as_deref(), Some(stream_url.as_str()));
     assert!(matches!(
         session.audio_tokens.get(&priming_token),
-        Some(RemoteAudioToken::HlsPrimingSegment)
+        Some(RemoteAudioToken::HlsPrimingSegment { index: 0 })
     ));
     assert!(!session.audio_tokens.contains_key(&track_token));
     assert!(!session.audio_tokens.contains_key(&segment_token));
@@ -248,11 +248,13 @@ fn remote_hls_prepare_preserves_stream_and_priming_tokens() {
 
 #[test]
 fn remote_hls_priming_segment_is_a_transport_stream() {
-    let cargo = remote_hls_priming_segment_cargo().expect("priming segment should decode");
+    for index in 0..REMOTE_HLS_PRIMING_SEGMENTS.len() {
+        let cargo = remote_hls_priming_segment_cargo(index).expect("priming segment should decode");
 
-    assert_eq!(cargo.content_type, "video/mp2t");
-    assert!(cargo.content_length > 0);
-    assert!(!cargo.body.is_empty());
+        assert_eq!(cargo.content_type, "video/mp2t");
+        assert!(cargo.content_length > 0);
+        assert!(!cargo.body.is_empty());
+    }
 }
 
 #[test]
