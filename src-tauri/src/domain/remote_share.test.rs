@@ -377,15 +377,48 @@ fn remote_hls_real_prefix_clock_starts_when_real_media_is_first_published() {
 }
 
 #[test]
-fn remote_hls_native_anchor_releases_the_materialized_suffix() {
+fn remote_hls_native_anchor_exposes_a_bounded_playback_runway() {
     let mut session = RemoteShareSession::default();
+    session.hls_real_prefix_started_at = Some(Instant::now() - Duration::from_secs(30));
 
     let initial_prefix_seconds = session.advance_hls_real_prefix_window(true, 2);
     session.anchor_hls_consumer();
     let anchored_prefix_seconds = session.advance_hls_real_prefix_window(true, 2);
 
     assert!(initial_prefix_seconds.is_finite());
-    assert!(anchored_prefix_seconds.is_infinite());
+    assert!(anchored_prefix_seconds.is_finite());
+    assert!(anchored_prefix_seconds > initial_prefix_seconds);
+    assert!(anchored_prefix_seconds >= f64::from(REMOTE_HLS_ANCHORED_RUNWAY_SECONDS) + 30.0);
+    assert!(anchored_prefix_seconds < f64::from(REMOTE_HLS_ANCHORED_RUNWAY_SECONDS) + 31.0);
+}
+
+#[test]
+fn remote_hls_bounded_runway_does_not_publish_a_long_successor_in_full() {
+    let current = RemoteHlsTrackAsset {
+        target_duration: 2,
+        segments: (0..105)
+            .map(|index| RemoteHlsSegmentAsset {
+                duration_seconds: 2.0,
+                path: PathBuf::from(format!("current-{index}.ts")),
+            })
+            .collect(),
+    };
+    let long_successor = RemoteHlsTrackAsset {
+        target_duration: 2,
+        segments: (0..3_000)
+            .map(|index| RemoteHlsSegmentAsset {
+                duration_seconds: 2.0,
+                path: PathBuf::from(format!("successor-{index}.ts")),
+            })
+            .collect(),
+    };
+
+    let counts = remote_hls_visible_segment_counts(
+        [&current, &long_successor],
+        f64::from(REMOTE_HLS_ANCHORED_RUNWAY_SECONDS),
+    );
+
+    assert_eq!(counts, vec![105, 345]);
 }
 
 #[test]

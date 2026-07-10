@@ -159,9 +159,11 @@ projections of this same cocone; neither may maintain a second sequence.
 
 Publication has two monotone phases. `Unanchored` exposes only the finite startup prefix so a
 native live player cannot choose the end of a complete track. The first matching native
-`playing` observation induces `session.anchor_hls`; `Anchored` then exposes the complete
-materialized suffix. This transition is irreversible inside one epoch and depends on media
-evidence rather than network classification or a guessed buffering threshold.
+`playing` observation induces `session.anchor_hls`; `Anchored` then exposes a bounded playback
+runway ahead of the monotone publication clock. The runway follows Apple's live-playlist
+guidance of at least fifteen minutes of available content. This transition is irreversible
+inside one epoch and depends on media evidence rather than network classification. Materialized
+asset duration cannot move the visible live edge by itself.
 
 ### 5.3 `AudibleState` is a pullback
 
@@ -499,8 +501,8 @@ first recommendation result to that prepared epoch. Every generated HLS playlist
 timeline event is indexed by the same epoch.
 
 `session.anchor_hls(epoch)` records the first native `playing` evidence for that resource.
-It does not change playback state or allocate media; it only releases the already
-materialized append-only suffix for native buffering.
+It does not change playback state or allocate media; it expands the append-only publication
+frontier from startup hold-back to the bounded playback runway.
 
 The HTTP playlist is append-only for one epoch. Segment URLs are immutable. The response
 uses no-store semantics for the playlist and immutable semantics for materialized segments.
@@ -515,9 +517,11 @@ Materialization and publication are different morphisms. A complete track asset 
 exist in the host cache, but the media playlist exposes only one monotone prefix of the
 materialized timeline. The real-media publication clock starts when that prefix is first
 exposed, not when preparation starts. Its initial frontier is one native HLS hold-back window
-(`3 * TARGETDURATION`) and advances with session time. Therefore an EVENT playlist cannot
-present an entire track as its initial live edge, while the same stable resource can still
-append future tracks without changing `audio.src`.
+(`3 * TARGETDURATION`). After native anchoring, the frontier advances with session time while
+keeping fifteen minutes of materialized runway. Therefore an EVENT playlist cannot present an
+entire track as its initial live edge or jump hours forward merely because a long successor is
+already cached, while the same stable resource can still append future tracks without changing
+`audio.src`.
 
 ## 11. State Sequence
 
@@ -543,7 +547,7 @@ sequenceDiagram
   S-->>H: timeline_updated(epoch, revision, entries)
   A-->>H: native playing/timeupdate
   H->>S: session.anchor_hls(epoch)
-  Note over S: release materialized suffix
+  Note over S: expose bounded clock-relative runway
   H->>H: establish Media Session shell
   H->>H: locate entry, then project page + track metadata
   H->>R: session.next(epoch, crossedEntryId)
@@ -580,10 +584,12 @@ events and verify:
 7. UI and Media Session track metadata use the same located entry.
 8. Playing is impossible without active-source native evidence.
 9. Priming time never appears as track-local progress.
-10. Each entry boundary commits `session.next` at most once.
-11. Recovery never changes source, epoch, or current entry.
-12. Stop rejects all late results from the stopped epoch.
-13. Relay/P2P/blob availability cannot alter playback semantics because those playback
+10. Anchored publication remains bounded by the monotone clock plus playback runway.
+11. Materializing a longer successor cannot jump the visible live edge beyond that runway.
+12. Each entry boundary commits `session.next` at most once.
+13. Recovery never changes source, epoch, or current entry.
+14. Stop rejects all late results from the stopped epoch.
+15. Relay/P2P/blob availability cannot alter playback semantics because those playback
     branches do not exist.
 
 Minimal counterexample traces must include epoch, source URL, timeline revision, entry ID,

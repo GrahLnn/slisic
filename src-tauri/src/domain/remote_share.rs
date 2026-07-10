@@ -67,6 +67,10 @@ const REMOTE_HLS_PRIMING_SEGMENT_SECONDS: f32 = REMOTE_HLS_SEGMENT_SECONDS as f3
 const REMOTE_HLS_PRIMING_TARGET_DURATION: u32 = REMOTE_HLS_SEGMENT_SECONDS;
 const REMOTE_HLS_PRIMING_LOOKAHEAD_SEGMENTS: usize = 6;
 const REMOTE_HLS_LIVE_HOLDBACK_SEGMENTS: u32 = 3;
+// Apple recommends at least fifteen minutes of content in a live playlist. Keeping that
+// duration ahead of the publication clock survives background reload gaps without exposing an
+// arbitrarily long materialized successor as the native player's live edge.
+const REMOTE_HLS_ANCHORED_RUNWAY_SECONDS: u32 = 15 * 60;
 const REMOTE_HLS_PRIMING_SEGMENTS: [RemoteHlsPrimingSegmentAsset; 6] = [
     RemoteHlsPrimingSegmentAsset::new(2.005_333, include_bytes!("remote_hls_prime_0.ts")),
     RemoteHlsPrimingSegmentAsset::new(2.005_333, include_bytes!("remote_hls_prime_1.ts")),
@@ -1916,18 +1920,17 @@ impl RemoteShareSession {
         if !real_prefix_ready {
             return 0.0;
         }
-        if self.hls_consumer_anchored {
-            return f64::INFINITY;
-        }
         let started_at = self
             .hls_real_prefix_started_at
             .get_or_insert_with(Instant::now);
-        started_at.elapsed().as_secs_f64()
-            + f64::from(
-                target_duration
-                    .max(1)
-                    .saturating_mul(REMOTE_HLS_LIVE_HOLDBACK_SEGMENTS),
-            )
+        let lookahead_seconds = if self.hls_consumer_anchored {
+            REMOTE_HLS_ANCHORED_RUNWAY_SECONDS
+        } else {
+            target_duration
+                .max(1)
+                .saturating_mul(REMOTE_HLS_LIVE_HOLDBACK_SEGMENTS)
+        };
+        started_at.elapsed().as_secs_f64() + f64::from(lookahead_seconds)
     }
 
     fn anchor_hls_consumer(&mut self) {
