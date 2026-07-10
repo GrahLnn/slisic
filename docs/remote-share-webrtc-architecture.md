@@ -44,6 +44,7 @@ or routes inside this object. They are not alternative playback engines.
 | `ControlPlane` | Relay WebSocket messages: liveness, RPC, ICE configuration, and signaling. |
 | `MediaPlane` | WebRTC SRTP packets flowing directly or through an ICE-selected TURN server. |
 | `PersistentTrack` | The one Host `TrackLocalStaticRTP` and browser remote audio track. |
+| `PageSession` | Ephemeral client identity owned by one Hero page and all of its Relay reconnects. |
 | `PlayoutGeneration` | Monotone identity of the Host track currently allowed to end. |
 | `IdleFrame` | A valid 20 ms Opus silence frame on the persistent RTP timeline. |
 | `EncodedFrame` | A 20 ms Opus payload produced in real time by FFmpeg. |
@@ -128,7 +129,9 @@ Every packet produced behind the one in-flight write maps to one pending value. 
 uniquely replaces the older pending value because live playback values current audio over stale
 backlog. The in-flight write remains affine and is never cancelled by the 20 ms clock; once it
 finishes, the writer samples the latest pending packet. Network effects cannot delay Play, Idle,
-Shutdown, FFmpeg packet intake, or RTP clock allocation.
+Shutdown, FFmpeg packet intake, or RTP clock allocation. A transport epoch boundary is the only
+operation allowed to cancel an in-flight write: `Disconnected` or `Failed` suspends publication,
+and a later `Connected` epoch samples the latest packet without rewinding the playout clock.
 
 ### `CurrentTrack` is a pullback
 
@@ -146,10 +149,10 @@ Late encoder completion from a stopped or replaced track has no element in this 
 
 ### Relay is the initial signaling factorization
 
-Every browser-to-Host signaling message factors uniquely through a `(code, clientId)` Relay
-pair. The Relay overwrites client identity on client-originated frames and directs Host frames
-to exactly one client. No media morphism factors through this object because the Relay protocol
-has no media constructors.
+Every browser-to-Host signaling message factors uniquely through a `(code, pageSession)` Relay
+pair. One page session survives Relay reconnect but not page replacement. The Relay overwrites
+client identity on client-originated frames and directs Host frames to exactly one page session.
+No media morphism factors through this object because the Relay protocol has no media constructors.
 
 ### ICE recovery is an endomorphism
 
@@ -315,7 +318,10 @@ sequenceDiagram
 
 - RTP append is associative, non-commutative, and has the empty prefix as identity.
 - Pending network publication is idempotent under replacement by the same packet and coalesces
-  older unstarted writes into the newest packet without cancelling the in-flight write.
+  older unstarted writes into the newest packet without cancelling the in-flight write inside one
+  transport epoch.
+- Transport loss terminates exactly one publication epoch; reconnect starts a new epoch from the
+  latest RTP packet while preserving Host playout time.
 - Silence insertion and real-payload insertion share the same clock allocator.
 - Queue refill is idempotent for a captured current track and rejected after current changes.
 - Track-end acceptance is invariant under duplicate and late completion events.
@@ -343,6 +349,10 @@ exists from network labels, metadata, or UI timers to audible playback truth.
 12. Host-owned track advance does not depend on foreground browser JavaScript.
 13. A blocked RTP write cannot delay Play, Idle, Shutdown, or encoder packet intake.
 14. New RTP packets coalesce behind one in-flight write and cannot starve that write.
+15. RTP publication is absent before `Connected`, suspended on transport loss, and recreated from
+    the latest packet after reconnect.
+16. Relay reconnect preserves page-session identity; page replacement allocates a fresh identity.
+17. Each transport epoch logs at most one first committed RTP packet as publication evidence.
 
 ## Verification
 

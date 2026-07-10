@@ -79,7 +79,11 @@ async fn pending_rtp_packets_coalesce_while_one_write_is_in_flight() -> Result<(
         completions: tokio::sync::Mutex::new(completion_receiver),
     });
     let (packets, packet_receiver) = tokio::sync::watch::channel(None);
-    let task = tokio::spawn(run_latest_rtp_writes(writer, packet_receiver));
+    let task = tokio::spawn(run_latest_rtp_writes(
+        writer,
+        packet_receiver,
+        Arc::new(AtomicU16::new(0)),
+    ));
 
     packets.send_replace(Some(test_rtp_packet(10)));
     assert_eq!(
@@ -114,7 +118,11 @@ async fn rtp_sequence_advances_only_after_a_committed_write() -> Result<()> {
         completions: tokio::sync::Mutex::new(completion_receiver),
     });
     let (packets, packet_receiver) = tokio::sync::watch::channel(None);
-    let task = tokio::spawn(run_latest_rtp_writes(writer, packet_receiver));
+    let task = tokio::spawn(run_latest_rtp_writes(
+        writer,
+        packet_receiver,
+        Arc::new(AtomicU16::new(0)),
+    ));
 
     packets.send_replace(Some(test_rtp_packet(10)));
     assert_eq!(
@@ -153,7 +161,44 @@ async fn playout_shutdown_is_responsive_while_network_write_is_blocked() -> Resu
         events,
     ));
 
+    commands.send(PlayoutCommand::TransportReady)?;
     tokio::time::timeout(Duration::from_secs(1), observed_writes.recv()).await?;
+    commands.send(PlayoutCommand::Shutdown)?;
+    tokio::time::timeout(Duration::from_secs(1), task).await??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn transport_epoch_replaces_a_blocked_write_with_the_latest_packet() -> Result<()> {
+    let (writes, mut observed_writes) = unbounded_channel();
+    let writer = Arc::new(BlockingRtpWriter { writes });
+    let (commands, command_receiver) = unbounded_channel();
+    let (events, _event_receiver) = unbounded_channel();
+    let task = tokio::spawn(run_playout(
+        "epoch-client".to_owned(),
+        writer,
+        command_receiver,
+        events,
+    ));
+
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), observed_writes.recv())
+            .await
+            .is_err()
+    );
+    commands.send(PlayoutCommand::TransportReady)?;
+    let first = tokio::time::timeout(Duration::from_secs(1), observed_writes.recv())
+        .await?
+        .ok_or_else(|| anyhow!("first transport epoch did not publish"))?;
+
+    commands.send(PlayoutCommand::TransportUnavailable)?;
+    commands.send(PlayoutCommand::TransportReady)?;
+    let recovered = tokio::time::timeout(Duration::from_secs(1), observed_writes.recv())
+        .await?
+        .ok_or_else(|| anyhow!("recovered transport epoch did not publish"))?;
+    assert_eq!(recovered.0, first.0);
+    assert!(recovered.1 > first.1);
+
     commands.send(PlayoutCommand::Shutdown)?;
     tokio::time::timeout(Duration::from_secs(1), task).await??;
     Ok(())

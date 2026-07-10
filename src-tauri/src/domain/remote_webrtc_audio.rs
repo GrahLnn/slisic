@@ -8,6 +8,7 @@ use std::collections::{HashMap, VecDeque};
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 use tokio::net::UdpSocket;
@@ -86,6 +87,8 @@ enum PlayoutCommand {
         generation: u64,
         source: RemoteAudioSource,
     },
+    TransportReady,
+    TransportUnavailable,
     Idle,
     Shutdown,
 }
@@ -277,6 +280,14 @@ impl RemoteWebRtcAudio {
         let sender = connection.add_track(track.clone()).await?;
         tokio::spawn(async move { while sender.read_rtcp().await.is_ok() {} });
 
+        let (playout, receiver) = unbounded_channel();
+        tokio::spawn(run_playout(
+            client_id.to_string(),
+            track,
+            receiver,
+            self.events.clone(),
+        ));
+
         let weak = Arc::downgrade(self);
         let candidate_client_id = client_id.to_string();
         connection.on_ice_candidate(Box::new(move |candidate| {
@@ -301,32 +312,34 @@ impl RemoteWebRtcAudio {
                 }
             })
         }));
+        let transport_playout = playout.clone();
         connection.on_peer_connection_state_change(Box::new(move |state| {
+            let playout = transport_playout.clone();
             Box::pin(async move {
                 match state {
-                    RTCPeerConnectionState::Connected => log::info!(
-                        target: REMOTE_SHARE_LOG_TARGET,
-                        "remote_p2p_media_connected"
-                    ),
+                    RTCPeerConnectionState::Connected => {
+                        let _ = playout.send(PlayoutCommand::TransportReady);
+                        log::info!(
+                            target: REMOTE_SHARE_LOG_TARGET,
+                            "remote_p2p_media_connected"
+                        );
+                    }
                     RTCPeerConnectionState::Failed | RTCPeerConnectionState::Disconnected => {
+                        let _ = playout.send(PlayoutCommand::TransportUnavailable);
                         log::warn!(
                             target: REMOTE_SHARE_LOG_TARGET,
                             "remote_p2p_media_path_unhealthy state={:?} recovery=await_ice_restart",
                             state
                         );
                     }
+                    RTCPeerConnectionState::Closed => {
+                        let _ = playout.send(PlayoutCommand::TransportUnavailable);
+                    }
                     _ => {}
                 }
             })
         }));
 
-        let (playout, receiver) = unbounded_channel();
-        tokio::spawn(run_playout(
-            client_id.to_string(),
-            track,
-            receiver,
-            self.events.clone(),
-        ));
         let peer = Arc::new(RemoteWebRtcPeer {
             connection,
             playout,
@@ -393,8 +406,10 @@ async fn run_playout<W>(
 {
     let (packets_tx, mut packets_rx) = channel::<EncodedPacket>(ENCODED_PACKET_CHANNEL_CAPACITY);
     let (finished_tx, mut finished_rx) = unbounded_channel::<WorkerFinished>();
-    let (rtp_packets, rtp_packet_receiver) = watch::channel(None);
-    let rtp_writer = tokio::spawn(run_latest_rtp_writes(track, rtp_packet_receiver));
+    let (rtp_packets, _) = watch::channel(None);
+    let sequence_number = Arc::new(AtomicU16::new(0));
+    let mut rtp_writer: Option<JoinHandle<()>> = None;
+    let mut transport_ready = false;
     let mut worker: Option<JoinHandle<()>> = None;
     let mut active_generation = None;
     let mut encoded_generation_started = None;
@@ -431,6 +446,32 @@ async fn run_playout<W>(
                             finished_tx.clone(),
                         )));
                     }
+                    Some(PlayoutCommand::TransportReady) if !transport_ready => {
+                        transport_ready = true;
+                        rtp_writer = Some(tokio::spawn(run_latest_rtp_writes(
+                            Arc::clone(&track),
+                            rtp_packets.subscribe(),
+                            Arc::clone(&sequence_number),
+                        )));
+                        log::info!(
+                            target: REMOTE_SHARE_LOG_TARGET,
+                            "remote_p2p_rtp_publication_resumed client_id=\"{}\"",
+                            client_id
+                        );
+                    }
+                    Some(PlayoutCommand::TransportUnavailable) if transport_ready => {
+                        transport_ready = false;
+                        if let Some(writer) = rtp_writer.take() {
+                            writer.abort();
+                            let _ = writer.await;
+                        }
+                        log::info!(
+                            target: REMOTE_SHARE_LOG_TARGET,
+                            "remote_p2p_rtp_publication_suspended client_id=\"{}\"",
+                            client_id
+                        );
+                    }
+                    Some(PlayoutCommand::TransportReady | PlayoutCommand::TransportUnavailable) => {}
                     Some(PlayoutCommand::Idle) => {
                         if let Some(worker) = worker.take() {
                             worker.abort();
@@ -508,26 +549,40 @@ async fn run_playout<W>(
     }
 
     drop(rtp_packets);
-    rtp_writer.abort();
-    let _ = rtp_writer.await;
+    if let Some(writer) = rtp_writer {
+        writer.abort();
+        let _ = writer.await;
+    }
 }
 
-async fn run_latest_rtp_writes<W>(track: Arc<W>, mut packets: watch::Receiver<Option<Packet>>)
-where
+async fn run_latest_rtp_writes<W>(
+    track: Arc<W>,
+    mut packets: watch::Receiver<Option<Packet>>,
+    sequence_number: Arc<AtomicU16>,
+) where
     W: RtpPacketWriter + 'static,
 {
     let mut write_failed = false;
-    let mut sequence_number = 0_u16;
+    let mut packet_committed = false;
     while packets.changed().await.is_ok() {
         let Some(mut packet) = packets.borrow_and_update().clone() else {
             continue;
         };
-        packet.header.sequence_number = sequence_number;
+        packet.header.sequence_number = sequence_number.load(Ordering::Relaxed);
         match track.write_packet(&packet).await {
             Ok(written) => {
                 write_failed = false;
                 if written > 0 {
-                    sequence_number = sequence_number.wrapping_add(1);
+                    sequence_number.fetch_add(1, Ordering::Relaxed);
+                    if !packet_committed {
+                        packet_committed = true;
+                        log::info!(
+                            target: REMOTE_SHARE_LOG_TARGET,
+                            "remote_p2p_rtp_packet_committed sequence={} timestamp={}",
+                            packet.header.sequence_number,
+                            packet.header.timestamp
+                        );
+                    }
                 }
             }
             Err(error) if !write_failed => {
