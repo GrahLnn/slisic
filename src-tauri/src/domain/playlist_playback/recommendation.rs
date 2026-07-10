@@ -8028,18 +8028,9 @@ fn audio_style_programmatic_adaptive_distance_band(
     }
     values.sort_by(|left, right| left.total_cmp(right));
     let mut band = AudioStyleProgrammaticDistanceBand {
-        low: sorted_quantile(
-            &values,
-            AUDIO_STYLE_PROGRAMMATIC_DISTANCE_LOW_QUANTILE,
-        ),
-        target: sorted_quantile(
-            &values,
-            AUDIO_STYLE_PROGRAMMATIC_DISTANCE_TARGET_QUANTILE,
-        ),
-        high: sorted_quantile(
-            &values,
-            AUDIO_STYLE_PROGRAMMATIC_DISTANCE_HIGH_QUANTILE,
-        ),
+        low: sorted_quantile(&values, AUDIO_STYLE_PROGRAMMATIC_DISTANCE_LOW_QUANTILE),
+        target: sorted_quantile(&values, AUDIO_STYLE_PROGRAMMATIC_DISTANCE_TARGET_QUANTILE),
+        high: sorted_quantile(&values, AUDIO_STYLE_PROGRAMMATIC_DISTANCE_HIGH_QUANTILE),
     };
     if band.high - band.low < AUDIO_STYLE_PROGRAMMATIC_DISTANCE_MIN_WIDTH {
         let half_width = AUDIO_STYLE_PROGRAMMATIC_DISTANCE_MIN_WIDTH * 0.5;
@@ -10533,11 +10524,7 @@ pub(crate) fn audio_style_current_stable_adaptive_distance_u_probe_for_test(
     max_tracks: usize,
     run_count: usize,
 ) -> Result<AudioStyleAdaptiveDistanceUProbeReport, String> {
-    const POLICIES: [&str; 3] = [
-        "global_calibrated",
-        "window_adaptive",
-        "episodic_fatigue_u",
-    ];
+    const POLICIES: [&str; 3] = ["global_calibrated", "window_adaptive", "episodic_fatigue_u"];
     let snapshot = read_audio_style_stable_model(path)?;
     let state = snapshot.state.as_ref();
     let geometry = state
@@ -10935,11 +10922,7 @@ fn audio_style_adaptive_probe_run(
                     }
                 };
                 score -= AUDIO_STYLE_PROGRAMMATIC_WINDOW_CAPACITY_STRENGTH
-                    * audio_style_adaptive_probe_capacity_violation(
-                        basin_ids,
-                        &order,
-                        *candidate,
-                    );
+                    * audio_style_adaptive_probe_capacity_violation(basin_ids, &order, *candidate);
                 score += AUDIO_STYLE_PROGRAMMATIC_FUTURE_REBALANCE_STRENGTH
                     * audio_style_adaptive_probe_remaining_collapse_pressure(
                         basin_ids, &remaining, *candidate,
@@ -11084,12 +11067,11 @@ fn audio_style_adaptive_probe_capacity_violation(
         .saturating_sub(AUDIO_STYLE_PROGRAMMATIC_ROUTE_CAPACITY_WINDOW);
     let recent = &order[recent_start..];
     let projected_len = (recent.len() + 1).min(AUDIO_STYLE_PROGRAMMATIC_ROUTE_CAPACITY_WINDOW);
-    let projected_count =
-        recent
-            .iter()
-            .filter(|index| basin_ids[**index] == candidate_basin)
-            .count()
-            + 1;
+    let projected_count = recent
+        .iter()
+        .filter(|index| basin_ids[**index] == candidate_basin)
+        .count()
+        + 1;
     let support_share = basin_ids
         .iter()
         .filter(|basin| **basin == candidate_basin)
@@ -11205,9 +11187,8 @@ fn audio_style_adaptive_probe_order_metrics(
         for basin in &basin_order[start..=index] {
             *counts.entry(*basin).or_insert(0) += 1;
         }
-        window_shares.push(
-            counts.values().copied().max().unwrap_or(0) as f32 / (index - start + 1) as f32,
-        );
+        window_shares
+            .push(counts.values().copied().max().unwrap_or(0) as f32 / (index - start + 1) as f32);
     }
     let warm_window_shares = window_shares
         .iter()
@@ -11223,12 +11204,16 @@ fn audio_style_adaptive_probe_order_metrics(
     let continue_positions = phases
         .iter()
         .enumerate()
-        .filter_map(|(index, phase)| (*phase == AudioStyleAdaptiveProbePhase::Continue).then_some(index))
+        .filter_map(|(index, phase)| {
+            (*phase == AudioStyleAdaptiveProbePhase::Continue).then_some(index)
+        })
         .collect::<Vec<_>>();
     let shift_positions = phases
         .iter()
         .enumerate()
-        .filter_map(|(index, phase)| (*phase == AudioStyleAdaptiveProbePhase::Shift).then_some(index))
+        .filter_map(|(index, phase)| {
+            (*phase == AudioStyleAdaptiveProbePhase::Shift).then_some(index)
+        })
         .collect::<Vec<_>>();
     let mut episode_lengths = Vec::new();
     let mut current_episode_len = 1usize;
@@ -11312,12 +11297,7 @@ fn audio_style_adaptive_probe_mean_metric(
     metrics: &[AudioStyleAdaptiveProbeRunMetrics],
     selector: impl Fn(AudioStyleAdaptiveProbeRunMetrics) -> f32,
 ) -> f32 {
-    metrics
-        .iter()
-        .copied()
-        .map(selector)
-        .sum::<f32>()
-        / metrics.len().max(1) as f32
+    metrics.iter().copied().map(selector).sum::<f32>() / metrics.len().max(1) as f32
 }
 
 #[cfg(test)]

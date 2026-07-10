@@ -162,7 +162,9 @@ fn current_stable_adaptive_distance_u_reproduces_episode_shift() {
                 256,
                 2,
             )
-            .unwrap_or_else(|error| panic!("adaptive distance probe failed for seed {seed}: {error}"))
+            .unwrap_or_else(|error| {
+                panic!("adaptive distance probe failed for seed {seed}: {error}")
+            })
         })
         .collect::<Vec<_>>();
 
