@@ -279,13 +279,38 @@ fn remote_hls_fresh_prepare_replaces_previous_stream_tokens() {
 
 #[test]
 fn remote_hls_priming_segment_is_a_transport_stream() {
+    assert!(REMOTE_HLS_PRIMING_SEGMENTS.len() >= 6);
+    assert_eq!(
+        REMOTE_HLS_PRIMING_TARGET_DURATION,
+        REMOTE_HLS_SEGMENT_SECONDS
+    );
     for index in 0..REMOTE_HLS_PRIMING_SEGMENTS.len() {
         let cargo = remote_hls_priming_segment_cargo(index).expect("priming segment should decode");
 
         assert_eq!(cargo.content_type, "video/mp2t");
-        assert!(cargo.content_length > 0);
-        assert!(!cargo.body.is_empty());
+        assert!(cargo.content_length > (188 * 10));
+        assert_eq!(cargo.body.len() % 188, 0);
+        assert!(cargo.body.chunks_exact(188).all(|packet| packet[0] == 0x47));
     }
+}
+
+#[test]
+fn remote_hls_event_header_is_stable_before_and_after_real_media() {
+    let header = remote_hls_playlist_header();
+
+    assert!(header.contains("#EXT-X-TARGETDURATION:2\n"));
+    assert!(header.contains("#EXT-X-MEDIA-SEQUENCE:0\n"));
+    assert!(header.contains("#EXT-X-DISCONTINUITY-SEQUENCE:0\n"));
+    assert!(header.contains("#EXT-X-PLAYLIST-TYPE:EVENT\n"));
+}
+
+#[test]
+fn remote_hls_priming_timeline_uses_the_encoded_segment_durations() {
+    let one_cycle = remote_hls_priming_duration_seconds(REMOTE_HLS_PRIMING_SEGMENTS.len());
+    let two_cycles = remote_hls_priming_duration_seconds(REMOTE_HLS_PRIMING_SEGMENTS.len() * 2);
+
+    assert!((one_cycle - 12.010_665).abs() < 0.001);
+    assert!((two_cycles - one_cycle * 2.0).abs() < f64::EPSILON);
 }
 
 #[test]
@@ -295,7 +320,10 @@ fn remote_hls_priming_window_extends_until_real_prefix_is_ready() {
     session.hls_priming_started_at = Some(Instant::now() - Duration::from_secs(12));
 
     let waiting_segments = session.advance_hls_priming_window(false);
-    assert!(waiting_segments >= 18);
+    let elapsed_segments = (12.0 / REMOTE_HLS_PRIMING_SEGMENT_SECONDS).ceil() as usize;
+    assert!(
+        waiting_segments >= elapsed_segments.saturating_add(REMOTE_HLS_PRIMING_LOOKAHEAD_SEGMENTS)
+    );
 
     session.hls_priming_started_at = Some(Instant::now() - Duration::from_secs(30));
     let ready_segments = session.advance_hls_priming_window(true);

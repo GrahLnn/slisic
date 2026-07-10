@@ -63,15 +63,17 @@ const REMOTE_PAIRING_CODE_ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ01234567
 const REMOTE_SHARE_PORT: u16 = 48_231;
 const REMOTE_AUDIO_CACHE_DIR: &str = "remote-audio";
 const REMOTE_HLS_SEGMENT_SECONDS: u32 = 2;
-const REMOTE_HLS_PRIMING_SEGMENT_SECONDS: f32 = 1.0;
-const REMOTE_HLS_PRIMING_TARGET_DURATION: u32 = 1;
+const REMOTE_HLS_PRIMING_SEGMENT_SECONDS: f32 = REMOTE_HLS_SEGMENT_SECONDS as f32;
+const REMOTE_HLS_PRIMING_TARGET_DURATION: u32 = REMOTE_HLS_SEGMENT_SECONDS;
 const REMOTE_HLS_PRIMING_LOOKAHEAD_SEGMENTS: usize = 6;
 const REMOTE_HLS_LIVE_HOLDBACK_SEGMENTS: u32 = 3;
-const REMOTE_HLS_PRIMING_SEGMENTS: [&[u8]; 4] = [
-    include_bytes!("remote_hls_prime_0.ts"),
-    include_bytes!("remote_hls_prime_1.ts"),
-    include_bytes!("remote_hls_prime_2.ts"),
-    include_bytes!("remote_hls_prime_3.ts"),
+const REMOTE_HLS_PRIMING_SEGMENTS: [RemoteHlsPrimingSegmentAsset; 6] = [
+    RemoteHlsPrimingSegmentAsset::new(2.005_333, include_bytes!("remote_hls_prime_0.ts")),
+    RemoteHlsPrimingSegmentAsset::new(2.005_333, include_bytes!("remote_hls_prime_1.ts")),
+    RemoteHlsPrimingSegmentAsset::new(2.005_333, include_bytes!("remote_hls_prime_2.ts")),
+    RemoteHlsPrimingSegmentAsset::new(1.984, include_bytes!("remote_hls_prime_3.ts")),
+    RemoteHlsPrimingSegmentAsset::new(2.005_333, include_bytes!("remote_hls_prime_4.ts")),
+    RemoteHlsPrimingSegmentAsset::new(2.005_333, include_bytes!("remote_hls_prime_5.ts")),
 ];
 const REMOTE_HLS_PLAYLIST_TRACK_LIMIT: usize = 4;
 const REMOTE_HLS_MATERIALIZATION_VERSION: &str = "hls-v3";
@@ -421,6 +423,20 @@ struct RemoteHlsTrackAsset {
 struct RemoteHlsSegmentAsset {
     duration_seconds: f32,
     path: PathBuf,
+}
+
+struct RemoteHlsPrimingSegmentAsset {
+    duration_seconds: f32,
+    bytes: &'static [u8],
+}
+
+impl RemoteHlsPrimingSegmentAsset {
+    const fn new(duration_seconds: f32, bytes: &'static [u8]) -> Self {
+        Self {
+            duration_seconds,
+            bytes,
+        }
+    }
 }
 
 struct RemoteHlsMaterializationDescriptor {
@@ -1350,21 +1366,17 @@ impl RemoteShareRuntime {
             }
         }
         self.spawn_remote_hls_prewarm(missing_tracks);
-        let target_duration = assets
+        if assets
             .iter()
-            .map(|(_, asset)| asset.target_duration)
-            .max()
-            .unwrap_or(REMOTE_HLS_PRIMING_TARGET_DURATION)
-            .max(REMOTE_HLS_PRIMING_TARGET_DURATION);
+            .any(|(_, asset)| asset.target_duration > REMOTE_HLS_PRIMING_TARGET_DURATION)
+        {
+            return Err(RemoteShareError::internal(
+                "remote HLS segment exceeds the stable target duration",
+            ));
+        }
+        let target_duration = REMOTE_HLS_PRIMING_TARGET_DURATION;
         let code = self.status()?.code;
-        let mut playlist = String::new();
-        playlist.push_str("#EXTM3U\n");
-        playlist.push_str("#EXT-X-VERSION:3\n");
-        playlist.push_str(&format!("#EXT-X-TARGETDURATION:{target_duration}\n"));
-        playlist.push_str("#EXT-X-MEDIA-SEQUENCE:0\n");
-        playlist.push_str("#EXT-X-PLAYLIST-TYPE:EVENT\n");
-        playlist.push_str("#EXT-X-START:TIME-OFFSET=0,PRECISE=YES\n");
-        playlist.push_str("#EXT-X-ALLOW-CACHE:NO\n");
+        let mut playlist = remote_hls_playlist_header();
         let (timeline_changed, hls_view) = {
             let mut sessions = self.lock_sessions()?;
             let session =
@@ -1384,8 +1396,7 @@ impl RemoteShareRuntime {
                 assets.iter().map(|(_, asset)| asset),
                 visible_media_seconds,
             );
-            let mut timeline_cursor =
-                priming_segments as f64 * REMOTE_HLS_PRIMING_SEGMENT_SECONDS as f64;
+            let mut timeline_cursor = remote_hls_priming_duration_seconds(priming_segments);
             let entries = assets
                 .iter()
                 .enumerate()
@@ -1406,10 +1417,15 @@ impl RemoteShareRuntime {
                 .collect::<Vec<_>>();
             let timeline_changed = session.publish_hls_entries(entries);
             for sequence in 0..priming_segments {
-                let priming_token = session
-                    .create_hls_priming_segment_token(sequence % REMOTE_HLS_PRIMING_SEGMENTS.len());
+                if sequence > 0 && sequence % REMOTE_HLS_PRIMING_SEGMENTS.len() == 0 {
+                    playlist.push_str("#EXT-X-DISCONTINUITY\n");
+                }
+                let priming_index = sequence % REMOTE_HLS_PRIMING_SEGMENTS.len();
+                let priming_segment = &REMOTE_HLS_PRIMING_SEGMENTS[priming_index];
+                let priming_token = session.create_hls_priming_segment_token(priming_index);
                 playlist.push_str(&format!(
-                    "#EXTINF:{REMOTE_HLS_PRIMING_SEGMENT_SECONDS:.3},\n"
+                    "#EXTINF:{:.6},\n",
+                    priming_segment.duration_seconds
                 ));
                 playlist.push_str(&format!(
                     "/api/audio/{priming_token}?code={code}&clientId={client_id}&primeSeq={sequence}\n"
@@ -2139,6 +2155,33 @@ fn remote_hls_visible_segment_counts<'a>(
         .collect()
 }
 
+fn remote_hls_playlist_header() -> String {
+    format!(
+        "#EXTM3U\n\
+#EXT-X-VERSION:3\n\
+#EXT-X-TARGETDURATION:{REMOTE_HLS_PRIMING_TARGET_DURATION}\n\
+#EXT-X-MEDIA-SEQUENCE:0\n\
+#EXT-X-DISCONTINUITY-SEQUENCE:0\n\
+#EXT-X-PLAYLIST-TYPE:EVENT\n\
+#EXT-X-START:TIME-OFFSET=0,PRECISE=YES\n\
+#EXT-X-ALLOW-CACHE:NO\n"
+    )
+}
+
+fn remote_hls_priming_duration_seconds(segment_count: usize) -> f64 {
+    let cycle_duration = REMOTE_HLS_PRIMING_SEGMENTS
+        .iter()
+        .map(|segment| f64::from(segment.duration_seconds))
+        .sum::<f64>();
+    let complete_cycles = segment_count / REMOTE_HLS_PRIMING_SEGMENTS.len();
+    let remainder = segment_count % REMOTE_HLS_PRIMING_SEGMENTS.len();
+    complete_cycles as f64 * cycle_duration
+        + REMOTE_HLS_PRIMING_SEGMENTS[..remainder]
+            .iter()
+            .map(|segment| f64::from(segment.duration_seconds))
+            .sum::<f64>()
+}
+
 struct RemoteAudioMaterializationDescriptor {
     key: String,
     app: AppHandle,
@@ -2497,12 +2540,15 @@ fn remote_bytes_relay_cargo(content_type: &'static str, body: Vec<u8>) -> Remote
 }
 
 fn remote_hls_priming_segment_cargo(index: usize) -> RemoteResult<RemoteAudioRelayCargo> {
-    let Some(bytes) = REMOTE_HLS_PRIMING_SEGMENTS.get(index) else {
+    let Some(segment) = REMOTE_HLS_PRIMING_SEGMENTS.get(index) else {
         return Err(RemoteShareError::not_found(
             "remote hls priming segment not found",
         ));
     };
-    Ok(remote_bytes_relay_cargo("video/mp2t", bytes.to_vec()))
+    Ok(remote_bytes_relay_cargo(
+        "video/mp2t",
+        segment.bytes.to_vec(),
+    ))
 }
 
 fn remote_audio_relay_response(cargo: RemoteAudioRelayCargo) -> RemoteResult<Response> {

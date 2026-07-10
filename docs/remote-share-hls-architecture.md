@@ -199,8 +199,8 @@ truth.
 
 ### 5.7 `Recovery` is an endomorphism on session identity
 
-Recovery may reconnect relay control, reissue `audio.play()`, or wait for a larger HLS
-prefix. It must be an endomorphism on `(epoch, resource)`:
+Recovery may reconnect relay control, reissue `audio.play()`, reload the same fatal native
+resource, or wait for a larger HLS prefix. It must be an endomorphism on `(epoch, resource)`:
 
 ```text
 recover : S(epoch, resource) -> S(epoch, resource)
@@ -443,8 +443,9 @@ Does not own:
 | `Playing` | `NativeTime` | next boundary crossed | `Advancing` | consume boundary key, request next |
 | `Advancing` | `NextCommitted` | same epoch/key | `Playing` | accept timeline extension; keep source |
 | active | `NativePause` | explicit user/OS pause | `Paused` | project paused |
-| active | `NativePause` | unexpected/background | `Recovering` | request play; keep source |
-| active | `NativeError/Stalled` | same epoch/source | `Recovering` | reconnect control if needed; request play |
+| active | `NativePause` | hidden before native playing | `Recovering` | defer recovery until visible; keep source |
+| active | `NativeError` | native `NETWORK_NO_SOURCE`, visible | `Recovering` | reload and play the same source |
+| active | `NativeStalled` | same epoch/source | `Recovering` | reconnect control if needed; request play |
 | `Recovering` | `NativePlaying/Time` | same epoch/source | derived active state | project native evidence |
 | active | `Stop` | any | `Stopped` | cancel epoch effects, pause and clear source once |
 | any | stale async/native event | epoch/source mismatch | unchanged | diagnostic only |
@@ -478,6 +479,12 @@ timeline event is indexed by the same epoch.
 
 The HTTP playlist is append-only for one epoch. Segment URLs are immutable. The response
 uses no-store semantics for the playlist and immutable semantics for materialized segments.
+
+The Host owns priming as the initial prefix of that same resource. It publishes at least six
+independently decodable two-second AAC/MPEG-TS silence segments before real media exists.
+`TARGETDURATION`, `MEDIA-SEQUENCE`, and `DISCONTINUITY-SEQUENCE` are fixed in the first
+response and never rewritten. Repeated priming cycles and every real-track boundary append an
+explicit discontinuity. Hero never constructs a second fake source.
 
 Materialization and publication are different morphisms. A complete track asset may already
 exist in the host cache, but the media playlist exposes only one monotone prefix of the
