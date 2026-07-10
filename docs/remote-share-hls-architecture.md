@@ -46,7 +46,8 @@ The public seams are:
 
 - Host RPC: `connect`, `bootstrap`, `session.prepare_hls`, `session.start`,
   `session.next`, and `session.stop`.
-- Media HTTP: `GET /api/audio/{hls-token}` for a playlist or segment.
+- Media HTTP: `GET /api/audio/{hls-token}.m3u8` for a playlist and
+  `GET /api/audio/{segment-token}.ts` for a segment.
 - Host events: session/timeline observations scoped by client and epoch.
 - Hero commands: connect, select playlist, stop, and native media controls.
 
@@ -506,6 +507,10 @@ frontier from startup hold-back to the bounded playback runway.
 
 The HTTP playlist is append-only for one epoch. Segment URLs are immutable. The response
 uses no-store semantics for the playlist and immutable semantics for materialized segments.
+Canonical tokens remain extension-free session identities. The HTTP adapter is the only owner
+of the typed filename projection (`token -> token.m3u8 | token.ts`) and normalizes requests back
+to the canonical token before lookup. This keeps browser media classification out of session
+state while following the HLS resource types expected by Apple clients.
 
 The Host owns priming as the initial prefix of that same resource. It publishes at least six
 independently decodable two-second AAC/MPEG-TS silence segments before real media exists.
@@ -514,14 +519,12 @@ response and never rewritten. Repeated priming cycles and every real-track bound
 explicit discontinuity. Hero never constructs a second fake source.
 
 Materialization and publication are different morphisms. A complete track asset may already
-exist in the host cache, but the media playlist exposes only one monotone prefix of the
-materialized timeline. The real-media publication clock starts when that prefix is first
-exposed, not when preparation starts. Its initial frontier is one native HLS hold-back window
-(`3 * TARGETDURATION`). After native anchoring, the frontier advances with session time while
-keeping fifteen minutes of materialized runway. Therefore an EVENT playlist cannot present an
-entire track as its initial live edge or jump hours forward merely because a long successor is
-already cached, while the same stable resource can still append future tracks without changing
-`audio.src`.
+exist in the host cache, but real media is not published until native `playing` anchors the
+priming prefix. The real-media publication clock starts at that anchor, then advances with
+session time while keeping fifteen minutes of materialized runway. Therefore an EVENT playlist
+first establishes one native lifetime on priming, cannot present an entire track as its initial
+live edge, and cannot jump hours forward merely because a long successor is already cached. The
+same stable resource then appends real and future tracks without changing `audio.src`.
 
 ## 11. State Sequence
 
@@ -640,5 +643,6 @@ npm run build
 ```
 
 The final manual iOS trace must show one HLS URL per start, no source mutation during
-recovery or track advance, monotone timeline revisions, one boundary commit per entry, and
-Media Session position derived from the same timeline entry as the page title.
+recovery or track advance, native `playing` on priming before the first real segment is
+published, monotone timeline revisions, one boundary commit per entry, and Media Session
+position derived from the same timeline entry as the page title.

@@ -66,7 +66,6 @@ const REMOTE_HLS_SEGMENT_SECONDS: u32 = 2;
 const REMOTE_HLS_PRIMING_SEGMENT_SECONDS: f32 = REMOTE_HLS_SEGMENT_SECONDS as f32;
 const REMOTE_HLS_PRIMING_TARGET_DURATION: u32 = REMOTE_HLS_SEGMENT_SECONDS;
 const REMOTE_HLS_PRIMING_LOOKAHEAD_SEGMENTS: usize = 6;
-const REMOTE_HLS_LIVE_HOLDBACK_SEGMENTS: u32 = 3;
 // Apple recommends at least fifteen minutes of content in a live playlist. Keeping that
 // duration ahead of the publication clock survives background reload gaps without exposing an
 // arbitrarily long materialized successor as the native player's live edge.
@@ -191,6 +190,31 @@ enum RemoteAudioToken {
     HlsPlaylist,
     HlsPrimingSegment { index: usize },
     HlsSegment { track: PlaybackTrack, path: PathBuf },
+}
+
+#[derive(Clone, Copy)]
+enum RemoteAudioTransportKind {
+    HlsPlaylist,
+    MpegTsSegment,
+}
+
+impl RemoteAudioTransportKind {
+    fn extension(self) -> &'static str {
+        match self {
+            Self::HlsPlaylist => "m3u8",
+            Self::MpegTsSegment => "ts",
+        }
+    }
+}
+
+fn remote_audio_transport_path(token: &str, kind: RemoteAudioTransportKind) -> String {
+    format!("/api/audio/{token}.{}", kind.extension())
+}
+
+fn remote_audio_token_from_transport_path(path: &str) -> &str {
+    path.strip_suffix(".m3u8")
+        .or_else(|| path.strip_suffix(".ts"))
+        .unwrap_or(path)
 }
 
 #[derive(Debug, Deserialize)]
@@ -1339,7 +1363,7 @@ impl RemoteShareRuntime {
                     "remote client session not found",
                 ))?
                 .audio_tokens
-                .get(&token)
+                .get(remote_audio_token_from_transport_path(&token))
                 .cloned()
                 .ok_or(RemoteShareError::not_found("audio token not found"))?
         };
@@ -1402,7 +1426,6 @@ impl RemoteShareRuntime {
                 "remote HLS segment exceeds the stable target duration",
             ));
         }
-        let target_duration = REMOTE_HLS_PRIMING_TARGET_DURATION;
         let code = self.status()?.code;
         let mut playlist = remote_hls_playlist_header();
         let (timeline_changed, hls_view) = {
@@ -1416,10 +1439,9 @@ impl RemoteShareRuntime {
                     ))?;
             let real_prefix_ready = !assets.is_empty();
             let priming_segments = session.advance_hls_priming_window(real_prefix_ready);
-            // Native HLS starts growing EVENT playlists near their live edge. Publish only
-            // one hold-back window ahead so the first live edge remains at the track start.
-            let visible_media_seconds =
-                session.advance_hls_real_prefix_window(real_prefix_ready, target_duration);
+            // Establish the native media session on priming before appending real media. This
+            // prevents an EVENT playlist live-edge start from skipping the priming lifetime.
+            let visible_media_seconds = session.advance_hls_real_prefix_window(real_prefix_ready);
             let visible_segment_counts = remote_hls_visible_segment_counts(
                 assets.iter().map(|(_, asset)| asset),
                 visible_media_seconds,
@@ -1456,7 +1478,11 @@ impl RemoteShareRuntime {
                     priming_segment.duration_seconds
                 ));
                 playlist.push_str(&format!(
-                    "/api/audio/{priming_token}?code={code}&clientId={client_id}&primeSeq={sequence}\n"
+                    "{}?code={code}&clientId={client_id}&primeSeq={sequence}\n",
+                    remote_audio_transport_path(
+                        &priming_token,
+                        RemoteAudioTransportKind::MpegTsSegment,
+                    )
                 ));
             }
             for ((track, asset), visible_segment_count) in assets.iter().zip(visible_segment_counts)
@@ -1469,7 +1495,11 @@ impl RemoteShareRuntime {
                     let token = session.create_hls_segment_token(track, segment.path.clone());
                     playlist.push_str(&format!("#EXTINF:{:.3},\n", segment.duration_seconds));
                     playlist.push_str(&format!(
-                        "/api/audio/{token}?code={code}&clientId={client_id}\n"
+                        "{}?code={code}&clientId={client_id}\n",
+                        remote_audio_transport_path(
+                            &token,
+                            RemoteAudioTransportKind::MpegTsSegment,
+                        )
                     ));
                 }
             }
@@ -1828,7 +1858,7 @@ impl RemoteShareSession {
     fn stream_url(&self) -> Option<String> {
         self.stream_token
             .as_ref()
-            .map(|token| format!("/api/audio/{token}"))
+            .map(|token| remote_audio_transport_path(token, RemoteAudioTransportKind::HlsPlaylist))
     }
 
     fn create_stream_url(&mut self) -> String {
@@ -1849,7 +1879,7 @@ impl RemoteShareSession {
         self.audio_tokens
             .insert(token.clone(), RemoteAudioToken::HlsPlaylist);
         self.stream_token = Some(token.clone());
-        format!("/api/audio/{token}")
+        remote_audio_transport_path(&token, RemoteAudioTransportKind::HlsPlaylist)
     }
 
     fn create_hls_segment_token(&mut self, track: &PlaybackTrack, path: PathBuf) -> String {
@@ -1912,25 +1942,14 @@ impl RemoteShareSession {
         self.hls_priming_published_segments
     }
 
-    fn advance_hls_real_prefix_window(
-        &mut self,
-        real_prefix_ready: bool,
-        target_duration: u32,
-    ) -> f64 {
-        if !real_prefix_ready {
+    fn advance_hls_real_prefix_window(&mut self, real_prefix_ready: bool) -> f64 {
+        if !real_prefix_ready || !self.hls_consumer_anchored {
             return 0.0;
         }
         let started_at = self
             .hls_real_prefix_started_at
             .get_or_insert_with(Instant::now);
-        let lookahead_seconds = if self.hls_consumer_anchored {
-            REMOTE_HLS_ANCHORED_RUNWAY_SECONDS
-        } else {
-            target_duration
-                .max(1)
-                .saturating_mul(REMOTE_HLS_LIVE_HOLDBACK_SEGMENTS)
-        };
-        started_at.elapsed().as_secs_f64() + f64::from(lookahead_seconds)
+        started_at.elapsed().as_secs_f64() + f64::from(REMOTE_HLS_ANCHORED_RUNWAY_SECONDS)
     }
 
     fn anchor_hls_consumer(&mut self) {

@@ -196,10 +196,12 @@ fn remote_hls_stream_url_is_stable_for_the_session() {
     let second_url = session.create_stream_url();
     let first_token = first_url
         .strip_prefix("/api/audio/")
-        .expect("first stream url should expose its token");
+        .and_then(|value| value.strip_suffix(".m3u8"))
+        .expect("first stream url should expose a typed playlist token");
     let second_token = second_url
         .strip_prefix("/api/audio/")
-        .expect("second stream url should expose its token");
+        .and_then(|value| value.strip_suffix(".m3u8"))
+        .expect("second stream url should expose a typed playlist token");
 
     assert_eq!(first_token, second_token);
     assert!(matches!(
@@ -267,10 +269,12 @@ fn remote_hls_fresh_prepare_replaces_previous_stream_tokens() {
     let new_stream_url = session.stream_url().expect("new stream should exist");
     let old_stream_token = old_stream_url
         .strip_prefix("/api/audio/")
-        .expect("old stream url should expose its token");
+        .and_then(|value| value.strip_suffix(".m3u8"))
+        .expect("old stream url should expose a typed playlist token");
     let new_stream_token = new_stream_url
         .strip_prefix("/api/audio/")
-        .expect("new stream url should expose its token");
+        .and_then(|value| value.strip_suffix(".m3u8"))
+        .expect("new stream url should expose a typed playlist token");
 
     assert_ne!(old_stream_url, new_stream_url);
     assert!(!session.audio_tokens.contains_key(old_stream_token));
@@ -366,14 +370,19 @@ fn remote_hls_visible_prefix_does_not_publish_a_complete_track_at_startup() {
 }
 
 #[test]
-fn remote_hls_real_prefix_clock_starts_when_real_media_is_first_published() {
+fn remote_hls_real_prefix_waits_for_native_priming_anchor() {
     let mut session = RemoteShareSession::default();
     session.hls_priming_started_at = Some(Instant::now() - Duration::from_secs(300));
 
-    let initial_prefix_seconds = session.advance_hls_real_prefix_window(true, 2);
+    let initial_prefix_seconds = session.advance_hls_real_prefix_window(true);
+    assert_eq!(initial_prefix_seconds, 0.0);
+    assert!(session.hls_real_prefix_started_at.is_none());
 
-    assert!(initial_prefix_seconds >= 6.0);
-    assert!(initial_prefix_seconds < 7.0);
+    session.anchor_hls_consumer();
+    let anchored_prefix_seconds = session.advance_hls_real_prefix_window(true);
+
+    assert!(anchored_prefix_seconds >= f64::from(REMOTE_HLS_ANCHORED_RUNWAY_SECONDS));
+    assert!(anchored_prefix_seconds < f64::from(REMOTE_HLS_ANCHORED_RUNWAY_SECONDS) + 1.0);
 }
 
 #[test]
@@ -381,11 +390,11 @@ fn remote_hls_native_anchor_exposes_a_bounded_playback_runway() {
     let mut session = RemoteShareSession::default();
     session.hls_real_prefix_started_at = Some(Instant::now() - Duration::from_secs(30));
 
-    let initial_prefix_seconds = session.advance_hls_real_prefix_window(true, 2);
+    let initial_prefix_seconds = session.advance_hls_real_prefix_window(true);
     session.anchor_hls_consumer();
-    let anchored_prefix_seconds = session.advance_hls_real_prefix_window(true, 2);
+    let anchored_prefix_seconds = session.advance_hls_real_prefix_window(true);
 
-    assert!(initial_prefix_seconds.is_finite());
+    assert_eq!(initial_prefix_seconds, 0.0);
     assert!(anchored_prefix_seconds.is_finite());
     assert!(anchored_prefix_seconds > initial_prefix_seconds);
     assert!(anchored_prefix_seconds >= f64::from(REMOTE_HLS_ANCHORED_RUNWAY_SECONDS) + 30.0);
@@ -603,7 +612,8 @@ fn remote_hls_stream_token_survives_track_token_retention() {
 
     let stream_token = stream_url
         .strip_prefix("/api/audio/")
-        .expect("stream url should expose its token");
+        .and_then(|value| value.strip_suffix(".m3u8"))
+        .expect("stream url should expose a typed playlist token");
     assert!(matches!(
         session.audio_tokens.get(stream_token),
         Some(RemoteAudioToken::HlsPlaylist)
@@ -616,6 +626,34 @@ fn remote_hls_stream_token_survives_track_token_retention() {
         session.audio_tokens.get(&next_segment),
         Some(RemoteAudioToken::HlsSegment { track, .. }) if same_remote_track(track, &next)
     ));
+}
+
+#[test]
+fn remote_audio_transport_paths_normalize_to_canonical_tokens() {
+    assert_eq!(
+        remote_audio_transport_path("hls-1", RemoteAudioTransportKind::HlsPlaylist),
+        "/api/audio/hls-1.m3u8"
+    );
+    assert_eq!(
+        remote_audio_transport_path("hls-seg-2", RemoteAudioTransportKind::MpegTsSegment),
+        "/api/audio/hls-seg-2.ts"
+    );
+    assert_eq!(
+        remote_audio_token_from_transport_path("hls-1.m3u8"),
+        "hls-1"
+    );
+    assert_eq!(
+        remote_audio_token_from_transport_path("hls-seg-2.ts"),
+        "hls-seg-2"
+    );
+    assert_eq!(
+        remote_audio_token_from_transport_path("hls-prime-0-3.ts"),
+        "hls-prime-0-3"
+    );
+    assert_eq!(
+        remote_audio_token_from_transport_path("legacy-token"),
+        "legacy-token"
+    );
 }
 
 #[test]
