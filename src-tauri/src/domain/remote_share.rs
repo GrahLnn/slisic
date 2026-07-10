@@ -66,6 +66,7 @@ const REMOTE_HLS_SEGMENT_SECONDS: u32 = 2;
 const REMOTE_HLS_PRIMING_SEGMENT_SECONDS: f32 = 1.0;
 const REMOTE_HLS_PRIMING_TARGET_DURATION: u32 = 1;
 const REMOTE_HLS_PRIMING_LOOKAHEAD_SEGMENTS: usize = 6;
+const REMOTE_HLS_LIVE_HOLDBACK_SEGMENTS: u32 = 3;
 const REMOTE_HLS_PRIMING_SEGMENTS: [&[u8]; 4] = [
     include_bytes!("remote_hls_prime_0.ts"),
     include_bytes!("remote_hls_prime_1.ts"),
@@ -162,6 +163,7 @@ struct RemoteShareSession {
     hls_current_index: Option<usize>,
     hls_priming_started_at: Option<Instant>,
     hls_priming_published_segments: usize,
+    hls_real_prefix_started_at: Option<Instant>,
     hls_entries: Vec<RemoteHlsTimelineEntry>,
     session_epoch: u64,
     timeline_revision: u64,
@@ -1265,6 +1267,7 @@ impl RemoteShareRuntime {
         session.hls_current_index = None;
         session.hls_priming_started_at = None;
         session.hls_priming_published_segments = 0;
+        session.hls_real_prefix_started_at = None;
         session.hls_entries.clear();
         session.timeline_revision = session.timeline_revision.saturating_add(1);
         Ok(session.view())
@@ -1371,7 +1374,16 @@ impl RemoteShareRuntime {
                     .ok_or(RemoteShareError::not_found(
                         "remote client session not found",
                     ))?;
-            let priming_segments = session.advance_hls_priming_window(!assets.is_empty());
+            let real_prefix_ready = !assets.is_empty();
+            let priming_segments = session.advance_hls_priming_window(real_prefix_ready);
+            // Native HLS starts growing EVENT playlists near their live edge. Publish only
+            // one hold-back window ahead so the first live edge remains at the track start.
+            let visible_media_seconds =
+                session.advance_hls_real_prefix_window(real_prefix_ready, target_duration);
+            let visible_segment_counts = remote_hls_visible_segment_counts(
+                assets.iter().map(|(_, asset)| asset),
+                visible_media_seconds,
+            );
             let mut timeline_cursor =
                 priming_segments as f64 * REMOTE_HLS_PRIMING_SEGMENT_SECONDS as f64;
             let entries = assets
@@ -1403,9 +1415,13 @@ impl RemoteShareRuntime {
                     "/api/audio/{priming_token}?code={code}&clientId={client_id}&primeSeq={sequence}\n"
                 ));
             }
-            for (track, asset) in assets.iter() {
+            for ((track, asset), visible_segment_count) in assets.iter().zip(visible_segment_counts)
+            {
+                if visible_segment_count == 0 {
+                    break;
+                }
                 playlist.push_str("#EXT-X-DISCONTINUITY\n");
-                for segment in &asset.segments {
+                for segment in asset.segments.iter().take(visible_segment_count) {
                     let token = session.create_hls_segment_token(track, segment.path.clone());
                     playlist.push_str(&format!("#EXTINF:{:.3},\n", segment.duration_seconds));
                     playlist.push_str(&format!(
@@ -1562,6 +1578,7 @@ impl RemoteShareRuntime {
         session.hls_current_index = None;
         session.hls_priming_started_at = None;
         session.hls_priming_published_segments = 0;
+        session.hls_real_prefix_started_at = None;
         session.hls_entries.clear();
         session.timeline_revision = session.timeline_revision.saturating_add(1);
         Ok(())
@@ -1739,6 +1756,7 @@ impl RemoteShareSession {
         self.hls_current_index = None;
         self.hls_priming_started_at = None;
         self.hls_priming_published_segments = 0;
+        self.hls_real_prefix_started_at = None;
         self.hls_entries.clear();
         self.timeline_revision = 0;
         let stream_token = self.stream_token.clone();
@@ -1846,6 +1864,25 @@ impl RemoteShareSession {
         self.hls_priming_published_segments =
             self.hls_priming_published_segments.max(target_segments);
         self.hls_priming_published_segments
+    }
+
+    fn advance_hls_real_prefix_window(
+        &mut self,
+        real_prefix_ready: bool,
+        target_duration: u32,
+    ) -> f64 {
+        if !real_prefix_ready {
+            return 0.0;
+        }
+        let started_at = self
+            .hls_real_prefix_started_at
+            .get_or_insert_with(Instant::now);
+        started_at.elapsed().as_secs_f64()
+            + f64::from(
+                target_duration
+                    .max(1)
+                    .saturating_mul(REMOTE_HLS_LIVE_HOLDBACK_SEGMENTS),
+            )
     }
 
     fn publish_hls_entries(&mut self, entries: Vec<RemoteHlsTimelineEntry>) -> bool {
@@ -2079,6 +2116,27 @@ fn remote_hls_playlist_tracks(
         ));
     }
     Ok(session.hls_timeline.clone())
+}
+
+fn remote_hls_visible_segment_counts<'a>(
+    assets: impl IntoIterator<Item = &'a RemoteHlsTrackAsset>,
+    visible_media_seconds: f64,
+) -> Vec<usize> {
+    let mut remaining_seconds = visible_media_seconds.max(0.0);
+    assets
+        .into_iter()
+        .map(|asset| {
+            let mut visible_count = 0;
+            for segment in &asset.segments {
+                if remaining_seconds <= 0.0 {
+                    break;
+                }
+                visible_count += 1;
+                remaining_seconds -= f64::from(segment.duration_seconds);
+            }
+            visible_count
+        })
+        .collect()
 }
 
 struct RemoteAudioMaterializationDescriptor {

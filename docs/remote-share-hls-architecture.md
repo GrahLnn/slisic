@@ -479,6 +479,14 @@ timeline event is indexed by the same epoch.
 The HTTP playlist is append-only for one epoch. Segment URLs are immutable. The response
 uses no-store semantics for the playlist and immutable semantics for materialized segments.
 
+Materialization and publication are different morphisms. A complete track asset may already
+exist in the host cache, but the media playlist exposes only one monotone prefix of the
+materialized timeline. The real-media publication clock starts when that prefix is first
+exposed, not when preparation starts. Its initial frontier is one native HLS hold-back window
+(`3 * TARGETDURATION`) and advances with session time. Therefore an EVENT playlist cannot
+present an entire track as its initial live edge, while the same stable resource can still
+append future tracks without changing `audio.src`.
+
 ## 11. State Sequence
 
 ```mermaid

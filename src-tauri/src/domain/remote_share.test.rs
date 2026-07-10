@@ -33,6 +33,7 @@ fn playing_sessions(current: PlaybackTrack) -> Arc<Mutex<RemoteShareSessions>> {
         hls_current_index: None,
         hls_priming_started_at: None,
         hls_priming_published_segments: 0,
+        hls_real_prefix_started_at: None,
         hls_entries: Vec::new(),
         session_epoch: 1,
         timeline_revision: 0,
@@ -150,6 +151,7 @@ fn remote_hls_timeline_starts_at_current_track() {
         hls_current_index: None,
         hls_priming_started_at: None,
         hls_priming_published_segments: 0,
+        hls_real_prefix_started_at: None,
         hls_entries: Vec::new(),
         session_epoch: 1,
         timeline_revision: 0,
@@ -180,6 +182,7 @@ fn remote_hls_stream_url_is_stable_for_the_session() {
         hls_current_index: None,
         hls_priming_started_at: None,
         hls_priming_published_segments: 0,
+        hls_real_prefix_started_at: None,
         hls_entries: Vec::new(),
         session_epoch: 1,
         timeline_revision: 0,
@@ -217,6 +220,7 @@ fn remote_hls_playlist_can_prime_before_current_track_exists() {
         hls_current_index: None,
         hls_priming_started_at: None,
         hls_priming_published_segments: 0,
+        hls_real_prefix_started_at: None,
         hls_entries: Vec::new(),
         session_epoch: 1,
         timeline_revision: 0,
@@ -300,6 +304,47 @@ fn remote_hls_priming_window_extends_until_real_prefix_is_ready() {
 }
 
 #[test]
+fn remote_hls_visible_prefix_does_not_publish_a_complete_track_at_startup() {
+    let first = RemoteHlsTrackAsset {
+        target_duration: 2,
+        segments: (0..180)
+            .map(|index| RemoteHlsSegmentAsset {
+                duration_seconds: 2.0,
+                path: PathBuf::from(format!("first-{index}.ts")),
+            })
+            .collect(),
+    };
+    let second = RemoteHlsTrackAsset {
+        target_duration: 2,
+        segments: (0..180)
+            .map(|index| RemoteHlsSegmentAsset {
+                duration_seconds: 2.0,
+                path: PathBuf::from(format!("second-{index}.ts")),
+            })
+            .collect(),
+    };
+
+    let counts = remote_hls_visible_segment_counts([&first, &second], 6.0);
+
+    assert_eq!(counts, vec![3, 0]);
+
+    let boundary_counts = remote_hls_visible_segment_counts([&first, &second], 366.0);
+
+    assert_eq!(boundary_counts, vec![180, 3]);
+}
+
+#[test]
+fn remote_hls_real_prefix_clock_starts_when_real_media_is_first_published() {
+    let mut session = RemoteShareSession::default();
+    session.hls_priming_started_at = Some(Instant::now() - Duration::from_secs(300));
+
+    let initial_prefix_seconds = session.advance_hls_real_prefix_window(true, 2);
+
+    assert!(initial_prefix_seconds >= 6.0);
+    assert!(initial_prefix_seconds < 7.0);
+}
+
+#[test]
 fn remote_hls_reader_accepts_partial_event_playlist_without_endlist() {
     let hls_dir =
         std::env::temp_dir().join(format!("slisic-remote-hls-partial-{}", std::process::id()));
@@ -343,6 +388,7 @@ fn remote_hls_timeline_appends_new_queue_without_replacing_the_stream() {
         hls_current_index: None,
         hls_priming_started_at: None,
         hls_priming_published_segments: 0,
+        hls_real_prefix_started_at: None,
         hls_entries: Vec::new(),
         session_epoch: 1,
         timeline_revision: 0,
@@ -392,6 +438,7 @@ fn remote_hls_timeline_keeps_repeated_track_occurrences() {
         hls_current_index: None,
         hls_priming_started_at: None,
         hls_priming_published_segments: 0,
+        hls_real_prefix_started_at: None,
         hls_entries: Vec::new(),
         session_epoch: 1,
         timeline_revision: 0,
@@ -462,6 +509,7 @@ fn remote_hls_stream_token_survives_track_token_retention() {
         hls_current_index: None,
         hls_priming_started_at: None,
         hls_priming_published_segments: 0,
+        hls_real_prefix_started_at: None,
         hls_entries: Vec::new(),
         session_epoch: 1,
         timeline_revision: 0,
@@ -507,6 +555,7 @@ fn remote_hls_segment_token_does_not_imply_playback_transition() {
         hls_current_index: None,
         hls_priming_started_at: None,
         hls_priming_published_segments: 0,
+        hls_real_prefix_started_at: None,
         hls_entries: Vec::new(),
         session_epoch: 1,
         timeline_revision: 0,
