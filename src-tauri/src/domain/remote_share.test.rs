@@ -30,11 +30,14 @@ fn playing_sessions(current: PlaybackTrack) -> Arc<Mutex<RemoteShareSessions>> {
         audio_tokens: HashMap::new(),
         stream_token: None,
         hls_timeline: Vec::new(),
+        hls_current_index: None,
         hls_priming_started_at: None,
         hls_priming_published_segments: 0,
+        hls_entries: Vec::new(),
+        session_epoch: 1,
+        timeline_revision: 0,
         next_token_id: 0,
     };
-    session.create_audio_token(current);
 
     let mut sessions = RemoteShareSessions::default();
     sessions
@@ -74,28 +77,7 @@ fn remote_next_queue_refill_updates_only_the_current_track_session() {
     assert_eq!(commit.prewarm_tracks.len(), 2);
     assert_eq!(commit.prewarm_tracks[0].music_name, first_next.music_name);
     assert_eq!(commit.prewarm_tracks[1].music_name, second_next.music_name);
-    assert_eq!(commit.frontier.len(), 2);
-    assert_eq!(commit.frontier[0].track.title, first_next.music_name);
-    assert_eq!(commit.frontier[1].track.title, second_next.music_name);
-    assert_eq!(session.audio_tokens.len(), 3);
-    assert!(
-        session
-            .audio_tokens
-            .values()
-            .any(|token| matches!(token, RemoteAudioToken::Track(track) if same_remote_track(track, &current)))
-    );
-    assert!(
-        session
-            .audio_tokens
-            .values()
-            .any(|token| matches!(token, RemoteAudioToken::Track(track) if same_remote_track(track, &first_next)))
-    );
-    assert!(
-        session
-            .audio_tokens
-            .values()
-            .any(|token| matches!(token, RemoteAudioToken::Track(track) if same_remote_track(track, &second_next)))
-    );
+    assert!(session.audio_tokens.is_empty());
 }
 
 #[test]
@@ -142,7 +124,7 @@ fn remote_next_queue_refill_discards_stale_session_results() {
         Some(new_current.music_name.as_str())
     );
     assert!(session.audio_tokens.values().all(|token| match token {
-        RemoteAudioToken::Track(track) | RemoteAudioToken::HlsSegment { track, .. } => {
+        RemoteAudioToken::HlsSegment { track, .. } => {
             !same_remote_track(track, &stale_next)
         }
         RemoteAudioToken::HlsPlaylist | RemoteAudioToken::HlsPrimingSegment { .. } => true,
@@ -165,8 +147,12 @@ fn remote_hls_timeline_starts_at_current_track() {
         audio_tokens: HashMap::new(),
         stream_token: None,
         hls_timeline: Vec::new(),
+        hls_current_index: None,
         hls_priming_started_at: None,
         hls_priming_published_segments: 0,
+        hls_entries: Vec::new(),
+        session_epoch: 1,
+        timeline_revision: 0,
         next_token_id: 0,
     };
 
@@ -191,8 +177,12 @@ fn remote_hls_stream_url_is_stable_for_the_session() {
         audio_tokens: HashMap::new(),
         stream_token: None,
         hls_timeline: Vec::new(),
+        hls_current_index: None,
         hls_priming_started_at: None,
         hls_priming_published_segments: 0,
+        hls_entries: Vec::new(),
+        session_epoch: 1,
+        timeline_revision: 0,
         next_token_id: 0,
     };
 
@@ -224,8 +214,12 @@ fn remote_hls_playlist_can_prime_before_current_track_exists() {
         audio_tokens: HashMap::new(),
         stream_token: None,
         hls_timeline: Vec::new(),
+        hls_current_index: None,
         hls_priming_started_at: None,
         hls_priming_published_segments: 0,
+        hls_entries: Vec::new(),
+        session_epoch: 1,
+        timeline_revision: 0,
         next_token_id: 0,
     };
     session.create_stream_url();
@@ -236,36 +230,33 @@ fn remote_hls_playlist_can_prime_before_current_track_exists() {
 }
 
 #[test]
-fn remote_hls_prepare_preserves_stream_and_priming_tokens() {
-    let current = test_track("current");
+fn remote_hls_start_preserves_prepared_stream_and_priming_tokens() {
     let mut session = RemoteShareSession::default();
-    let stream_url = session.create_stream_url();
-    let priming_token = session.create_hls_priming_segment_token(0);
-    let track_token = session.create_audio_token(current.clone());
-    let segment_token = session.create_hls_segment_token(&current, PathBuf::from("current.ts"));
-
     session.reset_for_hls_prepare("playlist".to_string());
+    session.begin_fresh_hls_epoch();
+    let stream_url = session.stream_url().expect("prepared stream should exist");
+    let priming_token = session.create_hls_priming_segment_token(0);
+
+    session.reset_for_hls_start("playlist".to_string());
 
     assert_eq!(session.stream_url().as_deref(), Some(stream_url.as_str()));
     assert!(matches!(
         session.audio_tokens.get(&priming_token),
         Some(RemoteAudioToken::HlsPrimingSegment { index: 0 })
     ));
-    assert!(!session.audio_tokens.contains_key(&track_token));
-    assert!(!session.audio_tokens.contains_key(&segment_token));
 }
 
 #[test]
 fn remote_hls_fresh_prepare_replaces_previous_stream_tokens() {
-    let current = test_track("current");
     let mut session = RemoteShareSession::default();
-    let old_stream_url = session.create_stream_url();
+    session.reset_for_hls_prepare("old".to_string());
+    session.begin_fresh_hls_epoch();
+    let old_stream_url = session.stream_url().expect("old stream should exist");
     let old_priming_token = session.create_hls_priming_segment_token(0);
-    let track_token = session.create_audio_token(current.clone());
-    let segment_token = session.create_hls_segment_token(&current, PathBuf::from("current.ts"));
 
     session.reset_for_hls_prepare("playlist".to_string());
-    let new_stream_url = session.create_fresh_stream_url();
+    session.begin_fresh_hls_epoch();
+    let new_stream_url = session.stream_url().expect("new stream should exist");
     let old_stream_token = old_stream_url
         .strip_prefix("/api/audio/")
         .expect("old stream url should expose its token");
@@ -276,8 +267,6 @@ fn remote_hls_fresh_prepare_replaces_previous_stream_tokens() {
     assert_ne!(old_stream_url, new_stream_url);
     assert!(!session.audio_tokens.contains_key(old_stream_token));
     assert!(!session.audio_tokens.contains_key(&old_priming_token));
-    assert!(!session.audio_tokens.contains_key(&track_token));
-    assert!(!session.audio_tokens.contains_key(&segment_token));
     assert!(matches!(
         session.audio_tokens.get(new_stream_token),
         Some(RemoteAudioToken::HlsPlaylist)
@@ -351,8 +340,12 @@ fn remote_hls_timeline_appends_new_queue_without_replacing_the_stream() {
         audio_tokens: HashMap::new(),
         stream_token: None,
         hls_timeline: Vec::new(),
+        hls_current_index: None,
         hls_priming_started_at: None,
         hls_priming_published_segments: 0,
+        hls_entries: Vec::new(),
+        session_epoch: 1,
+        timeline_revision: 0,
         next_token_id: 0,
     };
 
@@ -383,6 +376,76 @@ fn remote_hls_timeline_appends_new_queue_without_replacing_the_stream() {
 }
 
 #[test]
+fn remote_hls_timeline_keeps_repeated_track_occurrences() {
+    let liked = test_track("liked");
+    let bridge = test_track("bridge");
+    let mut session = RemoteShareSession {
+        connected: true,
+        playlist_name: Some(liked.playlist_name.clone()),
+        current: Some(liked.clone()),
+        queue: VecDeque::from([bridge.clone()]),
+        recently_played: vec![liked.clone()],
+        state: RemotePlaybackState::Playing,
+        audio_tokens: HashMap::new(),
+        stream_token: None,
+        hls_timeline: Vec::new(),
+        hls_current_index: None,
+        hls_priming_started_at: None,
+        hls_priming_published_segments: 0,
+        hls_entries: Vec::new(),
+        session_epoch: 1,
+        timeline_revision: 0,
+        next_token_id: 0,
+    };
+
+    remote_hls_playlist_tracks(&mut session).expect("first window should be available");
+    session.current = Some(bridge);
+    session.queue = VecDeque::from([liked]);
+    let timeline =
+        remote_hls_playlist_tracks(&mut session).expect("repeat window should be available");
+
+    assert_eq!(
+        timeline
+            .iter()
+            .map(|track| track.music_name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["liked", "bridge", "liked"]
+    );
+    assert_eq!(session.hls_current_index, Some(1));
+}
+
+#[test]
+fn remote_hls_published_timeline_is_append_only() {
+    let first_track = test_track("first");
+    let second_track = test_track("second");
+    let first = RemoteHlsTimelineEntry {
+        id: "0:first".to_string(),
+        track: RemoteTrackView::from_track(&first_track),
+        start_seconds: 4.0,
+        end_seconds: 184.0,
+    };
+    let second = RemoteHlsTimelineEntry {
+        id: "1:second".to_string(),
+        track: RemoteTrackView::from_track(&second_track),
+        start_seconds: 184.0,
+        end_seconds: 364.0,
+    };
+    let mut session = RemoteShareSession::default();
+
+    assert!(session.publish_hls_entries(vec![first.clone()]));
+    assert!(session.publish_hls_entries(vec![first.clone(), second.clone()]));
+    assert_eq!(session.timeline_revision, 2);
+    assert!(!session.publish_hls_entries(vec![RemoteHlsTimelineEntry {
+        start_seconds: 5.0,
+        end_seconds: 185.0,
+        ..first
+    }]));
+    assert_eq!(session.hls_entries.len(), 2);
+    assert_eq!(session.hls_entries[1].id, second.id);
+    assert_eq!(session.timeline_revision, 2);
+}
+
+#[test]
 fn remote_hls_stream_token_survives_track_token_retention() {
     let current = test_track("current");
     let next = test_track("next");
@@ -396,17 +459,18 @@ fn remote_hls_stream_token_survives_track_token_retention() {
         audio_tokens: HashMap::new(),
         stream_token: None,
         hls_timeline: vec![current.clone(), next.clone()],
+        hls_current_index: None,
         hls_priming_started_at: None,
         hls_priming_published_segments: 0,
+        hls_entries: Vec::new(),
+        session_epoch: 1,
+        timeline_revision: 0,
         next_token_id: 0,
     };
 
     let stream_url = session.create_stream_url();
     let current_segment = session.create_hls_segment_token(&current, PathBuf::from("current.ts"));
     let next_segment = session.create_hls_segment_token(&next, PathBuf::from("next.ts"));
-    session.create_audio_token(current.clone());
-    session.create_audio_token(next.clone());
-
     session.retain_audio_tokens_for_tracks(&[current.clone(), next.clone()]);
 
     let stream_token = stream_url
@@ -440,8 +504,12 @@ fn remote_hls_segment_token_does_not_imply_playback_transition() {
         audio_tokens: HashMap::new(),
         stream_token: None,
         hls_timeline: vec![current.clone(), next.clone()],
+        hls_current_index: None,
         hls_priming_started_at: None,
         hls_priming_published_segments: 0,
+        hls_entries: Vec::new(),
+        session_epoch: 1,
+        timeline_revision: 0,
         next_token_id: 0,
     };
 
