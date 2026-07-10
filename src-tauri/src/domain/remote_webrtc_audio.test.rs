@@ -70,12 +70,6 @@ async fn negotiated_peer_receives_silence_on_the_persistent_audio_track() -> Res
         .ok_or_else(|| anyhow!("browser offer is missing"))?;
     tokio::time::timeout(
         Duration::from_secs(5),
-        host.create_peer("integration-client"),
-    )
-    .await
-    .map_err(|_| anyhow!("host peer creation timed out"))??;
-    tokio::time::timeout(
-        Duration::from_secs(5),
         host.handle_signal(
             "integration-client",
             RemoteP2pSignal::Offer { sdp: offer.sdp },

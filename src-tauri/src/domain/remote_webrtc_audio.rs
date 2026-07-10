@@ -210,7 +210,11 @@ impl RemoteWebRtcAudio {
     }
 
     async fn accept_offer(self: &Arc<Self>, client_id: &str, sdp: String) -> Result<()> {
-        let peer = match self.peers.lock().await.get(client_id).cloned() {
+        let existing_peer = {
+            let peers = self.peers.lock().await;
+            peers.get(client_id).cloned()
+        };
+        let peer = match existing_peer {
             Some(peer) => peer,
             None => self.create_peer(client_id).await?,
         };
