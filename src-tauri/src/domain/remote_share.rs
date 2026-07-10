@@ -1,7 +1,5 @@
 use crate::domain::player::model::PlaybackTrack;
 use crate::domain::player::service::{PlaybackLoudnessPlan, playback_loudness_plan_for_profile};
-#[cfg(not(test))]
-use crate::domain::playlist_playback::playable_index;
 use crate::domain::playlist_playback::service::{
     PlaylistPlaybackRecommendationMode, PlaylistPlaybackRecommendationRequest,
 };
@@ -12,40 +10,32 @@ use crate::domain::playlist_playback::service::{
 };
 use crate::domain::playlists::model::PlayListListView;
 use crate::domain::playlists::repo as playlist_repo;
-use crate::utils::binaries::{ManagedBinary, acquire_managed_binary_usage, ensure_managed_binary};
+use crate::domain::remote_webrtc_audio::{
+    RemoteAudioSource, RemoteIceServer, RemoteP2pSignal, RemoteWebRtcAudio, RemoteWebRtcEvent,
+};
+use crate::utils::binaries::{ManagedBinary, ensure_managed_binary};
 use anyhow::{Result, anyhow};
 use appdb::Store;
 use appdb::error::{DBError, classify_db_error};
 use appdb::model::meta::ModelMeta;
 use appdb::repository::Repo;
-use axum::body::Body;
-use axum::extract::{Path as AxumPath, State};
-use axum::http::header::{ACCEPT_RANGES, CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE, RANGE};
-use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
+use axum::extract::State;
+use axum::http::{HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
 use rand::RngExt;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use specta::Type;
 use std::collections::{HashMap, VecDeque};
-use std::fs as std_fs;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
-use std::path::PathBuf;
-use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 use surrealdb::types::RecordId;
 use surrealdb_types::SurrealValue;
-use tauri::{AppHandle, Manager};
-use tokio::fs::File;
-use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
+use tauri::AppHandle;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use tokio::task;
@@ -55,35 +45,11 @@ use tokio_tungstenite::tungstenite::Message;
 use tower_http::cors::{Any, CorsLayer};
 
 const REMOTE_SHARE_LOG_TARGET: &str = "remote_share";
-#[cfg(windows)]
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const REMOTE_SHARE_SETTINGS_RECORD_KEY: &str = "singleton";
 const REMOTE_PAIRING_CODE_MAX_LEN: usize = 8;
 const REMOTE_PAIRING_CODE_ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
 const REMOTE_SHARE_PORT: u16 = 48_231;
-const REMOTE_AUDIO_CACHE_DIR: &str = "remote-audio";
-const REMOTE_HLS_SEGMENT_SECONDS: u32 = 2;
-const REMOTE_HLS_PRIMING_SEGMENT_SECONDS: f32 = REMOTE_HLS_SEGMENT_SECONDS as f32;
-const REMOTE_HLS_PRIMING_TARGET_DURATION: u32 = REMOTE_HLS_SEGMENT_SECONDS;
-const REMOTE_HLS_PRIMING_LOOKAHEAD_SEGMENTS: usize = 6;
-// Apple recommends at least fifteen minutes of content in a live playlist. Keeping that
-// duration ahead of the publication clock survives background reload gaps without exposing an
-// arbitrarily long materialized successor as the native player's live edge.
-const REMOTE_HLS_ANCHORED_RUNWAY_SECONDS: u32 = 15 * 60;
-const REMOTE_HLS_PRIMING_SEGMENTS: [RemoteHlsPrimingSegmentAsset; 6] = [
-    RemoteHlsPrimingSegmentAsset::new(2.005_333, include_bytes!("remote_hls_prime_0.ts")),
-    RemoteHlsPrimingSegmentAsset::new(2.005_333, include_bytes!("remote_hls_prime_1.ts")),
-    RemoteHlsPrimingSegmentAsset::new(2.005_333, include_bytes!("remote_hls_prime_2.ts")),
-    RemoteHlsPrimingSegmentAsset::new(1.984, include_bytes!("remote_hls_prime_3.ts")),
-    RemoteHlsPrimingSegmentAsset::new(2.005_333, include_bytes!("remote_hls_prime_4.ts")),
-    RemoteHlsPrimingSegmentAsset::new(2.005_333, include_bytes!("remote_hls_prime_5.ts")),
-];
-const REMOTE_HLS_PLAYLIST_TRACK_LIMIT: usize = 4;
-const REMOTE_HLS_MATERIALIZATION_VERSION: &str = "hls-v3";
-const REMOTE_AUDIO_GAIN_EPSILON_DB: f32 = 0.001;
 const REMOTE_CANDIDATE_WINDOW_LIMIT: usize = 96;
-const REMOTE_FIRST_SLOT_PREWARM_LIMIT: usize = 12;
-const REMOTE_PREFETCH_FRONTIER_LIMIT: usize = 3;
 const REMOTE_RELAY_HOST_URL_ENV: &str = "SLISIC_REMOTE_RELAY_HOST_URL";
 const DEFAULT_REMOTE_RELAY_HOST_URL: &str = "wss://slisic-remote.grahlnn.com/ws/host";
 const REMOTE_RELAY_RECONNECT_DELAY: Duration = Duration::from_secs(5);
@@ -100,7 +66,7 @@ struct RemoteShareRuntime {
     app: AppHandle,
     settings: Arc<Mutex<RemoteShareSettings>>,
     sessions: Arc<Mutex<RemoteShareSessions>>,
-    remote_audio_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
+    webrtc_audio: Arc<RemoteWebRtcAudio>,
 }
 
 #[derive(Clone)]
@@ -162,18 +128,7 @@ struct RemoteShareSession {
     queue: VecDeque<PlaybackTrack>,
     recently_played: Vec<PlaybackTrack>,
     state: RemotePlaybackState,
-    audio_tokens: HashMap<String, RemoteAudioToken>,
-    stream_token: Option<String>,
-    hls_timeline: Vec<PlaybackTrack>,
-    hls_current_index: Option<usize>,
-    hls_priming_started_at: Option<Instant>,
-    hls_priming_published_segments: usize,
-    hls_real_prefix_started_at: Option<Instant>,
-    hls_consumer_anchored: bool,
-    hls_entries: Vec<RemoteHlsTimelineEntry>,
-    session_epoch: u64,
-    timeline_revision: u64,
-    next_token_id: u64,
+    playback_generation: u64,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -183,38 +138,6 @@ enum RemotePlaybackState {
     Ready,
     Preparing,
     Playing,
-}
-
-#[derive(Clone)]
-enum RemoteAudioToken {
-    HlsPlaylist,
-    HlsPrimingSegment { index: usize },
-    HlsSegment { track: PlaybackTrack, path: PathBuf },
-}
-
-#[derive(Clone, Copy)]
-enum RemoteAudioTransportKind {
-    HlsPlaylist,
-    MpegTsSegment,
-}
-
-impl RemoteAudioTransportKind {
-    fn extension(self) -> &'static str {
-        match self {
-            Self::HlsPlaylist => "m3u8",
-            Self::MpegTsSegment => "ts",
-        }
-    }
-}
-
-fn remote_audio_transport_path(token: &str, kind: RemoteAudioTransportKind) -> String {
-    format!("/api/audio/{token}.{}", kind.extension())
-}
-
-fn remote_audio_token_from_transport_path(path: &str) -> &str {
-    path.strip_suffix(".m3u8")
-        .or_else(|| path.strip_suffix(".ts"))
-        .unwrap_or(path)
 }
 
 #[derive(Debug, Deserialize)]
@@ -242,29 +165,12 @@ pub struct RemoteShareStatus {
 struct RemoteStartRequest {
     code: String,
     playlist_name: String,
-    session_epoch: u64,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RemotePrepareHlsRequest {
-    code: String,
-    playlist_name: String,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RemoteSessionCommandRequest {
     code: String,
-    session_epoch: u64,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RemoteNextRequest {
-    code: String,
-    session_epoch: u64,
-    entry_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -277,10 +183,14 @@ enum RemoteRelayInbound {
     Hello {
         role: String,
         code: String,
+        #[serde(default)]
+        ice_servers: Vec<RemoteIceServer>,
     },
     PeerState {
         host_connected: bool,
         client_connected: bool,
+        #[serde(default)]
+        ice_servers: Vec<RemoteIceServer>,
     },
     RpcRequest {
         id: String,
@@ -290,12 +200,10 @@ enum RemoteRelayInbound {
         #[serde(default)]
         params: serde_json::Value,
     },
-    AudioRequest {
-        id: String,
+    P2pSignal {
         #[serde(default)]
         client_id: Option<String>,
-        token: String,
-        range: Option<String>,
+        signal: RemoteP2pSignal,
     },
 }
 
@@ -314,27 +222,14 @@ enum RemoteRelayOutbound {
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
-    AudioResponse {
-        id: String,
-        ok: bool,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        status: Option<u16>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        content_type: Option<&'static str>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        content_length: Option<u64>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        content_range: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        accept_ranges: Option<&'static str>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        body_base64: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        error: Option<String>,
-    },
-    SessionTimelineUpdated {
+    SessionPlaybackUpdated {
         client_id: String,
-        hls: RemoteHlsSessionView,
+        session: RemoteSessionView,
+        playback: Option<RemotePlaybackCargo>,
+    },
+    P2pSignal {
+        client_id: String,
+        signal: RemoteP2pSignal,
     },
     HostPing {},
 }
@@ -358,7 +253,7 @@ struct RemoteHealthResponse {
     remote_page: &'static str,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RemoteSessionView {
     state: RemotePlaybackState,
@@ -372,17 +267,9 @@ struct RemoteSessionView {
 struct RemotePlaybackResponse {
     session: RemoteSessionView,
     playback: Option<RemotePlaybackCargo>,
-    hls: RemoteHlsSessionView,
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct RemoteHlsStreamResponse {
-    session: RemoteSessionView,
-    hls: RemoteHlsSessionView,
-}
-
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RemotePlaybackCargo {
     track: RemoteTrackView,
@@ -390,24 +277,6 @@ struct RemotePlaybackCargo {
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct RemoteHlsSessionView {
-    session_epoch: u64,
-    timeline_revision: u64,
-    stream_url: Option<String>,
-    entries: Vec<RemoteHlsTimelineEntry>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct RemoteHlsTimelineEntry {
-    id: String,
-    track: RemoteTrackView,
-    start_seconds: f64,
-    end_seconds: f64,
-}
-
-#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RemoteLoudnessPlanView {
     integrated_lufs: f32,
@@ -431,63 +300,18 @@ struct RemoteTrackView {
     duration_ms: u32,
 }
 
-struct RemoteAudioRelayCargo {
-    status: StatusCode,
-    content_type: &'static str,
-    content_length: u64,
-    content_range: Option<String>,
-    accept_ranges: &'static str,
-    body: Vec<u8>,
-}
-
-struct RemoteNextQueueCommit {
-    prewarm_tracks: Vec<PlaybackTrack>,
-}
-
-struct RemoteHlsTrackAsset {
-    target_duration: u32,
-    segments: Vec<RemoteHlsSegmentAsset>,
-}
-
-struct RemoteHlsSegmentAsset {
-    duration_seconds: f32,
-    path: PathBuf,
-}
-
-struct RemoteHlsPrimingSegmentAsset {
-    duration_seconds: f32,
-    bytes: &'static [u8],
-}
-
-impl RemoteHlsPrimingSegmentAsset {
-    const fn new(duration_seconds: f32, bytes: &'static [u8]) -> Self {
-        Self {
-            duration_seconds,
-            bytes,
-        }
-    }
-}
-
-struct RemoteHlsMaterializationDescriptor {
-    key: String,
-    app: AppHandle,
-    track: PlaybackTrack,
-    hls_dir: PathBuf,
-    playlist_path: PathBuf,
-    gain_db: f32,
-}
-
 pub async fn initialize_runtime(app: AppHandle) -> Result<()> {
     install_remote_tls_crypto_provider();
     let settings = ensure_remote_share_settings()
         .await
         .map_err(|error| anyhow!(error.message))?;
 
+    let (webrtc_audio, webrtc_events) = RemoteWebRtcAudio::new();
     let runtime = Arc::new(RemoteShareRuntime {
         app,
         settings: Arc::new(Mutex::new(settings)),
         sessions: Arc::new(Mutex::new(RemoteShareSessions::default())),
-        remote_audio_locks: Arc::new(Mutex::new(HashMap::new())),
+        webrtc_audio,
     });
     if REMOTE_SHARE_RUNTIME.set(Arc::clone(&runtime)).is_err() {
         log::warn!(
@@ -496,6 +320,9 @@ pub async fn initialize_runtime(app: AppHandle) -> Result<()> {
         );
         return Ok(());
     }
+
+    let webrtc_runtime = Arc::clone(&runtime);
+    tauri::async_runtime::spawn(run_remote_webrtc_events(webrtc_runtime, webrtc_events));
 
     let gateway_runtime = Arc::clone(&runtime);
     tauri::async_runtime::spawn(async move {
@@ -512,6 +339,28 @@ pub async fn initialize_runtime(app: AppHandle) -> Result<()> {
     Ok(())
 }
 
+async fn run_remote_webrtc_events(
+    runtime: Arc<RemoteShareRuntime>,
+    mut events: tokio::sync::mpsc::UnboundedReceiver<RemoteWebRtcEvent>,
+) {
+    while let Some(event) = events.recv().await {
+        match event {
+            RemoteWebRtcEvent::TrackEnded {
+                client_id,
+                generation,
+            } => {
+                if let Err(error) = runtime.handle_track_ended(&client_id, generation).await {
+                    log::warn!(
+                        target: REMOTE_SHARE_LOG_TARGET,
+                        "remote_p2p_track_advance_failed error=\"{}\"",
+                        escape_remote_log_value(&error.message)
+                    );
+                }
+            }
+        }
+    }
+}
+
 fn install_remote_tls_crypto_provider() {
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 }
@@ -522,12 +371,8 @@ async fn serve_remote_share_gateway(runtime: Arc<RemoteShareRuntime>) -> Result<
         .route("/", get(remote_share_health))
         .route("/api/connect", post(connect_remote_share))
         .route("/api/bootstrap", get(bootstrap_remote_share))
-        .route("/api/session/prepare-hls", post(prepare_remote_hls_session))
-        .route("/api/session/timeline", post(remote_hls_timeline))
         .route("/api/session/start", post(start_remote_session))
-        .route("/api/session/next", post(next_remote_track))
         .route("/api/session/stop", post(stop_remote_session))
-        .route("/api/audio/{token}", get(stream_remote_audio))
         .layer(
             CorsLayer::new()
                 .allow_origin(Any)
@@ -604,6 +449,7 @@ async fn serve_remote_relay_socket(
 ) -> Result<()> {
     let (mut sink, mut stream) = socket.split();
     let (outbound_tx, mut outbound_rx) = unbounded_channel::<String>();
+    runtime.webrtc_audio.set_relay_events(outbound_tx.clone());
     let connected_at = Instant::now();
     let mut client_connected = false;
     let mut heartbeat = interval(REMOTE_RELAY_HEARTBEAT_INTERVAL);
@@ -691,11 +537,17 @@ async fn handle_remote_relay_message(
     };
 
     let outbound = match inbound {
-        RemoteRelayInbound::Hello { role, code } => {
+        RemoteRelayInbound::Hello {
+            role,
+            code,
+            ice_servers,
+        } => {
             let _ = (role, code);
+            runtime.webrtc_audio.update_ice_servers(ice_servers);
             return None;
         }
-        RemoteRelayInbound::PeerState { .. } => {
+        RemoteRelayInbound::PeerState { ice_servers, .. } => {
+            runtime.webrtc_audio.update_ice_servers(ice_servers);
             return None;
         }
         RemoteRelayInbound::RpcRequest {
@@ -714,14 +566,18 @@ async fn handle_remote_relay_message(
             )
             .await,
         ),
-        RemoteRelayInbound::AudioRequest {
-            id,
-            client_id,
-            token,
-            range,
-        } => Some(
-            handle_remote_relay_audio(runtime, id, client_id, token, range, relay_events).await,
-        ),
+        RemoteRelayInbound::P2pSignal { client_id, signal } => {
+            let client_id = normalize_remote_client_id(client_id.as_deref());
+            match runtime.webrtc_audio.handle_signal(&client_id, signal).await {
+                Ok(()) => return None,
+                Err(error) => Some(RemoteRelayOutbound::P2pSignal {
+                    client_id,
+                    signal: RemoteP2pSignal::Error {
+                        reason: error.to_string(),
+                    },
+                }),
+            }
+        }
     };
     let outbound = outbound?;
     Some(serde_json::to_string(&outbound).unwrap_or_else(|error| {
@@ -755,28 +611,14 @@ async fn handle_remote_relay_rpc(
         "connect" => parse_relay_params(params)
             .and_then(|request| relay_json(runtime.handle_connect(&client_id, request))),
         "bootstrap" => relay_json(runtime.handle_bootstrap(&client_id).await),
-        "session.prepare_hls" => match parse_relay_params(params) {
-            Ok(request) => relay_json(runtime.handle_prepare_hls(&client_id, request)),
-            Err(error) => Err(error),
-        },
-        "session.timeline" => match parse_relay_params(params) {
-            Ok(request) => relay_json(runtime.handle_hls_timeline(&client_id, request)),
-            Err(error) => Err(error),
-        },
-        "session.anchor_hls" => match parse_relay_params(params) {
-            Ok(request) => relay_json(runtime.handle_hls_anchor(&client_id, request)),
-            Err(error) => Err(error),
-        },
         "session.start" => match parse_relay_params(params) {
             Ok(request) => relay_json(runtime.handle_start(&client_id, request).await),
             Err(error) => Err(error),
         },
-        "session.next" => match parse_relay_params(params) {
-            Ok(request) => relay_json(runtime.handle_next(&client_id, request).await),
+        "session.stop" => match parse_relay_params(params) {
+            Ok(request) => relay_json(runtime.handle_stop(&client_id, request).await),
             Err(error) => Err(error),
         },
-        "session.stop" => parse_relay_params(params)
-            .and_then(|request| relay_json(runtime.handle_stop(&client_id, request))),
         _ => Err(RemoteShareError::not_found(format!(
             "unknown remote relay method `{method}`"
         ))),
@@ -821,44 +663,6 @@ async fn handle_remote_relay_rpc(
         );
     }
     outbound
-}
-
-async fn handle_remote_relay_audio(
-    runtime: Arc<RemoteShareRuntime>,
-    id: String,
-    client_id: Option<String>,
-    token: String,
-    range: Option<String>,
-    relay_events: RemoteRelayEventSender,
-) -> RemoteRelayOutbound {
-    let client_id = normalize_remote_client_id(client_id.as_deref());
-    match runtime
-        .handle_audio_relay(&client_id, token, range, Some(relay_events))
-        .await
-    {
-        Ok(cargo) => RemoteRelayOutbound::AudioResponse {
-            id,
-            ok: true,
-            status: Some(cargo.status.as_u16()),
-            content_type: Some(cargo.content_type),
-            content_length: Some(cargo.content_length),
-            content_range: cargo.content_range,
-            accept_ranges: Some(cargo.accept_ranges),
-            body_base64: Some(base64::engine::general_purpose::STANDARD.encode(cargo.body)),
-            error: None,
-        },
-        Err(error) => RemoteRelayOutbound::AudioResponse {
-            id,
-            ok: false,
-            status: Some(error.status.as_u16()),
-            content_type: None,
-            content_length: None,
-            content_range: None,
-            accept_ranges: None,
-            body_base64: None,
-            error: Some(error.message),
-        },
-    }
 }
 
 fn relay_json<T: Serialize>(result: RemoteResult<T>) -> RemoteResult<serde_json::Value> {
@@ -946,57 +750,15 @@ async fn start_remote_session(
     ))
 }
 
-async fn prepare_remote_hls_session(
-    State(runtime): State<Arc<RemoteShareRuntime>>,
-    Json(request): Json<RemotePrepareHlsRequest>,
-) -> RemoteResult<Json<RemoteHlsStreamResponse>> {
-    Ok(Json(
-        runtime.handle_prepare_hls(DEFAULT_REMOTE_CLIENT_ID, request)?,
-    ))
-}
-
-async fn remote_hls_timeline(
-    State(runtime): State<Arc<RemoteShareRuntime>>,
-    Json(request): Json<RemoteSessionCommandRequest>,
-) -> RemoteResult<Json<RemoteHlsSessionView>> {
-    Ok(Json(
-        runtime.handle_hls_timeline(DEFAULT_REMOTE_CLIENT_ID, request)?,
-    ))
-}
-
-async fn next_remote_track(
-    State(runtime): State<Arc<RemoteShareRuntime>>,
-    Json(request): Json<RemoteNextRequest>,
-) -> RemoteResult<Json<RemotePlaybackResponse>> {
-    Ok(Json(
-        runtime
-            .handle_next(DEFAULT_REMOTE_CLIENT_ID, request)
-            .await?,
-    ))
-}
-
 async fn stop_remote_session(
     State(runtime): State<Arc<RemoteShareRuntime>>,
     Json(request): Json<RemoteSessionCommandRequest>,
 ) -> RemoteResult<Json<RemoteSessionView>> {
     Ok(Json(
-        runtime.handle_stop(DEFAULT_REMOTE_CLIENT_ID, request)?,
+        runtime
+            .handle_stop(DEFAULT_REMOTE_CLIENT_ID, request)
+            .await?,
     ))
-}
-
-async fn stream_remote_audio(
-    State(runtime): State<Arc<RemoteShareRuntime>>,
-    AxumPath(token): AxumPath<String>,
-    headers: HeaderMap,
-) -> RemoteResult<Response> {
-    let range = headers
-        .get(RANGE)
-        .and_then(|value| value.to_str().ok())
-        .map(ToOwned::to_owned);
-    let cargo = runtime
-        .handle_audio_relay(DEFAULT_REMOTE_CLIENT_ID, token, range, None)
-        .await?;
-    remote_audio_relay_response(cargo)
 }
 
 async fn resolve_remote_initial_track(
@@ -1111,6 +873,7 @@ impl RemoteShareRuntime {
         }
         if !enabled {
             self.clear_sessions()?;
+            self.webrtc_audio.close_all().await;
         }
         self.status()
     }
@@ -1137,6 +900,7 @@ impl RemoteShareRuntime {
         };
         if code_changed {
             self.clear_sessions()?;
+            self.webrtc_audio.close_all().await;
         }
         self.status()
     }
@@ -1189,7 +953,6 @@ impl RemoteShareRuntime {
 
     async fn handle_bootstrap(&self, client_id: &str) -> RemoteResult<RemoteBootstrapResponse> {
         let playlists = playlist_repo::list_playlists().await?;
-        self.spawn_remote_first_slot_audio_prewarm(&playlists);
         let session = self.session_view(client_id)?;
         let status = self.status()?;
         Ok(RemoteBootstrapResponse {
@@ -1198,57 +961,6 @@ impl RemoteShareRuntime {
             playlists,
             session,
         })
-    }
-
-    fn handle_prepare_hls(
-        &self,
-        client_id: &str,
-        request: RemotePrepareHlsRequest,
-    ) -> RemoteResult<RemoteHlsStreamResponse> {
-        self.ensure_code(&request.code)?;
-        let mut sessions = self.lock_sessions()?;
-        let session = sessions.by_client.entry(client_id.to_string()).or_default();
-        session.reset_for_hls_prepare(request.playlist_name);
-        session.begin_fresh_hls_epoch();
-        Ok(RemoteHlsStreamResponse {
-            session: session.view(),
-            hls: session.hls_view(),
-        })
-    }
-
-    fn handle_hls_timeline(
-        &self,
-        client_id: &str,
-        request: RemoteSessionCommandRequest,
-    ) -> RemoteResult<RemoteHlsSessionView> {
-        self.ensure_code(&request.code)?;
-        let sessions = self.lock_sessions()?;
-        let session = sessions
-            .by_client
-            .get(client_id)
-            .ok_or(RemoteShareError::not_found(
-                "remote client session not found",
-            ))?;
-        session.ensure_epoch(request.session_epoch)?;
-        Ok(session.hls_view())
-    }
-
-    fn handle_hls_anchor(
-        &self,
-        client_id: &str,
-        request: RemoteSessionCommandRequest,
-    ) -> RemoteResult<RemoteHlsSessionView> {
-        self.ensure_code(&request.code)?;
-        let mut sessions = self.lock_sessions()?;
-        let session = sessions
-            .by_client
-            .get_mut(client_id)
-            .ok_or(RemoteShareError::not_found(
-                "remote client session not found",
-            ))?;
-        session.ensure_epoch(request.session_epoch)?;
-        session.anchor_hls_consumer();
-        Ok(session.hls_view())
     }
 
     async fn handle_start(
@@ -1260,14 +972,12 @@ impl RemoteShareRuntime {
         {
             let mut sessions = self.lock_sessions()?;
             let session = sessions.by_client.entry(client_id.to_string()).or_default();
-            session.ensure_epoch(request.session_epoch)?;
-            let prepared_playlist = session.playlist_name.as_deref().unwrap_or_default();
-            if !prepared_playlist.is_empty() && prepared_playlist != request.playlist_name {
-                return Err(RemoteShareError::conflict(
-                    "prepared HLS playlist does not match start request",
-                ));
-            }
-            session.reset_for_hls_start(request.playlist_name.clone());
+            session.connected = true;
+            session.playlist_name = Some(request.playlist_name.clone());
+            session.current = None;
+            session.queue.clear();
+            session.recently_played.clear();
+            session.state = RemotePlaybackState::Preparing;
         }
 
         let initial = match resolve_remote_initial_track(&self.app, &request.playlist_name).await {
@@ -1283,290 +993,33 @@ impl RemoteShareRuntime {
             initial.clone(),
             Vec::new(),
         )?;
+        let generation = self.playback_generation(client_id)?;
+        let source = remote_webrtc_audio_source(&self.app, &initial).await?;
+        if let Err(error) = self.webrtc_audio.play(client_id, generation, source).await {
+            self.reset_to_ready(client_id)?;
+            return Err(RemoteShareError::unavailable(error.to_string()));
+        }
         self.spawn_remote_next_queue_fill(client_id.to_string(), initial, Vec::new());
         Ok(response)
     }
 
-    async fn handle_next(
-        &self,
-        client_id: &str,
-        request: RemoteNextRequest,
-    ) -> RemoteResult<RemotePlaybackResponse> {
-        self.ensure_code(&request.code)?;
-        let (playlist_name, current, recent_history) = {
-            let mut sessions = self.lock_sessions()?;
-            let session = sessions.by_client.entry(client_id.to_string()).or_default();
-            session.ensure_epoch(request.session_epoch)?;
-            session.ensure_current_entry(&request.entry_id)?;
-            let Some(next) = session.queue.pop_front() else {
-                return Err(RemoteShareError::unavailable(
-                    "next HLS timeline entry is not ready",
-                ));
-            };
-            let playlist_name = next.playlist_name.clone();
-            session.current = Some(next.clone());
-            observe_remote_recent_track(&mut session.recently_played, next.clone());
-            session.state = RemotePlaybackState::Playing;
-            (playlist_name, next, session.recently_played.clone())
-        };
-
-        let response =
-            self.commit_playback(client_id, playlist_name, current.clone(), Vec::new())?;
-        self.spawn_remote_next_queue_fill(client_id.to_string(), current, recent_history);
-        Ok(response)
-    }
-
-    fn handle_stop(
+    async fn handle_stop(
         &self,
         client_id: &str,
         request: RemoteSessionCommandRequest,
     ) -> RemoteResult<RemoteSessionView> {
         self.ensure_code(&request.code)?;
-        let mut sessions = self.lock_sessions()?;
-        let session = sessions.by_client.entry(client_id.to_string()).or_default();
-        session.ensure_epoch(request.session_epoch)?;
-        session.current = None;
-        session.queue.clear();
-        session.state = RemotePlaybackState::Ready;
-        session.audio_tokens.clear();
-        session.stream_token = None;
-        session.hls_timeline.clear();
-        session.hls_current_index = None;
-        session.hls_priming_started_at = None;
-        session.hls_priming_published_segments = 0;
-        session.hls_real_prefix_started_at = None;
-        session.hls_consumer_anchored = false;
-        session.hls_entries.clear();
-        session.timeline_revision = session.timeline_revision.saturating_add(1);
-        Ok(session.view())
-    }
-
-    async fn handle_audio_relay(
-        &self,
-        client_id: &str,
-        token: String,
-        range: Option<String>,
-        relay_events: Option<RemoteRelayEventSender>,
-    ) -> RemoteResult<RemoteAudioRelayCargo> {
-        {
-            let settings = self.lock_settings()?;
-            if !settings.enabled {
-                return Err(RemoteShareError::unauthorized("remote share is disabled"));
-            }
-        }
-        let token = {
-            let sessions = self.lock_sessions()?;
-            sessions
-                .by_client
-                .get(client_id)
-                .ok_or(RemoteShareError::not_found(
-                    "remote client session not found",
-                ))?
-                .audio_tokens
-                .get(remote_audio_token_from_transport_path(&token))
-                .cloned()
-                .ok_or(RemoteShareError::not_found("audio token not found"))?
-        };
-        match token {
-            RemoteAudioToken::HlsPlaylist => {
-                self.remote_hls_playlist_cargo(client_id, relay_events.as_ref())
-                    .await
-            }
-            RemoteAudioToken::HlsPrimingSegment { index } => {
-                remote_hls_priming_segment_cargo(index)
-            }
-            RemoteAudioToken::HlsSegment { track: _, path } => {
-                self.observe_remote_hls_segment_request(client_id).await;
-                read_file_relay_chunk_with_content_type(
-                    path,
-                    range.as_deref(),
-                    "video/mp2t",
-                    u64::MAX,
-                )
-                .await
-            }
-        }
-    }
-
-    async fn remote_hls_playlist_cargo(
-        &self,
-        client_id: &str,
-        relay_events: Option<&RemoteRelayEventSender>,
-    ) -> RemoteResult<RemoteAudioRelayCargo> {
-        let tracks = {
+        let view = {
             let mut sessions = self.lock_sessions()?;
-            let session =
-                sessions
-                    .by_client
-                    .get_mut(client_id)
-                    .ok_or(RemoteShareError::not_found(
-                        "remote client session not found",
-                    ))?;
-            remote_hls_playlist_tracks(session)?
+            let session = sessions.by_client.entry(client_id.to_string()).or_default();
+            session.current = None;
+            session.queue.clear();
+            session.state = RemotePlaybackState::Ready;
+            session.playback_generation = session.playback_generation.saturating_add(1);
+            session.view()
         };
-        let mut assets = Vec::new();
-        let mut missing_tracks = Vec::new();
-        let mut blocked_by_missing_prefix = false;
-        for track in tracks {
-            match read_materialized_remote_hls_for_track(&self.app, &track).await? {
-                Some(asset) if !blocked_by_missing_prefix => assets.push((track, asset)),
-                Some(_) => {}
-                None => {
-                    blocked_by_missing_prefix = true;
-                    missing_tracks.push(track);
-                }
-            }
-        }
-        self.spawn_remote_hls_prewarm(missing_tracks);
-        if assets
-            .iter()
-            .any(|(_, asset)| asset.target_duration > REMOTE_HLS_PRIMING_TARGET_DURATION)
-        {
-            return Err(RemoteShareError::internal(
-                "remote HLS segment exceeds the stable target duration",
-            ));
-        }
-        let code = self.status()?.code;
-        let mut playlist = remote_hls_playlist_header();
-        let (timeline_changed, hls_view) = {
-            let mut sessions = self.lock_sessions()?;
-            let session =
-                sessions
-                    .by_client
-                    .get_mut(client_id)
-                    .ok_or(RemoteShareError::not_found(
-                        "remote client session not found",
-                    ))?;
-            let real_prefix_ready = !assets.is_empty();
-            let priming_segments = session.advance_hls_priming_window(real_prefix_ready);
-            // Establish the native media session on priming before appending real media. This
-            // prevents an EVENT playlist live-edge start from skipping the priming lifetime.
-            let visible_media_seconds = session.advance_hls_real_prefix_window(real_prefix_ready);
-            let visible_segment_counts = remote_hls_visible_segment_counts(
-                assets.iter().map(|(_, asset)| asset),
-                visible_media_seconds,
-            );
-            let mut timeline_cursor = remote_hls_priming_duration_seconds(priming_segments);
-            let entries = assets
-                .iter()
-                .enumerate()
-                .map(|(index, (track, asset))| {
-                    let start_seconds = timeline_cursor;
-                    timeline_cursor += asset
-                        .segments
-                        .iter()
-                        .map(|segment| segment.duration_seconds as f64)
-                        .sum::<f64>();
-                    RemoteHlsTimelineEntry {
-                        id: remote_hls_entry_id(index, track),
-                        track: RemoteTrackView::from_track(track),
-                        start_seconds,
-                        end_seconds: timeline_cursor,
-                    }
-                })
-                .collect::<Vec<_>>();
-            let timeline_changed = session.publish_hls_entries(entries);
-            for sequence in 0..priming_segments {
-                if sequence > 0 && sequence % REMOTE_HLS_PRIMING_SEGMENTS.len() == 0 {
-                    playlist.push_str("#EXT-X-DISCONTINUITY\n");
-                }
-                let priming_index = sequence % REMOTE_HLS_PRIMING_SEGMENTS.len();
-                let priming_segment = &REMOTE_HLS_PRIMING_SEGMENTS[priming_index];
-                let priming_token = session.create_hls_priming_segment_token(priming_index);
-                playlist.push_str(&format!(
-                    "#EXTINF:{:.6},\n",
-                    priming_segment.duration_seconds
-                ));
-                playlist.push_str(&format!(
-                    "{}?code={code}&clientId={client_id}&primeSeq={sequence}\n",
-                    remote_audio_transport_path(
-                        &priming_token,
-                        RemoteAudioTransportKind::MpegTsSegment,
-                    )
-                ));
-            }
-            for ((track, asset), visible_segment_count) in assets.iter().zip(visible_segment_counts)
-            {
-                if visible_segment_count == 0 {
-                    break;
-                }
-                playlist.push_str("#EXT-X-DISCONTINUITY\n");
-                for segment in asset.segments.iter().take(visible_segment_count) {
-                    let token = session.create_hls_segment_token(track, segment.path.clone());
-                    playlist.push_str(&format!("#EXTINF:{:.3},\n", segment.duration_seconds));
-                    playlist.push_str(&format!(
-                        "{}?code={code}&clientId={client_id}\n",
-                        remote_audio_transport_path(
-                            &token,
-                            RemoteAudioTransportKind::MpegTsSegment,
-                        )
-                    ));
-                }
-            }
-            (timeline_changed, session.hls_view())
-        };
-        if timeline_changed {
-            if let Some(relay_events) = relay_events {
-                send_remote_relay_timeline_updated(relay_events, client_id, hls_view);
-            }
-        }
-        Ok(remote_text_relay_cargo(
-            "application/vnd.apple.mpegurl",
-            playlist.into_bytes(),
-        ))
-    }
-
-    async fn observe_remote_hls_segment_request(&self, _client_id: &str) {
-        // HLS segment requests are transport/cache observations. Safari can prefetch or
-        // re-request segments out of audible order, so playback state advances only through
-        // explicit session commands.
-    }
-    #[cfg(not(test))]
-    fn spawn_remote_first_slot_audio_prewarm(&self, playlists: &[PlayListListView]) {
-        let tracks = playlists
-            .iter()
-            .take(REMOTE_FIRST_SLOT_PREWARM_LIMIT)
-            .filter_map(
-                |playlist| match playable_index::read_playlist_source(&playlist.name) {
-                    Ok(Some(snapshot)) => snapshot.track,
-                    Ok(None) => None,
-                    Err(error) => {
-                        log::warn!(
-                            target: REMOTE_SHARE_LOG_TARGET,
-                            "remote_first_slot_prewarm_source_failed playlist=\"{}\" error=\"{}\"",
-                            escape_remote_log_value(&playlist.name),
-                            escape_remote_log_value(&error.to_string())
-                        );
-                        None
-                    }
-                },
-            )
-            .collect::<Vec<_>>();
-        self.spawn_remote_hls_prewarm(tracks);
-    }
-
-    #[cfg(test)]
-    fn spawn_remote_first_slot_audio_prewarm(&self, _playlists: &[PlayListListView]) {}
-
-    fn spawn_remote_hls_prewarm(&self, tracks: Vec<PlaybackTrack>) {
-        if tracks.is_empty() {
-            return;
-        }
-        let app = self.app.clone();
-        let locks = Arc::clone(&self.remote_audio_locks);
-        tauri::async_runtime::spawn(async move {
-            for track in tracks {
-                let title = track.music_name.clone();
-                if let Err(error) = materialize_remote_hls_for_track(&app, &locks, &track).await {
-                    log::warn!(
-                        target: REMOTE_SHARE_LOG_TARGET,
-                        "remote_hls_prewarm_failed title=\"{}\" error=\"{}\"",
-                        escape_remote_log_value(&title),
-                        escape_remote_log_value(&error.message)
-                    );
-                }
-            }
-        });
+        let _ = self.webrtc_audio.stop(client_id).await;
+        Ok(view)
     }
 
     fn spawn_remote_next_queue_fill(
@@ -1577,7 +1030,6 @@ impl RemoteShareRuntime {
     ) {
         let app = self.app.clone();
         let sessions = Arc::clone(&self.sessions);
-        let locks = Arc::clone(&self.remote_audio_locks);
         tauri::async_runtime::spawn(async move {
             let title = current.music_name.clone();
             let started = Instant::now();
@@ -1594,11 +1046,11 @@ impl RemoteShareRuntime {
                     return;
                 }
             };
-            let commit = match commit_remote_next_queue_for_current(
+            let committed = match commit_remote_next_queue_for_current(
                 &sessions, &client_id, &current, queue,
             ) {
-                Ok(Some(commit)) => commit,
-                Ok(None) => {
+                Ok(true) => true,
+                Ok(false) => {
                     log::info!(
                         target: REMOTE_SHARE_LOG_TARGET,
                         "remote_next_queue_fill_discarded title=\"{}\" reason=stale_session elapsed_ms={}",
@@ -1618,25 +1070,13 @@ impl RemoteShareRuntime {
                     return;
                 }
             };
-            let prewarm_tracks = commit.prewarm_tracks;
             log::info!(
                 target: REMOTE_SHARE_LOG_TARGET,
-                "remote_next_queue_fill_finished title=\"{}\" prewarm_tracks={} elapsed_ms={}",
+                "remote_next_queue_fill_finished title=\"{}\" committed={} elapsed_ms={}",
                 escape_remote_log_value(&title),
-                prewarm_tracks.len(),
+                committed,
                 started.elapsed().as_millis()
             );
-            for track in prewarm_tracks {
-                let title = track.music_name.clone();
-                if let Err(error) = materialize_remote_hls_for_track(&app, &locks, &track).await {
-                    log::warn!(
-                        target: REMOTE_SHARE_LOG_TARGET,
-                        "remote_next_queue_hls_prewarm_failed title=\"{}\" error=\"{}\"",
-                        escape_remote_log_value(&title),
-                        escape_remote_log_value(&error.message)
-                    );
-                }
-            }
         });
     }
 
@@ -1646,16 +1086,6 @@ impl RemoteShareRuntime {
         session.current = None;
         session.queue.clear();
         session.state = RemotePlaybackState::Ready;
-        session.audio_tokens.clear();
-        session.stream_token = None;
-        session.hls_timeline.clear();
-        session.hls_current_index = None;
-        session.hls_priming_started_at = None;
-        session.hls_priming_published_segments = 0;
-        session.hls_real_prefix_started_at = None;
-        session.hls_consumer_anchored = false;
-        session.hls_entries.clear();
-        session.timeline_revision = session.timeline_revision.saturating_add(1);
         Ok(())
     }
 
@@ -1676,26 +1106,133 @@ impl RemoteShareRuntime {
             .collect();
         observe_remote_recent_track(&mut session.recently_played, current.clone());
         session.state = RemotePlaybackState::Playing;
+        session.playback_generation = session.playback_generation.saturating_add(1).max(1);
         let playback = session.create_playback_cargo(&current);
-        session.create_stream_url();
-        let retained_tracks = std::iter::once(current.clone())
-            .chain(session.queue.front().cloned())
-            .collect::<Vec<_>>();
-        session.retain_audio_tokens_for_tracks(&retained_tracks);
-        self.spawn_remote_hls_prewarm(retained_tracks);
         Ok(RemotePlaybackResponse {
             session: session.view(),
             playback: Some(playback),
-            hls: session.hls_view(),
         })
+    }
+
+    fn playback_generation(&self, client_id: &str) -> RemoteResult<u64> {
+        self.lock_sessions()?
+            .by_client
+            .get(client_id)
+            .map(|session| session.playback_generation)
+            .ok_or_else(|| RemoteShareError::not_found("remote client session not found"))
     }
 }
 
-fn remote_hls_entry_id(index: usize, track: &PlaybackTrack) -> String {
-    format!(
-        "{}:{}:{}:{}",
-        index, track.canonical_music_id, track.start_ms, track.end_ms
-    )
+impl RemoteShareRuntime {
+    async fn handle_track_ended(&self, client_id: &str, generation: u64) -> RemoteResult<()> {
+        let refill = {
+            let sessions = self.lock_sessions()?;
+            let Some(session) = sessions.by_client.get(client_id) else {
+                return Ok(());
+            };
+            if !accepts_remote_track_end(session, generation) {
+                return Ok(());
+            }
+            if session.queue.is_empty() {
+                session
+                    .current
+                    .clone()
+                    .map(|current| (current, session.recently_played.clone()))
+            } else {
+                None
+            }
+        };
+        if let Some((current, recent_history)) = refill {
+            let queue = propose_remote_next_queue(&self.app, &current, &recent_history).await?;
+            let _ =
+                commit_remote_next_queue_for_current(&self.sessions, client_id, &current, queue)?;
+        }
+
+        let (current, recent_history, next_generation, response) = {
+            let mut sessions = self.lock_sessions()?;
+            let Some(session) = sessions.by_client.get_mut(client_id) else {
+                return Ok(());
+            };
+            if !accepts_remote_track_end(session, generation) {
+                return Ok(());
+            }
+            let Some(current) = session.queue.pop_front() else {
+                return Err(RemoteShareError::unavailable(
+                    "remote recommendation queue is empty at track boundary",
+                ));
+            };
+            session.playlist_name = Some(current.playlist_name.clone());
+            session.current = Some(current.clone());
+            observe_remote_recent_track(&mut session.recently_played, current.clone());
+            session.playback_generation = session.playback_generation.saturating_add(1).max(1);
+            let playback = session.create_playback_cargo(&current);
+            (
+                current,
+                session.recently_played.clone(),
+                session.playback_generation,
+                RemotePlaybackResponse {
+                    session: session.view(),
+                    playback: Some(playback),
+                },
+            )
+        };
+
+        let source = remote_webrtc_audio_source(&self.app, &current).await?;
+        self.webrtc_audio
+            .play(client_id, next_generation, source)
+            .await
+            .map_err(|error| RemoteShareError::unavailable(error.to_string()))?;
+        if let Err(error) = self.send_playback_updated(client_id, &response) {
+            log::warn!(
+                target: REMOTE_SHARE_LOG_TARGET,
+                "remote_playback_projection_failed error=\"{}\"",
+                escape_remote_log_value(&error.message)
+            );
+        }
+        self.spawn_remote_next_queue_fill(client_id.to_string(), current, recent_history);
+        Ok(())
+    }
+
+    fn send_playback_updated(
+        &self,
+        client_id: &str,
+        response: &RemotePlaybackResponse,
+    ) -> RemoteResult<()> {
+        let frame = serde_json::to_string(&RemoteRelayOutbound::SessionPlaybackUpdated {
+            client_id: client_id.to_string(),
+            session: response.session.clone(),
+            playback: response.playback.clone(),
+        })
+        .map_err(|error| RemoteShareError::internal(error.to_string()))?;
+        self.webrtc_audio
+            .send_relay_frame(frame)
+            .map_err(|error| RemoteShareError::unavailable(error.to_string()))
+    }
+}
+
+async fn remote_webrtc_audio_source(
+    app: &AppHandle,
+    track: &PlaybackTrack,
+) -> RemoteResult<RemoteAudioSource> {
+    let metadata = tokio::fs::metadata(&track.file_path)
+        .await
+        .map_err(|_| RemoteShareError::not_found("audio file not found"))?;
+    if metadata.len() == 0 {
+        return Err(RemoteShareError::internal("empty audio file"));
+    }
+    let app = app.clone();
+    let ffmpeg_path =
+        task::spawn_blocking(move || ensure_managed_binary(&app, ManagedBinary::Ffmpeg))
+            .await
+            .map_err(|error| RemoteShareError::internal(error.to_string()))?
+            .map_err(RemoteShareError::internal)?;
+    Ok(RemoteAudioSource {
+        ffmpeg_path,
+        file_path: track.file_path.clone(),
+        start_ms: track.start_ms,
+        end_ms: track.end_ms,
+        gain_db: remote_audio_gain_db(track),
+    })
 }
 
 fn commit_remote_next_queue_for_current(
@@ -1703,12 +1240,12 @@ fn commit_remote_next_queue_for_current(
     client_id: &str,
     current: &PlaybackTrack,
     queue: Vec<PlaybackTrack>,
-) -> RemoteResult<Option<RemoteNextQueueCommit>> {
+) -> RemoteResult<bool> {
     let mut sessions = sessions
         .lock()
         .map_err(|_| RemoteShareError::internal("remote share sessions lock is poisoned"))?;
     let Some(session) = sessions.by_client.get_mut(client_id) else {
-        return Ok(None);
+        return Ok(false);
     };
     if session.state != RemotePlaybackState::Playing
         || !session
@@ -1716,51 +1253,17 @@ fn commit_remote_next_queue_for_current(
             .as_ref()
             .is_some_and(|active| same_remote_track(active, current))
     {
-        return Ok(None);
+        return Ok(false);
     }
     session.queue = queue
         .into_iter()
         .filter(|track| !same_remote_track(track, current))
         .collect();
-    let prewarm_tracks = session
-        .queue
-        .iter()
-        .take(REMOTE_PREFETCH_FRONTIER_LIMIT)
-        .cloned()
-        .collect::<Vec<_>>();
-    let retained_tracks = std::iter::once(current.clone())
-        .chain(prewarm_tracks.iter().cloned())
-        .collect::<Vec<_>>();
-    session.retain_audio_tokens_for_tracks(&retained_tracks);
-    Ok(Some(RemoteNextQueueCommit { prewarm_tracks }))
+    Ok(true)
 }
 
-fn send_remote_relay_timeline_updated(
-    relay_events: &RemoteRelayEventSender,
-    client_id: &str,
-    hls: RemoteHlsSessionView,
-) {
-    let event = RemoteRelayOutbound::SessionTimelineUpdated {
-        client_id: client_id.to_string(),
-        hls,
-    };
-    match serde_json::to_string(&event) {
-        Ok(frame) => {
-            if relay_events.send(frame).is_err() {
-                log::warn!(
-                    target: REMOTE_SHARE_LOG_TARGET,
-                    "remote_timeline_event_send_failed reason=relay_closed"
-                );
-            }
-        }
-        Err(error) => {
-            log::warn!(
-                target: REMOTE_SHARE_LOG_TARGET,
-                "remote_timeline_event_serialize_failed error=\"{}\"",
-                error
-            );
-        }
-    }
+fn accepts_remote_track_end(session: &RemoteShareSession, generation: u64) -> bool {
+    session.state == RemotePlaybackState::Playing && session.playback_generation == generation
 }
 
 impl RemoteShareSession {
@@ -1780,228 +1283,6 @@ impl RemoteShareSession {
                 playback_loudness_plan_for_profile(profile).map(RemoteLoudnessPlanView::from_plan)
             }),
         }
-    }
-
-    fn hls_view(&self) -> RemoteHlsSessionView {
-        RemoteHlsSessionView {
-            session_epoch: self.session_epoch,
-            timeline_revision: self.timeline_revision,
-            stream_url: self.stream_url(),
-            entries: self.hls_entries.clone(),
-        }
-    }
-
-    fn ensure_epoch(&self, session_epoch: u64) -> RemoteResult<()> {
-        if self.session_epoch == session_epoch && session_epoch != 0 {
-            Ok(())
-        } else {
-            Err(RemoteShareError::conflict("stale remote playback session"))
-        }
-    }
-
-    fn ensure_current_entry(&self, entry_id: &str) -> RemoteResult<()> {
-        let Some(current) = self.current.as_ref() else {
-            return Err(RemoteShareError::conflict(
-                "remote session has no current track",
-            ));
-        };
-        if self.hls_entries.iter().any(|entry| {
-            entry.id == entry_id
-                && (entry.track.canonical_music_id == current.canonical_music_id
-                    || (entry.track.music_url == current.music_url
-                        && entry.track.start_ms == current.start_ms
-                        && entry.track.end_ms == current.end_ms))
-        }) {
-            Ok(())
-        } else {
-            Err(RemoteShareError::conflict(
-                "HLS boundary does not match current track",
-            ))
-        }
-    }
-
-    fn reset_for_hls_prepare(&mut self, playlist_name: String) {
-        self.connected = true;
-        self.playlist_name = Some(playlist_name);
-        self.current = None;
-        self.queue.clear();
-        self.recently_played.clear();
-        self.state = RemotePlaybackState::Preparing;
-        self.hls_timeline.clear();
-        self.hls_current_index = None;
-        self.hls_priming_started_at = None;
-        self.hls_priming_published_segments = 0;
-        self.hls_real_prefix_started_at = None;
-        self.hls_consumer_anchored = false;
-        self.hls_entries.clear();
-        self.timeline_revision = 0;
-        let stream_token = self.stream_token.clone();
-        self.audio_tokens.retain(|token_id, token| match token {
-            RemoteAudioToken::HlsPlaylist => stream_token.as_deref() == Some(token_id.as_str()),
-            RemoteAudioToken::HlsPrimingSegment { .. } => stream_token.is_some(),
-            RemoteAudioToken::HlsSegment { .. } => false,
-        });
-    }
-
-    fn reset_for_hls_start(&mut self, playlist_name: String) {
-        self.connected = true;
-        self.playlist_name = Some(playlist_name);
-        self.hls_priming_started_at.get_or_insert_with(Instant::now);
-        self.state = RemotePlaybackState::Preparing;
-    }
-
-    fn begin_fresh_hls_epoch(&mut self) {
-        self.session_epoch = self.session_epoch.saturating_add(1).max(1);
-        self.create_fresh_stream_url();
-    }
-
-    fn stream_url(&self) -> Option<String> {
-        self.stream_token
-            .as_ref()
-            .map(|token| remote_audio_transport_path(token, RemoteAudioTransportKind::HlsPlaylist))
-    }
-
-    fn create_stream_url(&mut self) -> String {
-        if let Some(url) = self.stream_url() {
-            return url;
-        }
-        self.create_fresh_stream_url()
-    }
-
-    fn create_fresh_stream_url(&mut self) -> String {
-        if let Some(token) = self.stream_token.take() {
-            self.audio_tokens.remove(&token);
-        }
-        self.audio_tokens
-            .retain(|_, token| !matches!(token, RemoteAudioToken::HlsPrimingSegment { .. }));
-        self.next_token_id = self.next_token_id.saturating_add(1);
-        let token = format!("hls-{}", self.next_token_id);
-        self.audio_tokens
-            .insert(token.clone(), RemoteAudioToken::HlsPlaylist);
-        self.stream_token = Some(token.clone());
-        remote_audio_transport_path(&token, RemoteAudioTransportKind::HlsPlaylist)
-    }
-
-    fn create_hls_segment_token(&mut self, track: &PlaybackTrack, path: PathBuf) -> String {
-        if let Some((token, _)) = self.audio_tokens.iter().find(|(_, token)| {
-            matches!(
-                token,
-                RemoteAudioToken::HlsSegment {
-                    track: token_track,
-                    path: token_path,
-                } if same_remote_track(token_track, track) && token_path == &path
-            )
-        }) {
-            return token.clone();
-        }
-
-        self.next_token_id = self.next_token_id.saturating_add(1);
-        let token = format!("hls-seg-{}", self.next_token_id);
-        self.audio_tokens.insert(
-            token.clone(),
-            RemoteAudioToken::HlsSegment {
-                track: track.clone(),
-                path,
-            },
-        );
-        token
-    }
-
-    fn create_hls_priming_segment_token(&mut self, index: usize) -> String {
-        if let Some((token, _)) = self.audio_tokens.iter().find(|(_, token)| {
-            matches!(token, RemoteAudioToken::HlsPrimingSegment {
-                index: token_index,
-            } if *token_index == index)
-        }) {
-            return token.clone();
-        }
-
-        self.next_token_id = self.next_token_id.saturating_add(1);
-        let token = format!("hls-prime-{index}-{}", self.next_token_id);
-        self.audio_tokens
-            .insert(token.clone(), RemoteAudioToken::HlsPrimingSegment { index });
-        token
-    }
-
-    fn advance_hls_priming_window(&mut self, real_prefix_ready: bool) -> usize {
-        let minimum_segments = REMOTE_HLS_PRIMING_SEGMENTS.len();
-        if real_prefix_ready {
-            self.hls_priming_published_segments =
-                self.hls_priming_published_segments.max(minimum_segments);
-            return self.hls_priming_published_segments;
-        }
-        let started_at = self.hls_priming_started_at.get_or_insert_with(Instant::now);
-        let elapsed_segments = (started_at.elapsed().as_secs_f32()
-            / REMOTE_HLS_PRIMING_SEGMENT_SECONDS)
-            .ceil() as usize;
-        let target_segments = elapsed_segments
-            .saturating_add(REMOTE_HLS_PRIMING_LOOKAHEAD_SEGMENTS)
-            .max(minimum_segments);
-        self.hls_priming_published_segments =
-            self.hls_priming_published_segments.max(target_segments);
-        self.hls_priming_published_segments
-    }
-
-    fn advance_hls_real_prefix_window(&mut self, real_prefix_ready: bool) -> f64 {
-        if !real_prefix_ready || !self.hls_consumer_anchored {
-            return 0.0;
-        }
-        let started_at = self
-            .hls_real_prefix_started_at
-            .get_or_insert_with(Instant::now);
-        started_at.elapsed().as_secs_f64() + f64::from(REMOTE_HLS_ANCHORED_RUNWAY_SECONDS)
-    }
-
-    fn anchor_hls_consumer(&mut self) {
-        self.hls_consumer_anchored = true;
-    }
-
-    fn publish_hls_entries(&mut self, entries: Vec<RemoteHlsTimelineEntry>) -> bool {
-        let unchanged = self.hls_entries.len() == entries.len()
-            && self
-                .hls_entries
-                .iter()
-                .zip(entries.iter())
-                .all(|(left, right)| {
-                    left.id == right.id
-                        && (left.start_seconds - right.start_seconds).abs() < f64::EPSILON
-                        && (left.end_seconds - right.end_seconds).abs() < f64::EPSILON
-                });
-        if unchanged {
-            return false;
-        }
-        let prefix_preserved = self
-            .hls_entries
-            .iter()
-            .zip(entries.iter())
-            .all(|(left, right)| {
-                left.id == right.id
-                    && (left.start_seconds - right.start_seconds).abs() < f64::EPSILON
-                    && (left.end_seconds - right.end_seconds).abs() < f64::EPSILON
-            });
-        if !prefix_preserved || entries.len() < self.hls_entries.len() {
-            return false;
-        }
-        self.hls_entries = entries;
-        self.timeline_revision = self.timeline_revision.saturating_add(1);
-        true
-    }
-
-    fn retain_audio_tokens_for_tracks(&mut self, retained_tracks: &[PlaybackTrack]) {
-        let stream_token = self.stream_token.clone();
-        let hls_timeline = self.hls_timeline.clone();
-        self.audio_tokens.retain(|token_id, token| match token {
-            RemoteAudioToken::HlsSegment { track, .. } => {
-                retained_tracks
-                    .iter()
-                    .any(|retained| same_remote_track(retained, track))
-                    || hls_timeline
-                        .iter()
-                        .any(|retained| same_remote_track(retained, track))
-            }
-            RemoteAudioToken::HlsPlaylist => stream_token.as_deref() == Some(token_id.as_str()),
-            RemoteAudioToken::HlsPrimingSegment { .. } => stream_token.is_some(),
-        });
     }
 }
 
@@ -2135,152 +1416,6 @@ fn same_remote_track(left: &PlaybackTrack, right: &PlaybackTrack) -> bool {
             && left.end_ms == right.end_ms)
 }
 
-fn remote_hls_playlist_tracks(
-    session: &mut RemoteShareSession,
-) -> RemoteResult<Vec<PlaybackTrack>> {
-    let Some(current) = session.current.clone() else {
-        return Ok(Vec::new());
-    };
-    let search_from = session
-        .hls_current_index
-        .map(|index| index.saturating_add(1))
-        .unwrap_or(0);
-    let current_index = session
-        .hls_current_index
-        .filter(|index| {
-            session
-                .hls_timeline
-                .get(*index)
-                .is_some_and(|track| same_remote_track(track, &current))
-        })
-        .or_else(|| {
-            session
-                .hls_timeline
-                .iter()
-                .enumerate()
-                .skip(search_from)
-                .find_map(|(index, track)| same_remote_track(track, &current).then_some(index))
-        })
-        .unwrap_or_else(|| {
-            session.hls_timeline.push(current.clone());
-            session.hls_timeline.len() - 1
-        });
-    session.hls_current_index = Some(current_index);
-
-    for (offset, track) in session
-        .queue
-        .iter()
-        .filter(|track| !same_remote_track(track, &current))
-        .take(REMOTE_HLS_PLAYLIST_TRACK_LIMIT.saturating_sub(1))
-        .enumerate()
-    {
-        let expected_index = current_index.saturating_add(offset).saturating_add(1);
-        match session.hls_timeline.get(expected_index) {
-            Some(existing) if same_remote_track(existing, track) => {}
-            Some(_) => break,
-            None => session.hls_timeline.push(track.clone()),
-        }
-    }
-    if session.hls_timeline.is_empty() {
-        return Err(RemoteShareError::not_found(
-            "remote session has no hls timeline tracks",
-        ));
-    }
-    Ok(session.hls_timeline.clone())
-}
-
-fn remote_hls_visible_segment_counts<'a>(
-    assets: impl IntoIterator<Item = &'a RemoteHlsTrackAsset>,
-    visible_media_seconds: f64,
-) -> Vec<usize> {
-    let mut remaining_seconds = visible_media_seconds.max(0.0);
-    assets
-        .into_iter()
-        .map(|asset| {
-            let mut visible_count = 0;
-            for segment in &asset.segments {
-                if remaining_seconds <= 0.0 {
-                    break;
-                }
-                visible_count += 1;
-                remaining_seconds -= f64::from(segment.duration_seconds);
-            }
-            visible_count
-        })
-        .collect()
-}
-
-fn remote_hls_playlist_header() -> String {
-    format!(
-        "#EXTM3U\n\
-#EXT-X-VERSION:3\n\
-#EXT-X-TARGETDURATION:{REMOTE_HLS_PRIMING_TARGET_DURATION}\n\
-#EXT-X-MEDIA-SEQUENCE:0\n\
-#EXT-X-DISCONTINUITY-SEQUENCE:0\n\
-#EXT-X-PLAYLIST-TYPE:EVENT\n\
-#EXT-X-START:TIME-OFFSET=0,PRECISE=YES\n\
-#EXT-X-ALLOW-CACHE:NO\n"
-    )
-}
-
-fn remote_hls_priming_duration_seconds(segment_count: usize) -> f64 {
-    let cycle_duration = REMOTE_HLS_PRIMING_SEGMENTS
-        .iter()
-        .map(|segment| f64::from(segment.duration_seconds))
-        .sum::<f64>();
-    let complete_cycles = segment_count / REMOTE_HLS_PRIMING_SEGMENTS.len();
-    let remainder = segment_count % REMOTE_HLS_PRIMING_SEGMENTS.len();
-    complete_cycles as f64 * cycle_duration
-        + REMOTE_HLS_PRIMING_SEGMENTS[..remainder]
-            .iter()
-            .map(|segment| f64::from(segment.duration_seconds))
-            .sum::<f64>()
-}
-
-struct RemoteAudioMaterializationDescriptor {
-    key: String,
-    app: AppHandle,
-    track: PlaybackTrack,
-    gain_db: f32,
-}
-
-async fn remote_audio_materialization_descriptor(
-    app: &AppHandle,
-    track: &PlaybackTrack,
-) -> RemoteResult<RemoteAudioMaterializationDescriptor> {
-    let metadata = tokio::fs::metadata(&track.file_path)
-        .await
-        .map_err(|_| RemoteShareError::not_found("audio file not found"))?;
-    if metadata.len() == 0 {
-        return Err(RemoteShareError::internal("empty audio file"));
-    }
-
-    let gain_db = remote_audio_gain_db(track);
-    let modified_ms = metadata
-        .modified()
-        .ok()
-        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
-        .map(|duration| duration.as_millis());
-    let key = remote_audio_materialization_key(track, gain_db, metadata.len(), modified_ms);
-    Ok(RemoteAudioMaterializationDescriptor {
-        key,
-        app: app.clone(),
-        track: track.clone(),
-        gain_db,
-    })
-}
-
-fn remote_audio_cache_root(app: &AppHandle) -> RemoteResult<PathBuf> {
-    let cache_dir = app
-        .path()
-        .app_cache_dir()
-        .map_err(|error| RemoteShareError::internal(error.to_string()))?
-        .join(REMOTE_AUDIO_CACHE_DIR);
-    std_fs::create_dir_all(&cache_dir)
-        .map_err(|error| RemoteShareError::internal(error.to_string()))?;
-    Ok(cache_dir)
-}
-
 fn remote_audio_gain_db(track: &PlaybackTrack) -> f32 {
     track
         .loudness_profile
@@ -2290,346 +1425,8 @@ fn remote_audio_gain_db(track: &PlaybackTrack) -> f32 {
         .unwrap_or(0.0)
 }
 
-fn remote_audio_materialization_key(
-    track: &PlaybackTrack,
-    gain_db: f32,
-    file_len: u64,
-    modified_ms: Option<u128>,
-) -> String {
-    let gain_millidb = (gain_db * 1000.0).round() as i32;
-    let mut hasher = Sha256::new();
-    hasher.update(track.canonical_music_id.as_bytes());
-    hasher.update(b"\0");
-    hasher.update(track.music_url.as_bytes());
-    hasher.update(b"\0");
-    hasher.update(track.file_path.to_string_lossy().as_bytes());
-    hasher.update(b"\0");
-    hasher.update(track.start_ms.to_le_bytes());
-    hasher.update(track.end_ms.to_le_bytes());
-    hasher.update(file_len.to_le_bytes());
-    hasher.update(modified_ms.unwrap_or_default().to_le_bytes());
-    hasher.update(gain_millidb.to_le_bytes());
-    hex::encode(hasher.finalize())
-}
-
-fn remote_audio_materialization_lock_from(
-    locks: &Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
-    key: &str,
-) -> RemoteResult<Arc<Mutex<()>>> {
-    let mut locks = locks
-        .lock()
-        .map_err(|_| RemoteShareError::internal("remote audio materialization lock is poisoned"))?;
-    Ok(Arc::clone(
-        locks
-            .entry(key.to_string())
-            .or_insert_with(|| Arc::new(Mutex::new(()))),
-    ))
-}
-
-async fn materialize_remote_hls_for_track(
-    app: &AppHandle,
-    locks: &Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
-    track: &PlaybackTrack,
-) -> RemoteResult<RemoteHlsTrackAsset> {
-    let descriptor = remote_hls_materialization_descriptor(app, track).await?;
-    if let Ok(asset) = parse_remote_hls_track_asset(&descriptor.playlist_path, &descriptor.hls_dir)
-    {
-        if !asset.segments.is_empty() {
-            return Ok(asset);
-        }
-    }
-
-    let lock = remote_audio_materialization_lock_from(locks, &format!("hls-{}", descriptor.key))?;
-    task::spawn_blocking(move || materialize_remote_hls_blocking(descriptor, lock))
-        .await
-        .map_err(|error| RemoteShareError::internal(error.to_string()))?
-}
-
-async fn read_materialized_remote_hls_for_track(
-    app: &AppHandle,
-    track: &PlaybackTrack,
-) -> RemoteResult<Option<RemoteHlsTrackAsset>> {
-    let descriptor = remote_hls_materialization_descriptor(app, track).await?;
-    if !descriptor.playlist_path.exists() {
-        return Ok(None);
-    }
-    match parse_remote_hls_track_asset(&descriptor.playlist_path, &descriptor.hls_dir) {
-        Ok(asset) if !asset.segments.is_empty() => Ok(Some(asset)),
-        _ => Ok(None),
-    }
-}
-
-async fn remote_hls_materialization_descriptor(
-    app: &AppHandle,
-    track: &PlaybackTrack,
-) -> RemoteResult<RemoteHlsMaterializationDescriptor> {
-    let audio = remote_audio_materialization_descriptor(app, track).await?;
-    let cache_root = remote_audio_cache_root(app)?;
-    let key = format!("{}-{}", REMOTE_HLS_MATERIALIZATION_VERSION, audio.key);
-    let hls_dir = cache_root.join(format!("{key}.hls"));
-    let playlist_path = hls_dir.join("playlist.m3u8");
-    Ok(RemoteHlsMaterializationDescriptor {
-        key,
-        app: audio.app,
-        track: audio.track,
-        hls_dir,
-        playlist_path,
-        gain_db: audio.gain_db,
-    })
-}
-
-fn materialize_remote_hls_blocking(
-    descriptor: RemoteHlsMaterializationDescriptor,
-    lock: Arc<Mutex<()>>,
-) -> RemoteResult<RemoteHlsTrackAsset> {
-    let _guard = lock
-        .lock()
-        .map_err(|_| RemoteShareError::internal("remote hls materialization lock is poisoned"))?;
-    if let Ok(asset) = parse_remote_hls_track_asset(&descriptor.playlist_path, &descriptor.hls_dir)
-    {
-        if !asset.segments.is_empty() {
-            return Ok(asset);
-        }
-    }
-
-    let _ = std_fs::remove_dir_all(&descriptor.hls_dir);
-    std_fs::create_dir_all(&descriptor.hls_dir)
-        .map_err(|error| RemoteShareError::internal(error.to_string()))?;
-
-    let ffmpeg_path = ensure_managed_binary(&descriptor.app, ManagedBinary::Ffmpeg)
-        .map_err(RemoteShareError::internal)?;
-    let _usage = acquire_managed_binary_usage(ManagedBinary::Ffmpeg, "remote_share_hls");
-    let segment_pattern = descriptor.hls_dir.join("segment%05d.ts");
-    let mut command = Command::new(ffmpeg_path);
-    command
-        .arg("-y")
-        .arg("-hide_banner")
-        .arg("-loglevel")
-        .arg("error")
-        .arg("-ss")
-        .arg(format_remote_seconds(descriptor.track.start_ms))
-        .arg("-i")
-        .arg(&descriptor.track.file_path)
-        .arg("-t")
-        .arg(format_remote_seconds(
-            descriptor
-                .track
-                .end_ms
-                .saturating_sub(descriptor.track.start_ms),
-        ))
-        .arg("-map")
-        .arg("0:a:0")
-        .arg("-vn");
-    if descriptor.gain_db.abs() > REMOTE_AUDIO_GAIN_EPSILON_DB {
-        command
-            .arg("-af")
-            .arg(format!("volume={:.3}dB", descriptor.gain_db));
-    }
-    command
-        .arg("-c:a")
-        .arg("aac")
-        .arg("-b:a")
-        .arg("192k")
-        .arg("-f")
-        .arg("hls")
-        .arg("-hls_time")
-        .arg(REMOTE_HLS_SEGMENT_SECONDS.to_string())
-        .arg("-hls_playlist_type")
-        .arg("event")
-        .arg("-hls_segment_filename")
-        .arg(&segment_pattern)
-        .arg(&descriptor.playlist_path);
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    #[cfg(windows)]
-    {
-        command.creation_flags(CREATE_NO_WINDOW);
-    }
-
-    let output = command
-        .output()
-        .map_err(|error| RemoteShareError::internal(error.to_string()))?;
-    if !output.status.success() {
-        let _ = std_fs::remove_dir_all(&descriptor.hls_dir);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(RemoteShareError::internal(format!(
-            "remote hls materialization failed: {}",
-            stderr.trim()
-        )));
-    }
-
-    let asset = parse_remote_hls_track_asset(&descriptor.playlist_path, &descriptor.hls_dir)?;
-    if asset.segments.is_empty() {
-        let _ = std_fs::remove_dir_all(&descriptor.hls_dir);
-        return Err(RemoteShareError::internal(
-            "remote hls materialization produced no segments",
-        ));
-    }
-    parse_remote_hls_track_asset(&descriptor.playlist_path, &descriptor.hls_dir)
-}
-
-fn parse_remote_hls_track_asset(
-    playlist_path: &PathBuf,
-    hls_dir: &PathBuf,
-) -> RemoteResult<RemoteHlsTrackAsset> {
-    let text = std_fs::read_to_string(playlist_path)
-        .map_err(|error| RemoteShareError::internal(error.to_string()))?;
-    let mut target_duration = REMOTE_HLS_SEGMENT_SECONDS;
-    let mut pending_duration = None;
-    let mut segments = Vec::new();
-    for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
-        if let Some(value) = line.strip_prefix("#EXT-X-TARGETDURATION:") {
-            if let Ok(value) = value.parse::<u32>() {
-                target_duration = value.max(1);
-            }
-            continue;
-        }
-        if let Some(value) = line.strip_prefix("#EXTINF:") {
-            let value = value.trim_end_matches(',');
-            pending_duration = value.parse::<f32>().ok();
-            continue;
-        }
-        if line.starts_with('#') {
-            continue;
-        }
-        let Some(duration_seconds) = pending_duration.take() else {
-            continue;
-        };
-        let path = hls_dir.join(line);
-        if !std_fs::metadata(&path)
-            .map(|metadata| metadata.len() > 0)
-            .unwrap_or(false)
-        {
-            return Err(RemoteShareError::internal("remote hls segment is missing"));
-        }
-        segments.push(RemoteHlsSegmentAsset {
-            duration_seconds,
-            path,
-        });
-    }
-    Ok(RemoteHlsTrackAsset {
-        target_duration,
-        segments,
-    })
-}
-
-fn format_remote_seconds(ms: u32) -> String {
-    format!("{:.3}", f64::from(ms) / 1000.0)
-}
-
 fn escape_remote_log_value(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
-}
-
-async fn read_file_relay_chunk_with_content_type(
-    path: PathBuf,
-    range: Option<&str>,
-    content_type: &'static str,
-    chunk_size: u64,
-) -> RemoteResult<RemoteAudioRelayCargo> {
-    let mut file = File::open(&path)
-        .await
-        .map_err(|_| RemoteShareError::not_found("audio file not found"))?;
-    let file_len = file
-        .metadata()
-        .await
-        .map_err(|error| RemoteShareError::internal(error.to_string()))?
-        .len();
-    if file_len == 0 {
-        return Err(RemoteShareError::internal("empty audio file"));
-    }
-
-    let parsed = range.and_then(|value| parse_single_http_range(value, file_len));
-    let (start, requested_end, range_requested) = match parsed {
-        Some((start, end)) => (start, end, true),
-        None => (0, file_len - 1, false),
-    };
-    let end = requested_end.min(start.saturating_add(chunk_size).saturating_sub(1));
-    let len = end.saturating_sub(start).saturating_add(1);
-    file.seek(SeekFrom::Start(start))
-        .await
-        .map_err(|error| RemoteShareError::internal(error.to_string()))?;
-    let mut body = Vec::with_capacity(len as usize);
-    file.take(len)
-        .read_to_end(&mut body)
-        .await
-        .map_err(|error| RemoteShareError::internal(error.to_string()))?;
-    let partial = range_requested || end < file_len - 1 || start > 0;
-
-    Ok(RemoteAudioRelayCargo {
-        status: if partial {
-            StatusCode::PARTIAL_CONTENT
-        } else {
-            StatusCode::OK
-        },
-        content_type,
-        content_length: body.len() as u64,
-        content_range: partial.then(|| format!("bytes {start}-{end}/{file_len}")),
-        accept_ranges: "bytes",
-        body,
-    })
-}
-
-fn remote_text_relay_cargo(content_type: &'static str, body: Vec<u8>) -> RemoteAudioRelayCargo {
-    RemoteAudioRelayCargo {
-        status: StatusCode::OK,
-        content_type,
-        content_length: body.len() as u64,
-        content_range: None,
-        accept_ranges: "none",
-        body,
-    }
-}
-
-fn remote_bytes_relay_cargo(content_type: &'static str, body: Vec<u8>) -> RemoteAudioRelayCargo {
-    RemoteAudioRelayCargo {
-        status: StatusCode::OK,
-        content_type,
-        content_length: body.len() as u64,
-        content_range: None,
-        accept_ranges: "none",
-        body,
-    }
-}
-
-fn remote_hls_priming_segment_cargo(index: usize) -> RemoteResult<RemoteAudioRelayCargo> {
-    let Some(segment) = REMOTE_HLS_PRIMING_SEGMENTS.get(index) else {
-        return Err(RemoteShareError::not_found(
-            "remote hls priming segment not found",
-        ));
-    };
-    Ok(remote_bytes_relay_cargo(
-        "video/mp2t",
-        segment.bytes.to_vec(),
-    ))
-}
-
-fn remote_audio_relay_response(cargo: RemoteAudioRelayCargo) -> RemoteResult<Response> {
-    let mut response = Response::builder()
-        .status(cargo.status)
-        .header(CONTENT_TYPE, cargo.content_type)
-        .header(ACCEPT_RANGES, cargo.accept_ranges)
-        .header(CONTENT_LENGTH, cargo.content_length.to_string());
-    if let Some(content_range) = cargo.content_range {
-        response = response.header(CONTENT_RANGE, content_range);
-    }
-    response
-        .body(Body::from(cargo.body))
-        .map_err(|error| RemoteShareError::internal(error.to_string()))
-}
-
-fn parse_single_http_range(value: &str, file_len: u64) -> Option<(u64, u64)> {
-    let range = value.strip_prefix("bytes=")?;
-    let (start, end) = range.split_once('-')?;
-    let start = start.parse::<u64>().ok()?;
-    let end = if end.is_empty() {
-        file_len - 1
-    } else {
-        end.parse::<u64>().ok()?.min(file_len - 1)
-    };
-    (start <= end && start < file_len).then_some((start, end))
 }
 
 #[derive(Debug)]
@@ -2649,13 +1446,6 @@ impl RemoteShareError {
     fn not_found(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::NOT_FOUND,
-            message: message.into(),
-        }
-    }
-
-    fn conflict(message: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::CONFLICT,
             message: message.into(),
         }
     }

@@ -7,3 +7,4 @@ pub mod player;
 pub mod playlist_playback;
 pub mod playlists;
 pub mod remote_share;
+mod remote_webrtc_audio;
