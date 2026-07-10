@@ -54,19 +54,22 @@ The public seams are:
 
 | Term | Meaning |
 | --- | --- |
-| `SessionEpoch` | Monotone identity of one user-started playback lifetime. |
+| `SessionEpoch` | Monotone identity of one reserved and subsequently user-started playback lifetime. |
 | `HlsResource` | Stable playlist URL allocated exactly once per epoch. |
 | `CanonicalTimeline` | Host-owned ordered entries with absolute media offsets. |
 | `TimelineRevision` | Monotone version of the published timeline prefix. |
 | `TimelineEntry` | Track metadata plus absolute HLS start/end positions. |
 | `PrimingPrefix` | Silent HLS prefix that keeps the native resource alive until real media exists. |
+| `StandbyReservation` | A fresh stable HLS resource assigned and loaded before playlist selection, without playback authority. |
 | `MediaEvidence` | Native events and observed time from the one audio element. |
 | `AudibleState` | Playback state derived only from active-epoch media evidence. |
+| `MediaSessionShell` | The persistent OS playback control surface established by native playback evidence. |
 | `BoundaryCommit` | Exactly-once `session.next` for a crossed timeline entry. |
 | `RecoveryEffect` | A liveness attempt that preserves epoch, source, and timeline. |
 
-`current track`, `HLS entry`, and `Media Session metadata` are projections of one timeline
-entry. They are not independently mutable concepts.
+`current track`, `HLS entry`, and track-specific Media Session metadata are projections of one
+timeline entry. The Media Session shell exists earlier, during priming, but cannot invent track
+metadata or track-local position.
 
 ## 4. Categories
 
@@ -136,11 +139,12 @@ An owner with no unique property is removable.
 
 ### 5.1 `HlsSession` is the initial fresh-resource allocation
 
-Given a playlist selection and the previous host state, `prepare_hls` constructs the unique
-fresh `(epoch, HlsResource)` through which all operations for that start factor.
+Given a connected client and the previous host state, `prepare_hls` constructs the unique fresh
+`(epoch, HlsResource)` through which the next playlist start factors.
 
 ```text
-PlaylistSelection -> HlsSession(epoch, resource)
+ConnectedClient -> StandbyReservation(epoch, resource)
+PlaylistSelection x StandbyReservation -> HlsSession(epoch, resource)
 ```
 
 Any start, materialization, segment token, timeline update, stop, or late async result must
@@ -196,12 +200,14 @@ coequalized by `(epoch, entry_id)` into one `session.next` commit. After consump
 commit key is not reusable. This gives exactly-once semantic advance while allowing
 duplicate observations.
 
-### 5.6 `MediaSessionProjection` is a terminal read-only projection
+### 5.6 `MediaSessionProjection` is a terminal read-only extension
 
-Page UI and `navigator.mediaSession` receive the unique projection from
-`(AudibleState, CurrentEntry)`. They have no arrows back into core playback state. OS media
-commands produce explicit commands to the media owner; OS display state is never read as
-truth.
+Native `playing` has a unique projection into a persistent `MediaSessionShell`, including the
+session playlist identity and OS playback state. `CurrentEntry`, when defined, uniquely extends
+that shell with track title, duration, and position. A temporary undefined `CurrentEntry` cannot
+delete the shell or replace already established track metadata. Page UI and
+`navigator.mediaSession` have no arrows back into core playback state. OS media commands produce
+explicit commands to the media owner; OS display state is never read as truth.
 
 ### 5.7 `Recovery` is an endomorphism on session identity
 
@@ -319,11 +325,13 @@ prefetch completion, and queue responses cannot bypass it.
 ### 7.7 `project`
 
 ```text
-(PlaybackEvidence, CurrentEntry) => (PageView, MediaSessionView)
+NativePlayingEvidence => MediaSessionShell
+(PlaybackEvidence, CurrentEntry) => (PageTrackView, MediaSessionTrackView)
 ```
 
-Both views are projections of the same pair. Their playback state, title, duration, and
-position therefore cannot diverge by construction.
+The first transformation establishes one OS control surface during priming. The second extends
+that same surface when a real entry is located. Page and OS track title, duration, and position
+therefore cannot diverge, while absence of a current entry cannot destroy playback continuity.
 
 ### 7.8 `advance`
 
@@ -412,6 +420,7 @@ Does not own:
 Owns:
 
 - The one audio element.
+- Standby resource assignment and preload without playback authority.
 - One source assignment per epoch.
 - Native event reduction.
 - Recovery effects preserving source identity.
@@ -445,9 +454,10 @@ Does not own:
 
 | From | Event | Guard | To | Effects |
 | --- | --- | --- | --- | --- |
-| `Idle` | `SelectPlaylist` | code connected | `Preparing(e+1)` | prepare HLS, assign source, request play, start host session |
+| `Idle` | `ReserveHls` | code connected | `Idle` | assign and load one fresh standby resource; do not play |
+| `Idle` | `SelectPlaylist` | matching standby exists | `Preparing(e+1)` | consume standby, request play, start host session |
 | `Preparing` | `TimelinePublished` | same epoch, real entry exists | `AwaitingEntry` | update canonical timeline view |
-| `Preparing` | `NativePlaying` | same epoch/source, time in priming | `Preparing` | project preparing only |
+| `Preparing` | `NativePlaying` | same epoch/source, time in priming | `Preparing` | establish persistent Media Session shell |
 | `AwaitingEntry` | `NativeTime` | time locates entry | `Playing` | project entry and playing state |
 | `Playing` | `NativeTime` | same entry | `Playing` | project local position |
 | `Playing` | `NativeTime` | next boundary crossed | `Advancing` | consume boundary key, request next |
@@ -460,8 +470,9 @@ Does not own:
 | active | `Stop` | any | `Stopped` | cancel epoch effects, pause and clear source once |
 | any | stale async/native event | epoch/source mismatch | unchanged | diagnostic only |
 
-`Preparing` is allowed to produce silent priming audio. It is not allowed to install track
-metadata until `locate` identifies a real timeline entry.
+`Preparing` is allowed to produce silent priming audio and the persistent Media Session shell.
+It is not allowed to install track metadata or track-local position until `locate` identifies a
+real timeline entry.
 
 ## 10. Protocol
 
@@ -518,11 +529,12 @@ sequenceDiagram
   participant S as Slisic Host
   participant A as Native Audio
 
-  U->>H: select playlist
-  H->>R: session.prepare_hls
+  H->>R: session.prepare_hls after connect/stop
   R->>S: session.prepare_hls
   S-->>H: epoch + stable HLS URL
-  H->>A: assign src once + play
+  H->>A: assign src once + load without play
+  U->>H: select playlist
+  H->>A: play the reserved source
   H->>R: session.start(epoch)
   R->>S: session.start(epoch)
   A->>R: GET HLS playlist/segments
@@ -532,8 +544,8 @@ sequenceDiagram
   A-->>H: native playing/timeupdate
   H->>S: session.anchor_hls(epoch)
   Note over S: release materialized suffix
-  H->>H: locate entry by absolute media time
-  H->>H: project page + Media Session
+  H->>H: establish Media Session shell
+  H->>H: locate entry, then project page + track metadata
   H->>R: session.next(epoch, crossedEntryId)
   R->>S: session.next
   Note over H,A: src is unchanged for the entire epoch
@@ -564,13 +576,14 @@ events and verify:
 3. Every accepted async result matches the current epoch.
 4. Timeline revisions are monotone and entries are prefix-preserving.
 5. Published entry offsets never change.
-6. UI and Media Session use the same located entry.
-7. Playing is impossible without active-source native evidence.
-8. Priming time never appears as track-local progress.
-9. Each entry boundary commits `session.next` at most once.
-10. Recovery never changes source, epoch, or current entry.
-11. Stop rejects all late results from the stopped epoch.
-12. Relay/P2P/blob availability cannot alter playback semantics because those playback
+6. Native priming playback establishes one persistent Media Session shell.
+7. UI and Media Session track metadata use the same located entry.
+8. Playing is impossible without active-source native evidence.
+9. Priming time never appears as track-local progress.
+10. Each entry boundary commits `session.next` at most once.
+11. Recovery never changes source, epoch, or current entry.
+12. Stop rejects all late results from the stopped epoch.
+13. Relay/P2P/blob availability cannot alter playback semantics because those playback
     branches do not exist.
 
 Minimal counterexample traces must include epoch, source URL, timeline revision, entry ID,
