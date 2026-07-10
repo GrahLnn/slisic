@@ -1,4 +1,22 @@
 use super::*;
+use std::collections::HashMap;
+
+fn segment_urls_by_sequence(manifest: &str) -> HashMap<u64, String> {
+    let mut sequence = manifest
+        .lines()
+        .find_map(|line| line.strip_prefix("#EXT-X-MEDIA-SEQUENCE:"))
+        .and_then(|value| value.parse::<u64>().ok())
+        .expect("manifest should declare its media sequence");
+    let mut segments = HashMap::new();
+    for line in manifest.lines().filter(|line| !line.starts_with('#')) {
+        if line.is_empty() {
+            continue;
+        }
+        segments.insert(sequence, line.to_owned());
+        sequence += 1;
+    }
+    segments
+}
 
 fn track(id: &str, start_ms: u32, end_ms: u32) -> PlaybackTrack {
     PlaybackTrack {
@@ -75,14 +93,30 @@ fn appending_tracks_preserves_repeated_queue_entries() {
 #[test]
 fn real_media_handoff_is_future_only_and_keeps_its_discontinuity_visible() {
     let mut session = ClientHlsSession::prepared(5);
+    let prepared = session.manifest_at(20);
     session.publish_start_at(published("first", 8.0), 20);
     let manifest = session.manifest_at(21);
-    assert!(manifest.contains("#EXT-X-MEDIA-SEQUENCE:20"));
+    let prepared_segments = segment_urls_by_sequence(&prepared);
+    let published_segments = segment_urls_by_sequence(&manifest);
+    assert!(prepared.contains("#EXT-X-MEDIA-SEQUENCE:18"));
+    assert_eq!(prepared.matches(LOCAL_PRIMING_SEGMENT_URL).count(), 9);
+    assert!(manifest.contains("#EXT-X-MEDIA-SEQUENCE:24"));
     assert_eq!(manifest.matches(LOCAL_PRIMING_SEGMENT_URL).count(), 3);
+    for sequence in 24..27 {
+        assert_eq!(
+            published_segments.get(&sequence),
+            prepared_segments.get(&sequence)
+        );
+    }
+    assert!(!prepared_segments.contains_key(&27));
+    assert_eq!(
+        published_segments.get(&27).map(String::as_str),
+        Some("p2p-hls://session/5/track/0/segment/0.ts")
+    );
     assert!(manifest.contains("#EXT-X-DISCONTINUITY\n#EXTINF:8.000000"));
     assert_eq!(
         session.snapshot().entries[0].start_seconds,
-        23.0 * HLS_PRIMING_SEGMENT_SECONDS
+        27.0 * HLS_PRIMING_SEGMENT_SECONDS
     );
 }
 

@@ -17,7 +17,6 @@ const HLS_SEGMENT_SECONDS: u32 = 2;
 const HLS_PRIMING_SEGMENT_SECONDS: f64 = 2.005_333;
 const HLS_PRIMING_WINDOW_BEHIND: u64 = 2;
 const HLS_PRIMING_WINDOW_AHEAD: u64 = 6;
-const HLS_HANDOFF_LEAD_SEGMENTS: u64 = 3;
 const HLS_MATERIALIZATION_VERSION: &str = "p2p-hls-v1";
 const LOCAL_PRIMING_SEGMENT_URL: &str = "p2p-local://slisic/prime.ts";
 
@@ -96,8 +95,8 @@ impl ClientHlsSession {
         self.tracks.push(track);
         self.handoff_sequence = Some(
             current_sequence
-                .saturating_add(HLS_HANDOFF_LEAD_SEGMENTS)
-                .max(HLS_HANDOFF_LEAD_SEGMENTS),
+                .saturating_add(HLS_PRIMING_WINDOW_AHEAD)
+                .saturating_add(1),
         );
         self.revision = self.revision.saturating_add(1);
     }
@@ -163,7 +162,7 @@ impl ClientHlsSession {
             .max(HLS_SEGMENT_SECONDS);
         let handoff_sequence = self.handoff_sequence;
         let media_sequence = handoff_sequence
-            .map(|handoff| handoff.saturating_sub(HLS_HANDOFF_LEAD_SEGMENTS))
+            .map(|handoff| handoff.saturating_sub(HLS_PRIMING_WINDOW_BEHIND.saturating_add(1)))
             .unwrap_or_else(|| current_sequence.saturating_sub(HLS_PRIMING_WINDOW_BEHIND));
         let mut manifest = format!(
             "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:{target_duration}\n\

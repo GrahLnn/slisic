@@ -37,8 +37,8 @@ T∞ = colim(T0 -> T1 -> T2 -> ...)
 
 Recommendation may append a future track. It cannot replace or shift media already published.
 Before the first real track exists, the manifest advances a bounded silent live window. Publication
-chooses a future media sequence and appends the first real segment after that sequence, so waiting
-has no fixed timeout and handoff never rewrites an advertised segment.
+places the first real segment at the first sequence that the current silent manifest has never
+advertised. Waiting has no fixed timeout, and handoff cannot rewrite an advertised segment.
 
 ### Asset cache
 
@@ -78,8 +78,9 @@ cache first and uses DataChannel only for a miss. Relay HTTP and Blob fallbacks 
 
 ### `BoundaryCommit` is a linear coequalizer
 
-Native time events, hls.js fragment events, and watchdog observations of the same crossed entry are
-coequalized by `(mediaEpoch, entryId)`. Exactly one Host `session.next` is permitted.
+The hls.js fragment that actually enters native playout supplies the boundary evidence. Repeated
+observations are coequalized by `(mediaEpoch, entryId)`. Exactly one Host `session.next` is
+permitted; projected wall time is not boundary evidence.
 
 ## Composition Laws
 
