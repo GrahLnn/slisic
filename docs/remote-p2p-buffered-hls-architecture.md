@@ -19,6 +19,7 @@ only playback owner.
 | `PrimingPrefix` | Sliding live window of local silent HLS segments available before real media. |
 | `TimelinePrefix` | Immutable ordered HLS entries and segments published so far. |
 | `ForwardReserve` | Media already appended ahead of the native playhead. |
+| `PersistentMirror` | Hero IndexedDB mirror of the current epoch's published immutable segments. |
 | `AssetRequest` | Idempotent DataChannel request for one manifest or media segment URL. |
 | `SupplyPath` | Current ICE-selected path used to refill the forward reserve. |
 | `BoundaryCommit` | Exactly-once Host session advance after native playback crosses an entry. |
@@ -42,9 +43,13 @@ advertised. Waiting has no fixed timeout, and handoff cannot rewrite an advertis
 
 ### Asset cache
 
-Objects are finite maps from immutable virtual URL to bytes. Repeating an `AssetRequest` is an
-identity operation. A network retry therefore cannot create another media object or advance
-playback state.
+Objects are finite maps from immutable virtual URL to bytes. Hero resolves each segment through a
+short memory cache, then the current epoch's `PersistentMirror`, then P2P. Repeating an
+`AssetRequest` is an identity operation. A network retry therefore cannot create another media
+object or advance playback state. The mirror copies the complete published prefix one segment at a
+time and yields before each copy while a foreground hls.js request exists. The last successful
+manifest is also persisted: hls.js reads that known append-only prefix immediately while a healthy
+P2P path refreshes the next prefix in the background.
 
 ### Supply paths
 
@@ -73,8 +78,10 @@ future inclusions but cannot remove an existing prefix from playback.
 
 ### `P2pLoader` is the terminal asset consumer
 
-Every hls.js manifest or fragment load factors through one loader. The loader checks the immutable
-cache first and uses DataChannel only for a miss. Relay HTTP and Blob fallbacks have no constructors.
+Every hls.js manifest or fragment load factors through one loader. The loader checks memory and
+IndexedDB before using DataChannel for a miss. Relay HTTP and Blob fallbacks have no constructors.
+DataChannel delivery is reliable but unordered because request and chunk coordinates already
+provide deterministic reassembly; packet loss cannot impose cross-asset ordering.
 
 ### `BoundaryCommit` is a linear coequalizer
 
@@ -90,6 +97,7 @@ permitted; projected wall time is not boundary evidence.
 - Asset retries are idempotent by virtual URL.
 - DataChannel recovery may refill the forward reserve but cannot command the audio element.
 - Native playback may consume cached media while DataChannel and Relay are unavailable.
+- Persistent mirroring follows the canonical timeline and never selects or advances a track.
 - Metadata is a read-only projection of native time into the canonical timeline.
 
 ## Checker Properties
@@ -98,7 +106,7 @@ permitted; projected wall time is not boundary evidence.
 2. One page owns one audible audio element and one ManagedMediaSource.
 3. The same virtual asset URL always resolves to the same bytes inside an epoch.
 4. Appending tracks preserves every existing timeline entry and offset.
-5. A cached segment remains readable with DataChannel disconnected.
+5. A persisted segment remains readable with DataChannel disconnected.
 6. ICE restart preserves media epoch, audio source, current time, and buffered ranges.
 7. Playback does not pause or seek because of WiFi/4G classification.
 8. Host track advance occurs only after a native boundary commit.
