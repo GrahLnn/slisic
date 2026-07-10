@@ -166,6 +166,7 @@ struct RemoteShareSession {
     hls_priming_started_at: Option<Instant>,
     hls_priming_published_segments: usize,
     hls_real_prefix_started_at: Option<Instant>,
+    hls_consumer_anchored: bool,
     hls_entries: Vec<RemoteHlsTimelineEntry>,
     session_epoch: u64,
     timeline_revision: u64,
@@ -734,6 +735,10 @@ async fn handle_remote_relay_rpc(
             Ok(request) => relay_json(runtime.handle_hls_timeline(&client_id, request)),
             Err(error) => Err(error),
         },
+        "session.anchor_hls" => match parse_relay_params(params) {
+            Ok(request) => relay_json(runtime.handle_hls_anchor(&client_id, request)),
+            Err(error) => Err(error),
+        },
         "session.start" => match parse_relay_params(params) {
             Ok(request) => relay_json(runtime.handle_start(&client_id, request).await),
             Err(error) => Err(error),
@@ -1200,6 +1205,24 @@ impl RemoteShareRuntime {
         Ok(session.hls_view())
     }
 
+    fn handle_hls_anchor(
+        &self,
+        client_id: &str,
+        request: RemoteSessionCommandRequest,
+    ) -> RemoteResult<RemoteHlsSessionView> {
+        self.ensure_code(&request.code)?;
+        let mut sessions = self.lock_sessions()?;
+        let session = sessions
+            .by_client
+            .get_mut(client_id)
+            .ok_or(RemoteShareError::not_found(
+                "remote client session not found",
+            ))?;
+        session.ensure_epoch(request.session_epoch)?;
+        session.anchor_hls_consumer();
+        Ok(session.hls_view())
+    }
+
     async fn handle_start(
         &self,
         client_id: &str,
@@ -1284,6 +1307,7 @@ impl RemoteShareRuntime {
         session.hls_priming_started_at = None;
         session.hls_priming_published_segments = 0;
         session.hls_real_prefix_started_at = None;
+        session.hls_consumer_anchored = false;
         session.hls_entries.clear();
         session.timeline_revision = session.timeline_revision.saturating_add(1);
         Ok(session.view())
@@ -1595,6 +1619,7 @@ impl RemoteShareRuntime {
         session.hls_priming_started_at = None;
         session.hls_priming_published_segments = 0;
         session.hls_real_prefix_started_at = None;
+        session.hls_consumer_anchored = false;
         session.hls_entries.clear();
         session.timeline_revision = session.timeline_revision.saturating_add(1);
         Ok(())
@@ -1773,6 +1798,7 @@ impl RemoteShareSession {
         self.hls_priming_started_at = None;
         self.hls_priming_published_segments = 0;
         self.hls_real_prefix_started_at = None;
+        self.hls_consumer_anchored = false;
         self.hls_entries.clear();
         self.timeline_revision = 0;
         let stream_token = self.stream_token.clone();
@@ -1890,6 +1916,9 @@ impl RemoteShareSession {
         if !real_prefix_ready {
             return 0.0;
         }
+        if self.hls_consumer_anchored {
+            return f64::INFINITY;
+        }
         let started_at = self
             .hls_real_prefix_started_at
             .get_or_insert_with(Instant::now);
@@ -1899,6 +1928,10 @@ impl RemoteShareSession {
                     .max(1)
                     .saturating_mul(REMOTE_HLS_LIVE_HOLDBACK_SEGMENTS),
             )
+    }
+
+    fn anchor_hls_consumer(&mut self) {
+        self.hls_consumer_anchored = true;
     }
 
     fn publish_hls_entries(&mut self, entries: Vec<RemoteHlsTimelineEntry>) -> bool {

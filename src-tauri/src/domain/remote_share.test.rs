@@ -34,6 +34,7 @@ fn playing_sessions(current: PlaybackTrack) -> Arc<Mutex<RemoteShareSessions>> {
         hls_priming_started_at: None,
         hls_priming_published_segments: 0,
         hls_real_prefix_started_at: None,
+        hls_consumer_anchored: false,
         hls_entries: Vec::new(),
         session_epoch: 1,
         timeline_revision: 0,
@@ -152,6 +153,7 @@ fn remote_hls_timeline_starts_at_current_track() {
         hls_priming_started_at: None,
         hls_priming_published_segments: 0,
         hls_real_prefix_started_at: None,
+        hls_consumer_anchored: false,
         hls_entries: Vec::new(),
         session_epoch: 1,
         timeline_revision: 0,
@@ -183,6 +185,7 @@ fn remote_hls_stream_url_is_stable_for_the_session() {
         hls_priming_started_at: None,
         hls_priming_published_segments: 0,
         hls_real_prefix_started_at: None,
+        hls_consumer_anchored: false,
         hls_entries: Vec::new(),
         session_epoch: 1,
         timeline_revision: 0,
@@ -221,6 +224,7 @@ fn remote_hls_playlist_can_prime_before_current_track_exists() {
         hls_priming_started_at: None,
         hls_priming_published_segments: 0,
         hls_real_prefix_started_at: None,
+        hls_consumer_anchored: false,
         hls_entries: Vec::new(),
         session_epoch: 1,
         timeline_revision: 0,
@@ -373,6 +377,18 @@ fn remote_hls_real_prefix_clock_starts_when_real_media_is_first_published() {
 }
 
 #[test]
+fn remote_hls_native_anchor_releases_the_materialized_suffix() {
+    let mut session = RemoteShareSession::default();
+
+    let initial_prefix_seconds = session.advance_hls_real_prefix_window(true, 2);
+    session.anchor_hls_consumer();
+    let anchored_prefix_seconds = session.advance_hls_real_prefix_window(true, 2);
+
+    assert!(initial_prefix_seconds.is_finite());
+    assert!(anchored_prefix_seconds.is_infinite());
+}
+
+#[test]
 fn remote_hls_reader_accepts_partial_event_playlist_without_endlist() {
     let hls_dir =
         std::env::temp_dir().join(format!("slisic-remote-hls-partial-{}", std::process::id()));
@@ -417,6 +433,7 @@ fn remote_hls_timeline_appends_new_queue_without_replacing_the_stream() {
         hls_priming_started_at: None,
         hls_priming_published_segments: 0,
         hls_real_prefix_started_at: None,
+        hls_consumer_anchored: false,
         hls_entries: Vec::new(),
         session_epoch: 1,
         timeline_revision: 0,
@@ -467,6 +484,7 @@ fn remote_hls_timeline_keeps_repeated_track_occurrences() {
         hls_priming_started_at: None,
         hls_priming_published_segments: 0,
         hls_real_prefix_started_at: None,
+        hls_consumer_anchored: false,
         hls_entries: Vec::new(),
         session_epoch: 1,
         timeline_revision: 0,
@@ -538,6 +556,7 @@ fn remote_hls_stream_token_survives_track_token_retention() {
         hls_priming_started_at: None,
         hls_priming_published_segments: 0,
         hls_real_prefix_started_at: None,
+        hls_consumer_anchored: false,
         hls_entries: Vec::new(),
         session_epoch: 1,
         timeline_revision: 0,
@@ -584,6 +603,7 @@ fn remote_hls_segment_token_does_not_imply_playback_transition() {
         hls_priming_started_at: None,
         hls_priming_published_segments: 0,
         hls_real_prefix_started_at: None,
+        hls_consumer_anchored: false,
         hls_entries: Vec::new(),
         session_epoch: 1,
         timeline_revision: 0,

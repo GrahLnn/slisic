@@ -153,6 +153,12 @@ Priming and real-track assets produce compatible finite prefixes. Their unique
 append-preserving cocone is `CanonicalTimeline`. HLS text and timeline metadata are two
 projections of this same cocone; neither may maintain a second sequence.
 
+Publication has two monotone phases. `Unanchored` exposes only the finite startup prefix so a
+native live player cannot choose the end of a complete track. The first matching native
+`playing` observation induces `session.anchor_hls`; `Anchored` then exposes the complete
+materialized suffix. This transition is irreversible inside one epoch and depends on media
+evidence rather than network classification or a guessed buffering threshold.
+
 ### 5.3 `AudibleState` is a pullback
 
 The system may claim audible playback only when host and media evidence agree on the same
@@ -208,6 +214,10 @@ recover : S(epoch, resource) -> S(epoch, resource)
 
 Changing `src`, allocating a blob URL, changing playback mode, or advancing metadata is not
 recovery. It is an undeclared substitution and is forbidden.
+
+Relay recovery is additionally the identity morphism when the current socket is `OPEN`.
+Reconnect timers are subordinate to connection identity: any successful or in-progress
+connect cancels an older timer, so a stale timer cannot replace a healthy socket.
 
 ### 5.8 `Diagnostics` is the forgetful functor
 
@@ -477,6 +487,10 @@ type RemoteHlsTimelineEntry = {
 first recommendation result to that prepared epoch. Every generated HLS playlist and
 timeline event is indexed by the same epoch.
 
+`session.anchor_hls(epoch)` records the first native `playing` evidence for that resource.
+It does not change playback state or allocate media; it only releases the already
+materialized append-only suffix for native buffering.
+
 The HTTP playlist is append-only for one epoch. Segment URLs are immutable. The response
 uses no-store semantics for the playlist and immutable semantics for materialized segments.
 
@@ -516,6 +530,8 @@ sequenceDiagram
   S-->>R: playlist/segment bytes
   S-->>H: timeline_updated(epoch, revision, entries)
   A-->>H: native playing/timeupdate
+  H->>S: session.anchor_hls(epoch)
+  Note over S: release materialized suffix
   H->>H: locate entry by absolute media time
   H->>H: project page + Media Session
   H->>R: session.next(epoch, crossedEntryId)
