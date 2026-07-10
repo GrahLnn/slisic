@@ -1,5 +1,6 @@
 use crate::utils::binaries::{ManagedBinary, acquire_managed_binary_usage};
 use anyhow::{Result, anyhow};
+use async_trait::async_trait;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
@@ -12,6 +13,7 @@ use std::time::Duration;
 use tokio::net::UdpSocket;
 use tokio::process::Command;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, channel, unbounded_channel};
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio::time::{MissedTickBehavior, interval};
 use webrtc::api::APIBuilder;
@@ -101,6 +103,18 @@ struct WorkerFinished {
 struct RemoteWebRtcPeer {
     connection: Arc<RTCPeerConnection>,
     playout: UnboundedSender<PlayoutCommand>,
+}
+
+#[async_trait]
+trait RtpPacketWriter: Send + Sync {
+    async fn write_packet(&self, packet: &Packet) -> Result<usize>;
+}
+
+#[async_trait]
+impl RtpPacketWriter for TrackLocalStaticRTP {
+    async fn write_packet(&self, packet: &Packet) -> Result<usize> {
+        Ok(self.write_rtp(packet).await?)
+    }
 }
 
 pub(super) struct RemoteWebRtcAudio {
@@ -369,23 +383,26 @@ impl RemoteWebRtcAudio {
     }
 }
 
-async fn run_playout(
+async fn run_playout<W>(
     client_id: String,
-    track: Arc<TrackLocalStaticRTP>,
+    track: Arc<W>,
     mut commands: UnboundedReceiver<PlayoutCommand>,
     events: UnboundedSender<RemoteWebRtcEvent>,
-) {
+) where
+    W: RtpPacketWriter + 'static,
+{
     let (packets_tx, mut packets_rx) = channel::<EncodedPacket>(ENCODED_PACKET_CHANNEL_CAPACITY);
     let (finished_tx, mut finished_rx) = unbounded_channel::<WorkerFinished>();
+    let (rtp_packets, rtp_packet_receiver) = watch::channel(None);
+    let rtp_writer = tokio::spawn(run_latest_rtp_writes(track, rtp_packet_receiver));
     let mut worker: Option<JoinHandle<()>> = None;
     let mut active_generation = None;
+    let mut encoded_generation_started = None;
     let mut finished_generation = None;
     let mut queue = VecDeque::new();
-    let mut sequence_number = 0_u16;
     let mut timestamp = 0_u32;
     let mut ticker = interval(Duration::from_millis(OPUS_FRAME_DURATION_MS));
     ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    let mut write_failed = false;
 
     loop {
         tokio::select! {
@@ -396,8 +413,17 @@ async fn run_playout(
                             worker.abort();
                         }
                         queue.clear();
+                        encoded_generation_started = None;
                         finished_generation = None;
                         active_generation = Some(generation);
+                        log::info!(
+                            target: REMOTE_SHARE_LOG_TARGET,
+                            "remote_p2p_playout_generation_started client_id=\"{}\" generation={} range={}..{}",
+                            client_id,
+                            generation,
+                            source.start_ms,
+                            source.end_ms
+                        );
                         worker = Some(tokio::spawn(stream_encoded_opus(
                             generation,
                             source,
@@ -410,6 +436,7 @@ async fn run_playout(
                             worker.abort();
                         }
                         active_generation = None;
+                        encoded_generation_started = None;
                         finished_generation = None;
                         queue.clear();
                     }
@@ -424,6 +451,15 @@ async fn run_playout(
             packet = packets_rx.recv() => {
                 if let Some(packet) = packet {
                     if active_generation == Some(packet.generation) {
+                        if encoded_generation_started != Some(packet.generation) {
+                            encoded_generation_started = Some(packet.generation);
+                            log::info!(
+                                target: REMOTE_SHARE_LOG_TARGET,
+                                "remote_p2p_encoded_audio_started client_id=\"{}\" generation={}",
+                                client_id,
+                                packet.generation
+                            );
+                        }
                         push_realtime_packet(&mut queue, packet.payload);
                     }
                 }
@@ -449,26 +485,13 @@ async fn run_playout(
                     header: Header {
                         version: 2,
                         payload_type: OPUS_PAYLOAD_TYPE,
-                        sequence_number,
                         timestamp,
                         ssrc: RTP_SSRC,
                         ..Default::default()
                     },
                     payload,
                 };
-                match track.write_rtp(&packet).await {
-                    Ok(_) => write_failed = false,
-                    Err(error) if !write_failed => {
-                        write_failed = true;
-                        log::warn!(
-                            target: REMOTE_SHARE_LOG_TARGET,
-                            "remote_p2p_rtp_write_failed error=\"{}\"",
-                            error
-                        );
-                    }
-                    Err(_) => {}
-                }
-                sequence_number = sequence_number.wrapping_add(1);
+                rtp_packets.send_replace(Some(packet));
                 timestamp = timestamp.wrapping_add(OPUS_SAMPLES_PER_FRAME);
 
                 if queue.is_empty() && finished_generation == active_generation {
@@ -481,6 +504,41 @@ async fn run_playout(
                     }
                 }
             }
+        }
+    }
+
+    drop(rtp_packets);
+    rtp_writer.abort();
+    let _ = rtp_writer.await;
+}
+
+async fn run_latest_rtp_writes<W>(track: Arc<W>, mut packets: watch::Receiver<Option<Packet>>)
+where
+    W: RtpPacketWriter + 'static,
+{
+    let mut write_failed = false;
+    let mut sequence_number = 0_u16;
+    while packets.changed().await.is_ok() {
+        let Some(mut packet) = packets.borrow_and_update().clone() else {
+            continue;
+        };
+        packet.header.sequence_number = sequence_number;
+        match track.write_packet(&packet).await {
+            Ok(written) => {
+                write_failed = false;
+                if written > 0 {
+                    sequence_number = sequence_number.wrapping_add(1);
+                }
+            }
+            Err(error) if !write_failed => {
+                write_failed = true;
+                log::warn!(
+                    target: REMOTE_SHARE_LOG_TARGET,
+                    "remote_p2p_rtp_write_failed error=\"{}\"",
+                    error
+                );
+            }
+            Err(_) => {}
         }
     }
 }

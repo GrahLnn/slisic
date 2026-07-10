@@ -47,6 +47,7 @@ or routes inside this object. They are not alternative playback engines.
 | `PlayoutGeneration` | Monotone identity of the Host track currently allowed to end. |
 | `IdleFrame` | A valid 20 ms Opus silence frame on the persistent RTP timeline. |
 | `EncodedFrame` | A 20 ms Opus payload produced in real time by FFmpeg. |
+| `LatestRtpWrite` | The newest canonical RTP packet still awaiting the network sink. |
 | `TrackEnded` | Host evidence emitted only after FFmpeg exits and queued RTP is drained. |
 | `PathRestart` | ICE restart on the existing PeerConnection. |
 | `MetadataProjection` | Host playback state mapped to page and Media Session metadata. |
@@ -87,8 +88,9 @@ colimit:
 R∞ = colim(R0 -> R1 -> R2 -> ...)
 ```
 
-Every inclusion preserves SSRC, payload type, sequence order, and the 48 kHz timestamp clock.
-Silence and real audio are payload choices at an index; neither creates another timeline.
+Every inclusion preserves SSRC, payload type, committed sequence order, and the 48 kHz timestamp
+clock. Silence and real audio are payload choices at an index; neither creates another timeline.
+Publication to the network is a separate effect and cannot suspend construction of this prefix.
 
 ### Effect category `E`
 
@@ -114,9 +116,19 @@ No caller chooses a sink and no second sink can be introduced by recovery or tra
 
 ### `PlayoutClock` is the colimit of 20 ms frames
 
-Sequence number and timestamp are allocated by the playout owner, not copied from individual
-FFmpeg processes. FFmpeg RTP headers are forgotten; only Opus payloads enter the canonical
-clock. Therefore per-track encoder restarts compose into one monotone RTP stream.
+Logical timestamps are allocated by the playout owner, not copied from individual FFmpeg
+processes. FFmpeg RTP headers are forgotten; only Opus payloads enter the canonical clock.
+Sequence numbers are allocated by the network writer and committed only after a successful write.
+Therefore cancelled or superseded packets can create a timestamp jump but cannot consume SRTP
+packet indexes, while per-track encoder restarts still compose into one monotone RTP stream.
+
+### `LatestRtpWrite` is the terminal pending network effect
+
+Every packet produced behind the one in-flight write maps to one pending value. A newer packet
+uniquely replaces the older pending value because live playback values current audio over stale
+backlog. The in-flight write remains affine and is never cancelled by the 20 ms clock; once it
+finishes, the writer samples the latest pending packet. Network effects cannot delay Play, Idle,
+Shutdown, FFmpeg packet intake, or RTP clock allocation.
 
 ### `CurrentTrack` is a pullback
 
@@ -210,8 +222,11 @@ Encoding is real-time (`-re`) and never waits for a whole-track artifact.
 IdleOpus + RealtimeOpusPayloads => PersistentRtpTimeline
 ```
 
-This transformation assigns one sequence/timestamp stream. An empty bounded payload queue maps
-to valid Opus silence, so startup and source handoff preserve native media liveness.
+This transformation assigns one logical timestamp stream and feeds one committed sequence stream.
+An empty bounded payload queue maps to valid Opus silence, so startup and source handoff preserve
+native media liveness.
+The resulting packet is published through a latest-value channel; publication never awaits the
+network inside the playout state machine.
 
 ### `advance`
 
@@ -299,6 +314,8 @@ sequenceDiagram
 ## Composition Laws
 
 - RTP append is associative, non-commutative, and has the empty prefix as identity.
+- Pending network publication is idempotent under replacement by the same packet and coalesces
+  older unstarted writes into the newest packet without cancelling the in-flight write.
 - Silence insertion and real-payload insertion share the same clock allocator.
 - Queue refill is idempotent for a captured current track and rejected after current changes.
 - Track-end acceptance is invariant under duplicate and late completion events.
@@ -320,10 +337,12 @@ exists from network labels, metadata, or UI timers to audible playback truth.
 6. The Host's idle track produces valid Opus RTP in a real loopback negotiation.
 7. The playout payload queue is bounded and discards oldest latency, not newest audio.
 8. FFmpeg completion drains pending UDP RTP before emitting `TrackEnded`.
-9. Sequence and timestamp advance once per 20 ms frame across silence and tracks.
+9. Timestamp advances once per 20 ms frame; sequence advances only after a committed network write.
 10. A stale generation cannot advance the Host session.
 11. Stop cancels real encoding while keeping the persistent track alive with silence.
 12. Host-owned track advance does not depend on foreground browser JavaScript.
+13. A blocked RTP write cannot delay Play, Idle, Shutdown, or encoder packet intake.
+14. New RTP packets coalesce behind one in-flight write and cannot starve that write.
 
 ## Verification
 

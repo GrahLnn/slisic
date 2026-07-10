@@ -1,7 +1,54 @@
 use super::*;
+use std::future::pending;
 use webrtc::rtp_transceiver::RTCRtpTransceiverInit;
 use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
 use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirection;
+
+struct BlockingRtpWriter {
+    writes: UnboundedSender<(u16, u32)>,
+}
+
+#[async_trait::async_trait]
+impl RtpPacketWriter for BlockingRtpWriter {
+    async fn write_packet(&self, packet: &Packet) -> Result<usize> {
+        let _ = self
+            .writes
+            .send((packet.header.sequence_number, packet.header.timestamp));
+        pending::<()>().await;
+        unreachable!()
+    }
+}
+
+struct DeferredRtpWriter {
+    writes: UnboundedSender<(u16, u32)>,
+    completions: tokio::sync::Mutex<UnboundedReceiver<bool>>,
+}
+
+#[async_trait::async_trait]
+impl RtpPacketWriter for DeferredRtpWriter {
+    async fn write_packet(&self, packet: &Packet) -> Result<usize> {
+        let _ = self
+            .writes
+            .send((packet.header.sequence_number, packet.header.timestamp));
+        match self.completions.lock().await.recv().await {
+            Some(true) => Ok(1),
+            Some(false) => Err(anyhow!("forced write failure")),
+            None => pending::<Result<usize>>().await,
+        }
+    }
+}
+
+fn test_rtp_packet(timestamp: u32) -> Packet {
+    Packet {
+        header: Header {
+            version: 2,
+            sequence_number: u16::MAX,
+            timestamp,
+            ..Default::default()
+        },
+        payload: Bytes::from_static(OPUS_SILENCE_PAYLOAD),
+    }
+}
 
 #[test]
 fn realtime_queue_stays_bounded_and_keeps_the_newest_packets() {
@@ -21,6 +68,95 @@ fn realtime_queue_stays_bounded_and_keeps_the_newest_packets() {
 fn ffmpeg_ranges_are_formatted_without_integer_truncation() {
     assert_eq!(format_seconds(0), "0.000");
     assert_eq!(format_seconds(1_234), "1.234");
+}
+
+#[tokio::test]
+async fn pending_rtp_packets_coalesce_while_one_write_is_in_flight() -> Result<()> {
+    let (writes, mut observed_writes) = unbounded_channel();
+    let (completions, completion_receiver) = unbounded_channel();
+    let writer = Arc::new(DeferredRtpWriter {
+        writes,
+        completions: tokio::sync::Mutex::new(completion_receiver),
+    });
+    let (packets, packet_receiver) = tokio::sync::watch::channel(None);
+    let task = tokio::spawn(run_latest_rtp_writes(writer, packet_receiver));
+
+    packets.send_replace(Some(test_rtp_packet(10)));
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(1), observed_writes.recv()).await?,
+        Some((0, 10))
+    );
+    packets.send_replace(Some(test_rtp_packet(11)));
+    packets.send_replace(Some(test_rtp_packet(12)));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), observed_writes.recv())
+            .await
+            .is_err()
+    );
+    completions.send(true)?;
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(1), observed_writes.recv()).await?,
+        Some((1, 12))
+    );
+    completions.send(true)?;
+
+    drop(packets);
+    tokio::time::timeout(Duration::from_secs(1), task).await??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn rtp_sequence_advances_only_after_a_committed_write() -> Result<()> {
+    let (writes, mut observed_writes) = unbounded_channel();
+    let (completions, completion_receiver) = unbounded_channel();
+    let writer = Arc::new(DeferredRtpWriter {
+        writes,
+        completions: tokio::sync::Mutex::new(completion_receiver),
+    });
+    let (packets, packet_receiver) = tokio::sync::watch::channel(None);
+    let task = tokio::spawn(run_latest_rtp_writes(writer, packet_receiver));
+
+    packets.send_replace(Some(test_rtp_packet(10)));
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(1), observed_writes.recv()).await?,
+        Some((0, 10))
+    );
+    packets.send_replace(Some(test_rtp_packet(11)));
+    completions.send(false)?;
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(1), observed_writes.recv()).await?,
+        Some((0, 11))
+    );
+    completions.send(true)?;
+    packets.send_replace(Some(test_rtp_packet(12)));
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(1), observed_writes.recv()).await?,
+        Some((1, 12))
+    );
+    completions.send(true)?;
+
+    drop(packets);
+    tokio::time::timeout(Duration::from_secs(1), task).await??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn playout_shutdown_is_responsive_while_network_write_is_blocked() -> Result<()> {
+    let (writes, mut observed_writes) = unbounded_channel();
+    let writer = Arc::new(BlockingRtpWriter { writes });
+    let (commands, command_receiver) = unbounded_channel();
+    let (events, _event_receiver) = unbounded_channel();
+    let task = tokio::spawn(run_playout(
+        "blocked-client".to_owned(),
+        writer,
+        command_receiver,
+        events,
+    ));
+
+    tokio::time::timeout(Duration::from_secs(1), observed_writes.recv()).await?;
+    commands.send(PlayoutCommand::Shutdown)?;
+    tokio::time::timeout(Duration::from_secs(1), task).await??;
+    Ok(())
 }
 
 #[tokio::test]
