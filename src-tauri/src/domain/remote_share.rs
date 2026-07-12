@@ -561,7 +561,7 @@ async fn run_remote_p2p_events(
                 priority,
                 responses,
             } => {
-                let trace_asset = request_id <= 8 || url.ends_with(".m3u8");
+                let trace_asset = should_trace_remote_p2p_hls_asset(request_id, &url);
                 let asset_kind = if url.ends_with(".m3u8") {
                     "manifest"
                 } else if url.ends_with(".ts") {
@@ -761,6 +761,10 @@ async fn run_remote_p2p_events(
             }
         }
     }
+}
+
+fn should_trace_remote_p2p_hls_asset(request_id: u32, url: &str) -> bool {
+    request_id <= 8 && !url.ends_with(".m3u8")
 }
 
 fn install_remote_tls_crypto_provider() {

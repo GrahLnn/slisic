@@ -32,6 +32,7 @@ only playback owner.
 | `AssetRepository` | Memory, IndexedDB, and P2P resolution of immutable epoch assets. |
 | `AssetScheduler` | The unique priority owner for foreground and reserve asset demand. |
 | `AssetRequest` | Idempotent DataChannel request for one manifest or media segment URL. |
+| `DeliveryWindow` | Bounded set of transmitted chunks not yet acknowledged by Hero. |
 | `SupplyPath` | Current ICE-selected path used to refill the forward reserve. |
 | `StartupReadiness` | Monotone evidence that the required first-track prefix is committed to IndexedDB. |
 | `ProtectedSequence` | The first sequence never advertised as priming, chosen once by Hero at readiness. |
@@ -63,6 +64,12 @@ timeline must start at that sequence. A rejected offer, expired handoff lease, o
 replays the same transaction identity; only accepting the committed timeline or resetting the media
 epoch releases it. Therefore native-time progress and lost acknowledgements cannot extend priming
 across the pending real-media boundary or rewrite a committed timeline prefix.
+
+Hero is also the unique owner of the required startup prefix because only Hero can observe the
+native manifest, persistent cache prefix, and protected sequence together. The Host validates that
+readiness is positive, finite, and belongs to the current transaction; it must not recompute a
+second duration threshold. This keeps readiness a single cross-process fact instead of two drifting
+policies.
 
 ### Asset cache
 
@@ -107,12 +114,13 @@ time, buffered ranges, and persistent assets are invariant under this substituti
 
 Each asset owns its own progress lease. Only that asset's response header or chunk renews the lease;
 an unrelated timeline update cannot keep a lost request occupying the bounded request window. A
-slow asset cannot create a replacement loop. The writer continuously admits bounded 16 KiB frames
-until the DataChannel reaches its high watermark, then waits only until it crosses the low
-watermark. This hysteresis keeps the SCTP queue bounded without turning every frame into an
-acknowledgement round trip. A lossy mobile path therefore cannot create an unbounded queue, and a
-foreground manifest waits for at most the currently admitted frame rather than an entire media
-asset.
+slow asset cannot create a replacement loop. The writer admits bounded 16 KiB chunks into an
+application-level `DeliveryWindow`. Hero acknowledges every accepted `(requestId, chunkIndex)`;
+duplicate acknowledgements are identities, and only matching acknowledgements release bytes. The
+writer stops admitting chunks at the high watermark and resumes below the low watermark. Local
+SCTP `buffered_amount` is diagnostic only because its observation is not a portable delivery fact
+on Windows or mobile paths. A lossy path therefore cannot create an unbounded queue, while delayed
+local SCTP accounting cannot turn healthy delivery into a dead `SupplyEpoch`.
 
 ## Behavior Object
 
@@ -279,4 +287,6 @@ The following compositions are intentionally invalid:
 13. Foreground HLS and reserve caching never compete through separate network workers.
 14. Late signal and asset completions from an older epoch cannot commit.
 15. A prepared track is absent from the playback manifest until the Host accepts cache readiness.
-16. Readiness below `min(60 seconds, first-track duration)` cannot commit a handoff.
+16. The Host cannot recompute or strengthen Hero's startup-readiness threshold.
+17. Unacknowledged binary chunks never exceed the delivery high watermark.
+18. Only an accepted matching chunk acknowledgement releases delivery-window capacity.

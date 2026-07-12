@@ -8,10 +8,11 @@ use tokio::sync::mpsc::{
     Receiver, Sender, UnboundedReceiver, UnboundedSender, channel as mpsc_channel,
     unbounded_channel,
 };
-use tokio::time::{Duration, sleep, timeout};
+use tokio::time::{Duration, timeout};
 use webrtc::api::APIBuilder;
 use webrtc::data_channel::RTCDataChannel;
 use webrtc::data_channel::data_channel_message::DataChannelMessage;
+use webrtc::data_channel::data_channel_state::RTCDataChannelState;
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::peer_connection::RTCPeerConnection;
@@ -26,6 +27,7 @@ const HLS_ASSET_CHUNK_HEADER_SIZE: usize = 12;
 const HLS_ASSET_CHUNK_SIZE: usize = HLS_ASSET_MAX_MESSAGE_SIZE - HLS_ASSET_CHUNK_HEADER_SIZE;
 const HLS_ASSET_CHUNK_MAGIC: &[u8; 4] = b"SLH1";
 const HLS_DATA_CHANNEL_PROGRESS_LEASE: Duration = Duration::from_secs(5);
+const HLS_DATA_CHANNEL_CAPACITY_POLL_INTERVAL: Duration = Duration::from_millis(20);
 const HLS_DATA_CHANNEL_HIGH_WATERMARK: usize = HLS_ASSET_MAX_MESSAGE_SIZE * 4;
 const HLS_DATA_CHANNEL_LOW_WATERMARK: usize = HLS_ASSET_MAX_MESSAGE_SIZE * 2;
 const HLS_RESPONSE_INGEST_BUDGET: usize = 64;
@@ -145,6 +147,10 @@ enum RemoteP2pDataChannelRequest {
     HlsAssetCancelThrough {
         request_id: u32,
     },
+    HlsAssetChunkAcknowledged {
+        id: u32,
+        chunk: u32,
+    },
     PrefetchReserve {
         revision: u32,
         target_tracks: usize,
@@ -200,11 +206,59 @@ pub(super) enum RemoteP2pOutboundResponse {
     CancelThrough {
         request_id: u32,
     },
+    Acknowledge {
+        request_id: u32,
+        chunk_index: u32,
+    },
 }
 
 enum RemoteP2pOutboundFrame {
     Text(String),
-    Binary(Bytes),
+    Binary {
+        request_id: u32,
+        chunk_index: u32,
+        body: Bytes,
+    },
+}
+
+#[derive(Default)]
+struct RemoteP2pDeliveryWindow {
+    chunks: HashMap<(u32, u32), usize>,
+    bytes: usize,
+}
+
+impl RemoteP2pDeliveryWindow {
+    fn can_admit(&self, bytes: usize) -> bool {
+        self.bytes.saturating_add(bytes) <= HLS_DATA_CHANNEL_HIGH_WATERMARK
+    }
+
+    fn admit(&mut self, request_id: u32, chunk_index: u32, bytes: usize) -> bool {
+        if !self.can_admit(bytes) || self.chunks.contains_key(&(request_id, chunk_index)) {
+            return false;
+        }
+        self.chunks.insert((request_id, chunk_index), bytes);
+        self.bytes += bytes;
+        true
+    }
+
+    fn acknowledge(&mut self, request_id: u32, chunk_index: u32) -> bool {
+        let Some(bytes) = self.chunks.remove(&(request_id, chunk_index)) else {
+            return false;
+        };
+        self.bytes = self.bytes.saturating_sub(bytes);
+        true
+    }
+
+    fn cancel_through(&mut self, request_id: u32) {
+        self.chunks.retain(|(candidate_request_id, _), bytes| {
+            if *candidate_request_id <= request_id {
+                self.bytes = self.bytes.saturating_sub(*bytes);
+                false
+            } else {
+                true
+            }
+        });
+    }
 }
 
 struct RemoteP2pScheduledAsset {
@@ -298,6 +352,7 @@ impl RemoteP2pOutboundScheduler {
                 self.cancel_through(request_id);
                 return;
             }
+            RemoteP2pOutboundResponse::Acknowledge { .. } => return,
         };
         self.queue(priority).push_back(response);
     }
@@ -372,11 +427,15 @@ impl RemoteP2pOutboundScheduler {
                 }
                 if asset.offset < asset.body.len() {
                     let end = (asset.offset + HLS_ASSET_CHUNK_SIZE).min(asset.body.len());
-                    frames.push(RemoteP2pOutboundFrame::Binary(encode_hls_asset_chunk(
-                        asset.request_id,
-                        asset.chunk_index,
-                        &asset.body[asset.offset..end],
-                    )));
+                    frames.push(RemoteP2pOutboundFrame::Binary {
+                        request_id: asset.request_id,
+                        chunk_index: asset.chunk_index,
+                        body: encode_hls_asset_chunk(
+                            asset.request_id,
+                            asset.chunk_index,
+                            &asset.body[asset.offset..end],
+                        ),
+                    });
                     asset.offset = end;
                     asset.chunk_index += 1;
                 }
@@ -977,6 +1036,15 @@ fn attach_hls_data_channel(
                             .await;
                     return;
                 }
+                RemoteP2pDataChannelRequest::HlsAssetChunkAcknowledged { id, chunk } => {
+                    let _ = responses
+                        .send(RemoteP2pOutboundResponse::Acknowledge {
+                            request_id: id,
+                            chunk_index: chunk,
+                        })
+                        .await;
+                    return;
+                }
                 RemoteP2pDataChannelRequest::PrefetchReserve {
                     revision,
                     target_tracks,
@@ -1019,15 +1087,39 @@ async fn run_hls_data_channel_writer(
     mut responses: Receiver<RemoteP2pOutboundResponse>,
 ) -> RemoteP2pWriterExit {
     let mut scheduler = RemoteP2pOutboundScheduler::default();
+    let mut delivery = RemoteP2pDeliveryWindow::default();
     loop {
-        ingest_hls_responses(&mut responses, &mut scheduler, HLS_RESPONSE_INGEST_BUDGET);
+        ingest_hls_responses(
+            &mut responses,
+            &mut scheduler,
+            &mut delivery,
+            HLS_RESPONSE_INGEST_BUDGET,
+        );
         let Some(transmission) = scheduler.next_transmission() else {
             let Some(response) = responses.recv().await else {
                 return RemoteP2pWriterExit::InputClosed;
             };
-            scheduler.push(response);
+            apply_hls_response(response, &mut scheduler, &mut delivery);
             continue;
         };
+        let binary_bytes = transmission
+            .iter()
+            .map(|frame| match frame {
+                RemoteP2pOutboundFrame::Text(_) => 0,
+                RemoteP2pOutboundFrame::Binary { body, .. } => body.len(),
+            })
+            .sum();
+        if !await_hls_delivery_capacity(
+            &channel,
+            &mut responses,
+            &mut scheduler,
+            &mut delivery,
+            binary_bytes,
+        )
+        .await
+        {
+            return RemoteP2pWriterExit::InputClosed;
+        }
         for frame in transmission {
             let result = match frame {
                 RemoteP2pOutboundFrame::Text(body) => {
@@ -1037,7 +1129,21 @@ async fn run_hls_data_channel_writer(
                     )
                     .await
                 }
-                RemoteP2pOutboundFrame::Binary(body) => {
+                RemoteP2pOutboundFrame::Binary {
+                    request_id,
+                    chunk_index,
+                    body,
+                } => {
+                    if !delivery.admit(request_id, chunk_index, body.len()) {
+                        log::error!(
+                            target: REMOTE_SHARE_LOG_TARGET,
+                            "remote_p2p_delivery_window_invariant_failed request_id={} chunk_index={} bytes={}",
+                            request_id,
+                            chunk_index,
+                            body.len()
+                        );
+                        return RemoteP2pWriterExit::Stalled;
+                    }
                     await_hls_data_channel_send(
                         channel.send(&body),
                         HLS_DATA_CHANNEL_PROGRESS_LEASE,
@@ -1062,27 +1168,13 @@ async fn run_hls_data_channel_writer(
                 return RemoteP2pWriterExit::Stalled;
             }
         }
-        if !await_hls_data_channel_capacity(
-            || channel.buffered_amount(),
-            HLS_DATA_CHANNEL_HIGH_WATERMARK,
-            HLS_DATA_CHANNEL_LOW_WATERMARK,
-            HLS_DATA_CHANNEL_PROGRESS_LEASE,
-        )
-        .await
-        {
-            log::warn!(
-                target: REMOTE_SHARE_LOG_TARGET,
-                "remote_p2p_response_writer_stalled phase=capacity recovery=close_supply_epoch"
-            );
-            let _ = channel.close().await;
-            return RemoteP2pWriterExit::Stalled;
-        }
     }
 }
 
 fn ingest_hls_responses(
     responses: &mut Receiver<RemoteP2pOutboundResponse>,
     scheduler: &mut RemoteP2pOutboundScheduler,
+    delivery: &mut RemoteP2pDeliveryWindow,
     budget: usize,
 ) -> usize {
     let mut ingested = 0;
@@ -1090,47 +1182,53 @@ fn ingest_hls_responses(
         let Ok(response) = responses.try_recv() else {
             break;
         };
-        scheduler.push(response);
+        apply_hls_response(response, scheduler, delivery);
         ingested += 1;
     }
     ingested
 }
 
-async fn await_hls_data_channel_capacity<F, Fut>(
-    mut buffered_amount: F,
-    high_watermark: usize,
-    low_watermark: usize,
-    lease: Duration,
-) -> bool
-where
-    F: FnMut() -> Fut,
-    Fut: Future<Output = usize>,
-{
-    debug_assert!(low_watermark <= high_watermark);
-    let mut previous = match timeout(lease, buffered_amount()).await {
-        Ok(buffered) => buffered,
-        Err(_) => return false,
-    };
-    if previous <= high_watermark {
+fn apply_hls_response(
+    response: RemoteP2pOutboundResponse,
+    scheduler: &mut RemoteP2pOutboundScheduler,
+    delivery: &mut RemoteP2pDeliveryWindow,
+) {
+    match response {
+        RemoteP2pOutboundResponse::Acknowledge {
+            request_id,
+            chunk_index,
+        } => {
+            delivery.acknowledge(request_id, chunk_index);
+        }
+        RemoteP2pOutboundResponse::CancelThrough { request_id } => {
+            delivery.cancel_through(request_id);
+            scheduler.push(RemoteP2pOutboundResponse::CancelThrough { request_id });
+        }
+        response => scheduler.push(response),
+    }
+}
+
+async fn await_hls_delivery_capacity(
+    channel: &RTCDataChannel,
+    responses: &mut Receiver<RemoteP2pOutboundResponse>,
+    scheduler: &mut RemoteP2pOutboundScheduler,
+    delivery: &mut RemoteP2pDeliveryWindow,
+    next_bytes: usize,
+) -> bool {
+    if delivery.can_admit(next_bytes) {
         return true;
     }
-    while previous > low_watermark {
-        let progress = timeout(lease, async {
-            loop {
-                sleep(Duration::from_millis(2)).await;
-                let current = buffered_amount().await;
-                if current < previous {
-                    return current;
-                }
-            }
-        })
-        .await;
-        let Ok(current) = progress else {
+    while delivery.bytes > HLS_DATA_CHANNEL_LOW_WATERMARK {
+        if channel.ready_state() != RTCDataChannelState::Open {
             return false;
-        };
-        previous = current;
+        }
+        match timeout(HLS_DATA_CHANNEL_CAPACITY_POLL_INTERVAL, responses.recv()).await {
+            Ok(Some(response)) => apply_hls_response(response, scheduler, delivery),
+            Ok(None) => return false,
+            Err(_) => {}
+        }
     }
-    true
+    delivery.can_admit(next_bytes)
 }
 
 async fn await_hls_data_channel_send<F, T>(send: F, lease: Duration) -> Option<T>

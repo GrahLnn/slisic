@@ -104,19 +104,19 @@ fn remote_hls_representation_preserves_the_music_bitrate() {
 }
 
 #[test]
-fn handoff_requires_the_complete_startup_cache_prefix_and_is_idempotent() {
+fn handoff_accepts_the_hero_owned_startup_prefix_and_is_idempotent() {
     let mut session = ClientHlsSession::prepared(10);
     session.prepare_start(published_segments("first", 40, 2.0));
-    assert_eq!(session.startup_reserve_seconds(), 60.0);
-    assert_eq!(session.offer_handoff(59.0, 24.0, 19), None);
+    assert_eq!(session.offer_handoff(f64::NAN, 24.0, 19), None);
+    assert_eq!(session.offer_handoff(0.0, 24.0, 19), None);
     assert!(session.handoff_sequence.is_none());
 
-    assert_eq!(session.offer_handoff(60.0, 24.0, 19), Some(19));
+    assert_eq!(session.offer_handoff(6.0, 24.0, 19), Some(19));
     assert!(session.handoff_sequence.is_none());
     assert!(session.commit_offered_handoff(19));
     assert!(session.commit_offered_handoff(19));
     assert_eq!(session.handoff_sequence, Some(19));
-    assert_eq!(session.offer_handoff(60.0, 40.0, 26), Some(19));
+    assert_eq!(session.offer_handoff(6.0, 40.0, 26), Some(19));
     assert!(session.commit_offered_handoff(19));
     assert_eq!(session.handoff_sequence, Some(19));
 }

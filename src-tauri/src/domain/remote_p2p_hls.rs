@@ -121,21 +121,6 @@ impl ClientHlsSession {
         true
     }
 
-    fn startup_reserve_seconds(&self) -> f64 {
-        self.tracks
-            .first()
-            .map(|track| {
-                track
-                    .asset
-                    .segments
-                    .iter()
-                    .map(|segment| segment.duration_seconds)
-                    .sum::<f64>()
-                    .min(f64::from(HLS_DEFAULT_RESERVE_BUFFER_SECONDS))
-            })
-            .unwrap_or_default()
-    }
-
     fn offer_handoff(
         &mut self,
         ready_seconds: f64,
@@ -145,7 +130,7 @@ impl ClientHlsSession {
         if let Some(sequence) = self.handoff_sequence.or(self.pending_handoff_sequence) {
             return Some(sequence);
         }
-        if !ready_seconds.is_finite() || ready_seconds + 0.001 < self.startup_reserve_seconds() {
+        if !ready_seconds.is_finite() || ready_seconds <= 0.0 {
             return None;
         }
         if !playout_seconds.is_finite() || playout_seconds < 0.0 {

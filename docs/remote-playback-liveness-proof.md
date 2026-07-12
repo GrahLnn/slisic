@@ -14,6 +14,9 @@ sustained physical throughput below the encoded bitrate has exhausted every comm
   ICE state, and a moving silent priming segment are not audible evidence.
 - `SupplyEpoch` is one PeerConnection and its HLS DataChannel writer. It is live only while every
   published foreground request receives response-header or chunk progress within its lease.
+- `DeliveryWindow` is the finite map from transmitted `(requestId, chunkIndex)` identities to their
+  byte lengths. Capacity is released only by Hero acknowledging the matching accepted chunk;
+  duplicate acknowledgements are identities.
 - `ForegroundRequest` is an HLS playback manifest, reserve manifest needed to construct the current
   playback prefix, or media segment demanded by native HLS. `ReserveRequest` is speculative cache
   demand and cannot consume foreground capacity or determine playout legality.
@@ -66,7 +69,9 @@ The following do not imply the Unique Final Goal:
 | Queue tuning | Reserve/foreground queue sizing | Prevents known unpublished-request starvation | Published requests can still receive zero progress | refuted | New queue invariant that proves end-to-end progress |
 | Infinite priming | Extend silent HLS indefinitely | Preserves one media source while waiting | Cannot produce audible audio when supply is dead | blocked | Independent proof that supply recovery is bounded |
 | Dual DataChannel | Separate metadata and media SCTP streams | Can isolate application queues | Association congestion/retransmission may remain shared | exploring | Real browser trace showing independent progress under loss |
-| Supply lease | Foreground progress lease terminates a dead SupplyEpoch | State tests prove terminal replacement, automatic immutable-demand replay, native-time preservation, and reserve/foreground lease separation; Rust tests prove hung send/capacity termination, progress-renewed capacity waits, and bounded high/low-watermark flow | Real iOS/Arc background and lock-screen execution remains unproved | promising | N/A |
+| Local SCTP capacity lease | Treat Host `buffered_amount` decrease as delivery progress and terminate the SupplyEpoch after five seconds without decrease | Bounds a locally observed SCTP queue | Windows/macOS WebRTC implementations do not provide a reliable portable progress observation; a healthy high-RTT path is falsely terminated | refuted | A WebRTC implementation guarantee that makes the observation portable |
+| Application delivery window | Hero acknowledges each accepted chunk identity; acknowledgements release a bounded Host window | Network lab proves delayed local SCTP accounting cannot stop progress; Rust negotiated-DataChannel test transfers an asset larger than twice the window; zero delivery still expires the Hero asset lease | Real iOS/Arc background and lock-screen execution remains unproved | promising | N/A |
+| Supply lease | Foreground asset progress terminates a truly dead SupplyEpoch and replays immutable demand | State tests prove terminal replacement, automatic replay, native-time preservation, and reserve/foreground lease separation | Real iOS/Arc background and lock-screen execution remains unproved | promising | N/A |
 | SafariDriver | Headed macOS Safari with trusted WebDriver input | Session creation, navigation, relay/P2P connection, and HLS timeline delivery are observable | Both element-click and W3C pointer actions block before returning a trusted play gesture | blocked | A driver/input mechanism that produces a bounded trusted click |
 | Relay media | Move HLS bytes through relay | Avoids the current P2P writer | Violates the P2P media requirement | refuted | Product requirement explicitly changes |
 
@@ -247,6 +252,52 @@ The software obligation is closed by the composition of canonical queued demand,
 channel-open leases, cross-generation replay, strict signaling identity, bounded backpressure,
 and exact peer discard. The remaining obligation is empirical: a real iOS/Arc trace must show
 audible foreground, background, and lock-screen playout plus Wi-Fi/cellular handover recovery.
+
+### Eleventh Independent Review
+
+Production cellular traces refuted the tenth review's capacity-composition premise. Two independent
+counterexamples were found:
+
+1. the Host treated five seconds without a decrease in its local SCTP `buffered_amount` observation
+   as a dead supply path, although Hero could still accept chunks; on Windows this repeatedly closed
+   healthy `SupplyEpoch`s under cellular RTT;
+2. Hero owned a six-second startup cache prefix while the Host independently required sixty seconds,
+   so the same readiness fact was accepted by one side and rejected by the other.
+
+The first counterexample is removed by an application-level delivery window keyed by
+`(requestId, chunkIndex)`. Hero acknowledges only valid accepted chunks, duplicate ACKs are
+idempotent, malformed or stale chunks are not acknowledged, and the Host admits no more than the
+strict byte bound before waiting for matching evidence. The existing network lab now distinguishes
+local SCTP observation from physical delivery and proves three trajectories: the old capacity lease
+falsely rebuilds, removing it without delivery evidence stalls until the asset lease rebuilds, and
+the ACK window completes without rebuild. A zero-throughput trajectory still rebuilds exactly once.
+A negotiated Windows DataChannel test transfers more than twice the window and checks every chunk
+coordinate and acknowledgement.
+
+The second counterexample is removed by making Hero the unique startup-prefix owner. The Host now
+validates only positive finite current-transaction readiness and cannot strengthen the threshold.
+The remaining obligation is empirical device evidence for audible background/lock-screen playback
+and Wi-Fi/cellular handover after deployment; it is not discharged by the simulations.
+
+### Twelfth Independent Review
+
+The twelfth review rejected three edge cases left by the first ACK-window implementation:
+
+1. canceling a request did not release its already transmitted delivery identities;
+2. a valid chunk arriving before its header did not renew the asset lease, while an arbitrarily
+   large preheader chunk index could later renew and acknowledge invalid progress;
+3. the ACK-loss experiment skipped Hero's two-stage foreground failure policy and therefore did not
+   prove that the same immutable demand crossed a real `SupplyEpoch` replacement.
+
+`CancelThrough` now removes exactly the superseded request identities from both the scheduler and
+delivery window. Preheader chunks are bounded by frame size, aggregate bytes, count, and index before
+they can renew progress or be acknowledged; a unique valid preheader chunk renews progress, while
+duplicates are idempotently acknowledged without renewal. The negotiated Rust DataChannel test now
+uses production's unordered mode. The Hero public-path test publishes the same URL twice on the
+original peer, receives exactly one full Host window on the first attempt, observes two bounded
+foreground timeouts, replaces the supply, and completes the same URL from an explicit replacement
+header and chunk zero. A final independent rereview passed these counterexamples. The software
+obligation is therefore closed; only the real-device empirical obligation stated above remains.
 
 ## 7. Resource Allocation
 
