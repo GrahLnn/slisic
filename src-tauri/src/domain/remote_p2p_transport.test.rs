@@ -128,6 +128,107 @@ fn asset_opening_is_atomic_before_foreground_overtakes_remaining_reserve_chunks(
 }
 
 #[test]
+fn causal_control_preempts_foreground_media_tails() {
+    let mut scheduler = RemoteP2pOutboundScheduler::default();
+    scheduler.push(RemoteP2pOutboundResponse::Asset {
+        request_id: 1,
+        content_type: "video/mp2t".to_owned(),
+        body: Bytes::from(vec![1; HLS_ASSET_CHUNK_SIZE * 3]),
+        priority: RemoteP2pAssetPriority::Foreground,
+    });
+    let opening = scheduler.next_transmission().expect("media opening");
+    assert!(matches!(
+        opening.as_slice(),
+        [
+            RemoteP2pOutboundFrame::Text(_),
+            RemoteP2pOutboundFrame::Binary(_)
+        ]
+    ));
+
+    scheduler.push(RemoteP2pOutboundResponse::Text {
+        body: "timeline".to_owned(),
+        priority: RemoteP2pOutboundPriority::Control,
+        request_id: None,
+    });
+    assert!(matches!(
+        scheduler.next_transmission().as_deref(),
+        Some([RemoteP2pOutboundFrame::Text(body)]) if body == "timeline"
+    ));
+
+    scheduler.push(RemoteP2pOutboundResponse::Asset {
+        request_id: 2,
+        content_type: "application/vnd.apple.mpegurl".to_owned(),
+        body: Bytes::from_static(b"#EXTM3U"),
+        priority: RemoteP2pAssetPriority::Foreground,
+    });
+    assert!(matches!(
+        scheduler.next_transmission().as_deref(),
+        Some([RemoteP2pOutboundFrame::Binary(chunk)])
+            if &chunk[4..8] == 1_u32.to_be_bytes().as_slice()
+    ));
+    assert!(matches!(
+        scheduler.next_transmission().as_deref(),
+        Some([RemoteP2pOutboundFrame::Text(header), RemoteP2pOutboundFrame::Binary(chunk)])
+            if header.contains("\"id\":2")
+                && &chunk[4..8] == 2_u32.to_be_bytes().as_slice()
+    ));
+}
+
+#[test]
+fn causal_control_has_a_bounded_burst_before_media_progress() {
+    let mut scheduler = RemoteP2pOutboundScheduler::default();
+    scheduler.push(RemoteP2pOutboundResponse::Asset {
+        request_id: 1,
+        content_type: "video/mp2t".to_owned(),
+        body: Bytes::from(vec![1; HLS_ASSET_CHUNK_SIZE * 3]),
+        priority: RemoteP2pAssetPriority::Foreground,
+    });
+    scheduler.next_transmission().expect("media opening");
+    for body in ["timeline-1", "timeline-2"] {
+        scheduler.push(RemoteP2pOutboundResponse::Text {
+            body: body.to_owned(),
+            priority: RemoteP2pOutboundPriority::Control,
+            request_id: None,
+        });
+    }
+
+    assert!(matches!(
+        scheduler.next_transmission().as_deref(),
+        Some([RemoteP2pOutboundFrame::Text(body)]) if body == "timeline-1"
+    ));
+    assert!(matches!(
+        scheduler.next_transmission().as_deref(),
+        Some([RemoteP2pOutboundFrame::Binary(chunk)])
+            if &chunk[4..8] == 1_u32.to_be_bytes().as_slice()
+    ));
+    assert!(matches!(
+        scheduler.next_transmission().as_deref(),
+        Some([RemoteP2pOutboundFrame::Text(body)]) if body == "timeline-2"
+    ));
+}
+
+#[test]
+fn cancellation_discards_correlated_text_responses() {
+    let mut scheduler = RemoteP2pOutboundScheduler::default();
+    scheduler.push(RemoteP2pOutboundResponse::Register { request_id: 7 });
+    scheduler.push(RemoteP2pOutboundResponse::Text {
+        body: "manifest-error".to_owned(),
+        priority: RemoteP2pOutboundPriority::Control,
+        request_id: Some(7),
+    });
+    scheduler.push(RemoteP2pOutboundResponse::CancelThrough { request_id: 7 });
+
+    assert!(scheduler.next_transmission().is_none());
+
+    scheduler.push(RemoteP2pOutboundResponse::Text {
+        body: "late-manifest-error".to_owned(),
+        priority: RemoteP2pOutboundPriority::Control,
+        request_id: Some(7),
+    });
+    assert!(scheduler.next_transmission().is_none());
+}
+
+#[test]
 fn promoting_a_published_reserve_asset_moves_its_next_frame_to_foreground() {
     let mut scheduler = RemoteP2pOutboundScheduler::default();
     scheduler.push(RemoteP2pOutboundResponse::Register { request_id: 1 });
@@ -189,7 +290,7 @@ fn writer_ingest_is_bounded_before_a_scheduled_frame_must_run() {
         responses
             .try_send(RemoteP2pOutboundResponse::Text {
                 body: format!("frame-{request_id}"),
-                priority: RemoteP2pAssetPriority::Foreground,
+                priority: RemoteP2pOutboundPriority::Control,
                 request_id: None,
             })
             .expect("queued response");
@@ -207,7 +308,7 @@ fn response_queue_and_unmatched_promotions_have_fixed_capacity() {
         responses
             .try_send(RemoteP2pOutboundResponse::Text {
                 body: format!("frame-{request_id}"),
-                priority: RemoteP2pAssetPriority::Foreground,
+                priority: RemoteP2pOutboundPriority::Control,
                 request_id: None,
             })
             .expect("within response capacity");
@@ -216,7 +317,7 @@ fn response_queue_and_unmatched_promotions_have_fixed_capacity() {
         responses
             .try_send(RemoteP2pOutboundResponse::Text {
                 body: "overflow".to_owned(),
-                priority: RemoteP2pAssetPriority::Foreground,
+                priority: RemoteP2pOutboundPriority::Control,
                 request_id: None,
             })
             .is_err()
@@ -236,7 +337,7 @@ async fn a_full_response_queue_backpressures_instead_of_losing_the_asset() {
     responses
         .send(RemoteP2pOutboundResponse::Text {
             body: "occupied".to_owned(),
-            priority: RemoteP2pAssetPriority::Foreground,
+            priority: RemoteP2pOutboundPriority::Control,
             request_id: None,
         })
         .await
@@ -285,12 +386,35 @@ async fn an_asset_larger_than_the_protocol_bound_is_rejected_before_queueing() {
 }
 
 #[tokio::test]
+async fn manifest_failure_preserves_its_control_role() {
+    let (responses, mut receiver) = mpsc_channel(1);
+    RemoteP2pTransport::send_hls_asset_error(
+        &responses,
+        7,
+        "p2p-hls://session/3/reserve.m3u8",
+        "fixture failure",
+        RemoteP2pAssetPriority::Foreground,
+    )
+    .await
+    .expect("manifest error response");
+
+    assert!(matches!(
+        receiver.recv().await,
+        Some(RemoteP2pOutboundResponse::Text {
+            priority: RemoteP2pOutboundPriority::Control,
+            request_id: Some(7),
+            ..
+        })
+    ));
+}
+
+#[tokio::test]
 async fn a_full_response_queue_backpressures_instead_of_losing_a_promotion() {
     let (responses, mut receiver) = mpsc_channel(1);
     responses
         .send(RemoteP2pOutboundResponse::Text {
             body: "occupied".to_owned(),
-            priority: RemoteP2pAssetPriority::Foreground,
+            priority: RemoteP2pOutboundPriority::Control,
             request_id: None,
         })
         .await

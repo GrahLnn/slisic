@@ -185,7 +185,7 @@ enum RemoteP2pDataChannelResponse<'a> {
 pub(super) enum RemoteP2pOutboundResponse {
     Text {
         body: String,
-        priority: RemoteP2pAssetPriority,
+        priority: RemoteP2pOutboundPriority,
         request_id: Option<u32>,
     },
     Asset {
@@ -221,17 +221,74 @@ struct RemoteP2pScheduledAsset {
 }
 
 enum RemoteP2pScheduledResponse {
-    Text(String),
+    Text {
+        body: String,
+        request_id: Option<u32>,
+    },
     Asset(RemoteP2pScheduledAsset),
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum RemoteP2pOutboundPriority {
+    Control,
+    Foreground,
+    Reserve,
+}
+
+impl From<RemoteP2pAssetPriority> for RemoteP2pOutboundPriority {
+    fn from(priority: RemoteP2pAssetPriority) -> Self {
+        match priority {
+            RemoteP2pAssetPriority::Foreground => Self::Foreground,
+            RemoteP2pAssetPriority::Reserve => Self::Reserve,
+        }
+    }
+}
+
+fn outbound_asset_priority(
+    content_type: &str,
+    priority: RemoteP2pAssetPriority,
+) -> RemoteP2pOutboundPriority {
+    let media_type = content_type
+        .split(';')
+        .next()
+        .unwrap_or(content_type)
+        .trim();
+    if media_type.eq_ignore_ascii_case("application/vnd.apple.mpegurl")
+        || media_type.eq_ignore_ascii_case("application/x-mpegurl")
+    {
+        RemoteP2pOutboundPriority::Control
+    } else {
+        priority.into()
+    }
+}
+
+fn outbound_request_priority(
+    url: &str,
+    priority: RemoteP2pAssetPriority,
+) -> RemoteP2pOutboundPriority {
+    if url.ends_with(".m3u8") {
+        RemoteP2pOutboundPriority::Control
+    } else {
+        priority.into()
+    }
+}
+
+fn scheduled_request_id(response: &RemoteP2pScheduledResponse) -> Option<u32> {
+    match response {
+        RemoteP2pScheduledResponse::Text { request_id, .. } => *request_id,
+        RemoteP2pScheduledResponse::Asset(asset) => Some(asset.request_id),
+    }
 }
 
 #[derive(Default)]
 struct RemoteP2pOutboundScheduler {
+    control: VecDeque<RemoteP2pScheduledResponse>,
     foreground: VecDeque<RemoteP2pScheduledResponse>,
     reserve: VecDeque<RemoteP2pScheduledResponse>,
     promoted: VecDeque<u32>,
     requested: HashSet<u32>,
     cancel_through: u32,
+    control_sent_since_media: bool,
 }
 
 impl RemoteP2pOutboundScheduler {
@@ -243,6 +300,9 @@ impl RemoteP2pOutboundScheduler {
                 request_id,
             } => {
                 if let Some(request_id) = request_id {
+                    if request_id <= self.cancel_through {
+                        return;
+                    }
                     self.requested.remove(&request_id);
                     if let Some(index) = self
                         .promoted
@@ -252,7 +312,10 @@ impl RemoteP2pOutboundScheduler {
                         self.promoted.remove(index);
                     }
                 }
-                (priority, RemoteP2pScheduledResponse::Text(body))
+                (
+                    priority,
+                    RemoteP2pScheduledResponse::Text { body, request_id },
+                )
             }
             RemoteP2pOutboundResponse::Asset {
                 request_id,
@@ -273,8 +336,9 @@ impl RemoteP2pOutboundScheduler {
                 } else {
                     priority
                 };
+                let outbound_priority = outbound_asset_priority(&content_type, priority);
                 (
-                    priority,
+                    outbound_priority,
                     RemoteP2pScheduledResponse::Asset(RemoteP2pScheduledAsset {
                         request_id,
                         content_type,
@@ -339,26 +403,37 @@ impl RemoteP2pOutboundScheduler {
         self.promoted
             .retain(|promoted| *promoted > self.cancel_through);
         self.foreground.retain(|response| {
-            !matches!(
-                response,
-                RemoteP2pScheduledResponse::Asset(asset) if asset.request_id <= self.cancel_through
-            )
+            scheduled_request_id(response).is_none_or(|request_id| request_id > self.cancel_through)
         });
         self.reserve.retain(|response| {
-            !matches!(
-                response,
-                RemoteP2pScheduledResponse::Asset(asset) if asset.request_id <= self.cancel_through
-            )
+            scheduled_request_id(response).is_none_or(|request_id| request_id > self.cancel_through)
+        });
+        self.control.retain(|response| {
+            scheduled_request_id(response).is_none_or(|request_id| request_id > self.cancel_through)
         });
     }
 
     fn next_transmission(&mut self) -> Option<Vec<RemoteP2pOutboundFrame>> {
-        let response = self
-            .foreground
-            .pop_front()
-            .or_else(|| self.reserve.pop_front())?;
+        let media_pending = !self.foreground.is_empty() || !self.reserve.is_empty();
+        let response =
+            if !self.control.is_empty() && (!self.control_sent_since_media || !media_pending) {
+                self.control_sent_since_media = true;
+                self.control.pop_front()
+            } else {
+                let media = self
+                    .foreground
+                    .pop_front()
+                    .or_else(|| self.reserve.pop_front());
+                if media.is_some() {
+                    self.control_sent_since_media = false;
+                    media
+                } else {
+                    self.control_sent_since_media = true;
+                    self.control.pop_front()
+                }
+            }?;
         match response {
-            RemoteP2pScheduledResponse::Text(body) => {
+            RemoteP2pScheduledResponse::Text { body, .. } => {
                 Some(vec![RemoteP2pOutboundFrame::Text(body)])
             }
             RemoteP2pScheduledResponse::Asset(mut asset) => {
@@ -384,7 +459,7 @@ impl RemoteP2pOutboundScheduler {
                     asset.chunk_index += 1;
                 }
                 if asset.offset < asset.body.len() {
-                    let priority = asset.priority;
+                    let priority = outbound_asset_priority(&asset.content_type, asset.priority);
                     self.queue(priority)
                         .push_back(RemoteP2pScheduledResponse::Asset(asset));
                 } else {
@@ -404,11 +479,12 @@ impl RemoteP2pOutboundScheduler {
 
     fn queue(
         &mut self,
-        priority: RemoteP2pAssetPriority,
+        priority: RemoteP2pOutboundPriority,
     ) -> &mut VecDeque<RemoteP2pScheduledResponse> {
         match priority {
-            RemoteP2pAssetPriority::Foreground => &mut self.foreground,
-            RemoteP2pAssetPriority::Reserve => &mut self.reserve,
+            RemoteP2pOutboundPriority::Control => &mut self.control,
+            RemoteP2pOutboundPriority::Foreground => &mut self.foreground,
+            RemoteP2pOutboundPriority::Reserve => &mut self.reserve,
         }
     }
 }
@@ -570,7 +646,13 @@ impl RemoteP2pTransport {
     ) -> Result<()> {
         if body.len() > HLS_ASSET_MAX_BYTES {
             let error = "remote P2P HLS asset exceeds protocol capacity";
-            Self::send_hls_asset_error(responses, request_id, error).await?;
+            Self::send_hls_asset_error_with_priority(
+                responses,
+                request_id,
+                error,
+                outbound_asset_priority(content_type, priority),
+            )
+            .await?;
             return Err(anyhow!(error));
         }
         responses
@@ -587,7 +669,24 @@ impl RemoteP2pTransport {
     pub(super) async fn send_hls_asset_error(
         responses: &RemoteP2pResponseSender,
         request_id: u32,
+        url: &str,
         error: &str,
+        priority: RemoteP2pAssetPriority,
+    ) -> Result<()> {
+        Self::send_hls_asset_error_with_priority(
+            responses,
+            request_id,
+            error,
+            outbound_request_priority(url, priority),
+        )
+        .await
+    }
+
+    async fn send_hls_asset_error_with_priority(
+        responses: &RemoteP2pResponseSender,
+        request_id: u32,
+        error: &str,
+        priority: RemoteP2pOutboundPriority,
     ) -> Result<()> {
         responses
             .send(RemoteP2pOutboundResponse::Text {
@@ -599,7 +698,7 @@ impl RemoteP2pTransport {
                     chunks: None,
                     error: Some(error),
                 })?,
-                priority: RemoteP2pAssetPriority::Foreground,
+                priority,
                 request_id: Some(request_id),
             })
             .await
@@ -613,7 +712,7 @@ impl RemoteP2pTransport {
         responses
             .send(RemoteP2pOutboundResponse::Text {
                 body: encode_hls_timeline_update(hls)?,
-                priority: RemoteP2pAssetPriority::Foreground,
+                priority: RemoteP2pOutboundPriority::Control,
                 request_id: None,
             })
             .await
@@ -633,7 +732,7 @@ impl RemoteP2pTransport {
                     "handoffSequence": handoff_sequence,
                 })
                 .to_string(),
-                priority: RemoteP2pAssetPriority::Foreground,
+                priority: RemoteP2pOutboundPriority::Control,
                 request_id: None,
             })
             .await

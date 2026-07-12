@@ -638,7 +638,7 @@ async fn run_remote_p2p_events(
                         Err(error) => {
                             let message = escape_remote_log_value(&error.to_string());
                             if let Err(send_error) = RemoteP2pTransport::send_hls_asset_error(
-                                &responses, request_id, &message,
+                                &responses, request_id, &url, &message, priority,
                             )
                             .await
                             {
