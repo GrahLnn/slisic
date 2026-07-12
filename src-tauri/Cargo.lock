@@ -24,6 +24,7 @@ dependencies = [
  "bytes",
  "chrono",
  "cubecl",
+ "ed25519-dalek",
  "ffplayr",
  "futures-util",
  "hex",

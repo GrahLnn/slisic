@@ -6,6 +6,7 @@ pub mod meta;
 pub mod player;
 pub mod playlist_playback;
 pub mod playlists;
+mod remote_host_identity;
 mod remote_p2p_hls;
 mod remote_p2p_transport;
 pub mod remote_share;

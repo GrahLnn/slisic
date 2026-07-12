@@ -10,6 +10,7 @@ use crate::domain::playlist_playback::service::{
 };
 use crate::domain::playlists::model::PlayListListView;
 use crate::domain::playlists::repo as playlist_repo;
+use crate::domain::remote_host_identity::RemoteHostIdentity;
 use crate::domain::remote_p2p_hls::{P2pHlsSessionSnapshot, P2pHlsSource, RemoteP2pHls};
 use crate::domain::remote_p2p_transport::{
     RemoteIceServer, RemoteP2pSignal, RemoteP2pTransport, RemoteP2pTransportEvent,
@@ -34,7 +35,7 @@ use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use surrealdb::types::RecordId;
 use surrealdb_types::SurrealValue;
 use tauri::{AppHandle, Manager};
@@ -60,6 +61,10 @@ const REMOTE_RELAY_RECONNECT_DELAY: Duration = Duration::from_secs(5);
 const REMOTE_RELAY_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
 const REMOTE_RELAY_IDLE_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 const REMOTE_RELAY_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
+const REMOTE_OWNERSHIP_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+const REMOTE_CODE_OCCUPIED_ERROR: &str = "remote_code_occupied";
+const REMOTE_CODE_NETWORK_REQUIRED_ERROR: &str = "remote_code_network_required";
+const REMOTE_CODE_IDENTITY_REJECTED_ERROR: &str = "remote_code_identity_rejected";
 const DEFAULT_REMOTE_CLIENT_ID: &str = "local";
 
 static REMOTE_SHARE_RUNTIME: OnceLock<Arc<RemoteShareRuntime>> = OnceLock::new();
@@ -80,15 +85,37 @@ struct RemoteShareSettings {
     enabled: bool,
     code: String,
     enabled_configured_by_user: bool,
+    code_configured_by_user: bool,
+    host_identity_secret: String,
+    ownership_revision: u64,
+    pending_ownership_transaction_id: String,
+    pending_ownership_expected_code: String,
+    pending_ownership_desired_code: String,
+    pending_ownership_expected_revision: u64,
 }
 
 impl Default for RemoteShareSettings {
     fn default() -> Self {
+        let identity = RemoteHostIdentity::generate();
         Self {
             enabled: false,
             code: generate_remote_pairing_code(),
             enabled_configured_by_user: false,
+            code_configured_by_user: false,
+            host_identity_secret: identity.encoded_secret(),
+            ownership_revision: 0,
+            pending_ownership_transaction_id: String::new(),
+            pending_ownership_expected_code: String::new(),
+            pending_ownership_desired_code: String::new(),
+            pending_ownership_expected_revision: 0,
         }
+    }
+}
+
+impl RemoteShareSettings {
+    fn host_identity(&self) -> RemoteResult<RemoteHostIdentity> {
+        RemoteHostIdentity::from_encoded_secret(&self.host_identity_secret)
+            .map_err(|error| RemoteShareError::internal(error.to_string()))
     }
 }
 
@@ -98,15 +125,40 @@ struct PersistedRemoteShareSettings {
     code: String,
     #[serde(default)]
     enabled_configured_by_user: bool,
+    #[serde(default)]
+    code_configured_by_user: bool,
+    #[serde(default)]
+    host_identity_secret: String,
+    #[serde(default)]
+    ownership_revision: u64,
+    #[serde(default)]
+    pending_ownership_transaction_id: String,
+    #[serde(default)]
+    pending_ownership_expected_code: String,
+    #[serde(default)]
+    pending_ownership_desired_code: String,
+    #[serde(default)]
+    pending_ownership_expected_revision: u64,
 }
 
 impl From<PersistedRemoteShareSettings> for RemoteShareSettings {
     fn from(value: PersistedRemoteShareSettings) -> Self {
+        let host_identity_secret =
+            RemoteHostIdentity::from_encoded_secret(&value.host_identity_secret)
+                .map(|identity| identity.encoded_secret())
+                .unwrap_or_else(|_| RemoteHostIdentity::generate().encoded_secret());
         Self {
             enabled: value.enabled_configured_by_user && value.enabled,
             code: normalize_remote_pairing_code(&value.code)
                 .unwrap_or_else(|_| generate_remote_pairing_code()),
             enabled_configured_by_user: value.enabled_configured_by_user,
+            code_configured_by_user: value.code_configured_by_user,
+            host_identity_secret,
+            ownership_revision: value.ownership_revision,
+            pending_ownership_transaction_id: value.pending_ownership_transaction_id,
+            pending_ownership_expected_code: value.pending_ownership_expected_code,
+            pending_ownership_desired_code: value.pending_ownership_desired_code,
+            pending_ownership_expected_revision: value.pending_ownership_expected_revision,
         }
     }
 }
@@ -117,6 +169,13 @@ impl From<RemoteShareSettings> for PersistedRemoteShareSettings {
             enabled: value.enabled,
             code: value.code,
             enabled_configured_by_user: value.enabled_configured_by_user,
+            code_configured_by_user: value.code_configured_by_user,
+            host_identity_secret: value.host_identity_secret,
+            ownership_revision: value.ownership_revision,
+            pending_ownership_transaction_id: value.pending_ownership_transaction_id,
+            pending_ownership_expected_code: value.pending_ownership_expected_code,
+            pending_ownership_desired_code: value.pending_ownership_desired_code,
+            pending_ownership_expected_revision: value.pending_ownership_expected_revision,
         }
     }
 }
@@ -219,9 +278,22 @@ struct RemoteSessionNextRequest {
     rename_all_fields = "camelCase"
 )]
 enum RemoteRelayInbound {
+    HostChallenge {
+        nonce: String,
+        expires_at: u64,
+    },
+    HostRejected {
+        reason: String,
+        #[serde(default)]
+        code: Option<String>,
+        #[serde(default)]
+        ownership_revision: Option<u64>,
+    },
     Hello {
         role: String,
         code: String,
+        #[serde(default)]
+        ownership_revision: Option<u64>,
         #[serde(default)]
         ice_servers: Vec<RemoteIceServer>,
     },
@@ -253,6 +325,13 @@ enum RemoteRelayInbound {
     rename_all_fields = "camelCase"
 )]
 enum RemoteRelayOutbound {
+    HostProof {
+        host_id: String,
+        public_key: String,
+        code: String,
+        connection_epoch: u64,
+        signature: String,
+    },
     RpcResponse {
         id: String,
         ok: bool,
@@ -270,6 +349,44 @@ enum RemoteRelayOutbound {
         signal: RemoteP2pSignal,
     },
     HostPing {},
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RemoteOwnershipClaimRequest {
+    transaction_id: String,
+    host_id: String,
+    public_key: String,
+    code: String,
+    signature: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RemoteOwnershipClaimResult {
+    status: String,
+    code: String,
+    revision: u64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RemoteOwnershipChangeRequest {
+    transaction_id: String,
+    host_id: String,
+    public_key: String,
+    expected_code: String,
+    desired_code: String,
+    expected_revision: u64,
+    signature: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RemoteOwnershipChangeResult {
+    status: String,
+    code: String,
+    revision: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -385,6 +502,15 @@ pub async fn initialize_runtime(app: AppHandle) -> Result<()> {
     let settings = ensure_remote_share_settings()
         .await
         .map_err(|error| anyhow!(error.message))?;
+    let host_identity = settings
+        .host_identity()
+        .map_err(|error| anyhow!(error.message))?;
+    log::info!(
+        target: REMOTE_SHARE_LOG_TARGET,
+        "remote_share_host_identity_ready host_id=\"{}\" public_key=\"{}\"",
+        host_identity.host_id(),
+        host_identity.encoded_public_key()
+    );
 
     let (p2p_transport, p2p_events) = RemoteP2pTransport::new();
     let p2p_hls = RemoteP2pHls::new(app.path().app_cache_dir()?.join("remote-p2p-hls"))?;
@@ -625,6 +751,9 @@ async fn serve_remote_share_gateway(runtime: Arc<RemoteShareRuntime>) -> Result<
 
 async fn run_remote_relay_host(runtime: Arc<RemoteShareRuntime>) {
     loop {
+        if runtime.has_pending_ownership_change() {
+            let _ = runtime.reconcile_pending_ownership_change().await;
+        }
         let status = match runtime.status() {
             Ok(status) => status,
             Err(error) => {
@@ -679,6 +808,7 @@ async fn serve_remote_relay_socket(
     let (outbound_tx, mut outbound_rx) = unbounded_channel::<String>();
     runtime.p2p_transport.set_relay_events(outbound_tx.clone());
     let connected_at = Instant::now();
+    let connection_epoch = current_epoch_micros();
     let mut client_connected = false;
     let mut heartbeat = interval(REMOTE_RELAY_HEARTBEAT_INTERVAL);
     heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -725,11 +855,14 @@ async fn serve_remote_relay_socket(
                     let runtime = Arc::clone(&runtime);
                     let response_tx = outbound_tx.clone();
                     let relay_events = outbound_tx.clone();
+                    let message_active_code = active_code.clone();
                     task::spawn(async move {
                         let Some(response) = handle_remote_relay_message(
                             runtime,
                             &text,
                             relay_events,
+                            &message_active_code,
+                            connection_epoch,
                         ).await else {
                             return;
                         };
@@ -741,6 +874,8 @@ async fn serve_remote_relay_socket(
                     Arc::clone(&runtime),
                     &text,
                     outbound_tx.clone(),
+                    &active_code,
+                    connection_epoch,
                 ).await else {
                     continue;
                 };
@@ -800,6 +935,8 @@ async fn handle_remote_relay_message(
     runtime: Arc<RemoteShareRuntime>,
     text: &str,
     relay_events: RemoteRelayEventSender,
+    active_code: &str,
+    connection_epoch: u64,
 ) -> Option<String> {
     let inbound = match serde_json::from_str::<RemoteRelayInbound>(text) {
         Ok(inbound) => inbound,
@@ -814,12 +951,69 @@ async fn handle_remote_relay_message(
     };
 
     let outbound = match inbound {
+        RemoteRelayInbound::HostChallenge { nonce, expires_at } => {
+            if current_epoch_millis() > expires_at {
+                return None;
+            }
+            let settings = runtime.lock_settings().ok()?.clone();
+            if settings.code != active_code {
+                return None;
+            }
+            let identity = settings.host_identity().ok()?;
+            Some(RemoteRelayOutbound::HostProof {
+                host_id: identity.host_id(),
+                public_key: identity.encoded_public_key(),
+                code: active_code.to_owned(),
+                connection_epoch,
+                signature: identity.sign_host_challenge(&nonce, active_code, connection_epoch),
+            })
+        }
+        RemoteRelayInbound::HostRejected {
+            reason,
+            code,
+            ownership_revision,
+        } => {
+            if reason == "ownership_mismatch" {
+                if let (Some(code), Some(revision)) = (code, ownership_revision) {
+                    if let Err(error) = runtime
+                        .apply_confirmed_ownership(code, revision, None)
+                        .await
+                    {
+                        log::warn!(
+                            target: REMOTE_SHARE_LOG_TARGET,
+                            "remote_share_ownership_reconcile_failed error=\"{}\"",
+                            error.message
+                        );
+                    }
+                }
+            } else {
+                log::warn!(
+                    target: REMOTE_SHARE_LOG_TARGET,
+                    "remote_share_host_rejected reason=\"{}\"",
+                    reason
+                );
+            }
+            return None;
+        }
         RemoteRelayInbound::Hello {
             role,
             code,
+            ownership_revision,
             ice_servers,
         } => {
-            let _ = (role, code);
+            let _ = role;
+            if let Some(revision) = ownership_revision {
+                if let Err(error) = runtime
+                    .apply_confirmed_ownership(code, revision, None)
+                    .await
+                {
+                    log::warn!(
+                        target: REMOTE_SHARE_LOG_TARGET,
+                        "remote_share_ownership_confirm_failed error=\"{}\"",
+                        error.message
+                    );
+                }
+            }
             runtime.p2p_transport.update_ice_servers(ice_servers);
             return None;
         }
@@ -988,6 +1182,83 @@ fn remote_relay_host_url(code: &str) -> String {
         .unwrap_or_else(|_| DEFAULT_REMOTE_RELAY_HOST_URL.to_string());
     let separator = if base.contains('?') { '&' } else { '?' };
     format!("{base}{separator}code={code}")
+}
+
+fn remote_relay_ownership_url(path: &str) -> RemoteResult<reqwest::Url> {
+    let base = std::env::var(REMOTE_RELAY_HOST_URL_ENV)
+        .unwrap_or_else(|_| DEFAULT_REMOTE_RELAY_HOST_URL.to_string());
+    let mut url = reqwest::Url::parse(&base)
+        .map_err(|error| RemoteShareError::internal(error.to_string()))?;
+    let next_scheme = match url.scheme() {
+        "wss" => "https",
+        "ws" => "http",
+        "https" => "https",
+        "http" => "http",
+        _ => {
+            return Err(RemoteShareError::internal(
+                "unsupported remote relay URL scheme",
+            ));
+        }
+    };
+    url.set_scheme(next_scheme)
+        .map_err(|_| RemoteShareError::internal("invalid remote relay URL scheme"))?;
+    url.set_path(path);
+    url.set_query(None);
+    url.set_fragment(None);
+    Ok(url)
+}
+
+async fn post_remote_ownership<T, R>(path: &str, request: &T) -> RemoteResult<R>
+where
+    T: Serialize,
+    R: DeserializeOwned,
+{
+    let url = remote_relay_ownership_url(path)?;
+    let body = serde_json::to_vec(request)
+        .map_err(|error| RemoteShareError::internal(error.to_string()))?;
+    let client = reqwest::Client::builder()
+        .timeout(REMOTE_OWNERSHIP_REQUEST_TIMEOUT)
+        .build()
+        .map_err(|error| RemoteShareError::internal(error.to_string()))?;
+    let mut last_error = None;
+    for attempt in 0..2 {
+        match client
+            .post(url.clone())
+            .header("content-type", "application/json")
+            .body(body.clone())
+            .send()
+            .await
+        {
+            Ok(response) if response.status().is_success() => {
+                let bytes = response
+                    .bytes()
+                    .await
+                    .map_err(|error| RemoteShareError::unavailable(error.to_string()))?;
+                return serde_json::from_slice(&bytes)
+                    .map_err(|error| RemoteShareError::internal(error.to_string()));
+            }
+            Ok(response) if response.status() == reqwest::StatusCode::UNAUTHORIZED => {
+                return Err(RemoteShareError::unauthorized(
+                    REMOTE_CODE_IDENTITY_REJECTED_ERROR,
+                ));
+            }
+            Ok(response) => {
+                last_error = Some(format!("ownership endpoint returned {}", response.status()));
+            }
+            Err(error) => last_error = Some(error.to_string()),
+        }
+        if attempt == 0 {
+            sleep(Duration::from_millis(300)).await;
+        }
+    }
+    log::warn!(
+        target: REMOTE_SHARE_LOG_TARGET,
+        "remote_share_ownership_request_failed error=\"{}\"",
+        escape_remote_log_value(last_error.as_deref().unwrap_or("unknown"))
+    );
+    Err(RemoteShareError::unavailable(
+        REMOTE_CODE_NETWORK_REQUIRED_ERROR,
+    ))
 }
 
 async fn remote_share_health(
@@ -1202,11 +1473,10 @@ impl RemoteShareRuntime {
     async fn set_enabled(&self, enabled: bool) -> RemoteResult<RemoteShareStatus> {
         let next_settings = {
             let settings = self.lock_settings()?;
-            RemoteShareSettings {
-                enabled,
-                code: settings.code.clone(),
-                enabled_configured_by_user: true,
-            }
+            let mut next = settings.clone();
+            next.enabled = enabled;
+            next.enabled_configured_by_user = true;
+            next
         };
         save_remote_share_settings(next_settings.clone()).await?;
         {
@@ -1221,30 +1491,210 @@ impl RemoteShareRuntime {
     }
 
     async fn set_code(&self, code: String) -> RemoteResult<RemoteShareStatus> {
-        let code = normalize_remote_pairing_code(&code)?;
-        let (next_settings, code_changed) = {
-            let settings = self.lock_settings()?;
-            (
-                RemoteShareSettings {
-                    enabled: settings.enabled,
-                    code: code.clone(),
-                    enabled_configured_by_user: settings.enabled_configured_by_user,
-                },
-                settings.code != code,
-            )
-        };
-        if code_changed {
-            save_remote_share_settings(next_settings.clone()).await?;
-            {
-                let mut settings = self.lock_settings()?;
-                *settings = next_settings;
-            }
-        };
-        if code_changed {
-            self.clear_sessions()?;
-            self.p2p_transport.close_all().await;
+        let desired_code = normalize_remote_pairing_code(&code)?;
+        if self.has_pending_ownership_change() {
+            self.reconcile_pending_ownership_change().await?;
         }
-        self.status()
+        if self.lock_settings()?.code == desired_code {
+            return self.status();
+        }
+
+        let mut current = self.ensure_remote_code_ownership().await?;
+        for _ in 0..2 {
+            if current.code == desired_code {
+                self.apply_confirmed_ownership(
+                    current.code,
+                    current.ownership_revision,
+                    Some(true),
+                )
+                .await?;
+                return self.status();
+            }
+            let identity = current.host_identity()?;
+            let transaction_id = generate_ownership_transaction_id();
+            let request = RemoteOwnershipChangeRequest {
+                transaction_id: transaction_id.clone(),
+                host_id: identity.host_id(),
+                public_key: identity.encoded_public_key(),
+                expected_code: current.code.clone(),
+                desired_code: desired_code.clone(),
+                expected_revision: current.ownership_revision,
+                signature: identity.sign_code_change(
+                    &transaction_id,
+                    &current.code,
+                    &desired_code,
+                    current.ownership_revision,
+                ),
+            };
+            self.stage_pending_ownership_change(&request).await?;
+            let result: RemoteOwnershipChangeResult =
+                post_remote_ownership("/v1/ownership/change", &request).await?;
+            match result.status.as_str() {
+                "changed" | "unchanged" => {
+                    self.apply_confirmed_ownership(result.code, result.revision, Some(true))
+                        .await?;
+                    self.clear_sessions()?;
+                    self.p2p_transport.close_all().await;
+                    return self.status();
+                }
+                "occupied" => {
+                    self.clear_pending_ownership_change().await?;
+                    return Err(RemoteShareError::unauthorized(REMOTE_CODE_OCCUPIED_ERROR));
+                }
+                "stale_revision" => {
+                    self.apply_confirmed_ownership(result.code, result.revision, None)
+                        .await?;
+                    current = self.lock_settings()?.clone();
+                }
+                _ => {
+                    self.clear_pending_ownership_change().await?;
+                    return Err(RemoteShareError::unauthorized(
+                        REMOTE_CODE_IDENTITY_REJECTED_ERROR,
+                    ));
+                }
+            }
+        }
+        Err(RemoteShareError::unavailable(
+            REMOTE_CODE_NETWORK_REQUIRED_ERROR,
+        ))
+    }
+
+    async fn ensure_remote_code_ownership(&self) -> RemoteResult<RemoteShareSettings> {
+        let current = self.lock_settings()?.clone();
+        if current.ownership_revision > 0 {
+            return Ok(current);
+        }
+        let identity = current.host_identity()?;
+        let transaction_id = generate_ownership_transaction_id();
+        let request = RemoteOwnershipClaimRequest {
+            transaction_id: transaction_id.clone(),
+            host_id: identity.host_id(),
+            public_key: identity.encoded_public_key(),
+            code: current.code.clone(),
+            signature: identity.sign_code_claim(&transaction_id, &current.code),
+        };
+        let result: RemoteOwnershipClaimResult =
+            post_remote_ownership("/v1/ownership/claim", &request).await?;
+        match result.status.as_str() {
+            "claimed" | "ownership_mismatch" => {
+                self.apply_confirmed_ownership(result.code, result.revision, None)
+                    .await?;
+                Ok(self.lock_settings()?.clone())
+            }
+            "occupied" => Err(RemoteShareError::unauthorized(REMOTE_CODE_OCCUPIED_ERROR)),
+            _ => Err(RemoteShareError::unauthorized(
+                REMOTE_CODE_IDENTITY_REJECTED_ERROR,
+            )),
+        }
+    }
+
+    async fn apply_confirmed_ownership(
+        &self,
+        code: String,
+        revision: u64,
+        configured_by_user: Option<bool>,
+    ) -> RemoteResult<()> {
+        let code = normalize_remote_pairing_code(&code)?;
+        let next_settings = {
+            let settings = self.lock_settings()?;
+            if settings.code == code
+                && settings.ownership_revision == revision
+                && configured_by_user.is_none_or(|value| settings.code_configured_by_user == value)
+                && settings.pending_ownership_transaction_id.is_empty()
+            {
+                return Ok(());
+            }
+            let mut next = settings.clone();
+            next.code = code;
+            next.ownership_revision = revision;
+            next.pending_ownership_transaction_id.clear();
+            next.pending_ownership_expected_code.clear();
+            next.pending_ownership_desired_code.clear();
+            next.pending_ownership_expected_revision = 0;
+            if let Some(configured_by_user) = configured_by_user {
+                next.code_configured_by_user = configured_by_user;
+            }
+            next
+        };
+        match save_remote_share_settings(next_settings.clone()).await {
+            Ok(persisted) => *self.lock_settings()? = persisted,
+            Err(error) => {
+                *self.lock_settings()? = next_settings;
+                log::warn!(
+                    target: REMOTE_SHARE_LOG_TARGET,
+                    "remote_share_ownership_local_persist_deferred error=\"{}\"",
+                    escape_remote_log_value(&error.message)
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn has_pending_ownership_change(&self) -> bool {
+        self.lock_settings()
+            .map(|settings| !settings.pending_ownership_transaction_id.is_empty())
+            .unwrap_or(false)
+    }
+
+    async fn stage_pending_ownership_change(
+        &self,
+        request: &RemoteOwnershipChangeRequest,
+    ) -> RemoteResult<()> {
+        let next = {
+            let settings = self.lock_settings()?;
+            let mut next = settings.clone();
+            next.pending_ownership_transaction_id = request.transaction_id.clone();
+            next.pending_ownership_expected_code = request.expected_code.clone();
+            next.pending_ownership_desired_code = request.desired_code.clone();
+            next.pending_ownership_expected_revision = request.expected_revision;
+            next
+        };
+        let persisted = save_remote_share_settings(next).await?;
+        *self.lock_settings()? = persisted;
+        Ok(())
+    }
+
+    async fn clear_pending_ownership_change(&self) -> RemoteResult<()> {
+        let current = self.lock_settings()?.clone();
+        if current.pending_ownership_transaction_id.is_empty() {
+            return Ok(());
+        }
+        self.apply_confirmed_ownership(current.code, current.ownership_revision, None)
+            .await
+    }
+
+    async fn reconcile_pending_ownership_change(&self) -> RemoteResult<()> {
+        let current = self.lock_settings()?.clone();
+        if current.pending_ownership_transaction_id.is_empty() {
+            return Ok(());
+        }
+        let identity = current.host_identity()?;
+        let request = RemoteOwnershipChangeRequest {
+            transaction_id: current.pending_ownership_transaction_id.clone(),
+            host_id: identity.host_id(),
+            public_key: identity.encoded_public_key(),
+            expected_code: current.pending_ownership_expected_code.clone(),
+            desired_code: current.pending_ownership_desired_code.clone(),
+            expected_revision: current.pending_ownership_expected_revision,
+            signature: identity.sign_code_change(
+                &current.pending_ownership_transaction_id,
+                &current.pending_ownership_expected_code,
+                &current.pending_ownership_desired_code,
+                current.pending_ownership_expected_revision,
+            ),
+        };
+        let result: RemoteOwnershipChangeResult =
+            post_remote_ownership("/v1/ownership/change", &request).await?;
+        match result.status.as_str() {
+            "changed" | "unchanged" | "stale_revision" => {
+                self.apply_confirmed_ownership(result.code, result.revision, None)
+                    .await
+            }
+            "occupied" | "identity_rejected" => self.clear_pending_ownership_change().await,
+            _ => Err(RemoteShareError::unavailable(
+                REMOTE_CODE_NETWORK_REQUIRED_ERROR,
+            )),
+        }
     }
 
     fn clear_sessions(&self) -> RemoteResult<()> {
@@ -1670,6 +2120,12 @@ impl RemoteShareRuntime {
     }
 }
 
+fn generate_ownership_transaction_id() -> String {
+    let mut bytes = [0_u8; 16];
+    rand::rng().fill(&mut bytes);
+    hex::encode(bytes)
+}
+
 impl RemoteShareRuntime {
     fn send_hls_timeline_updated(
         &self,
@@ -1935,9 +2391,25 @@ async fn save_remote_share_settings(
 
 async fn ensure_remote_share_settings() -> RemoteResult<RemoteShareSettings> {
     if let Some(settings) = get_remote_share_settings().await? {
-        return Ok(settings);
+        return save_remote_share_settings(settings).await;
     }
     save_remote_share_settings(RemoteShareSettings::default()).await
+}
+
+fn current_epoch_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(u64::MAX as u128) as u64
+}
+
+fn current_epoch_micros() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_micros()
+        .min(u64::MAX as u128) as u64
 }
 
 fn remote_share_settings_record_id() -> RecordId {

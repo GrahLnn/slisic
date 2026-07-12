@@ -270,3 +270,55 @@ fn hls_boundary_identity_advances_repeated_tracks_exactly_once() {
     assert!(!session.commit_hls_boundary("entry-2", &repeated).unwrap());
     assert_eq!(session.queue.len(), 1);
 }
+
+#[test]
+fn legacy_remote_settings_gain_one_stable_hidden_host_identity() {
+    let migrated = RemoteShareSettings::from(PersistedRemoteShareSettings {
+        enabled: true,
+        code: "grahlnn".to_owned(),
+        enabled_configured_by_user: true,
+        code_configured_by_user: true,
+        host_identity_secret: String::new(),
+        ownership_revision: 0,
+        pending_ownership_transaction_id: String::new(),
+        pending_ownership_expected_code: String::new(),
+        pending_ownership_desired_code: String::new(),
+        pending_ownership_expected_revision: 0,
+    });
+    let identity = migrated.host_identity().unwrap();
+    let persisted = PersistedRemoteShareSettings::from(migrated.clone());
+    let restored = RemoteShareSettings::from(persisted);
+
+    assert_eq!(migrated.code, "GRAHLNN");
+    assert_eq!(
+        restored.host_identity().unwrap().host_id(),
+        identity.host_id()
+    );
+    assert_eq!(restored.ownership_revision, 0);
+}
+
+#[test]
+fn relay_authentication_messages_preserve_ownership_coordinates() {
+    let challenge: RemoteRelayInbound =
+        serde_json::from_str(r#"{"kind":"host_challenge","nonce":"abc","expiresAt":99}"#).unwrap();
+    assert!(matches!(
+        challenge,
+        RemoteRelayInbound::HostChallenge {
+            nonce,
+            expires_at: 99
+        } if nonce == "abc"
+    ));
+
+    let hello: RemoteRelayInbound = serde_json::from_str(
+        r#"{"kind":"hello","role":"host","code":"GRAHLNN","ownershipRevision":4,"iceServers":[]}"#,
+    )
+    .unwrap();
+    assert!(matches!(
+        hello,
+        RemoteRelayInbound::Hello {
+            code,
+            ownership_revision: Some(4),
+            ..
+        } if code == "GRAHLNN"
+    ));
+}
