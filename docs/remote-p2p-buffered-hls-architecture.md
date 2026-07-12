@@ -105,6 +105,10 @@ Playback-manifest visibility is the greatest contiguous reserve prefix that sati
 temporal projection frontier and local byte evidence on the unreleased playback suffix. Completed
 tracks are historical quotient objects and need no future readability; memory and committed
 persistent storage are evidence for every remaining segment. A prefetch target is not evidence.
+For each timeline revision, the reserve manifest is the immutable inventory of every prepared
+track in that revision. It is never a playout-relative window; temporal bounding belongs only to
+Hero's playback-manifest projection. Therefore moving the playhead cannot change the meaning of an
+already cached reserve revision or hide the first segment of the next prepared track.
 Increasing desired reserve therefore drives materialization but cannot expose an unmaterialized
 future segment to native HLS.
 
@@ -342,3 +346,4 @@ The following compositions are intentionally invalid:
 23. Playback manifests expose only the greatest contiguous unreleased prefix backed by local bytes.
 24. Re-reading one timeline revision cannot create another reserve-manifest network request.
 25. Every committed timeline revision is published through the current P2P control sink, never Relay.
+26. A reserve revision contains every prepared track and is invariant under playout movement.

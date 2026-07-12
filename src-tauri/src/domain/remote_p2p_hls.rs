@@ -247,11 +247,7 @@ impl ClientHlsSession {
     }
 
     fn reserve_manifest_at(&self, current_sequence: u64) -> String {
-        self.manifest_with_ahead(
-            current_sequence,
-            f64::from(self.reserve_buffer_seconds),
-            true,
-        )
+        self.manifest_with_ahead(current_sequence, f64::INFINITY, true)
     }
 
     fn manifest_with_ahead(

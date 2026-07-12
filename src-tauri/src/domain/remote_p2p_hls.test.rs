@@ -93,7 +93,7 @@ fn prepared_track_is_reserve_only_until_handoff_is_committed() {
     assert_eq!(session.manifest_at(21).matches("/segment/").count(), 0);
     assert_eq!(
         session.reserve_manifest_at(21).matches("/segment/").count(),
-        30
+        40
     );
 }
 
@@ -152,6 +152,23 @@ fn appending_tracks_preserves_repeated_queue_entries() {
 }
 
 #[test]
+fn revisioned_reserve_snapshot_contains_every_prepared_track() {
+    let mut session = ClientHlsSession::prepared(11);
+    session.prepare_start(published_segments("first", 90, 2.0));
+    assert!(session.commit_handoff_at(20));
+    assert!(session.append_tracks(vec![
+        published_segments("second", 4, 2.0),
+        published_segments("third", 3, 2.0),
+    ]));
+
+    let early = session.reserve_manifest_at(21);
+    let later = session.reserve_manifest_at(121);
+    assert!(early.contains("/track/1/segment/0.ts"));
+    assert!(early.contains("/track/2/segment/0.ts"));
+    assert_eq!(early, later);
+}
+
+#[test]
 fn real_media_handoff_is_future_only_and_keeps_its_discontinuity_visible() {
     let mut session = ClientHlsSession::prepared(5);
     let prepared = session.manifest_at(20);
@@ -195,16 +212,16 @@ fn legacy_manifest_stays_deep_until_reserve_projection_is_observed() {
     let playback = session.manifest_at(21);
     assert_eq!(playback.matches("/segment/").count(), 3);
 
-    let compact = session.reserve_manifest_at(21);
-    assert_eq!(compact.matches("/segment/").count(), 30);
+    let complete = session.reserve_manifest_at(21);
+    assert_eq!(complete.matches("/segment/").count(), 150);
 
     session.set_reserve_buffer_seconds(180);
     let expanded = session.reserve_manifest_at(21);
-    assert_eq!(expanded.matches("/segment/").count(), 90);
+    assert_eq!(expanded, complete);
 
     session.set_reserve_buffer_seconds(60);
     let retained = session.reserve_manifest_at(21);
-    assert_eq!(retained.matches("/segment/").count(), 90);
+    assert_eq!(retained, complete);
 }
 
 #[test]
@@ -266,7 +283,7 @@ async fn reserve_manifest_request_negotiates_projected_playback_without_a_protoc
         String::from_utf8_lossy(&reserve.body)
             .matches("/segment/")
             .count(),
-        30
+        150
     );
 
     let projected = hls
