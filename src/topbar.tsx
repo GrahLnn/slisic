@@ -4,12 +4,14 @@ import { invoke } from "@tauri-apps/api/core";
 import { AnimatePresence, motion } from "motion/react";
 import type React from "react";
 import { type PropsWithChildren, type ReactNode, memo, useEffect, useRef, useState } from "react";
+import { sileo } from "sileo";
 import { app as bootstrapApp } from "./flow/bootstrap";
 import { action as pasteDownloadAction } from "./flow/pasteDownload";
 import { useIsBarVisible } from "./flow/barVisible";
 import { useIsWindowFocus } from "./flow/windowFocus";
 import { os } from "@/lib/utils";
 import { GlassSurface } from "./components/glass/GlassSurface";
+import { remoteShareCodeFeedback } from "./remoteShareCodeFeedback";
 
 interface CtrlButtonProps extends PropsWithChildren {
   icon?: React.ReactNode;
@@ -100,9 +102,7 @@ const CtrlButton = memo(function CtrlButtonComp({
 });
 
 function RemoteShareSignalIcon({ enabled }: { enabled: boolean }) {
-  const toneClassName = enabled
-    ? undefined
-    : "text-neutral-500 dark:text-neutral-500";
+  const toneClassName = enabled ? undefined : "text-neutral-500 dark:text-neutral-500";
   const RemoteShareIcon = enabled ? icons.wifi : icons.wifiOff;
   const pathMotion = {
     initial: { pathLength: 0, opacity: 0 },
@@ -134,6 +134,7 @@ const RemoteShareControl = memo(function RemoteShareControlComponent() {
   const [draftCode, setDraftCode] = useState("");
   const [hovered, setHovered] = useState(false);
   const [focused, setFocused] = useState(false);
+  const [codeCommitPending, setCodeCommitPending] = useState(false);
   const committingRef = useRef(false);
   const codeComposingRef = useRef(false);
 
@@ -175,15 +176,23 @@ const RemoteShareControl = memo(function RemoteShareControlComponent() {
       return;
     }
     committingRef.current = true;
+    setCodeCommitPending(true);
     setDraftCode(normalized);
     try {
       const nextStatus = await invokeRemoteShareCode(normalized);
       setStatus(nextStatus);
       setDraftCode(nextStatus.code);
-    } catch {
+      sileo.success({ title: "Connection code updated" });
+    } catch (error) {
       setDraftCode(status.code);
+      const feedback = remoteShareCodeFeedback(error);
+      sileo[feedback.tone]({
+        title: feedback.title,
+        description: feedback.description,
+      });
     } finally {
       committingRef.current = false;
+      setCodeCommitPending(false);
     }
   }
 
@@ -228,6 +237,8 @@ const RemoteShareControl = memo(function RemoteShareControlComponent() {
             {...remoteShareCodeInputProps}
             maxLength={REMOTE_SHARE_CODE_MAX_LENGTH}
             aria-label="Remote share code"
+            aria-busy={codeCommitPending}
+            disabled={codeCommitPending}
             onFocus={() => setFocused(true)}
             onBlur={() => void commitCode()}
             onCompositionStart={() => {
