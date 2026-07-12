@@ -746,6 +746,19 @@ async fn run_remote_p2p_events(
                     escape_remote_log_value(&error.to_string())
                 ),
             },
+            RemoteP2pTransportEvent::SupplyWriterStalled {
+                client_id,
+                generation,
+            } => {
+                log::warn!(
+                    target: REMOTE_SHARE_LOG_TARGET,
+                    "remote_p2p_supply_invalidated generation={generation} reason=writer_stalled"
+                );
+                runtime
+                    .p2p_transport
+                    .invalidate_supply(&client_id, generation)
+                    .await;
+            }
         }
     }
 }

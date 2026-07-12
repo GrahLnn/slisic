@@ -112,6 +112,16 @@ pub(super) enum RemoteP2pTransportEvent {
         epoch: u64,
         handoff_sequence: u64,
     },
+    SupplyWriterStalled {
+        client_id: String,
+        generation: u64,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RemoteP2pWriterExit {
+    InputClosed,
+    Stalled,
 }
 
 #[derive(Deserialize)]
@@ -757,10 +767,13 @@ impl RemoteP2pTransport {
         }));
         let events = self.events.clone();
         let channel_client_id = client_id.to_owned();
+        let channel_generation = generation;
         connection.on_data_channel(Box::new(move |channel| {
             let events = events.clone();
             let client_id = channel_client_id.clone();
-            Box::pin(async move { attach_hls_data_channel(events, client_id, channel) })
+            Box::pin(async move {
+                attach_hls_data_channel(events, client_id, channel_generation, channel)
+            })
         }));
         connection.on_peer_connection_state_change(Box::new(move |state| {
             Box::pin(async move {
@@ -816,6 +829,28 @@ impl RemoteP2pTransport {
             peer.connection.close().await?;
         }
         Ok(())
+    }
+
+    pub(super) async fn invalidate_supply(&self, client_id: &str, generation: u64) {
+        let removed = {
+            let mut peers = self.peers.lock().await;
+            match peers.get(client_id) {
+                Some(peer) if peer.generation == generation => peers.remove(client_id),
+                _ => None,
+            }
+        };
+        let Some(peer) = removed else {
+            return;
+        };
+        self.emit_signal(
+            client_id,
+            RemoteP2pSignal::Error {
+                reason: "supply_stalled".to_owned(),
+                generation,
+                revision: 0,
+            },
+        );
+        let _ = peer.connection.close().await;
     }
 
     async fn discard_peer(&self, client_id: &str, expected: &Arc<RemoteP2pPeer>) {
@@ -876,16 +911,26 @@ where
 fn attach_hls_data_channel(
     events: UnboundedSender<RemoteP2pTransportEvent>,
     client_id: String,
+    generation: u64,
     channel: Arc<RTCDataChannel>,
 ) {
     if channel.label() != HLS_DATA_CHANNEL_LABEL {
         return;
     }
     let (responses, response_receiver) = mpsc_channel(HLS_RESPONSE_QUEUE_CAPACITY);
-    tokio::spawn(run_hls_data_channel_writer(
-        Arc::clone(&channel),
-        response_receiver,
-    ));
+    let writer_events = events.clone();
+    let writer_client_id = client_id.clone();
+    let writer_channel = Arc::clone(&channel);
+    tokio::spawn(async move {
+        if run_hls_data_channel_writer(writer_channel, response_receiver).await
+            == RemoteP2pWriterExit::Stalled
+        {
+            let _ = writer_events.send(RemoteP2pTransportEvent::SupplyWriterStalled {
+                client_id: writer_client_id,
+                generation,
+            });
+        }
+    });
     channel.on_message(Box::new(move |message: DataChannelMessage| {
         let events = events.clone();
         let client_id = client_id.clone();
@@ -972,13 +1017,13 @@ fn attach_hls_data_channel(
 async fn run_hls_data_channel_writer(
     channel: Arc<RTCDataChannel>,
     mut responses: Receiver<RemoteP2pOutboundResponse>,
-) {
+) -> RemoteP2pWriterExit {
     let mut scheduler = RemoteP2pOutboundScheduler::default();
     loop {
         ingest_hls_responses(&mut responses, &mut scheduler, HLS_RESPONSE_INGEST_BUDGET);
         let Some(transmission) = scheduler.next_transmission() else {
             let Some(response) = responses.recv().await else {
-                return;
+                return RemoteP2pWriterExit::InputClosed;
             };
             scheduler.push(response);
             continue;
@@ -1006,7 +1051,7 @@ async fn run_hls_data_channel_writer(
                     "remote_p2p_response_writer_stalled phase=send recovery=close_supply_epoch"
                 );
                 let _ = channel.close().await;
-                return;
+                return RemoteP2pWriterExit::Stalled;
             };
             if let Err(error) = result {
                 log::warn!(
@@ -1014,7 +1059,7 @@ async fn run_hls_data_channel_writer(
                     "remote_p2p_response_writer_failed error=\"{}\"",
                     error
                 );
-                return;
+                return RemoteP2pWriterExit::Stalled;
             }
         }
         if !await_hls_data_channel_capacity(
@@ -1030,7 +1075,7 @@ async fn run_hls_data_channel_writer(
                 "remote_p2p_response_writer_stalled phase=capacity recovery=close_supply_epoch"
             );
             let _ = channel.close().await;
-            return;
+            return RemoteP2pWriterExit::Stalled;
         }
     }
 }

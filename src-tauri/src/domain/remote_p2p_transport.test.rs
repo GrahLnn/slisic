@@ -584,6 +584,33 @@ async fn discarding_a_timed_out_negotiation_removes_its_exact_peer() -> Result<(
 }
 
 #[tokio::test]
+async fn supply_invalidation_is_scoped_to_its_exact_generation() -> Result<()> {
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    let (host, _events) = RemoteP2pTransport::new();
+    let (relay_tx, mut relay_rx) = unbounded_channel();
+    host.set_relay_events(relay_tx);
+    let peer = host.create_peer("stalled-client", 2).await?;
+
+    host.invalidate_supply("stalled-client", 1).await;
+    assert!(Arc::ptr_eq(&peer, &host.peer("stalled-client").await?));
+    assert!(relay_rx.try_recv().is_err());
+
+    host.invalidate_supply("stalled-client", 2).await;
+    assert!(host.peer("stalled-client").await.is_err());
+    assert_eq!(
+        peer.connection.connection_state(),
+        RTCPeerConnectionState::Closed
+    );
+    let frame: serde_json::Value = serde_json::from_str(&relay_rx.recv().await.unwrap())?;
+    assert_eq!(frame["clientId"], "stalled-client");
+    assert_eq!(frame["signal"]["type"], "error");
+    assert_eq!(frame["signal"]["reason"], "supply_stalled");
+    assert_eq!(frame["signal"]["generation"], 2);
+    assert_eq!(frame["signal"]["revision"], 0);
+    Ok(())
+}
+
+#[tokio::test]
 async fn negotiated_data_channel_delivers_hls_asset_coordinates() -> Result<()> {
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
     let (host, mut events) = RemoteP2pTransport::new();
