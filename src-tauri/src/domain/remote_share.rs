@@ -340,10 +340,6 @@ enum RemoteRelayOutbound {
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
-    SessionTimelineUpdated {
-        client_id: String,
-        hls: RemoteHlsSessionView,
-    },
     P2pSignal {
         client_id: String,
         signal: RemoteP2pSignal,
@@ -728,7 +724,10 @@ async fn run_remote_p2p_events(
                         target: REMOTE_SHARE_LOG_TARGET,
                         "remote_p2p_hls_handoff_committed epoch={epoch} handoff_sequence={handoff_sequence}"
                     );
-                    if let Err(error) = runtime.send_hls_timeline_updated(&client_id, snapshot) {
+                    if let Err(error) = runtime
+                        .send_hls_timeline_updated(&client_id, snapshot)
+                        .await
+                    {
                         log::warn!(
                             target: REMOTE_SHARE_LOG_TARGET,
                             "remote_p2p_hls_handoff_projection_failed error=\"{}\"",
@@ -2061,7 +2060,9 @@ impl RemoteShareRuntime {
             if !published.is_empty() {
                 match runtime.p2p_hls.append_tracks(&client_id, published).await {
                     Ok(Some(snapshot)) => {
-                        if let Err(error) = runtime.send_hls_timeline_updated(&client_id, snapshot)
+                        if let Err(error) = runtime
+                            .send_hls_timeline_updated(&client_id, snapshot)
+                            .await
                         {
                             log::warn!(
                                 target: REMOTE_SHARE_LOG_TARGET,
@@ -2179,18 +2180,15 @@ fn generate_ownership_transaction_id() -> String {
 }
 
 impl RemoteShareRuntime {
-    fn send_hls_timeline_updated(
+    async fn send_hls_timeline_updated(
         &self,
         client_id: &str,
         snapshot: P2pHlsSessionSnapshot,
     ) -> RemoteResult<()> {
-        let frame = serde_json::to_string(&RemoteRelayOutbound::SessionTimelineUpdated {
-            client_id: client_id.to_owned(),
-            hls: snapshot.into(),
-        })
-        .map_err(|error| RemoteShareError::internal(error.to_string()))?;
+        let hls = RemoteHlsSessionView::from(snapshot);
         self.p2p_transport
-            .send_relay_frame(frame)
+            .send_hls_timeline_to_client(client_id, &hls)
+            .await
             .map_err(|error| RemoteShareError::unavailable(error.to_string()))
     }
 }

@@ -608,11 +608,16 @@ struct RemoteP2pPeer {
     generation: u64,
     connection: Arc<RTCPeerConnection>,
     negotiation: tokio::sync::Mutex<RemoteP2pNegotiation>,
+    responses: Arc<Mutex<Option<RemoteP2pResponseSender>>>,
     writer_lifetime: watch::Sender<bool>,
 }
 
 impl RemoteP2pPeer {
     fn cancel_writers(&self) {
+        self.responses
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
         self.writer_lifetime.send_replace(true);
     }
 
@@ -807,6 +812,21 @@ impl RemoteP2pTransport {
             .map_err(|_| anyhow!("remote P2P response writer is closed"))
     }
 
+    pub(super) async fn send_hls_timeline_to_client<T: Serialize>(
+        &self,
+        client_id: &str,
+        hls: &T,
+    ) -> Result<()> {
+        let peer = self.peer(client_id).await?;
+        let responses = peer
+            .responses
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+            .ok_or_else(|| anyhow!("remote P2P control channel is not ready"))?;
+        Self::send_hls_timeline(&responses, hls).await
+    }
+
     pub(super) async fn send_handoff_offer(
         responses: &RemoteP2pResponseSender,
         epoch: u64,
@@ -981,10 +1001,13 @@ impl RemoteP2pTransport {
         let channel_generation = generation;
         let (writer_lifetime, _) = watch::channel(false);
         let channel_writer_lifetime = writer_lifetime.clone();
+        let responses = Arc::new(Mutex::new(None));
+        let channel_responses = Arc::clone(&responses);
         connection.on_data_channel(Box::new(move |channel| {
             let events = events.clone();
             let client_id = channel_client_id.clone();
             let writer_lifetime = channel_writer_lifetime.subscribe();
+            let responses = Arc::clone(&channel_responses);
             Box::pin(async move {
                 attach_hls_data_channel(
                     events,
@@ -992,6 +1015,7 @@ impl RemoteP2pTransport {
                     channel_generation,
                     channel,
                     writer_lifetime,
+                    responses,
                 )
             })
         }));
@@ -1016,6 +1040,7 @@ impl RemoteP2pTransport {
             generation,
             connection,
             negotiation: tokio::sync::Mutex::new(RemoteP2pNegotiation::default()),
+            responses,
             writer_lifetime,
         });
         let mut peers = self.peers.lock().await;
@@ -1135,18 +1160,31 @@ fn attach_hls_data_channel(
     generation: u64,
     channel: Arc<RTCDataChannel>,
     writer_lifetime: watch::Receiver<bool>,
+    response_slot: Arc<Mutex<Option<RemoteP2pResponseSender>>>,
 ) {
     if channel.label() != HLS_DATA_CHANNEL_LABEL {
         return;
     }
     let (responses, response_receiver) = mpsc_channel(HLS_RESPONSE_QUEUE_CAPACITY);
+    *response_slot
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(responses.clone());
     let writer_events = events.clone();
     let writer_client_id = client_id.clone();
     let writer_channel = Arc::clone(&channel);
+    let writer_response_slot = Arc::clone(&response_slot);
     tokio::spawn(async move {
-        if run_hls_data_channel_writer(writer_channel, response_receiver, writer_lifetime).await
-            == RemoteP2pWriterExit::Stalled
-        {
+        let exit = run_hls_data_channel_writer(
+            writer_channel,
+            response_receiver,
+            writer_lifetime,
+        )
+        .await;
+        writer_response_slot
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        if exit == RemoteP2pWriterExit::Stalled {
             let _ = writer_events.send(RemoteP2pTransportEvent::SupplyWriterStalled {
                 client_id: writer_client_id,
                 generation,

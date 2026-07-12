@@ -71,6 +71,13 @@ readiness is positive, finite, and belongs to the current transaction; it must n
 second duration threshold. This keeps readiness a single cross-process fact instead of two drifting
 policies.
 
+Timeline publication belongs to the active P2P control sink. A handoff commit and its resulting
+timeline revision are one transaction on that sink; appended tracks use the same publication
+primitive. Relay carries peer discovery and WebRTC signaling only. Consequently a Relay delay,
+reconnect, or network-interface change cannot become a hidden prerequisite for exposing committed
+media, and the presence of the control sink rather than a browser connection-state label is the
+authoritative publication capability.
+
 ### Asset cache
 
 Objects are finite maps from immutable virtual URL to bytes. Hero resolves each segment through a
@@ -334,3 +341,4 @@ The following compositions are intentionally invalid:
 22. Asset bytes, chunks, published requests, and queued requests all have explicit finite bounds.
 23. Playback manifests expose only the greatest contiguous unreleased prefix backed by local bytes.
 24. Re-reading one timeline revision cannot create another reserve-manifest network request.
+25. Every committed timeline revision is published through the current P2P control sink, never Relay.

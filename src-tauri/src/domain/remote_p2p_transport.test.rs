@@ -1021,10 +1021,18 @@ async fn negotiated_data_channel_delivers_hls_asset_coordinates() -> Result<()> 
         })
     }));
     let (asset_chunk_tx, mut asset_chunk_rx) = unbounded_channel();
+    let (control_tx, mut control_rx) = unbounded_channel();
     data.on_message(Box::new(move |message: DataChannelMessage| {
         let asset_chunk_tx = asset_chunk_tx.clone();
+        let control_tx = control_tx.clone();
         Box::pin(async move {
-            if message.is_string || message.data.len() < HLS_ASSET_CHUNK_HEADER_SIZE {
+            if message.is_string {
+                if let Ok(body) = String::from_utf8(message.data.to_vec()) {
+                    let _ = control_tx.send(body);
+                }
+                return;
+            }
+            if message.data.len() < HLS_ASSET_CHUNK_HEADER_SIZE {
                 return;
             }
             let bytes = message.data;
@@ -1261,6 +1269,33 @@ async fn negotiated_data_channel_delivers_hls_asset_coordinates() -> Result<()> 
     assert_eq!(client_id, "integration-client");
     assert_eq!(epoch, 4);
     assert_eq!(handoff_sequence, 13);
+
+    host.send_hls_timeline_to_client(
+        "integration-client",
+        &serde_json::json!({
+            "epoch": 4,
+            "revision": 3,
+            "entries": [{ "startSeconds": 26.069 }]
+        }),
+    )
+    .await?;
+    let timeline = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let body = control_rx
+                .recv()
+                .await
+                .ok_or_else(|| anyhow!("P2P control response channel closed"))?;
+            let value: serde_json::Value = serde_json::from_str(&body)?;
+            if value["type"] == "hls_timeline_updated" {
+                break Ok::<_, anyhow::Error>(value);
+            }
+        }
+    })
+    .await
+    .map_err(|_| anyhow!("committed handoff timeline stayed off the P2P channel"))??;
+    assert_eq!(timeline["type"], "hls_timeline_updated");
+    assert_eq!(timeline["hls"]["revision"], 3);
+    assert_eq!(timeline["hls"]["entries"][0]["startSeconds"], 26.069);
 
     browser.close().await?;
     host.close_all().await;
