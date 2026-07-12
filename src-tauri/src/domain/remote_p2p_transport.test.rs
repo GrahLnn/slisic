@@ -38,6 +38,137 @@ fn hls_asset_chunk_frame_fits_the_data_channel_message_limit() {
 }
 
 #[test]
+fn concurrent_send_window_is_the_maximal_bounded_frame_colimit() {
+    let mut window = RemoteP2pSendWindow::default();
+    for _ in 0..4 {
+        assert!(window.admit(HLS_ASSET_MAX_MESSAGE_SIZE));
+    }
+    assert_eq!(window.bytes, HLS_DATA_CHANNEL_HIGH_WATERMARK);
+    assert!(!window.admit(1));
+
+    window.complete(HLS_ASSET_MAX_MESSAGE_SIZE);
+    assert!(window.admit(HLS_ASSET_MAX_MESSAGE_SIZE));
+    assert_eq!(window.bytes, HLS_DATA_CHANNEL_HIGH_WATERMARK);
+}
+
+#[test]
+fn scheduler_capacity_projection_equals_its_emitted_transmission() {
+    let mut scheduler = RemoteP2pOutboundScheduler::default();
+    scheduler.push(RemoteP2pOutboundResponse::Asset {
+        request_id: 1,
+        content_type: "video/mp2t".to_owned(),
+        body: Bytes::from(vec![1; HLS_ASSET_CHUNK_SIZE * 3]),
+        priority: RemoteP2pAssetPriority::Foreground,
+    });
+    scheduler.push(RemoteP2pOutboundResponse::Text {
+        body: "timeline".to_owned(),
+        priority: RemoteP2pOutboundPriority::Control,
+        request_id: None,
+    });
+
+    while let Some(projected_bytes) = scheduler.next_transmission_bytes() {
+        let transmission = scheduler
+            .next_transmission()
+            .expect("projected transmission");
+        assert_eq!(
+            transmission
+                .iter()
+                .map(RemoteP2pOutboundFrame::encoded_len)
+                .sum::<usize>(),
+            projected_bytes
+        );
+    }
+}
+
+#[test]
+fn capacity_projection_does_not_capture_a_stale_priority_decision() {
+    let mut scheduler = RemoteP2pOutboundScheduler::default();
+    scheduler.push(RemoteP2pOutboundResponse::Asset {
+        request_id: 7,
+        content_type: "video/mp2t".to_owned(),
+        body: Bytes::from(vec![7; HLS_ASSET_CHUNK_SIZE * 2]),
+        priority: RemoteP2pAssetPriority::Reserve,
+    });
+    let reserve_projection = scheduler
+        .next_transmission_bytes()
+        .expect("reserve projection");
+    assert_eq!(
+        scheduler.next_transmission_bytes(),
+        Some(reserve_projection),
+        "observing blocked capacity must not consume scheduler state"
+    );
+
+    scheduler.push(RemoteP2pOutboundResponse::Text {
+        body: "timeline".to_owned(),
+        priority: RemoteP2pOutboundPriority::Control,
+        request_id: None,
+    });
+    assert_eq!(scheduler.next_transmission_bytes(), Some("timeline".len()));
+    assert!(matches!(
+        scheduler.next_transmission().as_deref(),
+        Some([RemoteP2pOutboundFrame::Text(body)]) if body == "timeline"
+    ));
+}
+
+#[test]
+fn scheduling_and_unordered_completion_naturally_reassemble_the_same_asset() {
+    let expected = (0..HLS_ASSET_CHUNK_SIZE * 2 + 37)
+        .map(|index| (index % 251) as u8)
+        .collect::<Vec<_>>();
+    let mut scheduler = RemoteP2pOutboundScheduler::default();
+    scheduler.push(RemoteP2pOutboundResponse::Asset {
+        request_id: 41,
+        content_type: "video/mp2t".to_owned(),
+        body: Bytes::from(expected.clone()),
+        priority: RemoteP2pAssetPriority::Reserve,
+    });
+
+    let mut emitted = scheduler.next_transmission().expect("asset opening");
+    scheduler.push(RemoteP2pOutboundResponse::Text {
+        body: "timeline".to_owned(),
+        priority: RemoteP2pOutboundPriority::Control,
+        request_id: None,
+    });
+    scheduler.push(RemoteP2pOutboundResponse::Asset {
+        request_id: 42,
+        content_type: "application/vnd.apple.mpegurl".to_owned(),
+        body: Bytes::from_static(b"#EXTM3U"),
+        priority: RemoteP2pAssetPriority::Foreground,
+    });
+    while let Some(transmission) = scheduler.next_transmission() {
+        emitted.extend(transmission);
+    }
+
+    let mut completed_chunks = emitted
+        .into_iter()
+        .filter_map(|frame| match frame {
+            RemoteP2pOutboundFrame::Binary(packet) if packet[4..8] == 41_u32.to_be_bytes() => {
+                Some((
+                    u32::from_be_bytes(packet[8..12].try_into().expect("chunk index")),
+                    packet.slice(HLS_ASSET_CHUNK_HEADER_SIZE..),
+                ))
+            }
+            _ => None,
+        })
+        .rev()
+        .collect::<Vec<_>>();
+    completed_chunks.sort_by_key(|(chunk_index, _)| *chunk_index);
+
+    assert_eq!(
+        completed_chunks
+            .iter()
+            .map(|(chunk_index, _)| *chunk_index)
+            .collect::<Vec<_>>(),
+        vec![0, 1, 2]
+    );
+    let reconstructed = completed_chunks
+        .into_iter()
+        .flat_map(|(_, chunk)| chunk)
+        .collect::<Vec<_>>();
+    assert_eq!(reconstructed, expected);
+}
+
+#[test]
 fn empty_asset_opening_contains_only_its_header_and_releases_the_request() {
     let mut scheduler = RemoteP2pOutboundScheduler::default();
     scheduler.push(RemoteP2pOutboundResponse::Register { request_id: 3 });
@@ -601,14 +732,18 @@ async fn a_writer_capacity_wait_that_keeps_progressing_reaches_the_low_watermark
 #[tokio::test]
 async fn a_slow_writer_send_is_not_misclassified_as_transport_death() {
     let (_lifetime, mut lifetime) = watch::channel(false);
-    let delayed = async {
+    let mut sends = JoinSet::new();
+    sends.spawn(async {
         sleep(Duration::from_millis(10)).await;
-        "sent"
-    };
+        (17, Ok::<(), anyhow::Error>(()))
+    });
 
     assert_eq!(
-        await_hls_data_channel_send(delayed, &mut lifetime).await,
-        Some("sent")
+        await_hls_send_completion(&mut sends, &mut lifetime)
+            .await
+            .expect("send completion")
+            .expect("successful send"),
+        17
     );
 }
 
@@ -637,13 +772,15 @@ async fn explicit_peer_lifetime_cancels_a_stale_open_capacity_wait() {
 #[tokio::test]
 async fn explicit_peer_lifetime_cancels_a_pending_send() {
     let (lifetime, mut lifetime_rx) = watch::channel(false);
+    let mut sends = JoinSet::new();
+    sends.spawn(std::future::pending::<(usize, Result<()>)>());
     tokio::spawn(async move {
         sleep(Duration::from_millis(5)).await;
         lifetime.send(true).expect("cancel writer");
     });
 
     assert!(
-        await_hls_data_channel_send(std::future::pending::<()>(), &mut lifetime_rx)
+        await_hls_send_completion(&mut sends, &mut lifetime_rx)
             .await
             .is_none()
     );

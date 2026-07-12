@@ -9,6 +9,7 @@ use tokio::sync::mpsc::{
     unbounded_channel,
 };
 use tokio::sync::watch;
+use tokio::task::JoinSet;
 use tokio::time::{Duration, sleep, timeout};
 use webrtc::api::APIBuilder;
 use webrtc::data_channel::RTCDataChannel;
@@ -210,6 +211,15 @@ enum RemoteP2pOutboundFrame {
     Binary(Bytes),
 }
 
+impl RemoteP2pOutboundFrame {
+    fn encoded_len(&self) -> usize {
+        match self {
+            Self::Text(body) => body.len(),
+            Self::Binary(body) => body.len(),
+        }
+    }
+}
+
 struct RemoteP2pScheduledAsset {
     request_id: u32,
     content_type: String,
@@ -226,6 +236,41 @@ enum RemoteP2pScheduledResponse {
         request_id: Option<u32>,
     },
     Asset(RemoteP2pScheduledAsset),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RemoteP2pOutboundQueue {
+    Control,
+    Foreground,
+    Reserve,
+}
+
+#[derive(Default)]
+struct RemoteP2pSendWindow {
+    bytes: usize,
+}
+
+impl RemoteP2pSendWindow {
+    fn can_admit(&self, bytes: usize) -> bool {
+        self.bytes
+            .checked_add(bytes)
+            .is_some_and(|total| total <= HLS_DATA_CHANNEL_HIGH_WATERMARK)
+    }
+
+    fn admit(&mut self, bytes: usize) -> bool {
+        if !self.can_admit(bytes) {
+            return false;
+        }
+        self.bytes += bytes;
+        true
+    }
+
+    fn complete(&mut self, bytes: usize) {
+        self.bytes = self
+            .bytes
+            .checked_sub(bytes)
+            .expect("each admitted send must complete exactly once");
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -292,6 +337,10 @@ struct RemoteP2pOutboundScheduler {
 }
 
 impl RemoteP2pOutboundScheduler {
+    fn is_empty(&self) -> bool {
+        self.control.is_empty() && self.foreground.is_empty() && self.reserve.is_empty()
+    }
+
     fn push(&mut self, response: RemoteP2pOutboundResponse) {
         let (priority, response) = match response {
             RemoteP2pOutboundResponse::Text {
@@ -413,25 +462,56 @@ impl RemoteP2pOutboundScheduler {
         });
     }
 
-    fn next_transmission(&mut self) -> Option<Vec<RemoteP2pOutboundFrame>> {
-        let media_pending = !self.foreground.is_empty() || !self.reserve.is_empty();
-        let response =
-            if !self.control.is_empty() && (!self.control_sent_since_media || !media_pending) {
-                self.control_sent_since_media = true;
-                self.control.pop_front()
-            } else {
-                let media = self
-                    .foreground
-                    .pop_front()
-                    .or_else(|| self.reserve.pop_front());
-                if media.is_some() {
-                    self.control_sent_since_media = false;
-                    media
+    fn next_transmission_bytes(&self) -> Option<usize> {
+        let response = self.queue_ref(self.next_response_queue()?).front()?;
+        match response {
+            RemoteP2pScheduledResponse::Text { body, .. } => Some(body.len()),
+            RemoteP2pScheduledResponse::Asset(asset) => {
+                let header_bytes = if asset.header_sent {
+                    0
                 } else {
-                    self.control_sent_since_media = true;
-                    self.control.pop_front()
-                }
-            }?;
+                    encode_hls_asset_response(
+                        asset.request_id,
+                        &asset.content_type,
+                        asset.body.len(),
+                    )
+                    .ok()?
+                    .len()
+                };
+                let chunk_bytes = if asset.offset < asset.body.len() {
+                    HLS_ASSET_CHUNK_HEADER_SIZE
+                        + (asset.body.len() - asset.offset).min(HLS_ASSET_CHUNK_SIZE)
+                } else {
+                    0
+                };
+                header_bytes.checked_add(chunk_bytes)
+            }
+        }
+    }
+
+    fn next_response_queue(&self) -> Option<RemoteP2pOutboundQueue> {
+        let media_pending = !self.foreground.is_empty() || !self.reserve.is_empty();
+        if !self.control.is_empty() && (!self.control_sent_since_media || !media_pending) {
+            Some(RemoteP2pOutboundQueue::Control)
+        } else if !self.foreground.is_empty() {
+            Some(RemoteP2pOutboundQueue::Foreground)
+        } else if !self.reserve.is_empty() {
+            Some(RemoteP2pOutboundQueue::Reserve)
+        } else if !self.control.is_empty() {
+            Some(RemoteP2pOutboundQueue::Control)
+        } else {
+            None
+        }
+    }
+
+    fn next_transmission(&mut self) -> Option<Vec<RemoteP2pOutboundFrame>> {
+        let queue = self.next_response_queue()?;
+        self.control_sent_since_media = queue == RemoteP2pOutboundQueue::Control;
+        let response = match queue {
+            RemoteP2pOutboundQueue::Control => self.control.pop_front(),
+            RemoteP2pOutboundQueue::Foreground => self.foreground.pop_front(),
+            RemoteP2pOutboundQueue::Reserve => self.reserve.pop_front(),
+        }?;
         match response {
             RemoteP2pScheduledResponse::Text { body, .. } => {
                 Some(vec![RemoteP2pOutboundFrame::Text(body)])
@@ -485,6 +565,14 @@ impl RemoteP2pOutboundScheduler {
             RemoteP2pOutboundPriority::Control => &mut self.control,
             RemoteP2pOutboundPriority::Foreground => &mut self.foreground,
             RemoteP2pOutboundPriority::Reserve => &mut self.reserve,
+        }
+    }
+
+    fn queue_ref(&self, queue: RemoteP2pOutboundQueue) -> &VecDeque<RemoteP2pScheduledResponse> {
+        match queue {
+            RemoteP2pOutboundQueue::Control => &self.control,
+            RemoteP2pOutboundQueue::Foreground => &self.foreground,
+            RemoteP2pOutboundQueue::Reserve => &self.reserve,
         }
     }
 }
@@ -1154,12 +1242,55 @@ async fn run_hls_data_channel_writer(
     mut writer_lifetime: watch::Receiver<bool>,
 ) -> RemoteP2pWriterExit {
     let mut scheduler = RemoteP2pOutboundScheduler::default();
-    loop {
+    let mut sends: JoinSet<(usize, Result<()>)> = JoinSet::new();
+    let mut send_window = RemoteP2pSendWindow::default();
+    'writer: loop {
         if *writer_lifetime.borrow() {
             return RemoteP2pWriterExit::InputClosed;
         }
         ingest_hls_responses(&mut responses, &mut scheduler, HLS_RESPONSE_INGEST_BUDGET);
-        let Some(transmission) = scheduler.next_transmission() else {
+        if scheduler.is_empty() {
+            if !sends.is_empty() {
+                tokio::select! {
+                    changed = writer_lifetime.changed() => {
+                        let _ = changed;
+                        return RemoteP2pWriterExit::InputClosed;
+                    }
+                    response = responses.recv() => {
+                        let Some(response) = response else {
+                            return RemoteP2pWriterExit::InputClosed;
+                        };
+                        scheduler.push(response);
+                    }
+                    completion = sends.join_next() => {
+                        let Some(completion) = completion else {
+                            continue;
+                        };
+                        match completion {
+                            Ok((bytes, Ok(()))) => {
+                                send_window.complete(bytes);
+                            }
+                            Ok((_, Err(error))) => {
+                                log::warn!(
+                                    target: REMOTE_SHARE_LOG_TARGET,
+                                    "remote_p2p_response_writer_failed error=\"{}\"",
+                                    error
+                                );
+                                return RemoteP2pWriterExit::Stalled;
+                            }
+                            Err(error) => {
+                                log::warn!(
+                                    target: REMOTE_SHARE_LOG_TARGET,
+                                    "remote_p2p_response_writer_failed error=\"{}\"",
+                                    error
+                                );
+                                return RemoteP2pWriterExit::Stalled;
+                            }
+                        }
+                    }
+                }
+                continue;
+            }
             let Some(response) =
                 await_hls_writer_response(&mut responses, &mut writer_lifetime).await
             else {
@@ -1167,27 +1298,67 @@ async fn run_hls_data_channel_writer(
             };
             scheduler.push(response);
             continue;
-        };
-        for frame in transmission {
-            let result = match frame {
-                RemoteP2pOutboundFrame::Text(body) => {
-                    await_hls_data_channel_send(channel.send_text(body), &mut writer_lifetime).await
-                }
-                RemoteP2pOutboundFrame::Binary(body) => {
-                    await_hls_data_channel_send(channel.send(&body), &mut writer_lifetime).await
-                }
+        }
+        let transmission_bytes = loop {
+            let Some(projected_bytes) = scheduler.next_transmission_bytes() else {
+                continue 'writer;
             };
-            let Some(result) = result else {
-                return RemoteP2pWriterExit::InputClosed;
-            };
-            if let Err(error) = result {
+            if projected_bytes > HLS_DATA_CHANNEL_HIGH_WATERMARK {
                 log::warn!(
                     target: REMOTE_SHARE_LOG_TARGET,
-                    "remote_p2p_response_writer_failed error=\"{}\"",
-                    error
+                    "remote_p2p_response_writer_failed error=\"transmission exceeds send window\" bytes={}",
+                    projected_bytes
                 );
                 return RemoteP2pWriterExit::Stalled;
             }
+            if send_window.can_admit(projected_bytes) {
+                break projected_bytes;
+            }
+            let Some(completion) =
+                await_hls_send_completion(&mut sends, &mut writer_lifetime).await
+            else {
+                return RemoteP2pWriterExit::InputClosed;
+            };
+            match completion {
+                Ok(bytes) => send_window.complete(bytes),
+                Err(error) => {
+                    log::warn!(
+                        target: REMOTE_SHARE_LOG_TARGET,
+                        "remote_p2p_response_writer_failed error=\"{}\"",
+                        error
+                    );
+                    return RemoteP2pWriterExit::Stalled;
+                }
+            }
+            ingest_hls_responses(&mut responses, &mut scheduler, HLS_RESPONSE_INGEST_BUDGET);
+        };
+        let transmission = scheduler
+            .next_transmission()
+            .expect("a non-empty scheduler must yield a transmission");
+        let emitted_bytes = transmission
+            .iter()
+            .map(RemoteP2pOutboundFrame::encoded_len)
+            .sum::<usize>();
+        assert_eq!(
+            emitted_bytes, transmission_bytes,
+            "capacity projection must equal the emitted transmission"
+        );
+        for frame in transmission {
+            let frame_bytes = frame.encoded_len();
+            let send_channel = Arc::clone(&channel);
+            sends.spawn(async move {
+                let result = match frame {
+                    RemoteP2pOutboundFrame::Text(body) => send_channel.send_text(body).await,
+                    RemoteP2pOutboundFrame::Binary(body) => send_channel.send(&body).await,
+                }
+                .map(|_| ())
+                .map_err(anyhow::Error::from);
+                (frame_bytes, result)
+            });
+            assert!(
+                send_window.admit(frame_bytes),
+                "reserved transmission capacity must admit every constituent frame"
+            );
         }
         if !await_hls_data_channel_capacity(
             || channel.buffered_amount(),
@@ -1201,6 +1372,26 @@ async fn run_hls_data_channel_writer(
         {
             return RemoteP2pWriterExit::InputClosed;
         }
+    }
+}
+
+async fn await_hls_send_completion(
+    sends: &mut JoinSet<(usize, Result<()>)>,
+    writer_lifetime: &mut watch::Receiver<bool>,
+) -> Option<Result<usize>> {
+    if *writer_lifetime.borrow() {
+        return None;
+    }
+    tokio::select! {
+        changed = writer_lifetime.changed() => {
+            let _ = changed;
+            None
+        }
+        completion = sends.join_next() => completion.map(|completion| match completion {
+            Ok((bytes, Ok(()))) => Ok(bytes),
+            Ok((_, Err(error))) => Err(error),
+            Err(error) => Err(anyhow!(error)),
+        })
     }
 }
 
@@ -1272,25 +1463,6 @@ where
         }
     }
     true
-}
-
-async fn await_hls_data_channel_send<F, T>(
-    send: F,
-    writer_lifetime: &mut watch::Receiver<bool>,
-) -> Option<T>
-where
-    F: Future<Output = T>,
-{
-    if *writer_lifetime.borrow() {
-        return None;
-    }
-    tokio::select! {
-        changed = writer_lifetime.changed() => {
-            let _ = changed;
-            None
-        }
-        result = send => Some(result),
-    }
 }
 
 fn encode_hls_asset_chunk(request_id: u32, chunk_index: u32, chunk: &[u8]) -> Bytes {

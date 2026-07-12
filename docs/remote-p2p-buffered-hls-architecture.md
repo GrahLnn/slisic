@@ -80,14 +80,30 @@ object or advance playback state.
 
 All network demand factors through one `AssetScheduler`. It publishes one current asset request and
 one lookahead request so mobile request latency overlaps the current transfer. The host owns one
-frame scheduler and one DataChannel writer; after every bounded frame it re-evaluates priority
-before emitting another frame. Native HLS demand has strict priority over
+frame scheduler and one DataChannel writer. Every frame retains its request and chunk coordinates.
+The scheduler projects the exact byte size of its current atomic header/chunk candidate without
+consuming it. The writer supplies current capacity; insufficient capacity leaves scheduler state
+unchanged, so queued control changes are ingested before the next projection. The writer then
+interprets scheduled frames into one concurrent send window bounded by the SCTP high watermark;
+it does not await physical completion before admitting the next independent frame. Native HLS
+demand has strict priority over
 reserve requests that have not yet been published; reserve demand may use only measured surplus
 supply. Loading an asset for native HLS also persists that same value. There is no independent
 mirror worker that downloads the same timeline beside hls.js. Reserve materialization belongs to
 this scheduler and becomes part of `CachePrefix` only after its IndexedDB write commits; an HLS
 buffer target or host-side prepared track is not cache evidence. Cache hit and miss alter latency
 only, never timeline order, track state, or playback time.
+
+Playback-manifest visibility is the greatest contiguous reserve prefix that satisfies both the
+temporal projection frontier and local byte evidence on the unreleased playback suffix. Completed
+tracks are historical quotient objects and need no future readability; memory and committed
+persistent storage are evidence for every remaining segment. A prefetch target is not evidence.
+Increasing desired reserve therefore drives materialization but cannot expose an unmaterialized
+future segment to native HLS.
+
+`ReserveManifest` is indexed by `(MediaEpoch, TimelineRevision, ReserveUrl)`. Re-reading one index
+is identity on network demand and returns the committed value or joins its single in-flight load.
+Only a new control revision may construct a new reserve-manifest request.
 
 ### Supply paths
 
@@ -114,9 +130,10 @@ time, buffered ranges, and persistent assets are invariant under this substituti
 
 Each asset owns its own progress lease. Only that asset's response header or chunk renews the lease;
 an unrelated timeline update cannot keep a lost request occupying the bounded request window. A
-slow asset cannot create a replacement loop. The writer admits bounded 16 KiB chunks into an
-SCTP send queue. The writer observes capacity after each bounded frame, so the queue is capped by
-the high watermark plus one maximum frame, and resumes after reaching the low watermark.
+slow asset cannot create a replacement loop. The writer admits 16 KiB protocol frames into a
+concurrent send colimit bounded by the SCTP high watermark. A completed send removes exactly its
+own bytes from that window. The writer also observes DataChannel capacity, and resumes after the
+local buffered amount reaches the low watermark.
 `buffered_amount` is local capacity evidence only: delayed or
 stale observation may delay admission, but it cannot declare a dead `SupplyEpoch`. Hero's accepted
 response header and unique valid chunks are the only end-to-end asset-progress evidence. Progress
@@ -219,8 +236,24 @@ Every hls.js manifest or fragment load factors through one loader. The loader ch
 IndexedDB before using DataChannel for a miss. Relay HTTP and Blob fallbacks have no constructors.
 DataChannel delivery is reliable but unordered because request and chunk coordinates already
 provide deterministic reassembly. The browser publishes a two-request demand window and labels
-each request with its semantic priority. The host serializes frames, not whole assets, so request
-RTT is hidden while foreground control remains preemptive at every frame boundary.
+each request with its semantic priority. The host schedules frames independently, while the bounded
+send window interprets several scheduled frames concurrently. Foreground control remains
+preemptive at every admission boundary without turning physical frame completion into stop-and-wait.
+
+The scheduler satisfies the naturality law
+
+```text
+reassemble(interpret(schedule(decompose(asset)))) = asset
+```
+
+`decompose` assigns immutable `(requestId, chunkIndex)` coordinates, `schedule` may interleave
+objects by semantic priority, `interpret` admits their send futures into the bounded concurrent
+window, and `reassemble` is order-independent. The capacity projection equals the emitted
+transmission, and capacity is observed before `schedule`, so waiting cannot capture a stale priority
+decision. Path latency changes completion time only; it cannot
+change chunk multiplicity, coordinates, reconstructed bytes, or the scheduler's priority decisions. The send window is
+the maximal colimit of currently admitted frames whose total encoded size does not exceed the high
+watermark.
 
 ### `RemotePlaybackSession` is the unique recovery factorization
 
@@ -293,9 +326,11 @@ The following compositions are intentionally invalid:
 14. Late signal and asset completions from an older epoch cannot commit.
 15. A prepared track is absent from the playback manifest until the Host accepts cache readiness.
 16. The Host cannot recompute or strengthen Hero's startup-readiness threshold.
-17. The local DataChannel send queue is bounded by the SCTP high watermark plus one maximum frame.
+17. The local concurrent send window is bounded by the SCTP high watermark.
 18. Local queue observation can delay admission but cannot terminate a `SupplyEpoch`.
 19. Only Hero asset progress or a terminal transport/send fact participates in supply liveness.
 20. Only progress for the same asset identity clears its foreground timeout evidence.
 21. Peer replacement cancels every writer wait even if WebRTC state remains stale.
 22. Asset bytes, chunks, published requests, and queued requests all have explicit finite bounds.
+23. Playback manifests expose only the greatest contiguous unreleased prefix backed by local bytes.
+24. Re-reading one timeline revision cannot create another reserve-manifest network request.
