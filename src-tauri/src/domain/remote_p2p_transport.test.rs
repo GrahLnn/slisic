@@ -1,5 +1,5 @@
 use super::*;
-use tokio::time::sleep;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
 
 #[test]
 fn hls_timeline_update_frame_preserves_revisioned_metadata() {
@@ -100,7 +100,7 @@ fn asset_opening_is_atomic_before_foreground_overtakes_remaining_reserve_chunks(
     let reserve_opening = scheduler.next_transmission().expect("reserve opening");
     assert!(matches!(
         reserve_opening.as_slice(),
-        [RemoteP2pOutboundFrame::Text(header), RemoteP2pOutboundFrame::Binary { body: chunk, .. }]
+        [RemoteP2pOutboundFrame::Text(header), RemoteP2pOutboundFrame::Binary(chunk)]
             if header.contains("\"id\":1")
                 && &chunk[4..8] == 1_u32.to_be_bytes().as_slice()
                 && &chunk[8..12] == 0_u32.to_be_bytes().as_slice()
@@ -115,14 +115,14 @@ fn asset_opening_is_atomic_before_foreground_overtakes_remaining_reserve_chunks(
     let foreground_opening = scheduler.next_transmission().expect("foreground opening");
     assert!(matches!(
         foreground_opening.as_slice(),
-        [RemoteP2pOutboundFrame::Text(header), RemoteP2pOutboundFrame::Binary { body: chunk, .. }]
+        [RemoteP2pOutboundFrame::Text(header), RemoteP2pOutboundFrame::Binary(chunk)]
             if header.contains("\"id\":2")
                 && &chunk[4..8] == 2_u32.to_be_bytes().as_slice()
     ));
     let reserve_tail = scheduler.next_transmission().expect("reserve tail");
     assert!(matches!(
         reserve_tail.as_slice(),
-        [RemoteP2pOutboundFrame::Binary { body: chunk, .. }]
+        [RemoteP2pOutboundFrame::Binary(chunk)]
             if &chunk[4..8] == 1_u32.to_be_bytes().as_slice()
     ));
 }
@@ -151,7 +151,7 @@ fn promoting_a_published_reserve_asset_moves_its_next_frame_to_foreground() {
 
     assert!(matches!(
         scheduler.next_transmission().as_deref(),
-        Some([RemoteP2pOutboundFrame::Binary { body: frame, .. }])
+        Some([RemoteP2pOutboundFrame::Binary(frame)])
             if &frame[4..8] == 1_u32.to_be_bytes().as_slice()
     ));
 }
@@ -176,7 +176,7 @@ fn promotion_is_retained_when_it_arrives_before_the_asset_response() {
 
     assert!(matches!(
         scheduler.next_transmission().as_deref(),
-        Some([RemoteP2pOutboundFrame::Text(header), RemoteP2pOutboundFrame::Binary { body: chunk, .. }])
+        Some([RemoteP2pOutboundFrame::Text(header), RemoteP2pOutboundFrame::Binary(chunk)])
             if header.contains("\"id\":7")
                 && &chunk[4..8] == 7_u32.to_be_bytes().as_slice()
     ));
@@ -195,12 +195,7 @@ fn writer_ingest_is_bounded_before_a_scheduled_frame_must_run() {
             .expect("queued response");
     }
     let mut scheduler = RemoteP2pOutboundScheduler::default();
-    let mut delivery = RemoteP2pDeliveryWindow::default();
-
-    assert_eq!(
-        ingest_hls_responses(&mut receiver, &mut scheduler, &mut delivery, 3),
-        3
-    );
+    assert_eq!(ingest_hls_responses(&mut receiver, &mut scheduler, 3), 3);
     assert!(scheduler.next_transmission().is_some());
     assert!(receiver.try_recv().is_ok());
 }
@@ -271,6 +266,25 @@ async fn a_full_response_queue_backpressures_instead_of_losing_the_asset() {
 }
 
 #[tokio::test]
+async fn an_asset_larger_than_the_protocol_bound_is_rejected_before_queueing() {
+    let (responses, mut receiver) = mpsc_channel(1);
+    let result = RemoteP2pTransport::send_hls_asset(
+        &responses,
+        7,
+        "video/mp2t",
+        Bytes::from(vec![0; HLS_ASSET_MAX_BYTES + 1]),
+        RemoteP2pAssetPriority::Foreground,
+    )
+    .await;
+
+    assert!(result.is_err());
+    let Some(RemoteP2pOutboundResponse::Text { body, .. }) = receiver.recv().await else {
+        panic!("oversized asset must produce a protocol error response");
+    };
+    assert!(body.contains("exceeds protocol capacity"));
+}
+
+#[tokio::test]
 async fn a_full_response_queue_backpressures_instead_of_losing_a_promotion() {
     let (responses, mut receiver) = mpsc_channel(1);
     responses
@@ -312,8 +326,8 @@ fn invalid_promotions_cannot_evict_a_registered_promotion() {
 async fn negotiation_phases_share_one_total_lease() {
     let result = await_hls_negotiation(
         async {
-            sleep(Duration::from_millis(4)).await;
-            sleep(Duration::from_millis(4)).await;
+            sleep(Duration::from_millis(20)).await;
+            sleep(Duration::from_millis(20)).await;
             Ok::<(), anyhow::Error>(())
         },
         Duration::from_millis(5),
@@ -324,98 +338,226 @@ async fn negotiation_phases_share_one_total_lease() {
     assert!(result.is_err());
 }
 
-#[test]
-fn delivery_window_is_released_only_by_the_matching_chunk_acknowledgement() {
-    let mut delivery = RemoteP2pDeliveryWindow::default();
-    assert!(delivery.admit(7, 0, HLS_ASSET_MAX_MESSAGE_SIZE));
-    assert!(delivery.admit(7, 1, HLS_ASSET_MAX_MESSAGE_SIZE));
-    assert_eq!(delivery.bytes, HLS_DATA_CHANNEL_LOW_WATERMARK);
-
-    assert!(!delivery.acknowledge(8, 0));
-    assert!(!delivery.acknowledge(7, 2));
-    assert_eq!(delivery.bytes, HLS_DATA_CHANNEL_LOW_WATERMARK);
-    assert!(delivery.acknowledge(7, 1));
-    assert_eq!(delivery.bytes, HLS_ASSET_MAX_MESSAGE_SIZE);
-    assert!(!delivery.acknowledge(7, 1));
-    assert!(delivery.acknowledge(7, 0));
-    assert_eq!(delivery.bytes, 0);
-}
-
-#[test]
-fn chunk_acknowledgement_protocol_releases_the_delivery_window_idempotently() {
-    let request: RemoteP2pDataChannelRequest =
-        serde_json::from_str(r#"{"type":"hls_asset_chunk_acknowledged","id":7,"chunk":3}"#)
-            .expect("chunk acknowledgement");
-    let RemoteP2pDataChannelRequest::HlsAssetChunkAcknowledged { id, chunk } = request else {
-        panic!("expected chunk acknowledgement");
-    };
-    let mut scheduler = RemoteP2pOutboundScheduler::default();
-    let mut delivery = RemoteP2pDeliveryWindow::default();
-    assert!(delivery.admit(id, chunk, HLS_ASSET_MAX_MESSAGE_SIZE));
-
-    apply_hls_response(
-        RemoteP2pOutboundResponse::Acknowledge {
-            request_id: id,
-            chunk_index: chunk,
+#[tokio::test]
+async fn a_writer_capacity_wait_does_not_turn_slow_drain_into_supply_failure() {
+    let buffered = Arc::new(AtomicUsize::new(HLS_ASSET_MAX_MESSAGE_SIZE));
+    let wait = await_hls_data_channel_capacity(
+        {
+            let buffered = Arc::clone(&buffered);
+            move || {
+                let buffered = Arc::clone(&buffered);
+                async move { buffered.load(AtomicOrdering::SeqCst) }
+            }
         },
-        &mut scheduler,
-        &mut delivery,
+        || true,
+        || false,
+        HLS_ASSET_MAX_MESSAGE_SIZE - 1,
+        0,
+        Duration::from_millis(2),
     );
-    apply_hls_response(
-        RemoteP2pOutboundResponse::Acknowledge {
-            request_id: id,
-            chunk_index: chunk,
-        },
-        &mut scheduler,
-        &mut delivery,
-    );
+    tokio::pin!(wait);
 
-    assert_eq!(delivery.bytes, 0);
-    assert!(delivery.chunks.is_empty());
+    assert!(
+        tokio::time::timeout(Duration::from_millis(15), &mut wait)
+            .await
+            .is_err()
+    );
+    buffered.store(0, AtomicOrdering::SeqCst);
+    assert!(wait.await);
 }
 
-#[test]
-fn delivery_window_has_a_strict_byte_bound_independent_of_asset_order() {
-    let mut delivery = RemoteP2pDeliveryWindow::default();
-    for request_id in 1..=4 {
-        assert!(delivery.admit(request_id, 0, HLS_ASSET_MAX_MESSAGE_SIZE));
-    }
-    assert_eq!(delivery.bytes, HLS_DATA_CHANNEL_HIGH_WATERMARK);
-    assert!(!delivery.admit(5, 0, 1));
+#[tokio::test]
+async fn a_writer_capacity_read_that_never_finishes_exits_when_the_channel_closes() {
+    let open = Arc::new(AtomicBool::new(true));
+    let close = Arc::clone(&open);
+    tokio::spawn(async move {
+        sleep(Duration::from_millis(8)).await;
+        close.store(false, AtomicOrdering::SeqCst);
+    });
 
-    assert!(delivery.acknowledge(3, 0));
-    assert!(delivery.admit(5, 0, HLS_ASSET_MAX_MESSAGE_SIZE));
-    assert_eq!(delivery.bytes, HLS_DATA_CHANNEL_HIGH_WATERMARK);
-}
-
-#[test]
-fn cancellation_releases_only_superseded_delivery_identities() {
-    let mut scheduler = RemoteP2pOutboundScheduler::default();
-    let mut delivery = RemoteP2pDeliveryWindow::default();
-    assert!(delivery.admit(7, 0, HLS_ASSET_MAX_MESSAGE_SIZE));
-    assert!(delivery.admit(8, 0, HLS_ASSET_MAX_MESSAGE_SIZE));
-    assert!(delivery.admit(9, 0, HLS_ASSET_MAX_MESSAGE_SIZE));
-
-    apply_hls_response(
-        RemoteP2pOutboundResponse::CancelThrough { request_id: 8 },
-        &mut scheduler,
-        &mut delivery,
-    );
-
-    assert_eq!(delivery.bytes, HLS_ASSET_MAX_MESSAGE_SIZE);
-    assert_eq!(
-        delivery.chunks.keys().copied().collect::<Vec<_>>(),
-        vec![(9, 0)]
+    assert!(
+        !await_hls_data_channel_capacity(
+            || std::future::pending::<usize>(),
+            move || open.load(AtomicOrdering::SeqCst),
+            || false,
+            HLS_DATA_CHANNEL_HIGH_WATERMARK,
+            HLS_DATA_CHANNEL_LOW_WATERMARK,
+            Duration::from_millis(5),
+        )
+        .await
     );
 }
 
 #[tokio::test]
-async fn a_writer_send_that_never_finishes_expires_its_supply_lease() {
+async fn capacity_at_the_high_watermark_does_not_wait_for_remote_delivery_evidence() {
+    let buffered = Arc::new(AtomicUsize::new(HLS_DATA_CHANNEL_HIGH_WATERMARK));
+    let reads = Arc::new(AtomicUsize::new(0));
+
     assert!(
-        await_hls_data_channel_send(std::future::pending::<()>(), Duration::from_millis(5))
+        await_hls_data_channel_capacity(
+            {
+                let buffered = Arc::clone(&buffered);
+                let reads = Arc::clone(&reads);
+                move || {
+                    let buffered = Arc::clone(&buffered);
+                    let reads = Arc::clone(&reads);
+                    async move {
+                        reads.fetch_add(1, AtomicOrdering::SeqCst);
+                        buffered.load(AtomicOrdering::SeqCst)
+                    }
+                }
+            },
+            || true,
+            || false,
+            HLS_DATA_CHANNEL_HIGH_WATERMARK,
+            HLS_DATA_CHANNEL_LOW_WATERMARK,
+            Duration::from_millis(5),
+        )
+        .await
+    );
+    assert_eq!(reads.load(AtomicOrdering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn a_writer_capacity_wait_stops_at_the_low_watermark_instead_of_zero() {
+    let buffered = Arc::new(AtomicUsize::new(HLS_DATA_CHANNEL_HIGH_WATERMARK + 1));
+    let drain = Arc::clone(&buffered);
+    tokio::spawn(async move {
+        sleep(Duration::from_millis(2)).await;
+        drain.store(HLS_DATA_CHANNEL_LOW_WATERMARK, AtomicOrdering::SeqCst);
+    });
+
+    assert!(
+        await_hls_data_channel_capacity(
+            move || {
+                let buffered = Arc::clone(&buffered);
+                async move { buffered.load(AtomicOrdering::SeqCst) }
+            },
+            || true,
+            || false,
+            HLS_DATA_CHANNEL_HIGH_WATERMARK,
+            HLS_DATA_CHANNEL_LOW_WATERMARK,
+            Duration::from_millis(20),
+        )
+        .await
+    );
+}
+
+#[tokio::test]
+async fn a_writer_capacity_wait_that_keeps_progressing_reaches_the_low_watermark() {
+    let buffered = Arc::new(AtomicUsize::new(HLS_DATA_CHANNEL_HIGH_WATERMARK + 3));
+    let drain = Arc::clone(&buffered);
+    tokio::spawn(async move {
+        for remaining in [
+            HLS_DATA_CHANNEL_HIGH_WATERMARK + 2,
+            HLS_DATA_CHANNEL_HIGH_WATERMARK + 1,
+            HLS_DATA_CHANNEL_LOW_WATERMARK,
+        ] {
+            sleep(Duration::from_millis(60)).await;
+            drain.store(remaining, AtomicOrdering::SeqCst);
+        }
+    });
+
+    assert!(
+        await_hls_data_channel_capacity(
+            move || {
+                let buffered = Arc::clone(&buffered);
+                async move { buffered.load(AtomicOrdering::SeqCst) }
+            },
+            || true,
+            || false,
+            HLS_DATA_CHANNEL_HIGH_WATERMARK,
+            HLS_DATA_CHANNEL_LOW_WATERMARK,
+            Duration::from_millis(100),
+        )
+        .await
+    );
+}
+
+#[tokio::test]
+async fn a_slow_writer_send_is_not_misclassified_as_transport_death() {
+    let (_lifetime, mut lifetime) = watch::channel(false);
+    let delayed = async {
+        sleep(Duration::from_millis(10)).await;
+        "sent"
+    };
+
+    assert_eq!(
+        await_hls_data_channel_send(delayed, &mut lifetime).await,
+        Some("sent")
+    );
+}
+
+#[tokio::test]
+async fn explicit_peer_lifetime_cancels_a_stale_open_capacity_wait() {
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let cancel = Arc::clone(&cancelled);
+    tokio::spawn(async move {
+        sleep(Duration::from_millis(8)).await;
+        cancel.store(true, AtomicOrdering::SeqCst);
+    });
+
+    assert!(
+        !await_hls_data_channel_capacity(
+            || std::future::pending::<usize>(),
+            || true,
+            move || cancelled.load(AtomicOrdering::SeqCst),
+            HLS_DATA_CHANNEL_HIGH_WATERMARK,
+            HLS_DATA_CHANNEL_LOW_WATERMARK,
+            Duration::from_millis(5),
+        )
+        .await
+    );
+}
+
+#[tokio::test]
+async fn explicit_peer_lifetime_cancels_a_pending_send() {
+    let (lifetime, mut lifetime_rx) = watch::channel(false);
+    tokio::spawn(async move {
+        sleep(Duration::from_millis(5)).await;
+        lifetime.send(true).expect("cancel writer");
+    });
+
+    assert!(
+        await_hls_data_channel_send(std::future::pending::<()>(), &mut lifetime_rx)
             .await
             .is_none()
     );
+}
+
+#[tokio::test]
+async fn a_writer_cancelled_before_its_idle_wait_exits_immediately() {
+    let (_responses, mut receiver) = mpsc_channel(1);
+    let (lifetime, initial_lifetime_rx) = watch::channel(false);
+    drop(initial_lifetime_rx);
+    lifetime.send_replace(true);
+    let mut lifetime_rx = lifetime.subscribe();
+
+    assert!(
+        tokio::time::timeout(
+            Duration::from_millis(5),
+            await_hls_writer_response(&mut receiver, &mut lifetime_rx),
+        )
+        .await
+        .expect("pre-cancelled idle wait must be bounded")
+        .is_none()
+    );
+}
+
+#[tokio::test]
+async fn close_all_cancels_every_writer_before_waiting_for_transport_close() -> Result<()> {
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    let (host, _events) = RemoteP2pTransport::new();
+    let first = host.create_peer("first", 1).await?;
+    let second = host.create_peer("second", 1).await?;
+
+    host.close_all().await;
+
+    let first_lifetime = first.writer_lifetime.subscribe();
+    let second_lifetime = second.writer_lifetime.subscribe();
+    assert!(*first_lifetime.borrow());
+    assert!(*second_lifetime.borrow());
+    Ok(())
 }
 
 #[tokio::test]
@@ -618,10 +760,8 @@ async fn negotiated_data_channel_delivers_hls_asset_coordinates() -> Result<()> 
         })
     }));
     let (asset_chunk_tx, mut asset_chunk_rx) = unbounded_channel();
-    let acknowledgement_channel = Arc::clone(&data);
     data.on_message(Box::new(move |message: DataChannelMessage| {
         let asset_chunk_tx = asset_chunk_tx.clone();
-        let acknowledgement_channel = Arc::clone(&acknowledgement_channel);
         Box::pin(async move {
             if message.is_string || message.data.len() < HLS_ASSET_CHUNK_HEADER_SIZE {
                 return;
@@ -633,17 +773,6 @@ async fn negotiated_data_channel_delivers_hls_asset_coordinates() -> Result<()> 
             let request_id = u32::from_be_bytes(bytes[4..8].try_into().unwrap());
             let chunk_index = u32::from_be_bytes(bytes[8..12].try_into().unwrap());
             let _ = asset_chunk_tx.send((request_id, chunk_index, bytes.len() - 12));
-            acknowledgement_channel
-                .send_text(
-                    serde_json::json!({
-                        "type": "hls_asset_chunk_acknowledged",
-                        "id": request_id,
-                        "chunk": chunk_index
-                    })
-                    .to_string(),
-                )
-                .await
-                .expect("chunk acknowledgement");
         })
     }));
     let (candidate_tx, mut candidate_rx) = unbounded_channel();
@@ -772,7 +901,7 @@ async fn negotiated_data_channel_delivers_hls_asset_coordinates() -> Result<()> 
         Ok::<_, anyhow::Error>(chunks)
     })
     .await
-    .map_err(|_| anyhow!("acknowledged HLS asset delivery timed out"))??;
+    .map_err(|_| anyhow!("locally flow-controlled HLS asset delivery timed out"))??;
     assert_eq!(
         received.iter().map(|(_, _, bytes)| bytes).sum::<usize>(),
         expected_bytes

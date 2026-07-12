@@ -14,9 +14,9 @@ sustained physical throughput below the encoded bitrate has exhausted every comm
   ICE state, and a moving silent priming segment are not audible evidence.
 - `SupplyEpoch` is one PeerConnection and its HLS DataChannel writer. It is live only while every
   published foreground request receives response-header or chunk progress within its lease.
-- `DeliveryWindow` is the finite map from transmitted `(requestId, chunkIndex)` identities to their
-  byte lengths. Capacity is released only by Hero acknowledging the matching accepted chunk;
-  duplicate acknowledgements are identities.
+- `SctpAdmissionWindow` is the finite local DataChannel send queue bounded by high and low
+  watermarks. Its observation controls admission only; it is not end-to-end delivery evidence and
+  cannot terminate a `SupplyEpoch`.
 - `ForegroundRequest` is an HLS playback manifest, reserve manifest needed to construct the current
   playback prefix, or media segment demanded by native HLS. `ReserveRequest` is speculative cache
   demand and cannot consume foreground capacity or determine playout legality.
@@ -69,8 +69,9 @@ The following do not imply the Unique Final Goal:
 | Queue tuning | Reserve/foreground queue sizing | Prevents known unpublished-request starvation | Published requests can still receive zero progress | refuted | New queue invariant that proves end-to-end progress |
 | Infinite priming | Extend silent HLS indefinitely | Preserves one media source while waiting | Cannot produce audible audio when supply is dead | blocked | Independent proof that supply recovery is bounded |
 | Dual DataChannel | Separate metadata and media SCTP streams | Can isolate application queues | Association congestion/retransmission may remain shared | exploring | Real browser trace showing independent progress under loss |
-| Local SCTP capacity lease | Treat Host `buffered_amount` decrease as delivery progress and terminate the SupplyEpoch after five seconds without decrease | Bounds a locally observed SCTP queue | Windows/macOS WebRTC implementations do not provide a reliable portable progress observation; a healthy high-RTT path is falsely terminated | refuted | A WebRTC implementation guarantee that makes the observation portable |
-| Application delivery window | Hero acknowledges each accepted chunk identity; acknowledgements release a bounded Host window | Network lab proves delayed local SCTP accounting cannot stop progress; Rust negotiated-DataChannel test transfers an asset larger than twice the window; zero delivery still expires the Hero asset lease | Real iOS/Arc background and lock-screen execution remains unproved | promising | N/A |
+| Local SCTP capacity death lease | Treat Host `buffered_amount` decrease as delivery progress and terminate the SupplyEpoch after five seconds without decrease | Bounds a locally observed SCTP queue | Windows/macOS WebRTC implementations do not provide portable delivery progress; a healthy high-RTT path is falsely terminated | refuted | A portable implementation guarantee that local accounting proves remote delivery |
+| Local SCTP bounded admission | Use high/low `buffered_amount` watermarks only to bound the sender queue; never infer transport death | Negotiated unordered DataChannel transfers more than twice the window without application ACK; slow-drain and delayed-observation tests preserve the writer until channel close | Real iOS/Arc background and lock-screen execution remains unproved | promising | N/A |
+| Application delivery window | Release each 64 KiB Host window only after browser chunk acknowledgements | Bounds unacknowledged application bytes | Initial-cellular trace measures about 145 kbps effective throughput on a physically sustainable path and the replay experiment reproduces buffer exhaustion | refuted | A non-stop-and-wait protocol whose sustainable throughput is independent of browser ACK latency |
 | Supply lease | Foreground asset progress terminates a truly dead SupplyEpoch and replays immutable demand | State tests prove terminal replacement, automatic replay, native-time preservation, and reserve/foreground lease separation | Real iOS/Arc background and lock-screen execution remains unproved | promising | N/A |
 | SafariDriver | Headed macOS Safari with trusted WebDriver input | Session creation, navigation, relay/P2P connection, and HLS timeline delivery are observable | Both element-click and W3C pointer actions block before returning a trusted play gesture | blocked | A driver/input mechanism that produces a bounded trusted click |
 | Relay media | Move HLS bytes through relay | Avoids the current P2P writer | Violates the P2P media requirement | refuted | Product requirement explicitly changes |
@@ -298,6 +299,67 @@ original peer, receives exactly one full Host window on the first attempt, obser
 foreground timeouts, replaces the supply, and completes the same URL from an explicit replacement
 header and chunk zero. A final independent rereview passed these counterexamples. The software
 obligation is therefore closed; only the real-device empirical obligation stated above remains.
+
+### Thirteenth Independent Review
+
+The initial-cellular production trace refuted the twelfth review's ACK-window throughput premise.
+Startup handoff was bounded and the first real boundary began at track position `0.077 s`, but the
+next 18 foreground segments averaged about `145 kbps` effective throughput on a path that could
+sustain the `192 kbps` media rate. The browser ACK round trip released each `64 KiB` application
+window, so high and variable cellular RTT became serialized send permission. Forward reserve fell
+from about `13.5 s` to zero and native HLS stalled even though the PeerConnection remained live.
+
+The replayable network experiment uses the measured service cycles and produces `7.415 s` of
+starvation with application-ACK admission; the same `340 kbps` physical path has zero starvation
+when local SCTP admission is used. The ACK protocol is therefore removed rather than tuned. The
+Host now uses `buffered_amount` only as a bounded local high/low watermark, never as a liveness
+lease. Hero remains the unique owner of end-to-end asset progress and replaces a SupplyEpoch only
+after its foreground request receives no valid header or chunk progress. A real negotiated
+unordered DataChannel transfers more than twice the local high watermark without browser ACKs,
+while sidecar tests retain explicit writer cancellation, channel-close, replay, malformed-frame, background,
+handover, single-source, timeline, and native-boundary invariants.
+
+The remaining obligation is a fresh real iOS/Arc trace beginning directly on cellular and a
+Wi-Fi-to-cellular handover trace. The software result is not declared complete before both show
+continuous audible playout.
+
+### Fourteenth Independent Review
+
+The independent rereview rejected four remaining paths. First, the Host still treated a five-second
+pending `send()` as transport death. Second, any unrelated segment completion cleared a foreground
+request's retry evidence. Third, a stale-open WebRTC state could leave an old writer polling
+forever. Fourth, post-header asset bytes and queued demands lacked explicit protocol bounds.
+
+The Host send deadline is removed: send completion has no time-based liveness meaning, while an
+actual send error remains a terminal transport fact. Each peer now owns an explicit writer
+lifetime consumed by queue wait, send wait, and capacity wait; replacement, close, discard, and
+global shutdown cancel it before closing WebRTC. Hero carries the immutable asset URL through
+failure and progress facts, and only success for the same URL clears its foreground timeout
+evidence. The protocol rejects assets above `8 MiB`, mismatched chunk counts, and more than 64
+pending or queued Hero demands; Host rejects an oversized body before enqueueing it.
+
+New sidecar counterexamples cover a slow successful send, cancellation of pending send and
+stale-open capacity waits, unrelated progress between repeated foreground timeouts, oversized
+headers and Host bodies, and queued-demand overflow. The remaining stop condition is still the
+fresh real-device evidence described above.
+
+The follow-up review found four boundary errors in those fixes: timeout evidence used one URL slot
+instead of a set, a writer cancelled before subscribing could miss the transition, the 8 MiB asset
+bound required 513 chunks while preheader storage allowed only 512, and `close_all` awaited each
+WebRTC close before canceling later writers. Timeout evidence is now a finite URL set cleared only
+by matching success or a new healthy SupplyEpoch. Idle writer receive checks the current lifetime
+value before waiting. Preheader count and bytes derive from the same maximum asset bound, with an
+exact 8 MiB all-chunks-before-header test. Global close broadcasts cancellation to every writer
+before awaiting any transport close. The corresponding counterexamples pass.
+
+The next review exposed five ownership edges. Writer cancellation now uses `watch::send_replace`,
+so cancellation is retained even when no DataChannel receiver exists yet. Every P2P asset success,
+including manifests, emits matching URL progress. ICE `connected` no longer clears asset evidence;
+only an explicit new `SupplyEpoch` open does. The timeout URL set has a finite 64-entry recovery
+bound. Finally, an oversized Host asset emits a deterministic `ok:false` response before returning
+its local error, so protocol-capacity failure cannot masquerade as transport death. Production-
+sequence tests cover zero-receiver cancellation, manifest success, ICE reconnect without asset
+progress, new-epoch reset, finite timeout evidence, and the oversized error frame.
 
 ## 7. Resource Allocation
 

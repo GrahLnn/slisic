@@ -32,7 +32,7 @@ only playback owner.
 | `AssetRepository` | Memory, IndexedDB, and P2P resolution of immutable epoch assets. |
 | `AssetScheduler` | The unique priority owner for foreground and reserve asset demand. |
 | `AssetRequest` | Idempotent DataChannel request for one manifest or media segment URL. |
-| `DeliveryWindow` | Bounded set of transmitted chunks not yet acknowledged by Hero. |
+| `SctpAdmissionWindow` | Bounded local DataChannel send queue observed through high/low watermarks. |
 | `SupplyPath` | Current ICE-selected path used to refill the forward reserve. |
 | `StartupReadiness` | Monotone evidence that the required first-track prefix is committed to IndexedDB. |
 | `ProtectedSequence` | The first sequence never advertised as priming, chosen once by Hero at readiness. |
@@ -62,7 +62,7 @@ by native HLS. Publishing readiness freezes the priming prefix at that sequence.
 offer the same sequence, Hero may only commit the same sequence, and the accepted real-media
 timeline must start at that sequence. A rejected offer, expired handoff lease, or replaced supply
 replays the same transaction identity; only accepting the committed timeline or resetting the media
-epoch releases it. Therefore native-time progress and lost acknowledgements cannot extend priming
+epoch releases it. Therefore native-time progress and supply-path changes cannot extend priming
 across the pending real-media boundary or rewrite a committed timeline prefix.
 
 Hero is also the unique owner of the required startup prefix because only Hero can observe the
@@ -115,12 +115,17 @@ time, buffered ranges, and persistent assets are invariant under this substituti
 Each asset owns its own progress lease. Only that asset's response header or chunk renews the lease;
 an unrelated timeline update cannot keep a lost request occupying the bounded request window. A
 slow asset cannot create a replacement loop. The writer admits bounded 16 KiB chunks into an
-application-level `DeliveryWindow`. Hero acknowledges every accepted `(requestId, chunkIndex)`;
-duplicate acknowledgements are identities, and only matching acknowledgements release bytes. The
-writer stops admitting chunks at the high watermark and resumes below the low watermark. Local
-SCTP `buffered_amount` is diagnostic only because its observation is not a portable delivery fact
-on Windows or mobile paths. A lossy path therefore cannot create an unbounded queue, while delayed
-local SCTP accounting cannot turn healthy delivery into a dead `SupplyEpoch`.
+SCTP send queue. The writer observes capacity after each bounded frame, so the queue is capped by
+the high watermark plus one maximum frame, and resumes after reaching the low watermark.
+`buffered_amount` is local capacity evidence only: delayed or
+stale observation may delay admission, but it cannot declare a dead `SupplyEpoch`. Hero's accepted
+response header and unique valid chunks are the only end-to-end asset-progress evidence. Progress
+is keyed by immutable asset URL, so an unrelated reserve completion cannot erase a foreground
+request's timeout evidence. Peer replacement explicitly cancels its writer lifetime; it does not
+wait for a stale WebRTC `readyState` observation. Assets are bounded to 8 MiB and each Hero owns at
+most 64 pending or queued demands. A lossy
+path therefore cannot create an unbounded sender queue, while application RTT cannot serialize
+every 64 KiB of otherwise sustainable cellular delivery.
 
 ## Behavior Object
 
@@ -288,5 +293,9 @@ The following compositions are intentionally invalid:
 14. Late signal and asset completions from an older epoch cannot commit.
 15. A prepared track is absent from the playback manifest until the Host accepts cache readiness.
 16. The Host cannot recompute or strengthen Hero's startup-readiness threshold.
-17. Unacknowledged binary chunks never exceed the delivery high watermark.
-18. Only an accepted matching chunk acknowledgement releases delivery-window capacity.
+17. The local DataChannel send queue is bounded by the SCTP high watermark plus one maximum frame.
+18. Local queue observation can delay admission but cannot terminate a `SupplyEpoch`.
+19. Only Hero asset progress or a terminal transport/send fact participates in supply liveness.
+20. Only progress for the same asset identity clears its foreground timeout evidence.
+21. Peer replacement cancels every writer wait even if WebRTC state remains stale.
+22. Asset bytes, chunks, published requests, and queued requests all have explicit finite bounds.
