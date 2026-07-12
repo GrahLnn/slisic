@@ -339,14 +339,17 @@ impl RemoteP2pOutboundScheduler {
         });
     }
 
-    fn next_frame(&mut self) -> Option<RemoteP2pOutboundFrame> {
+    fn next_transmission(&mut self) -> Option<Vec<RemoteP2pOutboundFrame>> {
         let response = self
             .foreground
             .pop_front()
             .or_else(|| self.reserve.pop_front())?;
         match response {
-            RemoteP2pScheduledResponse::Text(body) => Some(RemoteP2pOutboundFrame::Text(body)),
+            RemoteP2pScheduledResponse::Text(body) => {
+                Some(vec![RemoteP2pOutboundFrame::Text(body)])
+            }
             RemoteP2pScheduledResponse::Asset(mut asset) => {
+                let mut frames = Vec::with_capacity(2);
                 if !asset.header_sent {
                     asset.header_sent = true;
                     let header = encode_hls_asset_response(
@@ -355,19 +358,18 @@ impl RemoteP2pOutboundScheduler {
                         asset.body.len(),
                     )
                     .ok()?;
-                    let priority = asset.priority;
-                    self.queue(priority)
-                        .push_back(RemoteP2pScheduledResponse::Asset(asset));
-                    return Some(RemoteP2pOutboundFrame::Text(header));
+                    frames.push(RemoteP2pOutboundFrame::Text(header));
                 }
-                let end = (asset.offset + HLS_ASSET_CHUNK_SIZE).min(asset.body.len());
-                let frame = encode_hls_asset_chunk(
-                    asset.request_id,
-                    asset.chunk_index,
-                    &asset.body[asset.offset..end],
-                );
-                asset.offset = end;
-                asset.chunk_index += 1;
+                if asset.offset < asset.body.len() {
+                    let end = (asset.offset + HLS_ASSET_CHUNK_SIZE).min(asset.body.len());
+                    frames.push(RemoteP2pOutboundFrame::Binary(encode_hls_asset_chunk(
+                        asset.request_id,
+                        asset.chunk_index,
+                        &asset.body[asset.offset..end],
+                    )));
+                    asset.offset = end;
+                    asset.chunk_index += 1;
+                }
                 if asset.offset < asset.body.len() {
                     let priority = asset.priority;
                     self.queue(priority)
@@ -382,7 +384,7 @@ impl RemoteP2pOutboundScheduler {
                         self.promoted.remove(index);
                     }
                 }
-                Some(RemoteP2pOutboundFrame::Binary(frame))
+                Some(frames)
             }
         }
     }
@@ -974,41 +976,46 @@ async fn run_hls_data_channel_writer(
     let mut scheduler = RemoteP2pOutboundScheduler::default();
     loop {
         ingest_hls_responses(&mut responses, &mut scheduler, HLS_RESPONSE_INGEST_BUDGET);
-        let Some(frame) = scheduler.next_frame() else {
+        let Some(transmission) = scheduler.next_transmission() else {
             let Some(response) = responses.recv().await else {
                 return;
             };
             scheduler.push(response);
             continue;
         };
-        let result = match frame {
-            RemoteP2pOutboundFrame::Text(body) => {
-                await_hls_data_channel_send(
-                    channel.send_text(body),
-                    HLS_DATA_CHANNEL_PROGRESS_LEASE,
-                )
-                .await
-            }
-            RemoteP2pOutboundFrame::Binary(body) => {
-                await_hls_data_channel_send(channel.send(&body), HLS_DATA_CHANNEL_PROGRESS_LEASE)
+        for frame in transmission {
+            let result = match frame {
+                RemoteP2pOutboundFrame::Text(body) => {
+                    await_hls_data_channel_send(
+                        channel.send_text(body),
+                        HLS_DATA_CHANNEL_PROGRESS_LEASE,
+                    )
                     .await
+                }
+                RemoteP2pOutboundFrame::Binary(body) => {
+                    await_hls_data_channel_send(
+                        channel.send(&body),
+                        HLS_DATA_CHANNEL_PROGRESS_LEASE,
+                    )
+                    .await
+                }
+            };
+            let Some(result) = result else {
+                log::warn!(
+                    target: REMOTE_SHARE_LOG_TARGET,
+                    "remote_p2p_response_writer_stalled phase=send recovery=close_supply_epoch"
+                );
+                let _ = channel.close().await;
+                return;
+            };
+            if let Err(error) = result {
+                log::warn!(
+                    target: REMOTE_SHARE_LOG_TARGET,
+                    "remote_p2p_response_writer_failed error=\"{}\"",
+                    error
+                );
+                return;
             }
-        };
-        let Some(result) = result else {
-            log::warn!(
-                target: REMOTE_SHARE_LOG_TARGET,
-                "remote_p2p_response_writer_stalled phase=send recovery=close_supply_epoch"
-            );
-            let _ = channel.close().await;
-            return;
-        };
-        if let Err(error) = result {
-            log::warn!(
-                target: REMOTE_SHARE_LOG_TARGET,
-                "remote_p2p_response_writer_failed error=\"{}\"",
-                error
-            );
-            return;
         }
         if !await_hls_data_channel_capacity(
             || channel.buffered_amount(),

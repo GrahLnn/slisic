@@ -38,6 +38,25 @@ fn hls_asset_chunk_frame_fits_the_data_channel_message_limit() {
 }
 
 #[test]
+fn empty_asset_opening_contains_only_its_header_and_releases_the_request() {
+    let mut scheduler = RemoteP2pOutboundScheduler::default();
+    scheduler.push(RemoteP2pOutboundResponse::Register { request_id: 3 });
+    scheduler.push(RemoteP2pOutboundResponse::Asset {
+        request_id: 3,
+        content_type: "application/vnd.apple.mpegurl".to_owned(),
+        body: Bytes::new(),
+        priority: RemoteP2pAssetPriority::Foreground,
+    });
+
+    assert!(matches!(
+        scheduler.next_transmission().as_deref(),
+        Some([RemoteP2pOutboundFrame::Text(header)]) if header.contains("\"chunks\":0")
+    ));
+    assert!(!scheduler.requested.contains(&3));
+    assert!(scheduler.next_transmission().is_none());
+}
+
+#[test]
 fn cancellation_discards_queued_frames_and_late_asset_completion() {
     let mut scheduler = RemoteP2pOutboundScheduler::default();
     scheduler.push(RemoteP2pOutboundResponse::Register { request_id: 9 });
@@ -48,7 +67,7 @@ fn cancellation_discards_queued_frames_and_late_asset_completion() {
         priority: RemoteP2pAssetPriority::Reserve,
     });
     scheduler.push(RemoteP2pOutboundResponse::CancelThrough { request_id: 9 });
-    assert!(scheduler.next_frame().is_none());
+    assert!(scheduler.next_transmission().is_none());
 
     scheduler.push(RemoteP2pOutboundResponse::Asset {
         request_id: 9,
@@ -56,7 +75,7 @@ fn cancellation_discards_queued_frames_and_late_asset_completion() {
         body: Bytes::from_static(b"late"),
         priority: RemoteP2pAssetPriority::Reserve,
     });
-    assert!(scheduler.next_frame().is_none());
+    assert!(scheduler.next_transmission().is_none());
 
     scheduler.push(RemoteP2pOutboundResponse::CancelThrough { request_id: 10 });
     scheduler.push(RemoteP2pOutboundResponse::Register { request_id: 10 });
@@ -66,11 +85,11 @@ fn cancellation_discards_queued_frames_and_late_asset_completion() {
         body: Bytes::from_static(b"reordered-late"),
         priority: RemoteP2pAssetPriority::Reserve,
     });
-    assert!(scheduler.next_frame().is_none());
+    assert!(scheduler.next_transmission().is_none());
 }
 
 #[test]
-fn foreground_frames_overtake_a_partially_sent_reserve_asset() {
+fn asset_opening_is_atomic_before_foreground_overtakes_remaining_reserve_chunks() {
     let mut scheduler = RemoteP2pOutboundScheduler::default();
     scheduler.push(RemoteP2pOutboundResponse::Asset {
         request_id: 1,
@@ -78,9 +97,13 @@ fn foreground_frames_overtake_a_partially_sent_reserve_asset() {
         body: Bytes::from(vec![1; HLS_ASSET_CHUNK_SIZE + 1]),
         priority: RemoteP2pAssetPriority::Reserve,
     });
+    let reserve_opening = scheduler.next_transmission().expect("reserve opening");
     assert!(matches!(
-        scheduler.next_frame(),
-        Some(RemoteP2pOutboundFrame::Text(frame)) if frame.contains("\"id\":1")
+        reserve_opening.as_slice(),
+        [RemoteP2pOutboundFrame::Text(header), RemoteP2pOutboundFrame::Binary(chunk)]
+            if header.contains("\"id\":1")
+                && &chunk[4..8] == 1_u32.to_be_bytes().as_slice()
+                && &chunk[8..12] == 0_u32.to_be_bytes().as_slice()
     ));
 
     scheduler.push(RemoteP2pOutboundResponse::Asset {
@@ -89,17 +112,18 @@ fn foreground_frames_overtake_a_partially_sent_reserve_asset() {
         body: Bytes::from_static(b"#EXTM3U"),
         priority: RemoteP2pAssetPriority::Foreground,
     });
+    let foreground_opening = scheduler.next_transmission().expect("foreground opening");
     assert!(matches!(
-        scheduler.next_frame(),
-        Some(RemoteP2pOutboundFrame::Text(frame)) if frame.contains("\"id\":2")
+        foreground_opening.as_slice(),
+        [RemoteP2pOutboundFrame::Text(header), RemoteP2pOutboundFrame::Binary(chunk)]
+            if header.contains("\"id\":2")
+                && &chunk[4..8] == 2_u32.to_be_bytes().as_slice()
     ));
+    let reserve_tail = scheduler.next_transmission().expect("reserve tail");
     assert!(matches!(
-        scheduler.next_frame(),
-        Some(RemoteP2pOutboundFrame::Binary(frame)) if &frame[4..8] == 2_u32.to_be_bytes().as_slice()
-    ));
-    assert!(matches!(
-        scheduler.next_frame(),
-        Some(RemoteP2pOutboundFrame::Binary(frame)) if &frame[4..8] == 1_u32.to_be_bytes().as_slice()
+        reserve_tail.as_slice(),
+        [RemoteP2pOutboundFrame::Binary(chunk)]
+            if &chunk[4..8] == 1_u32.to_be_bytes().as_slice()
     ));
 }
 
@@ -120,16 +144,14 @@ fn promoting_a_published_reserve_asset_moves_its_next_frame_to_foreground() {
         body: Bytes::from(vec![2; HLS_ASSET_CHUNK_SIZE + 1]),
         priority: RemoteP2pAssetPriority::Reserve,
     });
-    assert!(matches!(
-        scheduler.next_frame(),
-        Some(RemoteP2pOutboundFrame::Text(frame)) if frame.contains("\"id\":1")
-    ));
+    let opening = scheduler.next_transmission().expect("reserve opening");
+    assert_eq!(opening.len(), 2);
 
     scheduler.promote(1);
 
     assert!(matches!(
-        scheduler.next_frame(),
-        Some(RemoteP2pOutboundFrame::Binary(frame))
+        scheduler.next_transmission().as_deref(),
+        Some([RemoteP2pOutboundFrame::Binary(frame)])
             if &frame[4..8] == 1_u32.to_be_bytes().as_slice()
     ));
 }
@@ -153,8 +175,10 @@ fn promotion_is_retained_when_it_arrives_before_the_asset_response() {
     });
 
     assert!(matches!(
-        scheduler.next_frame(),
-        Some(RemoteP2pOutboundFrame::Text(frame)) if frame.contains("\"id\":7")
+        scheduler.next_transmission().as_deref(),
+        Some([RemoteP2pOutboundFrame::Text(header), RemoteP2pOutboundFrame::Binary(chunk)])
+            if header.contains("\"id\":7")
+                && &chunk[4..8] == 7_u32.to_be_bytes().as_slice()
     ));
 }
 
@@ -173,7 +197,7 @@ fn writer_ingest_is_bounded_before_a_scheduled_frame_must_run() {
     let mut scheduler = RemoteP2pOutboundScheduler::default();
 
     assert_eq!(ingest_hls_responses(&mut receiver, &mut scheduler, 3), 3);
-    assert!(scheduler.next_frame().is_some());
+    assert!(scheduler.next_transmission().is_some());
     assert!(receiver.try_recv().is_ok());
 }
 
