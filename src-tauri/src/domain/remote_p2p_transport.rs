@@ -12,7 +12,6 @@ use tokio::time::{Duration, sleep, timeout};
 use webrtc::api::APIBuilder;
 use webrtc::data_channel::RTCDataChannel;
 use webrtc::data_channel::data_channel_message::DataChannelMessage;
-use webrtc::data_channel::data_channel_state::RTCDataChannelState;
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::peer_connection::RTCPeerConnection;
@@ -27,7 +26,6 @@ const HLS_ASSET_CHUNK_HEADER_SIZE: usize = 12;
 const HLS_ASSET_CHUNK_SIZE: usize = HLS_ASSET_MAX_MESSAGE_SIZE - HLS_ASSET_CHUNK_HEADER_SIZE;
 const HLS_ASSET_CHUNK_MAGIC: &[u8; 4] = b"SLH1";
 const HLS_DATA_CHANNEL_PROGRESS_LEASE: Duration = Duration::from_secs(5);
-const HLS_DATA_CHANNEL_CAPACITY_POLL_INTERVAL: Duration = Duration::from_millis(20);
 const HLS_DATA_CHANNEL_HIGH_WATERMARK: usize = HLS_ASSET_MAX_MESSAGE_SIZE * 4;
 const HLS_DATA_CHANNEL_LOW_WATERMARK: usize = HLS_ASSET_MAX_MESSAGE_SIZE * 2;
 const HLS_RESPONSE_INGEST_BUDGET: usize = 64;
@@ -1021,17 +1019,17 @@ async fn run_hls_data_channel_writer(
         }
         if !await_hls_data_channel_capacity(
             || channel.buffered_amount(),
-            || channel.ready_state() == RTCDataChannelState::Open,
             HLS_DATA_CHANNEL_HIGH_WATERMARK,
             HLS_DATA_CHANNEL_LOW_WATERMARK,
-            HLS_DATA_CHANNEL_CAPACITY_POLL_INTERVAL,
+            HLS_DATA_CHANNEL_PROGRESS_LEASE,
         )
         .await
         {
             log::warn!(
                 target: REMOTE_SHARE_LOG_TARGET,
-                "remote_p2p_response_writer_stopped phase=capacity reason=channel_closed"
+                "remote_p2p_response_writer_stalled phase=capacity recovery=close_supply_epoch"
             );
+            let _ = channel.close().await;
             return;
         }
     }
@@ -1053,38 +1051,39 @@ fn ingest_hls_responses(
     ingested
 }
 
-async fn await_hls_data_channel_capacity<F, Fut, G>(
+async fn await_hls_data_channel_capacity<F, Fut>(
     mut buffered_amount: F,
-    mut channel_is_open: G,
     high_watermark: usize,
     low_watermark: usize,
-    observation_interval: Duration,
+    lease: Duration,
 ) -> bool
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = usize>,
-    G: FnMut() -> bool,
 {
     debug_assert!(low_watermark <= high_watermark);
-    let mut buffered = loop {
-        if !channel_is_open() {
-            return false;
-        }
-        if let Ok(buffered) = timeout(observation_interval, buffered_amount()).await {
-            break buffered;
-        }
+    let mut previous = match timeout(lease, buffered_amount()).await {
+        Ok(buffered) => buffered,
+        Err(_) => return false,
     };
-    if buffered <= high_watermark {
+    if previous <= high_watermark {
         return true;
     }
-    while buffered > low_watermark {
-        if !channel_is_open() {
+    while previous > low_watermark {
+        let progress = timeout(lease, async {
+            loop {
+                sleep(Duration::from_millis(2)).await;
+                let current = buffered_amount().await;
+                if current < previous {
+                    return current;
+                }
+            }
+        })
+        .await;
+        let Ok(current) = progress else {
             return false;
-        }
-        sleep(observation_interval).await;
-        if let Ok(current) = timeout(observation_interval, buffered_amount()).await {
-            buffered = current;
-        }
+        };
+        previous = current;
     }
     true
 }

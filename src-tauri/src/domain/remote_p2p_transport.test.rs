@@ -1,5 +1,5 @@
 use super::*;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
 #[test]
 fn hls_timeline_update_frame_preserves_revisioned_metadata() {
@@ -321,45 +321,30 @@ async fn negotiation_phases_share_one_total_lease() {
 }
 
 #[tokio::test]
-async fn a_writer_capacity_wait_does_not_turn_slow_drain_into_supply_failure() {
+async fn a_writer_capacity_wait_that_makes_no_progress_expires_its_supply_lease() {
     let buffered = Arc::new(AtomicUsize::new(HLS_ASSET_MAX_MESSAGE_SIZE));
-    let wait = await_hls_data_channel_capacity(
-        {
-            let buffered = Arc::clone(&buffered);
-            move || {
-                let buffered = Arc::clone(&buffered);
-                async move { buffered.load(AtomicOrdering::SeqCst) }
-            }
-        },
-        || true,
-        HLS_ASSET_MAX_MESSAGE_SIZE - 1,
-        0,
-        Duration::from_millis(2),
-    );
-    tokio::pin!(wait);
-
     assert!(
-        tokio::time::timeout(Duration::from_millis(15), &mut wait)
-            .await
-            .is_err()
+        !await_hls_data_channel_capacity(
+            {
+                let buffered = Arc::clone(&buffered);
+                move || {
+                    let buffered = Arc::clone(&buffered);
+                    async move { buffered.load(AtomicOrdering::SeqCst) }
+                }
+            },
+            HLS_ASSET_MAX_MESSAGE_SIZE - 1,
+            0,
+            Duration::from_millis(5),
+        )
+        .await
     );
-    buffered.store(0, AtomicOrdering::SeqCst);
-    assert!(wait.await);
 }
 
 #[tokio::test]
-async fn a_writer_capacity_read_that_never_finishes_exits_when_the_channel_closes() {
-    let open = Arc::new(AtomicBool::new(true));
-    let close = Arc::clone(&open);
-    tokio::spawn(async move {
-        sleep(Duration::from_millis(8)).await;
-        close.store(false, AtomicOrdering::SeqCst);
-    });
-
+async fn a_writer_capacity_read_that_never_finishes_expires_its_supply_lease() {
     assert!(
         !await_hls_data_channel_capacity(
             || std::future::pending::<usize>(),
-            move || open.load(AtomicOrdering::SeqCst),
             HLS_DATA_CHANNEL_HIGH_WATERMARK,
             HLS_DATA_CHANNEL_LOW_WATERMARK,
             Duration::from_millis(5),
@@ -387,7 +372,6 @@ async fn a_writer_capacity_below_the_high_watermark_does_not_wait_for_an_ack() {
                     }
                 }
             },
-            || true,
             HLS_DATA_CHANNEL_HIGH_WATERMARK,
             HLS_DATA_CHANNEL_LOW_WATERMARK,
             Duration::from_millis(5),
@@ -412,7 +396,6 @@ async fn a_writer_capacity_wait_stops_at_the_low_watermark_instead_of_zero() {
                 let buffered = Arc::clone(&buffered);
                 async move { buffered.load(AtomicOrdering::SeqCst) }
             },
-            || true,
             HLS_DATA_CHANNEL_HIGH_WATERMARK,
             HLS_DATA_CHANNEL_LOW_WATERMARK,
             Duration::from_millis(20),
@@ -422,7 +405,7 @@ async fn a_writer_capacity_wait_stops_at_the_low_watermark_instead_of_zero() {
 }
 
 #[tokio::test]
-async fn a_writer_capacity_wait_that_keeps_progressing_reaches_the_low_watermark() {
+async fn a_writer_capacity_wait_that_keeps_progressing_renews_its_supply_lease() {
     let buffered = Arc::new(AtomicUsize::new(HLS_DATA_CHANNEL_HIGH_WATERMARK + 3));
     let drain = Arc::clone(&buffered);
     tokio::spawn(async move {
@@ -442,7 +425,6 @@ async fn a_writer_capacity_wait_that_keeps_progressing_reaches_the_low_watermark
                 let buffered = Arc::clone(&buffered);
                 async move { buffered.load(AtomicOrdering::SeqCst) }
             },
-            || true,
             HLS_DATA_CHANNEL_HIGH_WATERMARK,
             HLS_DATA_CHANNEL_LOW_WATERMARK,
             Duration::from_millis(100),
