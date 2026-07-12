@@ -7,8 +7,9 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Instant, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -17,6 +18,10 @@ const HLS_SEGMENT_SECONDS: u32 = 2;
 const HLS_PRIMING_SEGMENT_SECONDS: f64 = 2.005_333;
 const HLS_PRIMING_WINDOW_BEHIND: u64 = 2;
 const HLS_PRIMING_WINDOW_AHEAD: u64 = 6;
+const HLS_PLAYBACK_AHEAD_SEGMENTS: u32 = 3;
+const HLS_DEFAULT_RESERVE_BUFFER_SECONDS: u32 = 60;
+const HLS_MAX_RESERVE_BUFFER_SECONDS: u32 = 180;
+const HLS_AUDIO_BITRATE: &str = "192k";
 const HLS_MATERIALIZATION_VERSION: &str = "p2p-hls-v1";
 const LOCAL_PRIMING_SEGMENT_URL: &str = "p2p-local://slisic/prime.ts";
 
@@ -33,6 +38,7 @@ pub(super) struct P2pHlsSessionSnapshot {
     pub(super) epoch: u64,
     pub(super) revision: u64,
     pub(super) stream_url: String,
+    pub(super) reserve_url: String,
     pub(super) entries: Vec<P2pHlsTimelineEntry>,
 }
 
@@ -71,7 +77,11 @@ struct ClientHlsSession {
     epoch: u64,
     revision: u64,
     prepared_at: Instant,
+    observed_playout_seconds: Option<f64>,
     handoff_sequence: Option<u64>,
+    pending_handoff_sequence: Option<u64>,
+    reserve_buffer_seconds: u32,
+    projected_playback_manifest: bool,
     tracks: Vec<PublishedTrack>,
 }
 
@@ -81,24 +91,85 @@ impl ClientHlsSession {
             epoch,
             revision: 1,
             prepared_at: Instant::now(),
+            observed_playout_seconds: None,
             handoff_sequence: None,
+            pending_handoff_sequence: None,
+            reserve_buffer_seconds: HLS_DEFAULT_RESERVE_BUFFER_SECONDS,
+            projected_playback_manifest: false,
             tracks: Vec::new(),
         }
     }
 
-    fn publish_start(&mut self, track: PublishedTrack) {
-        self.publish_start_at(track, self.current_prime_sequence());
-    }
-
-    fn publish_start_at(&mut self, track: PublishedTrack, current_sequence: u64) {
+    fn prepare_start(&mut self, track: PublishedTrack) {
         self.tracks.clear();
         self.tracks.push(track);
+        self.handoff_sequence = None;
+        self.pending_handoff_sequence = None;
+        self.revision = self.revision.saturating_add(1);
+    }
+
+    fn commit_handoff_at(&mut self, current_sequence: u64) -> bool {
+        if self.tracks.is_empty() || self.handoff_sequence.is_some() {
+            return false;
+        }
         self.handoff_sequence = Some(
             current_sequence
                 .saturating_add(HLS_PRIMING_WINDOW_AHEAD)
                 .saturating_add(1),
         );
         self.revision = self.revision.saturating_add(1);
+        true
+    }
+
+    fn startup_reserve_seconds(&self) -> f64 {
+        self.tracks
+            .first()
+            .map(|track| {
+                track
+                    .asset
+                    .segments
+                    .iter()
+                    .map(|segment| segment.duration_seconds)
+                    .sum::<f64>()
+                    .min(f64::from(HLS_DEFAULT_RESERVE_BUFFER_SECONDS))
+            })
+            .unwrap_or_default()
+    }
+
+    fn offer_handoff(
+        &mut self,
+        ready_seconds: f64,
+        playout_seconds: f64,
+        protected_sequence: u64,
+    ) -> Option<u64> {
+        if let Some(sequence) = self.handoff_sequence.or(self.pending_handoff_sequence) {
+            return Some(sequence);
+        }
+        if !ready_seconds.is_finite() || ready_seconds + 0.001 < self.startup_reserve_seconds() {
+            return None;
+        }
+        if !playout_seconds.is_finite() || playout_seconds < 0.0 {
+            return None;
+        }
+        let current_sequence = (playout_seconds / HLS_PRIMING_SEGMENT_SECONDS).floor() as u64;
+        if protected_sequence <= current_sequence {
+            return None;
+        }
+        self.pending_handoff_sequence = Some(protected_sequence);
+        Some(protected_sequence)
+    }
+
+    fn commit_offered_handoff(&mut self, sequence: u64) -> bool {
+        if self.handoff_sequence == Some(sequence) && self.pending_handoff_sequence.is_none() {
+            return true;
+        }
+        if self.tracks.is_empty() || self.pending_handoff_sequence != Some(sequence) {
+            return false;
+        }
+        self.pending_handoff_sequence = None;
+        self.handoff_sequence = Some(sequence);
+        self.revision = self.revision.saturating_add(1);
+        true
     }
 
     fn append_tracks(&mut self, tracks: Vec<PublishedTrack>) -> bool {
@@ -108,6 +179,30 @@ impl ClientHlsSession {
         self.tracks.extend(tracks);
         self.revision = self.revision.saturating_add(1);
         true
+    }
+
+    fn set_reserve_buffer_seconds(&mut self, buffer_seconds: u32) {
+        self.reserve_buffer_seconds = self.reserve_buffer_seconds.max(buffer_seconds.clamp(
+            HLS_DEFAULT_RESERVE_BUFFER_SECONDS,
+            HLS_MAX_RESERVE_BUFFER_SECONDS,
+        ));
+    }
+
+    fn enable_projected_playback_manifest(&mut self) {
+        self.projected_playback_manifest = true;
+    }
+
+    fn observe_playout_seconds(&mut self, playout_seconds: Option<f64>) {
+        let Some(playout_seconds) =
+            playout_seconds.filter(|value| value.is_finite() && *value >= 0.0)
+        else {
+            return;
+        };
+        self.observed_playout_seconds = Some(
+            self.observed_playout_seconds
+                .unwrap_or_default()
+                .max(playout_seconds),
+        );
     }
 
     fn snapshot(&self) -> P2pHlsSessionSnapshot {
@@ -144,6 +239,7 @@ impl ClientHlsSession {
             epoch: self.epoch,
             revision: self.revision,
             stream_url: stream_url(self.epoch),
+            reserve_url: reserve_url(self.epoch),
             entries,
         }
     }
@@ -153,6 +249,32 @@ impl ClientHlsSession {
     }
 
     fn manifest_at(&self, current_sequence: u64) -> String {
+        let ahead_seconds = if self.projected_playback_manifest {
+            HLS_PLAYBACK_AHEAD_SEGMENTS * HLS_SEGMENT_SECONDS
+        } else {
+            self.reserve_buffer_seconds
+        };
+        self.manifest_with_ahead(current_sequence, f64::from(ahead_seconds), false)
+    }
+
+    fn reserve_manifest(&self) -> String {
+        self.reserve_manifest_at(self.current_prime_sequence())
+    }
+
+    fn reserve_manifest_at(&self, current_sequence: u64) -> String {
+        self.manifest_with_ahead(
+            current_sequence,
+            f64::from(self.reserve_buffer_seconds),
+            true,
+        )
+    }
+
+    fn manifest_with_ahead(
+        &self,
+        current_sequence: u64,
+        ahead_seconds: f64,
+        include_prepared_tracks: bool,
+    ) -> String {
         let target_duration = self
             .tracks
             .iter()
@@ -178,25 +300,46 @@ impl ClientHlsSession {
                 "#EXTINF:{HLS_PRIMING_SEGMENT_SECONDS:.6},\n{LOCAL_PRIMING_SEGMENT_URL}\n"
             ));
         }
-        for (track_index, track) in self.tracks.iter().enumerate() {
-            manifest.push_str("#EXT-X-DISCONTINUITY\n");
+        if handoff_sequence.is_none() && !include_prepared_tracks {
+            return manifest;
+        }
+        let handoff_seconds =
+            handoff_sequence.unwrap_or(priming_end) as f64 * HLS_PRIMING_SEGMENT_SECONDS;
+        let availability_end = handoff_seconds
+            .max(current_sequence as f64 * HLS_PRIMING_SEGMENT_SECONDS)
+            + ahead_seconds;
+        let mut cursor = handoff_seconds;
+        'tracks: for (track_index, track) in self.tracks.iter().enumerate() {
+            let mut discontinuity_pending = true;
             for (segment_index, segment) in track.asset.segments.iter().enumerate() {
+                if cursor >= availability_end {
+                    break 'tracks;
+                }
+                if discontinuity_pending {
+                    manifest.push_str("#EXT-X-DISCONTINUITY\n");
+                    discontinuity_pending = false;
+                }
                 manifest.push_str(&format!(
                     "#EXTINF:{:.6},\np2p-hls://session/{}/track/{track_index}/segment/{segment_index}.ts\n",
                     segment.duration_seconds, self.epoch
                 ));
+                cursor += segment.duration_seconds;
             }
         }
         manifest
     }
 
     fn current_prime_sequence(&self) -> u64 {
-        (self.prepared_at.elapsed().as_secs_f64() / HLS_PRIMING_SEGMENT_SECONDS).floor() as u64
+        let playout_seconds = self
+            .observed_playout_seconds
+            .unwrap_or_else(|| self.prepared_at.elapsed().as_secs_f64());
+        (playout_seconds / HLS_PRIMING_SEGMENT_SECONDS).floor() as u64
     }
 }
 
 pub(super) struct RemoteP2pHls {
     cache_root: PathBuf,
+    epoch_clock: AtomicU64,
     sessions: Mutex<HashMap<String, ClientHlsSession>>,
     materialization_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
 }
@@ -206,6 +349,7 @@ impl RemoteP2pHls {
         fs::create_dir_all(&cache_root)?;
         Ok(Arc::new(Self {
             cache_root,
+            epoch_clock: AtomicU64::new(current_epoch_micros()),
             sessions: Mutex::new(HashMap::new()),
             materialization_locks: Mutex::new(HashMap::new()),
         }))
@@ -216,10 +360,9 @@ impl RemoteP2pHls {
             .sessions
             .lock()
             .map_err(|_| anyhow!("remote P2P HLS session lock is poisoned"))?;
-        let epoch = sessions
-            .get(client_id)
-            .map(|session| session.epoch.saturating_add(1))
-            .unwrap_or(1);
+        self.epoch_clock
+            .fetch_max(current_epoch_micros(), Ordering::Relaxed);
+        let epoch = self.epoch_clock.fetch_add(1, Ordering::Relaxed) + 1;
         let session = ClientHlsSession::prepared(epoch);
         let snapshot = session.snapshot();
         sessions.insert(client_id.to_owned(), session);
@@ -245,8 +388,48 @@ impl RemoteP2pHls {
                 "remote P2P HLS session must be stopped before a new start"
             ));
         }
-        session.publish_start(PublishedTrack { track, asset });
+        session.prepare_start(PublishedTrack { track, asset });
         Ok(session.snapshot())
+    }
+
+    pub(super) fn offer_handoff(
+        &self,
+        client_id: &str,
+        epoch: u64,
+        ready_seconds: f64,
+        playout_seconds: f64,
+        protected_sequence: u64,
+    ) -> Result<Option<u64>> {
+        let mut sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| anyhow!("remote P2P HLS session lock is poisoned"))?;
+        let Some(session) = sessions.get_mut(client_id) else {
+            return Ok(None);
+        };
+        if session.epoch != epoch {
+            return Ok(None);
+        }
+        Ok(session.offer_handoff(ready_seconds, playout_seconds, protected_sequence))
+    }
+
+    pub(super) fn commit_handoff(
+        &self,
+        client_id: &str,
+        epoch: u64,
+        handoff_sequence: u64,
+    ) -> Result<Option<P2pHlsSessionSnapshot>> {
+        let mut sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| anyhow!("remote P2P HLS session lock is poisoned"))?;
+        let Some(session) = sessions.get_mut(client_id) else {
+            return Ok(None);
+        };
+        if session.epoch != epoch || !session.commit_offered_handoff(handoff_sequence) {
+            return Ok(None);
+        }
+        Ok(Some(session.snapshot()))
     }
 
     pub(super) async fn append_tracks(
@@ -275,6 +458,22 @@ impl RemoteP2pHls {
         Ok(Some(session.snapshot()))
     }
 
+    pub(super) fn set_reserve_buffer_seconds(
+        &self,
+        client_id: &str,
+        buffer_seconds: u32,
+    ) -> Result<bool> {
+        let mut sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| anyhow!("remote P2P HLS session lock is poisoned"))?;
+        let Some(session) = sessions.get_mut(client_id) else {
+            return Ok(false);
+        };
+        session.set_reserve_buffer_seconds(buffer_seconds);
+        Ok(true)
+    }
+
     pub(super) fn snapshot(&self, client_id: &str) -> Result<P2pHlsSessionSnapshot> {
         self.sessions
             .lock()
@@ -296,22 +495,35 @@ impl RemoteP2pHls {
         }
     }
 
-    pub(super) async fn resolve_asset(&self, client_id: &str, url: &str) -> Result<P2pHlsAsset> {
+    pub(super) async fn resolve_asset(
+        &self,
+        client_id: &str,
+        url: &str,
+        playout_seconds: Option<f64>,
+    ) -> Result<P2pHlsAsset> {
         enum AssetRef {
             Manifest(String),
             Segment(PathBuf),
         }
         let asset = {
-            let sessions = self
+            let mut sessions = self
                 .sessions
                 .lock()
                 .map_err(|_| anyhow!("remote P2P HLS session lock is poisoned"))?;
             let session = sessions
-                .get(client_id)
+                .get_mut(client_id)
                 .ok_or_else(|| anyhow!("remote P2P HLS session is not prepared"))?;
             let path = parse_session_url(url, session.epoch)?;
             match path {
-                SessionAssetPath::Manifest => AssetRef::Manifest(session.manifest()),
+                SessionAssetPath::Manifest => {
+                    session.observe_playout_seconds(playout_seconds);
+                    AssetRef::Manifest(session.manifest())
+                }
+                SessionAssetPath::ReserveManifest => {
+                    session.enable_projected_playback_manifest();
+                    session.observe_playout_seconds(playout_seconds);
+                    AssetRef::Manifest(session.reserve_manifest())
+                }
                 SessionAssetPath::Segment {
                     track_index,
                     segment_index,
@@ -381,6 +593,7 @@ impl RemoteP2pHls {
 
 enum SessionAssetPath {
     Manifest,
+    ReserveManifest,
     Segment {
         track_index: usize,
         segment_index: usize,
@@ -401,6 +614,7 @@ fn parse_session_url(url: &str, expected_epoch: u64) -> Result<SessionAssetPath>
     }
     match parts.next() {
         Some("index.m3u8") if parts.next().is_none() => Ok(SessionAssetPath::Manifest),
+        Some("reserve.m3u8") if parts.next().is_none() => Ok(SessionAssetPath::ReserveManifest),
         Some("track") => {
             let track_index = parts
                 .next()
@@ -470,7 +684,7 @@ fn materialize_blocking(
         .arg("-c:a")
         .arg("aac")
         .arg("-b:a")
-        .arg("192k")
+        .arg(HLS_AUDIO_BITRATE)
         .arg("-f")
         .arg("hls")
         .arg("-hls_time")
@@ -544,6 +758,17 @@ fn parse_track_asset(playlist_path: &Path, hls_dir: &Path) -> Result<HlsTrackAss
 
 fn stream_url(epoch: u64) -> String {
     format!("p2p-hls://session/{epoch}/index.m3u8")
+}
+
+fn reserve_url(epoch: u64) -> String {
+    format!("p2p-hls://session/{epoch}/reserve.m3u8")
+}
+
+fn current_epoch_micros() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_micros() as u64)
+        .unwrap_or(1)
 }
 
 fn format_seconds(ms: u32) -> String {

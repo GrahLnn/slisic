@@ -31,6 +31,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::{HashMap, VecDeque};
+use std::future::Future;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -40,7 +41,7 @@ use tauri::{AppHandle, Manager};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use tokio::task;
-use tokio::time::{MissedTickBehavior, interval, sleep};
+use tokio::time::{MissedTickBehavior, interval, sleep, timeout};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 use tower_http::cors::{Any, CorsLayer};
@@ -51,11 +52,14 @@ const REMOTE_PAIRING_CODE_MAX_LEN: usize = 8;
 const REMOTE_PAIRING_CODE_ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
 const REMOTE_SHARE_PORT: u16 = 48_231;
 const REMOTE_CANDIDATE_WINDOW_LIMIT: usize = 96;
+const REMOTE_PREFETCH_MIN_FUTURE_TRACKS: usize = 1;
+const REMOTE_PREFETCH_MAX_FUTURE_TRACKS: usize = 3;
 const REMOTE_RELAY_HOST_URL_ENV: &str = "SLISIC_REMOTE_RELAY_HOST_URL";
 const DEFAULT_REMOTE_RELAY_HOST_URL: &str = "wss://slisic-remote.grahlnn.com/ws/host";
 const REMOTE_RELAY_RECONNECT_DELAY: Duration = Duration::from_secs(5);
 const REMOTE_RELAY_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
 const REMOTE_RELAY_IDLE_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
+const REMOTE_RELAY_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_REMOTE_CLIENT_ID: &str = "local";
 
 static REMOTE_SHARE_RUNTIME: OnceLock<Arc<RemoteShareRuntime>> = OnceLock::new();
@@ -122,7 +126,6 @@ struct RemoteShareSessions {
     by_client: HashMap<String, RemoteShareSession>,
 }
 
-#[derive(Default)]
 struct RemoteShareSession {
     connected: bool,
     playlist_name: Option<String>,
@@ -131,6 +134,33 @@ struct RemoteShareSession {
     queue: VecDeque<PlaybackTrack>,
     recently_played: Vec<PlaybackTrack>,
     state: RemotePlaybackState,
+    prefetch_target_tracks: usize,
+    prefetch_revision: u32,
+    queue_fill_in_progress: bool,
+}
+
+impl Default for RemoteShareSession {
+    fn default() -> Self {
+        Self {
+            connected: false,
+            playlist_name: None,
+            current: None,
+            current_hls_entry_id: None,
+            queue: VecDeque::new(),
+            recently_played: Vec::new(),
+            state: RemotePlaybackState::Ready,
+            prefetch_target_tracks: REMOTE_PREFETCH_MIN_FUTURE_TRACKS,
+            prefetch_revision: 0,
+            queue_fill_in_progress: false,
+        }
+    }
+}
+
+struct RemoteQueueFillPlan {
+    current: PlaybackTrack,
+    existing_queue: Vec<PlaybackTrack>,
+    recent_history: Vec<PlaybackTrack>,
+    target_tracks: usize,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -285,6 +315,7 @@ struct RemoteHlsSessionView {
     epoch: u64,
     revision: u64,
     stream_url: String,
+    reserve_url: String,
     entries: Vec<RemoteHlsTimelineEntryView>,
 }
 
@@ -303,6 +334,7 @@ impl From<P2pHlsSessionSnapshot> for RemoteHlsSessionView {
             epoch: snapshot.epoch,
             revision: snapshot.revision,
             stream_url: snapshot.stream_url,
+            reserve_url: snapshot.reserve_url,
             entries: snapshot
                 .entries
                 .into_iter()
@@ -399,17 +431,39 @@ async fn run_remote_p2p_events(
                 client_id,
                 request_id,
                 url,
-                channel,
+                playout_seconds,
+                priority,
+                responses,
             } => {
                 let runtime = Arc::clone(&runtime);
                 tauri::async_runtime::spawn(async move {
-                    match runtime.p2p_hls.resolve_asset(&client_id, &url).await {
+                    match runtime
+                        .p2p_hls
+                        .resolve_asset(&client_id, &url, playout_seconds)
+                        .await
+                    {
                         Ok(asset) => {
+                            if url.ends_with(".m3u8") {
+                                if let Ok(snapshot) = runtime.p2p_hls.snapshot(&client_id) {
+                                    let view = RemoteHlsSessionView::from(snapshot);
+                                    if let Err(error) =
+                                        RemoteP2pTransport::send_hls_timeline(&responses, &view)
+                                            .await
+                                    {
+                                        log::warn!(
+                                            target: REMOTE_SHARE_LOG_TARGET,
+                                            "remote_p2p_hls_timeline_send_failed error=\"{}\"",
+                                            escape_remote_log_value(&error.to_string())
+                                        );
+                                    }
+                                }
+                            }
                             if let Err(error) = RemoteP2pTransport::send_hls_asset(
-                                channel,
+                                &responses,
                                 request_id,
                                 asset.content_type,
                                 asset.body,
+                                priority,
                             )
                             .await
                             {
@@ -423,7 +477,7 @@ async fn run_remote_p2p_events(
                         Err(error) => {
                             let message = escape_remote_log_value(&error.to_string());
                             if let Err(send_error) = RemoteP2pTransport::send_hls_asset_error(
-                                channel, request_id, &message,
+                                &responses, request_id, &message,
                             )
                             .await
                             {
@@ -437,6 +491,100 @@ async fn run_remote_p2p_events(
                     }
                 });
             }
+            RemoteP2pTransportEvent::PrefetchReserveRequested {
+                client_id,
+                revision,
+                target_tracks,
+                buffer_seconds,
+            } => {
+                if let Err(error) = runtime.apply_prefetch_reserve(
+                    &client_id,
+                    revision,
+                    target_tracks,
+                    buffer_seconds,
+                ) {
+                    log::warn!(
+                        target: REMOTE_SHARE_LOG_TARGET,
+                        "remote_prefetch_reserve_rejected error=\"{}\"",
+                        escape_remote_log_value(&error.message)
+                    );
+                }
+            }
+            RemoteP2pTransportEvent::PlaybackReady {
+                client_id,
+                epoch,
+                ready_seconds,
+                playout_seconds,
+                protected_sequence,
+                responses,
+            } => match runtime.p2p_hls.offer_handoff(
+                &client_id,
+                epoch,
+                ready_seconds,
+                playout_seconds,
+                protected_sequence,
+            ) {
+                Ok(Some(handoff_sequence)) => {
+                    log::info!(
+                        target: REMOTE_SHARE_LOG_TARGET,
+                        "remote_p2p_hls_handoff_offered epoch={epoch} handoff_sequence={handoff_sequence} protected_sequence={protected_sequence} ready_seconds={ready_seconds:.3}"
+                    );
+                    if let Err(error) =
+                        RemoteP2pTransport::send_handoff_offer(&responses, epoch, handoff_sequence)
+                            .await
+                    {
+                        log::warn!(
+                            target: REMOTE_SHARE_LOG_TARGET,
+                            "remote_p2p_hls_handoff_offer_send_failed error=\"{}\"",
+                            escape_remote_log_value(&error.to_string())
+                        );
+                    }
+                }
+                Ok(None) => {
+                    log::warn!(
+                        target: REMOTE_SHARE_LOG_TARGET,
+                        "remote_p2p_hls_handoff_rejected epoch={epoch} ready_seconds={ready_seconds:.3}"
+                    );
+                }
+                Err(error) => {
+                    log::warn!(
+                        target: REMOTE_SHARE_LOG_TARGET,
+                        "remote_p2p_hls_handoff_failed error=\"{}\"",
+                        escape_remote_log_value(&error.to_string())
+                    );
+                }
+            },
+            RemoteP2pTransportEvent::PlaybackHandoffCommit {
+                client_id,
+                epoch,
+                handoff_sequence,
+            } => match runtime
+                .p2p_hls
+                .commit_handoff(&client_id, epoch, handoff_sequence)
+            {
+                Ok(Some(snapshot)) => {
+                    log::info!(
+                        target: REMOTE_SHARE_LOG_TARGET,
+                        "remote_p2p_hls_handoff_committed epoch={epoch} handoff_sequence={handoff_sequence}"
+                    );
+                    if let Err(error) = runtime.send_hls_timeline_updated(&client_id, snapshot) {
+                        log::warn!(
+                            target: REMOTE_SHARE_LOG_TARGET,
+                            "remote_p2p_hls_handoff_projection_failed error=\"{}\"",
+                            escape_remote_log_value(&error.message)
+                        );
+                    }
+                }
+                Ok(None) => log::warn!(
+                    target: REMOTE_SHARE_LOG_TARGET,
+                    "remote_p2p_hls_handoff_commit_rejected epoch={epoch} handoff_sequence={handoff_sequence}"
+                ),
+                Err(error) => log::warn!(
+                    target: REMOTE_SHARE_LOG_TARGET,
+                    "remote_p2p_hls_handoff_commit_failed error=\"{}\"",
+                    escape_remote_log_value(&error.to_string())
+                ),
+            },
         }
     }
 }
@@ -547,13 +695,19 @@ async fn serve_remote_relay_socket(
                     return Err(anyhow!("remote relay idle connection refresh requested"));
                 }
                 let ping = serde_json::to_string(&RemoteRelayOutbound::HostPing {})?;
-                sink.send(Message::Text(ping.into())).await?;
+                await_remote_relay_write(
+                    sink.send(Message::Text(ping.into())),
+                    REMOTE_RELAY_WRITE_TIMEOUT,
+                ).await?;
             }
             outbound = outbound_rx.recv() => {
                 let Some(outbound) = outbound else {
                     return Err(anyhow!("remote relay outbound channel closed"));
                 };
-                sink.send(Message::Text(outbound.into())).await?;
+                await_remote_relay_write(
+                    sink.send(Message::Text(outbound.into())),
+                    REMOTE_RELAY_WRITE_TIMEOUT,
+                ).await?;
             }
             message = stream.next() => {
                 let Some(message) = message else {
@@ -567,6 +721,22 @@ async fn serve_remote_relay_socket(
                 if let Some((_host_connected, next_client_connected)) = remote_relay_peer_state(&text) {
                     client_connected = next_client_connected;
                 }
+                if remote_relay_message_is_rpc_request(&text) {
+                    let runtime = Arc::clone(&runtime);
+                    let response_tx = outbound_tx.clone();
+                    let relay_events = outbound_tx.clone();
+                    task::spawn(async move {
+                        let Some(response) = handle_remote_relay_message(
+                            runtime,
+                            &text,
+                            relay_events,
+                        ).await else {
+                            return;
+                        };
+                        let _ = response_tx.send(response);
+                    });
+                    continue;
+                }
                 let Some(response) = handle_remote_relay_message(
                     Arc::clone(&runtime),
                     &text,
@@ -574,9 +744,36 @@ async fn serve_remote_relay_socket(
                 ).await else {
                     continue;
                 };
-                sink.send(Message::Text(response.into())).await?;
+                await_remote_relay_write(
+                    sink.send(Message::Text(response.into())),
+                    REMOTE_RELAY_WRITE_TIMEOUT,
+                ).await?;
             }
         }
+    }
+}
+
+fn remote_relay_message_is_rpc_request(text: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("kind")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        })
+        .is_some_and(|kind| kind == "rpc_request")
+}
+
+async fn await_remote_relay_write<F, T, E>(operation: F, max_wait: Duration) -> Result<T>
+where
+    F: Future<Output = std::result::Result<T, E>>,
+    E: std::fmt::Display,
+{
+    match timeout(max_wait, operation).await {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(error)) => Err(anyhow!(error.to_string())),
+        Err(_) => Err(anyhow!("remote relay write timed out")),
     }
 }
 
@@ -649,6 +846,20 @@ async fn handle_remote_relay_message(
         RemoteRelayInbound::P2pSignal { client_id, signal } => {
             let client_id = normalize_remote_client_id(client_id.as_deref());
             let closes_peer = matches!(signal, RemoteP2pSignal::Close);
+            let (signal_generation, signal_revision) = match &signal {
+                RemoteP2pSignal::Offer {
+                    generation,
+                    revision,
+                    ..
+                }
+                | RemoteP2pSignal::Answer {
+                    generation,
+                    revision,
+                    ..
+                } => (*generation, *revision),
+                RemoteP2pSignal::Candidate { generation, .. } => (*generation, 0),
+                RemoteP2pSignal::Close | RemoteP2pSignal::Error { .. } => (0, 0),
+            };
             match runtime
                 .p2p_transport
                 .handle_signal(&client_id, signal)
@@ -664,6 +875,8 @@ async fn handle_remote_relay_message(
                     client_id,
                     signal: RemoteP2pSignal::Error {
                         reason: error.to_string(),
+                        generation: signal_generation,
+                        revision: signal_revision,
                     },
                 }),
             }
@@ -899,6 +1112,41 @@ async fn propose_remote_next_queue(
     })
 }
 
+async fn propose_remote_queue_suffix(
+    app: &AppHandle,
+    current: &PlaybackTrack,
+    existing_queue: &[PlaybackTrack],
+    recently_played: &[PlaybackTrack],
+    target_tracks: usize,
+) -> Result<Vec<PlaybackTrack>> {
+    let target_tracks = target_tracks.clamp(
+        REMOTE_PREFETCH_MIN_FUTURE_TRACKS,
+        REMOTE_PREFETCH_MAX_FUTURE_TRACKS,
+    );
+    let mut frontier = existing_queue.to_vec();
+    let existing_len = frontier.len();
+    let mut planned_history = recently_played.to_vec();
+    for track in &frontier {
+        observe_remote_recent_track(&mut planned_history, track.clone());
+    }
+    while frontier.len() < target_tracks {
+        let anchor = frontier.last().unwrap_or(current);
+        observe_remote_recent_track(&mut planned_history, anchor.clone());
+        let proposal = propose_remote_next_queue(app, anchor, &planned_history).await?;
+        let next = proposal.into_iter().find(|candidate| {
+            !same_remote_track(candidate, current)
+                && !frontier
+                    .iter()
+                    .any(|planned| same_remote_track(planned, candidate))
+        });
+        let Some(next) = next else {
+            break;
+        };
+        frontier.push(next);
+    }
+    Ok(frontier.drain(existing_len..).collect())
+}
+
 #[cfg(test)]
 async fn consume_prepared_playlist_initial_track(
     _app: &AppHandle,
@@ -1086,6 +1334,7 @@ impl RemoteShareRuntime {
             session.current_hls_entry_id = None;
             session.queue.clear();
             session.recently_played.clear();
+            session.queue_fill_in_progress = false;
             session.state = RemotePlaybackState::Preparing;
         }
 
@@ -1118,7 +1367,7 @@ impl RemoteShareRuntime {
             Vec::new(),
             hls,
         )?;
-        self.spawn_remote_next_queue_fill(client_id.to_string(), initial, Vec::new());
+        self.spawn_remote_next_queue_fill(client_id.to_string());
         Ok(response)
     }
 
@@ -1149,11 +1398,11 @@ impl RemoteShareRuntime {
                     playback: Some(playback),
                     hls: snapshot.into(),
                 },
-                advanced.then(|| (target, session.recently_played.clone())),
+                advanced,
             )
         };
-        if let Some((current, recent_history)) = refill {
-            self.spawn_remote_next_queue_fill(client_id.to_owned(), current, recent_history);
+        if refill {
+            self.spawn_remote_next_queue_fill(client_id.to_owned());
         }
         Ok(response)
     }
@@ -1170,6 +1419,8 @@ impl RemoteShareRuntime {
             session.current = None;
             session.current_hls_entry_id = None;
             session.queue.clear();
+            session.queue_fill_in_progress = false;
+            session.prefetch_target_tracks = REMOTE_PREFETCH_MIN_FUTURE_TRACKS;
             session.state = RemotePlaybackState::Ready;
             session.view()
         };
@@ -1181,30 +1432,77 @@ impl RemoteShareRuntime {
         })
     }
 
-    fn spawn_remote_next_queue_fill(
+    fn apply_prefetch_reserve(
         &self,
-        client_id: String,
-        current: PlaybackTrack,
-        recent_history: Vec<PlaybackTrack>,
-    ) {
+        client_id: &str,
+        revision: u32,
+        target_tracks: usize,
+        buffer_seconds: u32,
+    ) -> RemoteResult<()> {
+        let target_tracks = target_tracks.clamp(
+            REMOTE_PREFETCH_MIN_FUTURE_TRACKS,
+            REMOTE_PREFETCH_MAX_FUTURE_TRACKS,
+        );
+        let accepted = {
+            let mut sessions = self.lock_sessions()?;
+            let session = sessions.by_client.entry(client_id.to_owned()).or_default();
+            session.set_prefetch_target(revision, target_tracks)
+        };
+        if accepted {
+            self.p2p_hls
+                .set_reserve_buffer_seconds(client_id, buffer_seconds)
+                .map_err(|error| RemoteShareError::internal(error.to_string()))?;
+            log::info!(
+                target: REMOTE_SHARE_LOG_TARGET,
+                "remote_prefetch_reserve_updated target_tracks={target_tracks} buffer_seconds={buffer_seconds}"
+            );
+        }
+        self.spawn_remote_next_queue_fill(client_id.to_owned());
+        Ok(())
+    }
+
+    fn spawn_remote_next_queue_fill(&self, client_id: String) {
+        let plan = {
+            let Ok(mut sessions) = self.sessions.lock() else {
+                return;
+            };
+            let Some(session) = sessions.by_client.get_mut(&client_id) else {
+                return;
+            };
+            session.begin_queue_fill()
+        };
+        let Some(plan) = plan else {
+            return;
+        };
         let runtime = self.clone();
         tauri::async_runtime::spawn(async move {
+            let current = plan.current.clone();
             let title = current.music_name.clone();
             let started = Instant::now();
-            let queue =
-                match propose_remote_next_queue(&runtime.app, &current, &recent_history).await {
-                    Ok(queue) => queue,
-                    Err(error) => {
-                        log::warn!(
-                            target: REMOTE_SHARE_LOG_TARGET,
-                            "remote_next_queue_fill_failed title=\"{}\" error=\"{}\" elapsed_ms={}",
-                            escape_remote_log_value(&title),
-                            escape_remote_log_value(&error.to_string()),
-                            started.elapsed().as_millis()
-                        );
-                        return;
-                    }
-                };
+            let proposed = propose_remote_queue_suffix(
+                &runtime.app,
+                &current,
+                &plan.existing_queue,
+                &plan.recent_history,
+                plan.target_tracks,
+            )
+            .await;
+            let queue = match proposed {
+                Ok(queue) => queue,
+                Err(error) => {
+                    runtime.finish_remote_queue_fill(&client_id, &current);
+                    log::warn!(
+                        target: REMOTE_SHARE_LOG_TARGET,
+                        "remote_next_queue_fill_failed title=\"{}\" error=\"{}\" elapsed_ms={}",
+                        escape_remote_log_value(&title),
+                        escape_remote_log_value(&error.to_string()),
+                        started.elapsed().as_millis()
+                    );
+                    sleep(Duration::from_secs(5)).await;
+                    runtime.spawn_remote_next_queue_fill(client_id);
+                    return;
+                }
+            };
             let committed = match commit_remote_next_queue_for_current(
                 &runtime.sessions,
                 &client_id,
@@ -1213,6 +1511,7 @@ impl RemoteShareRuntime {
             ) {
                 Ok(Some(committed)) => committed,
                 Ok(None) => {
+                    runtime.finish_remote_queue_fill(&client_id, &current);
                     log::info!(
                         target: REMOTE_SHARE_LOG_TARGET,
                         "remote_next_queue_fill_discarded title=\"{}\" reason=stale_session elapsed_ms={}",
@@ -1222,6 +1521,7 @@ impl RemoteShareRuntime {
                     return;
                 }
                 Err(error) => {
+                    runtime.finish_remote_queue_fill(&client_id, &current);
                     log::warn!(
                         target: REMOTE_SHARE_LOG_TARGET,
                         "remote_next_queue_fill_commit_failed title=\"{}\" error=\"{}\" elapsed_ms={}",
@@ -1234,23 +1534,24 @@ impl RemoteShareRuntime {
             };
             let mut published = Vec::with_capacity(committed.len());
             for track in &committed {
-                match remote_p2p_hls_source(&runtime.app, &track).await {
+                match remote_p2p_hls_source(&runtime.app, track).await {
                     Ok(source) => published.push((track.clone(), source)),
                     Err(error) => {
-                        log::warn!(
-                            target: REMOTE_SHARE_LOG_TARGET,
-                            "remote_p2p_hls_prefetch_source_failed title=\"{}\" error=\"{}\"",
-                            escape_remote_log_value(&track.music_name),
-                            escape_remote_log_value(&error.message)
-                        );
                         rollback_remote_queue_append(
                             &runtime.sessions,
                             &client_id,
                             &current,
                             &committed,
                         );
+                        runtime.finish_remote_queue_fill(&client_id, &current);
+                        log::warn!(
+                            target: REMOTE_SHARE_LOG_TARGET,
+                            "remote_p2p_hls_prefetch_source_failed title=\"{}\" error=\"{}\"",
+                            escape_remote_log_value(&track.music_name),
+                            escape_remote_log_value(&error.message)
+                        );
                         sleep(Duration::from_secs(5)).await;
-                        runtime.spawn_remote_next_queue_fill(client_id, current, recent_history);
+                        runtime.spawn_remote_next_queue_fill(client_id);
                         return;
                     }
                 }
@@ -1267,7 +1568,22 @@ impl RemoteShareRuntime {
                             );
                         }
                     }
-                    Ok(None) => {}
+                    Ok(None) => {
+                        rollback_remote_queue_append(
+                            &runtime.sessions,
+                            &client_id,
+                            &current,
+                            &committed,
+                        );
+                        runtime.finish_remote_queue_fill(&client_id, &current);
+                        log::info!(
+                            target: REMOTE_SHARE_LOG_TARGET,
+                            "remote_next_queue_fill_discarded title=\"{}\" reason=stale_hls_session elapsed_ms={}",
+                            escape_remote_log_value(&title),
+                            started.elapsed().as_millis()
+                        );
+                        return;
+                    }
                     Err(error) => {
                         rollback_remote_queue_append(
                             &runtime.sessions,
@@ -1275,25 +1591,42 @@ impl RemoteShareRuntime {
                             &current,
                             &committed,
                         );
+                        runtime.finish_remote_queue_fill(&client_id, &current);
                         log::warn!(
                             target: REMOTE_SHARE_LOG_TARGET,
                             "remote_p2p_hls_prefetch_failed error=\"{}\"",
                             escape_remote_log_value(&error.to_string())
                         );
                         sleep(Duration::from_secs(5)).await;
-                        runtime.spawn_remote_next_queue_fill(client_id, current, recent_history);
+                        runtime.spawn_remote_next_queue_fill(client_id);
                         return;
                     }
                 }
             }
+            runtime.finish_remote_queue_fill(&client_id, &current);
             log::info!(
                 target: REMOTE_SHARE_LOG_TARGET,
-                "remote_next_queue_fill_finished title=\"{}\" committed={} elapsed_ms={}",
+                "remote_next_queue_fill_finished title=\"{}\" committed={} target_tracks={} elapsed_ms={}",
                 escape_remote_log_value(&title),
-                true,
+                committed.len(),
+                plan.target_tracks,
                 started.elapsed().as_millis()
             );
+            if committed.is_empty() {
+                sleep(Duration::from_secs(5)).await;
+            }
+            runtime.spawn_remote_next_queue_fill(client_id);
         });
+    }
+
+    fn finish_remote_queue_fill(&self, client_id: &str, current: &PlaybackTrack) {
+        let Ok(mut sessions) = self.sessions.lock() else {
+            return;
+        };
+        let Some(session) = sessions.by_client.get_mut(client_id) else {
+            return;
+        };
+        session.finish_queue_fill(current);
     }
 
     fn reset_to_ready(&self, client_id: &str) -> RemoteResult<()> {
@@ -1302,6 +1635,7 @@ impl RemoteShareRuntime {
         session.current = None;
         session.current_hls_entry_id = None;
         session.queue.clear();
+        session.queue_fill_in_progress = false;
         session.state = RemotePlaybackState::Ready;
         Ok(())
     }
@@ -1324,6 +1658,7 @@ impl RemoteShareRuntime {
             .into_iter()
             .filter(|track| !same_remote_track(track, &current))
             .collect();
+        session.queue_fill_in_progress = false;
         observe_remote_recent_track(&mut session.recently_played, current.clone());
         session.state = RemotePlaybackState::Playing;
         let playback = session.create_playback_cargo(&current);
@@ -1444,6 +1779,49 @@ fn rollback_remote_queue_append(
 }
 
 impl RemoteShareSession {
+    fn set_prefetch_target(&mut self, revision: u32, target_tracks: usize) -> bool {
+        if revision <= self.prefetch_revision {
+            return false;
+        }
+        self.prefetch_revision = revision;
+        let target_tracks = target_tracks.clamp(
+            REMOTE_PREFETCH_MIN_FUTURE_TRACKS,
+            REMOTE_PREFETCH_MAX_FUTURE_TRACKS,
+        );
+        if self.prefetch_target_tracks == target_tracks {
+            return true;
+        }
+        self.prefetch_target_tracks = target_tracks;
+        true
+    }
+
+    fn begin_queue_fill(&mut self) -> Option<RemoteQueueFillPlan> {
+        if self.queue_fill_in_progress
+            || self.state != RemotePlaybackState::Playing
+            || self.queue.len() >= self.prefetch_target_tracks
+        {
+            return None;
+        }
+        let current = self.current.clone()?;
+        self.queue_fill_in_progress = true;
+        Some(RemoteQueueFillPlan {
+            current,
+            existing_queue: self.queue.iter().cloned().collect(),
+            recent_history: self.recently_played.clone(),
+            target_tracks: self.prefetch_target_tracks,
+        })
+    }
+
+    fn finish_queue_fill(&mut self, current: &PlaybackTrack) {
+        if self
+            .current
+            .as_ref()
+            .is_some_and(|active| same_remote_track(active, current))
+        {
+            self.queue_fill_in_progress = false;
+        }
+    }
+
     fn commit_hls_boundary(
         &mut self,
         entry_id: &str,
@@ -1466,6 +1844,7 @@ impl RemoteShareSession {
         self.playlist_name = Some(target.playlist_name.clone());
         self.current = Some(target.clone());
         self.current_hls_entry_id = Some(entry_id.to_owned());
+        self.queue_fill_in_progress = false;
         observe_remote_recent_track(&mut self.recently_played, target.clone());
         Ok(true)
     }

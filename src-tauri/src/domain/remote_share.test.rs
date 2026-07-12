@@ -1,4 +1,5 @@
 use super::*;
+use futures_util::future::pending;
 use std::path::PathBuf;
 
 const TEST_CLIENT_ID: &str = "client-a";
@@ -32,6 +33,86 @@ fn playing_sessions(current: PlaybackTrack) -> Arc<Mutex<RemoteShareSessions>> {
         .by_client
         .insert(TEST_CLIENT_ID.to_string(), session);
     Arc::new(Mutex::new(sessions))
+}
+
+#[tokio::test]
+async fn relay_write_timeout_releases_a_stuck_connection() {
+    let result = await_remote_relay_write(
+        pending::<std::result::Result<(), std::io::Error>>(),
+        Duration::from_millis(10),
+    )
+    .await;
+
+    assert_eq!(
+        result
+            .expect_err("a permanently pending write must be released")
+            .to_string(),
+        "remote relay write timed out"
+    );
+}
+
+#[test]
+fn relay_rpc_requests_use_the_nonblocking_dispatch_lane() {
+    assert!(remote_relay_message_is_rpc_request(
+        r#"{"kind":"rpc_request","id":"1","method":"session.start"}"#,
+    ));
+    assert!(!remote_relay_message_is_rpc_request(
+        r#"{"kind":"p2p_signal","signal":{"type":"close"}}"#,
+    ));
+    assert!(!remote_relay_message_is_rpc_request("not-json"));
+}
+
+#[test]
+fn adaptive_prefetch_target_is_bounded_and_owns_one_fill_at_a_time() {
+    let current = test_track("current");
+    let mut session = RemoteShareSession {
+        current: Some(current.clone()),
+        state: RemotePlaybackState::Playing,
+        ..Default::default()
+    };
+
+    assert!(session.set_prefetch_target(1, usize::MAX));
+    let plan = session
+        .begin_queue_fill()
+        .expect("larger inventory should request a fill");
+    assert_eq!(plan.target_tracks, REMOTE_PREFETCH_MAX_FUTURE_TRACKS);
+    assert!(plan.existing_queue.is_empty());
+    assert!(session.begin_queue_fill().is_none());
+
+    session.finish_queue_fill(&current);
+    assert!(session.begin_queue_fill().is_some());
+}
+
+#[test]
+fn lowering_prefetch_target_never_discards_an_already_published_frontier() {
+    let current = test_track("current");
+    let mut session = RemoteShareSession {
+        current: Some(current),
+        queue: VecDeque::from([
+            test_track("future-1"),
+            test_track("future-2"),
+            test_track("future-3"),
+        ]),
+        state: RemotePlaybackState::Playing,
+        prefetch_target_tracks: REMOTE_PREFETCH_MAX_FUTURE_TRACKS,
+        ..Default::default()
+    };
+
+    assert!(session.set_prefetch_target(1, REMOTE_PREFETCH_MIN_FUTURE_TRACKS));
+    assert_eq!(session.queue.len(), 3);
+    assert!(session.begin_queue_fill().is_none());
+}
+
+#[test]
+fn stale_unordered_prefetch_hint_cannot_shrink_newer_inventory() {
+    let mut session = RemoteShareSession::default();
+
+    assert!(session.set_prefetch_target(2, REMOTE_PREFETCH_MAX_FUTURE_TRACKS));
+    assert!(!session.set_prefetch_target(1, REMOTE_PREFETCH_MIN_FUTURE_TRACKS));
+    assert_eq!(
+        session.prefetch_target_tracks,
+        REMOTE_PREFETCH_MAX_FUTURE_TRACKS
+    );
 }
 
 #[test]

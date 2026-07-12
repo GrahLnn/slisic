@@ -1,9 +1,14 @@
 use anyhow::{Result, anyhow};
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::future::Future;
 use std::sync::{Arc, Mutex, Weak};
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use tokio::sync::mpsc::{
+    Receiver, Sender, UnboundedReceiver, UnboundedSender, channel as mpsc_channel,
+    unbounded_channel,
+};
+use tokio::time::{Duration, sleep, timeout};
 use webrtc::api::APIBuilder;
 use webrtc::data_channel::RTCDataChannel;
 use webrtc::data_channel::data_channel_message::DataChannelMessage;
@@ -16,10 +21,28 @@ use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
 const REMOTE_SHARE_LOG_TARGET: &str = "remote_share";
 const HLS_DATA_CHANNEL_LABEL: &str = "slisic.p2p-hls.v1";
-const HLS_ASSET_CHUNK_SIZE: usize = 16 * 1024;
+const HLS_ASSET_MAX_MESSAGE_SIZE: usize = 16 * 1024;
+const HLS_ASSET_CHUNK_HEADER_SIZE: usize = 12;
+const HLS_ASSET_CHUNK_SIZE: usize = HLS_ASSET_MAX_MESSAGE_SIZE - HLS_ASSET_CHUNK_HEADER_SIZE;
 const HLS_ASSET_CHUNK_MAGIC: &[u8; 4] = b"SLH1";
+const HLS_DATA_CHANNEL_PROGRESS_LEASE: Duration = Duration::from_secs(5);
+const HLS_DATA_CHANNEL_HIGH_WATERMARK: usize = HLS_ASSET_MAX_MESSAGE_SIZE * 4;
+const HLS_DATA_CHANNEL_LOW_WATERMARK: usize = HLS_ASSET_MAX_MESSAGE_SIZE * 2;
+const HLS_RESPONSE_INGEST_BUDGET: usize = 64;
+const HLS_RESPONSE_QUEUE_CAPACITY: usize = 256;
+const HLS_PROMOTION_CAPACITY: usize = 256;
+const HLS_NEGOTIATION_LEASE: Duration = Duration::from_secs(10);
 
 pub(super) type RemoteRelayEventSender = UnboundedSender<String>;
+pub(super) type RemoteP2pResponseSender = Sender<RemoteP2pOutboundResponse>;
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum RemoteP2pAssetPriority {
+    #[default]
+    Foreground,
+    Reserve,
+}
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -34,11 +57,31 @@ pub(super) struct RemoteIceServer {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(super) enum RemoteP2pSignal {
-    Offer { sdp: String },
-    Answer { sdp: String },
-    Candidate { candidate: RTCIceCandidateInit },
+    Offer {
+        sdp: String,
+        #[serde(default)]
+        generation: u64,
+        #[serde(default)]
+        revision: u64,
+    },
+    Answer {
+        sdp: String,
+        #[serde(default)]
+        generation: u64,
+        #[serde(default)]
+        revision: u64,
+    },
+    Candidate {
+        candidate: RTCIceCandidateInit,
+        #[serde(default)]
+        generation: u64,
+    },
     Close,
-    Error { reason: String },
+    Error {
+        reason: String,
+        generation: u64,
+        revision: u64,
+    },
 }
 
 pub(super) enum RemoteP2pTransportEvent {
@@ -46,14 +89,67 @@ pub(super) enum RemoteP2pTransportEvent {
         client_id: String,
         request_id: u32,
         url: String,
-        channel: Arc<RTCDataChannel>,
+        playout_seconds: Option<f64>,
+        priority: RemoteP2pAssetPriority,
+        responses: RemoteP2pResponseSender,
+    },
+    PrefetchReserveRequested {
+        client_id: String,
+        revision: u32,
+        target_tracks: usize,
+        buffer_seconds: u32,
+    },
+    PlaybackReady {
+        client_id: String,
+        epoch: u64,
+        ready_seconds: f64,
+        playout_seconds: f64,
+        protected_sequence: u64,
+        responses: RemoteP2pResponseSender,
+    },
+    PlaybackHandoffCommit {
+        client_id: String,
+        epoch: u64,
+        handoff_sequence: u64,
     },
 }
 
 #[derive(Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(
+    tag = "type",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
 enum RemoteP2pDataChannelRequest {
-    HlsAssetRequest { id: u32, url: String },
+    HlsAssetRequest {
+        id: u32,
+        url: String,
+        #[serde(default)]
+        playout_seconds: Option<f64>,
+        #[serde(default)]
+        priority: RemoteP2pAssetPriority,
+    },
+    HlsAssetPromote {
+        id: u32,
+    },
+    HlsAssetCancelThrough {
+        request_id: u32,
+    },
+    PrefetchReserve {
+        revision: u32,
+        target_tracks: usize,
+        buffer_seconds: u32,
+    },
+    PlaybackReady {
+        epoch: u64,
+        ready_seconds: f64,
+        playout_seconds: f64,
+        protected_sequence: u64,
+    },
+    PlaybackHandoffCommit {
+        epoch: u64,
+        handoff_sequence: u64,
+    },
 }
 
 #[derive(Serialize)]
@@ -73,8 +169,272 @@ enum RemoteP2pDataChannelResponse<'a> {
     },
 }
 
+pub(super) enum RemoteP2pOutboundResponse {
+    Text {
+        body: String,
+        priority: RemoteP2pAssetPriority,
+        request_id: Option<u32>,
+    },
+    Asset {
+        request_id: u32,
+        content_type: String,
+        body: Bytes,
+        priority: RemoteP2pAssetPriority,
+    },
+    Promote {
+        request_id: u32,
+    },
+    Register {
+        request_id: u32,
+    },
+    CancelThrough {
+        request_id: u32,
+    },
+}
+
+enum RemoteP2pOutboundFrame {
+    Text(String),
+    Binary(Bytes),
+}
+
+struct RemoteP2pScheduledAsset {
+    request_id: u32,
+    content_type: String,
+    body: Bytes,
+    priority: RemoteP2pAssetPriority,
+    header_sent: bool,
+    offset: usize,
+    chunk_index: u32,
+}
+
+enum RemoteP2pScheduledResponse {
+    Text(String),
+    Asset(RemoteP2pScheduledAsset),
+}
+
+#[derive(Default)]
+struct RemoteP2pOutboundScheduler {
+    foreground: VecDeque<RemoteP2pScheduledResponse>,
+    reserve: VecDeque<RemoteP2pScheduledResponse>,
+    promoted: VecDeque<u32>,
+    requested: HashSet<u32>,
+    cancel_through: u32,
+}
+
+impl RemoteP2pOutboundScheduler {
+    fn push(&mut self, response: RemoteP2pOutboundResponse) {
+        let (priority, response) = match response {
+            RemoteP2pOutboundResponse::Text {
+                body,
+                priority,
+                request_id,
+            } => {
+                if let Some(request_id) = request_id {
+                    self.requested.remove(&request_id);
+                    if let Some(index) = self
+                        .promoted
+                        .iter()
+                        .position(|promoted| *promoted == request_id)
+                    {
+                        self.promoted.remove(index);
+                    }
+                }
+                (priority, RemoteP2pScheduledResponse::Text(body))
+            }
+            RemoteP2pOutboundResponse::Asset {
+                request_id,
+                content_type,
+                body,
+                priority,
+            } => {
+                if request_id <= self.cancel_through {
+                    return;
+                }
+                let priority = if let Some(index) = self
+                    .promoted
+                    .iter()
+                    .position(|promoted| *promoted == request_id)
+                {
+                    self.promoted.remove(index);
+                    RemoteP2pAssetPriority::Foreground
+                } else {
+                    priority
+                };
+                (
+                    priority,
+                    RemoteP2pScheduledResponse::Asset(RemoteP2pScheduledAsset {
+                        request_id,
+                        content_type,
+                        body,
+                        priority,
+                        header_sent: false,
+                        offset: 0,
+                        chunk_index: 0,
+                    }),
+                )
+            }
+            RemoteP2pOutboundResponse::Promote { request_id } => {
+                self.promote(request_id);
+                return;
+            }
+            RemoteP2pOutboundResponse::Register { request_id } => {
+                if request_id <= self.cancel_through {
+                    return;
+                }
+                self.requested.insert(request_id);
+                return;
+            }
+            RemoteP2pOutboundResponse::CancelThrough { request_id } => {
+                self.cancel_through(request_id);
+                return;
+            }
+        };
+        self.queue(priority).push_back(response);
+    }
+
+    fn promote(&mut self, request_id: u32) {
+        if !self.requested.contains(&request_id) {
+            return;
+        }
+        let Some(index) = self.reserve.iter().position(|response| {
+            matches!(
+                response,
+                RemoteP2pScheduledResponse::Asset(asset) if asset.request_id == request_id
+            )
+        }) else {
+            if self.promoted.contains(&request_id) {
+                return;
+            }
+            if self.promoted.len() == HLS_PROMOTION_CAPACITY {
+                self.promoted.pop_front();
+            }
+            self.promoted.push_back(request_id);
+            return;
+        };
+        let Some(RemoteP2pScheduledResponse::Asset(mut asset)) = self.reserve.remove(index) else {
+            return;
+        };
+        asset.priority = RemoteP2pAssetPriority::Foreground;
+        self.foreground
+            .push_back(RemoteP2pScheduledResponse::Asset(asset));
+    }
+
+    fn cancel_through(&mut self, request_id: u32) {
+        self.cancel_through = self.cancel_through.max(request_id);
+        self.requested
+            .retain(|requested| *requested > self.cancel_through);
+        self.promoted
+            .retain(|promoted| *promoted > self.cancel_through);
+        self.foreground.retain(|response| {
+            !matches!(
+                response,
+                RemoteP2pScheduledResponse::Asset(asset) if asset.request_id <= self.cancel_through
+            )
+        });
+        self.reserve.retain(|response| {
+            !matches!(
+                response,
+                RemoteP2pScheduledResponse::Asset(asset) if asset.request_id <= self.cancel_through
+            )
+        });
+    }
+
+    fn next_frame(&mut self) -> Option<RemoteP2pOutboundFrame> {
+        let response = self
+            .foreground
+            .pop_front()
+            .or_else(|| self.reserve.pop_front())?;
+        match response {
+            RemoteP2pScheduledResponse::Text(body) => Some(RemoteP2pOutboundFrame::Text(body)),
+            RemoteP2pScheduledResponse::Asset(mut asset) => {
+                if !asset.header_sent {
+                    asset.header_sent = true;
+                    let header = encode_hls_asset_response(
+                        asset.request_id,
+                        &asset.content_type,
+                        asset.body.len(),
+                    )
+                    .ok()?;
+                    let priority = asset.priority;
+                    self.queue(priority)
+                        .push_back(RemoteP2pScheduledResponse::Asset(asset));
+                    return Some(RemoteP2pOutboundFrame::Text(header));
+                }
+                let end = (asset.offset + HLS_ASSET_CHUNK_SIZE).min(asset.body.len());
+                let frame = encode_hls_asset_chunk(
+                    asset.request_id,
+                    asset.chunk_index,
+                    &asset.body[asset.offset..end],
+                );
+                asset.offset = end;
+                asset.chunk_index += 1;
+                if asset.offset < asset.body.len() {
+                    let priority = asset.priority;
+                    self.queue(priority)
+                        .push_back(RemoteP2pScheduledResponse::Asset(asset));
+                } else {
+                    self.requested.remove(&asset.request_id);
+                    if let Some(index) = self
+                        .promoted
+                        .iter()
+                        .position(|promoted| *promoted == asset.request_id)
+                    {
+                        self.promoted.remove(index);
+                    }
+                }
+                Some(RemoteP2pOutboundFrame::Binary(frame))
+            }
+        }
+    }
+
+    fn queue(
+        &mut self,
+        priority: RemoteP2pAssetPriority,
+    ) -> &mut VecDeque<RemoteP2pScheduledResponse> {
+        match priority {
+            RemoteP2pAssetPriority::Foreground => &mut self.foreground,
+            RemoteP2pAssetPriority::Reserve => &mut self.reserve,
+        }
+    }
+}
+
+fn encode_hls_asset_response(request_id: u32, content_type: &str, length: usize) -> Result<String> {
+    Ok(serde_json::to_string(
+        &RemoteP2pDataChannelResponse::HlsAssetResponse {
+            id: request_id,
+            ok: true,
+            content_type: Some(content_type),
+            length: Some(length),
+            chunks: Some(length.div_ceil(HLS_ASSET_CHUNK_SIZE)),
+            error: None,
+        },
+    )?)
+}
+
+#[derive(Serialize)]
+struct RemoteP2pHlsTimelineUpdate<'a, T> {
+    #[serde(rename = "type")]
+    message_type: &'static str,
+    hls: &'a T,
+}
+
+fn encode_hls_timeline_update<T: Serialize>(hls: &T) -> Result<String> {
+    Ok(serde_json::to_string(&RemoteP2pHlsTimelineUpdate {
+        message_type: "hls_timeline_updated",
+        hls,
+    })?)
+}
+
 struct RemoteP2pPeer {
+    generation: u64,
     connection: Arc<RTCPeerConnection>,
+    negotiation: tokio::sync::Mutex<RemoteP2pNegotiation>,
+}
+
+#[derive(Default)]
+struct RemoteP2pNegotiation {
+    offer_sdp: Option<String>,
+    answer_sdp: Option<String>,
 }
 
 pub(super) struct RemoteP2pTransport {
@@ -137,13 +497,22 @@ impl RemoteP2pTransport {
         signal: RemoteP2pSignal,
     ) -> Result<()> {
         match signal {
-            RemoteP2pSignal::Offer { sdp } => self.accept_offer(client_id, sdp).await,
-            RemoteP2pSignal::Candidate { candidate } => {
-                self.peer(client_id)
-                    .await?
-                    .connection
-                    .add_ice_candidate(candidate)
-                    .await?;
+            RemoteP2pSignal::Offer {
+                sdp,
+                generation,
+                revision,
+            } => {
+                self.accept_offer(client_id, generation, revision, sdp)
+                    .await
+            }
+            RemoteP2pSignal::Candidate {
+                candidate,
+                generation,
+            } => {
+                let peer = self.peer(client_id).await?;
+                if peer.generation == generation {
+                    peer.connection.add_ice_candidate(candidate).await?;
+                }
                 Ok(())
             }
             RemoteP2pSignal::Close => self.close_peer(client_id).await,
@@ -162,81 +531,198 @@ impl RemoteP2pTransport {
     }
 
     pub(super) async fn send_hls_asset(
-        channel: Arc<RTCDataChannel>,
+        responses: &RemoteP2pResponseSender,
         request_id: u32,
         content_type: &str,
         body: Bytes,
+        priority: RemoteP2pAssetPriority,
     ) -> Result<()> {
-        let chunks = body.len().div_ceil(HLS_ASSET_CHUNK_SIZE);
-        channel
-            .send_text(serde_json::to_string(
-                &RemoteP2pDataChannelResponse::HlsAssetResponse {
-                    id: request_id,
-                    ok: true,
-                    content_type: Some(content_type),
-                    length: Some(body.len()),
-                    chunks: Some(chunks),
-                    error: None,
-                },
-            )?)
-            .await?;
-        for (index, chunk) in body.chunks(HLS_ASSET_CHUNK_SIZE).enumerate() {
-            channel
-                .send(&encode_hls_asset_chunk(request_id, index as u32, chunk))
-                .await?;
-        }
-        Ok(())
+        responses
+            .send(RemoteP2pOutboundResponse::Asset {
+                request_id,
+                content_type: content_type.to_owned(),
+                body,
+                priority,
+            })
+            .await
+            .map_err(|_| anyhow!("remote P2P response writer is closed"))
     }
 
     pub(super) async fn send_hls_asset_error(
-        channel: Arc<RTCDataChannel>,
+        responses: &RemoteP2pResponseSender,
         request_id: u32,
         error: &str,
     ) -> Result<()> {
-        channel
-            .send_text(serde_json::to_string(
-                &RemoteP2pDataChannelResponse::HlsAssetResponse {
+        responses
+            .send(RemoteP2pOutboundResponse::Text {
+                body: serde_json::to_string(&RemoteP2pDataChannelResponse::HlsAssetResponse {
                     id: request_id,
                     ok: false,
                     content_type: None,
                     length: None,
                     chunks: None,
                     error: Some(error),
-                },
-            )?)
-            .await?;
-        Ok(())
+                })?,
+                priority: RemoteP2pAssetPriority::Foreground,
+                request_id: Some(request_id),
+            })
+            .await
+            .map_err(|_| anyhow!("remote P2P response writer is closed"))
     }
 
-    async fn accept_offer(self: &Arc<Self>, client_id: &str, sdp: String) -> Result<()> {
+    pub(super) async fn send_hls_timeline<T: Serialize>(
+        responses: &RemoteP2pResponseSender,
+        hls: &T,
+    ) -> Result<()> {
+        responses
+            .send(RemoteP2pOutboundResponse::Text {
+                body: encode_hls_timeline_update(hls)?,
+                priority: RemoteP2pAssetPriority::Foreground,
+                request_id: None,
+            })
+            .await
+            .map_err(|_| anyhow!("remote P2P response writer is closed"))
+    }
+
+    pub(super) async fn send_handoff_offer(
+        responses: &RemoteP2pResponseSender,
+        epoch: u64,
+        handoff_sequence: u64,
+    ) -> Result<()> {
+        responses
+            .send(RemoteP2pOutboundResponse::Text {
+                body: serde_json::json!({
+                    "type": "playback_handoff_offer",
+                    "epoch": epoch,
+                    "handoffSequence": handoff_sequence,
+                })
+                .to_string(),
+                priority: RemoteP2pAssetPriority::Foreground,
+                request_id: None,
+            })
+            .await
+            .map_err(|_| anyhow!("remote P2P response writer is closed"))
+    }
+
+    async fn send_hls_promotion(
+        responses: &RemoteP2pResponseSender,
+        request_id: u32,
+    ) -> Result<()> {
+        responses
+            .send(RemoteP2pOutboundResponse::Promote { request_id })
+            .await
+            .map_err(|_| anyhow!("remote P2P response writer is closed"))
+    }
+
+    async fn send_hls_cancellation_through(
+        responses: &RemoteP2pResponseSender,
+        request_id: u32,
+    ) -> Result<()> {
+        responses
+            .send(RemoteP2pOutboundResponse::CancelThrough { request_id })
+            .await
+            .map_err(|_| anyhow!("remote P2P response writer is closed"))
+    }
+
+    async fn register_hls_request(
+        responses: &RemoteP2pResponseSender,
+        request_id: u32,
+    ) -> Result<()> {
+        responses
+            .send(RemoteP2pOutboundResponse::Register { request_id })
+            .await
+            .map_err(|_| anyhow!("remote P2P response writer is closed"))
+    }
+
+    async fn accept_offer(
+        self: &Arc<Self>,
+        client_id: &str,
+        generation: u64,
+        revision: u64,
+        sdp: String,
+    ) -> Result<()> {
         let existing = {
             let peers = self.peers.lock().await;
             peers.get(client_id).cloned()
         };
         let peer = match existing {
-            Some(peer) if peer.connection.connection_state() != RTCPeerConnectionState::Closed => {
+            Some(peer)
+                if peer.generation == generation
+                    && !matches!(
+                        peer.connection.connection_state(),
+                        RTCPeerConnectionState::Closed | RTCPeerConnectionState::Failed
+                    ) =>
+            {
                 peer
             }
-            _ => self.create_peer(client_id).await?,
+            _ => self.create_peer(client_id, generation).await?,
         };
-        peer.connection
-            .set_configuration(RTCConfiguration {
-                ice_servers: self.current_ice_servers(),
-                ..Default::default()
-            })
-            .await?;
-        peer.connection
-            .set_remote_description(RTCSessionDescription::offer(sdp)?)
-            .await?;
-        let answer = peer.connection.create_answer(None).await?;
-        peer.connection
-            .set_local_description(answer.clone())
-            .await?;
-        self.emit_signal(client_id, RemoteP2pSignal::Answer { sdp: answer.sdp });
+        if peer.generation != generation {
+            return Ok(());
+        }
+        let mut negotiation = peer.negotiation.lock().await;
+        if negotiation.offer_sdp.as_deref() == Some(sdp.as_str()) {
+            if let Some(answer_sdp) = negotiation.answer_sdp.clone() {
+                drop(negotiation);
+                self.emit_signal(
+                    client_id,
+                    RemoteP2pSignal::Answer {
+                        sdp: answer_sdp,
+                        generation,
+                        revision,
+                    },
+                );
+                return Ok(());
+            }
+        }
+        let answer_sdp = await_hls_negotiation(
+            async {
+                peer.connection
+                    .set_configuration(RTCConfiguration {
+                        ice_servers: self.current_ice_servers(),
+                        ..Default::default()
+                    })
+                    .await?;
+                peer.connection
+                    .set_remote_description(RTCSessionDescription::offer(sdp.clone())?)
+                    .await?;
+                let answer = peer.connection.create_answer(None).await?;
+                peer.connection
+                    .set_local_description(answer.clone())
+                    .await?;
+                Ok(answer.sdp)
+            },
+            HLS_NEGOTIATION_LEASE,
+            "remote P2P negotiation",
+        )
+        .await;
+        let answer_sdp = match answer_sdp {
+            Ok(answer_sdp) => answer_sdp,
+            Err(error) => {
+                drop(negotiation);
+                self.discard_peer(client_id, &peer).await;
+                return Err(error);
+            }
+        };
+        negotiation.offer_sdp = Some(sdp);
+        negotiation.answer_sdp = Some(answer_sdp.clone());
+        drop(negotiation);
+        self.emit_signal(
+            client_id,
+            RemoteP2pSignal::Answer {
+                sdp: answer_sdp,
+                generation,
+                revision,
+            },
+        );
         Ok(())
     }
 
-    async fn create_peer(self: &Arc<Self>, client_id: &str) -> Result<Arc<RemoteP2pPeer>> {
+    async fn create_peer(
+        self: &Arc<Self>,
+        client_id: &str,
+        generation: u64,
+    ) -> Result<Arc<RemoteP2pPeer>> {
         let connection = Arc::new(
             APIBuilder::new()
                 .build()
@@ -248,6 +734,7 @@ impl RemoteP2pTransport {
         );
         let weak = Arc::downgrade(self);
         let candidate_client_id = client_id.to_owned();
+        let candidate_generation = generation;
         connection.on_ice_candidate(Box::new(move |candidate| {
             let weak = Weak::clone(&weak);
             let client_id = candidate_client_id.clone();
@@ -256,7 +743,13 @@ impl RemoteP2pTransport {
                     return;
                 };
                 if let Ok(candidate) = candidate.to_json() {
-                    owner.emit_signal(&client_id, RemoteP2pSignal::Candidate { candidate });
+                    owner.emit_signal(
+                        &client_id,
+                        RemoteP2pSignal::Candidate {
+                            candidate,
+                            generation: candidate_generation,
+                        },
+                    );
                 }
             })
         }));
@@ -284,10 +777,30 @@ impl RemoteP2pTransport {
                 }
             })
         }));
-        let peer = Arc::new(RemoteP2pPeer { connection });
+        let peer = Arc::new(RemoteP2pPeer {
+            generation,
+            connection,
+            negotiation: tokio::sync::Mutex::new(RemoteP2pNegotiation::default()),
+        });
         let mut peers = self.peers.lock().await;
         if let Some(existing) = peers.get(client_id) {
             let existing = existing.clone();
+            if existing.generation > generation {
+                drop(peers);
+                let _ = peer.connection.close().await;
+                return Ok(existing);
+            }
+            if existing.generation < generation
+                || matches!(
+                    existing.connection.connection_state(),
+                    RTCPeerConnectionState::Closed | RTCPeerConnectionState::Failed
+                )
+            {
+                peers.insert(client_id.to_owned(), peer.clone());
+                drop(peers);
+                let _ = existing.connection.close().await;
+                return Ok(peer);
+            }
             drop(peers);
             let _ = peer.connection.close().await;
             return Ok(existing);
@@ -301,6 +814,19 @@ impl RemoteP2pTransport {
             peer.connection.close().await?;
         }
         Ok(())
+    }
+
+    async fn discard_peer(&self, client_id: &str, expected: &Arc<RemoteP2pPeer>) {
+        let removed = {
+            let mut peers = self.peers.lock().await;
+            match peers.get(client_id) {
+                Some(current) if Arc::ptr_eq(current, expected) => peers.remove(client_id),
+                _ => None,
+            }
+        };
+        if let Some(peer) = removed {
+            let _ = peer.connection.close().await;
+        }
     }
 
     async fn peer(&self, client_id: &str) -> Result<Arc<RemoteP2pPeer>> {
@@ -336,6 +862,15 @@ impl RemoteP2pTransport {
     }
 }
 
+async fn await_hls_negotiation<T, F>(future: F, lease: Duration, label: &str) -> Result<T>
+where
+    F: Future<Output = Result<T>>,
+{
+    timeout(lease, future)
+        .await
+        .map_err(|_| anyhow!("{label} timed out"))?
+}
+
 fn attach_hls_data_channel(
     events: UnboundedSender<RemoteP2pTransportEvent>,
     client_id: String,
@@ -344,11 +879,15 @@ fn attach_hls_data_channel(
     if channel.label() != HLS_DATA_CHANNEL_LABEL {
         return;
     }
-    let response_channel = Arc::clone(&channel);
+    let (responses, response_receiver) = mpsc_channel(HLS_RESPONSE_QUEUE_CAPACITY);
+    tokio::spawn(run_hls_data_channel_writer(
+        Arc::clone(&channel),
+        response_receiver,
+    ));
     channel.on_message(Box::new(move |message: DataChannelMessage| {
         let events = events.clone();
         let client_id = client_id.clone();
-        let channel = Arc::clone(&response_channel);
+        let responses = responses.clone();
         Box::pin(async move {
             if !message.is_string {
                 return;
@@ -356,19 +895,197 @@ fn attach_hls_data_channel(
             let Ok(text) = String::from_utf8(message.data.to_vec()) else {
                 return;
             };
-            let Ok(RemoteP2pDataChannelRequest::HlsAssetRequest { id, url }) =
-                serde_json::from_str(&text)
-            else {
+            let Ok(request) = serde_json::from_str(&text) else {
                 return;
             };
-            let _ = events.send(RemoteP2pTransportEvent::HlsAssetRequested {
-                client_id,
-                request_id: id,
-                url,
-                channel,
-            });
+            let event = match request {
+                RemoteP2pDataChannelRequest::HlsAssetRequest {
+                    id,
+                    url,
+                    playout_seconds,
+                    priority,
+                } => {
+                    if RemoteP2pTransport::register_hls_request(&responses, id)
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                    RemoteP2pTransportEvent::HlsAssetRequested {
+                        client_id,
+                        request_id: id,
+                        url,
+                        playout_seconds,
+                        priority,
+                        responses,
+                    }
+                }
+                RemoteP2pDataChannelRequest::HlsAssetPromote { id } => {
+                    let _ = RemoteP2pTransport::send_hls_promotion(&responses, id).await;
+                    return;
+                }
+                RemoteP2pDataChannelRequest::HlsAssetCancelThrough { request_id } => {
+                    let _ =
+                        RemoteP2pTransport::send_hls_cancellation_through(&responses, request_id)
+                            .await;
+                    return;
+                }
+                RemoteP2pDataChannelRequest::PrefetchReserve {
+                    revision,
+                    target_tracks,
+                    buffer_seconds,
+                } => RemoteP2pTransportEvent::PrefetchReserveRequested {
+                    client_id,
+                    revision,
+                    target_tracks,
+                    buffer_seconds,
+                },
+                RemoteP2pDataChannelRequest::PlaybackReady {
+                    epoch,
+                    ready_seconds,
+                    playout_seconds,
+                    protected_sequence,
+                } => RemoteP2pTransportEvent::PlaybackReady {
+                    client_id,
+                    epoch,
+                    ready_seconds,
+                    playout_seconds,
+                    protected_sequence,
+                    responses,
+                },
+                RemoteP2pDataChannelRequest::PlaybackHandoffCommit {
+                    epoch,
+                    handoff_sequence,
+                } => RemoteP2pTransportEvent::PlaybackHandoffCommit {
+                    client_id,
+                    epoch,
+                    handoff_sequence,
+                },
+            };
+            let _ = events.send(event);
         })
     }));
+}
+
+async fn run_hls_data_channel_writer(
+    channel: Arc<RTCDataChannel>,
+    mut responses: Receiver<RemoteP2pOutboundResponse>,
+) {
+    let mut scheduler = RemoteP2pOutboundScheduler::default();
+    loop {
+        ingest_hls_responses(&mut responses, &mut scheduler, HLS_RESPONSE_INGEST_BUDGET);
+        let Some(frame) = scheduler.next_frame() else {
+            let Some(response) = responses.recv().await else {
+                return;
+            };
+            scheduler.push(response);
+            continue;
+        };
+        let result = match frame {
+            RemoteP2pOutboundFrame::Text(body) => {
+                await_hls_data_channel_send(
+                    channel.send_text(body),
+                    HLS_DATA_CHANNEL_PROGRESS_LEASE,
+                )
+                .await
+            }
+            RemoteP2pOutboundFrame::Binary(body) => {
+                await_hls_data_channel_send(channel.send(&body), HLS_DATA_CHANNEL_PROGRESS_LEASE)
+                    .await
+            }
+        };
+        let Some(result) = result else {
+            log::warn!(
+                target: REMOTE_SHARE_LOG_TARGET,
+                "remote_p2p_response_writer_stalled phase=send recovery=close_supply_epoch"
+            );
+            let _ = channel.close().await;
+            return;
+        };
+        if let Err(error) = result {
+            log::warn!(
+                target: REMOTE_SHARE_LOG_TARGET,
+                "remote_p2p_response_writer_failed error=\"{}\"",
+                error
+            );
+            return;
+        }
+        if !await_hls_data_channel_capacity(
+            || channel.buffered_amount(),
+            HLS_DATA_CHANNEL_HIGH_WATERMARK,
+            HLS_DATA_CHANNEL_LOW_WATERMARK,
+            HLS_DATA_CHANNEL_PROGRESS_LEASE,
+        )
+        .await
+        {
+            log::warn!(
+                target: REMOTE_SHARE_LOG_TARGET,
+                "remote_p2p_response_writer_stalled phase=capacity recovery=close_supply_epoch"
+            );
+            let _ = channel.close().await;
+            return;
+        }
+    }
+}
+
+fn ingest_hls_responses(
+    responses: &mut Receiver<RemoteP2pOutboundResponse>,
+    scheduler: &mut RemoteP2pOutboundScheduler,
+    budget: usize,
+) -> usize {
+    let mut ingested = 0;
+    while ingested < budget {
+        let Ok(response) = responses.try_recv() else {
+            break;
+        };
+        scheduler.push(response);
+        ingested += 1;
+    }
+    ingested
+}
+
+async fn await_hls_data_channel_capacity<F, Fut>(
+    mut buffered_amount: F,
+    high_watermark: usize,
+    low_watermark: usize,
+    lease: Duration,
+) -> bool
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = usize>,
+{
+    debug_assert!(low_watermark <= high_watermark);
+    let mut previous = match timeout(lease, buffered_amount()).await {
+        Ok(buffered) => buffered,
+        Err(_) => return false,
+    };
+    if previous <= high_watermark {
+        return true;
+    }
+    while previous > low_watermark {
+        let progress = timeout(lease, async {
+            loop {
+                sleep(Duration::from_millis(2)).await;
+                let current = buffered_amount().await;
+                if current < previous {
+                    return current;
+                }
+            }
+        })
+        .await;
+        let Ok(current) = progress else {
+            return false;
+        };
+        previous = current;
+    }
+    true
+}
+
+async fn await_hls_data_channel_send<F, T>(send: F, lease: Duration) -> Option<T>
+where
+    F: Future<Output = T>,
+{
+    timeout(lease, send).await.ok()
 }
 
 fn encode_hls_asset_chunk(request_id: u32, chunk_index: u32, chunk: &[u8]) -> Bytes {

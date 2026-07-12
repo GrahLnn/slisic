@@ -46,6 +46,25 @@ fn published(id: &str, duration_seconds: f64) -> PublishedTrack {
     }
 }
 
+fn published_segments(id: &str, segment_count: usize, duration_seconds: f64) -> PublishedTrack {
+    PublishedTrack {
+        track: track(
+            id,
+            0,
+            (segment_count as f64 * duration_seconds * 1_000.0) as u32,
+        ),
+        asset: HlsTrackAsset {
+            target_duration: duration_seconds.ceil() as u32,
+            segments: (0..segment_count)
+                .map(|index| HlsSegmentAsset {
+                    duration_seconds,
+                    path: PathBuf::from(format!("{id}-{index}.ts")),
+                })
+                .collect(),
+        },
+    }
+}
+
 #[test]
 fn prepared_manifest_extends_the_live_priming_frontier() {
     let session = ClientHlsSession::prepared(7);
@@ -59,13 +78,54 @@ fn prepared_manifest_extends_the_live_priming_frontier() {
         session.snapshot().stream_url,
         "p2p-hls://session/7/index.m3u8"
     );
+    assert_eq!(
+        session.snapshot().reserve_url,
+        "p2p-hls://session/7/reserve.m3u8"
+    );
     assert!(session.snapshot().entries.is_empty());
+}
+
+#[test]
+fn prepared_track_is_reserve_only_until_handoff_is_committed() {
+    let mut session = ClientHlsSession::prepared(9);
+    session.prepare_start(published_segments("first", 40, 2.0));
+
+    assert_eq!(session.manifest_at(21).matches("/segment/").count(), 0);
+    assert_eq!(
+        session.reserve_manifest_at(21).matches("/segment/").count(),
+        30
+    );
+}
+
+#[test]
+fn remote_hls_representation_preserves_the_music_bitrate() {
+    assert_eq!(HLS_AUDIO_BITRATE, "192k");
+    assert_eq!(HLS_MATERIALIZATION_VERSION, "p2p-hls-v1");
+}
+
+#[test]
+fn handoff_requires_the_complete_startup_cache_prefix_and_is_idempotent() {
+    let mut session = ClientHlsSession::prepared(10);
+    session.prepare_start(published_segments("first", 40, 2.0));
+    assert_eq!(session.startup_reserve_seconds(), 60.0);
+    assert_eq!(session.offer_handoff(59.0, 24.0, 19), None);
+    assert!(session.handoff_sequence.is_none());
+
+    assert_eq!(session.offer_handoff(60.0, 24.0, 19), Some(19));
+    assert!(session.handoff_sequence.is_none());
+    assert!(session.commit_offered_handoff(19));
+    assert!(session.commit_offered_handoff(19));
+    assert_eq!(session.handoff_sequence, Some(19));
+    assert_eq!(session.offer_handoff(60.0, 40.0, 26), Some(19));
+    assert!(session.commit_offered_handoff(19));
+    assert_eq!(session.handoff_sequence, Some(19));
 }
 
 #[test]
 fn appending_tracks_preserves_existing_entry_offsets() {
     let mut session = ClientHlsSession::prepared(3);
-    session.publish_start_at(published("first", 8.0), 12);
+    session.prepare_start(published("first", 8.0));
+    assert!(session.commit_handoff_at(12));
     let first = session.snapshot().entries[0].clone();
     assert!(session.append_tracks(vec![published("second", 6.0)]));
     let snapshot = session.snapshot();
@@ -78,7 +138,8 @@ fn appending_tracks_preserves_existing_entry_offsets() {
 #[test]
 fn appending_tracks_preserves_repeated_queue_entries() {
     let mut session = ClientHlsSession::prepared(4);
-    session.publish_start_at(published("liked", 8.0), 12);
+    session.prepare_start(published("liked", 8.0));
+    assert!(session.commit_handoff_at(12));
     assert!(session.append_tracks(vec![published("liked", 8.0)]));
     let snapshot = session.snapshot();
     assert_eq!(snapshot.entries.len(), 2);
@@ -94,7 +155,8 @@ fn appending_tracks_preserves_repeated_queue_entries() {
 fn real_media_handoff_is_future_only_and_keeps_its_discontinuity_visible() {
     let mut session = ClientHlsSession::prepared(5);
     let prepared = session.manifest_at(20);
-    session.publish_start_at(published("first", 8.0), 20);
+    session.prepare_start(published("first", 8.0));
+    assert!(session.commit_handoff_at(20));
     let manifest = session.manifest_at(21);
     let prepared_segments = segment_urls_by_sequence(&prepared);
     let published_segments = segment_urls_by_sequence(&manifest);
@@ -121,8 +183,131 @@ fn real_media_handoff_is_future_only_and_keeps_its_discontinuity_visible() {
 }
 
 #[test]
+fn legacy_manifest_stays_deep_until_reserve_projection_is_observed() {
+    let mut session = ClientHlsSession::prepared(6);
+    session.prepare_start(published_segments("long", 150, 2.0));
+    assert!(session.commit_handoff_at(20));
+
+    let legacy = session.manifest_at(21);
+    assert_eq!(legacy.matches("/segment/").count(), 30);
+
+    session.enable_projected_playback_manifest();
+    let playback = session.manifest_at(21);
+    assert_eq!(playback.matches("/segment/").count(), 3);
+
+    let compact = session.reserve_manifest_at(21);
+    assert_eq!(compact.matches("/segment/").count(), 30);
+
+    session.set_reserve_buffer_seconds(180);
+    let expanded = session.reserve_manifest_at(21);
+    assert_eq!(expanded.matches("/segment/").count(), 90);
+
+    session.set_reserve_buffer_seconds(60);
+    let retained = session.reserve_manifest_at(21);
+    assert_eq!(retained.matches("/segment/").count(), 90);
+}
+
+#[test]
+fn real_media_handoff_is_anchored_to_observed_client_playout() {
+    let mut session = ClientHlsSession::prepared(8);
+    session.observe_playout_seconds(Some(10.5));
+    session.prepare_start(published("first", 8.0));
+    assert!(session.commit_handoff_at(session.current_prime_sequence()));
+
+    assert_eq!(
+        session.snapshot().entries[0].start_seconds,
+        12.0 * HLS_PRIMING_SEGMENT_SECONDS
+    );
+}
+
+#[tokio::test]
+async fn reserve_manifest_request_negotiates_projected_playback_without_a_protocol_flag() {
+    let cache_root = std::env::temp_dir().join(format!(
+        "slisic-p2p-hls-projection-test-{}",
+        std::process::id()
+    ));
+    let hls = RemoteP2pHls::new(cache_root.clone()).expect("test HLS cache should initialize");
+    let snapshot = hls
+        .prepare("client")
+        .expect("test HLS session should prepare");
+    {
+        let mut sessions = hls
+            .sessions
+            .lock()
+            .expect("test HLS session lock should remain healthy");
+        sessions
+            .get_mut("client")
+            .expect("prepared test session should exist")
+            .prepare_start(published_segments("long", 150, 2.0));
+        assert!(
+            sessions
+                .get_mut("client")
+                .expect("prepared test session should exist")
+                .commit_handoff_at(20)
+        );
+    }
+
+    let legacy = hls
+        .resolve_asset("client", &snapshot.stream_url, Some(42.0))
+        .await
+        .expect("legacy playback manifest should resolve");
+    assert_eq!(
+        String::from_utf8_lossy(&legacy.body)
+            .matches("/segment/")
+            .count(),
+        30
+    );
+
+    let reserve = hls
+        .resolve_asset("client", &snapshot.reserve_url, Some(42.0))
+        .await
+        .expect("reserve manifest should resolve");
+    assert_eq!(
+        String::from_utf8_lossy(&reserve.body)
+            .matches("/segment/")
+            .count(),
+        30
+    );
+
+    let projected = hls
+        .resolve_asset("client", &snapshot.stream_url, Some(42.0))
+        .await
+        .expect("projected playback manifest should resolve");
+    assert_eq!(
+        String::from_utf8_lossy(&projected.body)
+            .matches("/segment/")
+            .count(),
+        3
+    );
+
+    drop(hls);
+    let _ = std::fs::remove_dir_all(cache_root);
+}
+
+#[test]
+fn prepared_sessions_never_reuse_a_persistent_cache_epoch() {
+    let cache_root =
+        std::env::temp_dir().join(format!("slisic-p2p-hls-epoch-test-{}", std::process::id()));
+    let hls = RemoteP2pHls::new(cache_root.clone()).expect("test HLS cache should initialize");
+    let first = hls.prepare("client").expect("first session should prepare");
+    hls.remove("client");
+    let second = hls
+        .prepare("client")
+        .expect("second session should prepare");
+
+    assert!(second.epoch > first.epoch);
+    assert!(second.epoch <= 9_007_199_254_740_991);
+    drop(hls);
+    let _ = std::fs::remove_dir_all(cache_root);
+}
+
+#[test]
 fn stale_epoch_urls_have_no_asset_path() {
     assert!(parse_session_url("p2p-hls://session/8/index.m3u8", 9).is_err());
+    assert!(matches!(
+        parse_session_url("p2p-hls://session/9/reserve.m3u8", 9),
+        Ok(SessionAssetPath::ReserveManifest)
+    ));
     assert!(matches!(
         parse_session_url("p2p-hls://session/9/track/2/segment/4.ts", 9),
         Ok(SessionAssetPath::Segment {
