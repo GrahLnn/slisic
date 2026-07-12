@@ -555,6 +555,8 @@ async fn run_remote_p2p_events(
                 url,
                 playout_seconds,
                 priority,
+                attempt,
+                chunk_indices,
                 responses,
             } => {
                 let trace_asset = should_trace_remote_p2p_hls_asset(request_id, &url);
@@ -613,6 +615,8 @@ async fn run_remote_p2p_events(
                                 asset.content_type,
                                 asset.body,
                                 priority,
+                                attempt,
+                                chunk_indices,
                             )
                             .await
                             {

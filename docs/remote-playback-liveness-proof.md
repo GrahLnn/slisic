@@ -68,7 +68,7 @@ The following do not imply the Unique Final Goal:
 | --- | --- | --- | --- | --- | --- |
 | Queue tuning | Reserve/foreground queue sizing | Prevents known unpublished-request starvation | Published requests can still receive zero progress | refuted | New queue invariant that proves end-to-end progress |
 | Infinite priming | Extend silent HLS indefinitely | Preserves one media source while waiting | Cannot produce audible audio when supply is dead | blocked | Independent proof that supply recovery is bounded |
-| Dual DataChannel | Separate metadata and media SCTP streams | Can isolate application queues | Association congestion/retransmission may remain shared | exploring | Real browser trace showing independent progress under loss |
+| Dual DataChannel with attempt closure | Reliable ordered control plus partially reliable coordinate media; each media attempt ends with reliable closure evidence | Captured initial-cellular and two-second handover production E2E both preserve uninterrupted native time; missing coordinates are repaired without replaying delivered chunks | Real iOS/Arc background and lock-screen execution remains unproved | promising | N/A |
 | Local SCTP capacity death lease | Treat Host `buffered_amount` decrease as delivery progress and terminate the SupplyEpoch after five seconds without decrease | Bounds a locally observed SCTP queue | Windows/macOS WebRTC implementations do not provide portable delivery progress; a healthy high-RTT path is falsely terminated | refuted | A portable implementation guarantee that local accounting proves remote delivery |
 | Local SCTP bounded admission | Use high/low `buffered_amount` watermarks only to bound the sender queue; never infer transport death | Negotiated unordered DataChannel transfers more than twice the window without application ACK; slow-drain and delayed-observation tests preserve the writer until channel close | Real iOS/Arc background and lock-screen execution remains unproved | promising | N/A |
 | Application delivery window | Release each 64 KiB Host window only after browser chunk acknowledgements | Bounds unacknowledged application bytes | Initial-cellular trace measures about 145 kbps effective throughput on a physically sustainable path and the replay experiment reproduces buffer exhaustion | refuted | A non-stop-and-wait protocol whose sustainable throughput is independent of browser ACK latency |
@@ -205,7 +205,7 @@ The sixth review rejected completion with five further composition failures:
 
 The outbound scheduler now registers accepted request identities before domain resolution and accepts
 promotion only for a registered live request. Asset completion or an error retires that identity.
-Browser frames are bounded to the protocol's 16 KiB message size and preheader storage has an
+Browser media frames are bounded to the protocol's 1,200 byte message size and preheader storage has an
 aggregate byte bound. Host negotiation failure atomically removes and closes only the exact peer
 that timed out. Browser initial negotiation failure resets that peer and enters bounded replacement
 retry. A close during replacement preserves replay demand and schedules another ownership transfer;
@@ -319,9 +319,24 @@ unordered DataChannel transfers more than twice the local high watermark without
 while sidecar tests retain explicit writer cancellation, channel-close, replay, malformed-frame, background,
 handover, single-source, timeline, and native-boundary invariants.
 
-The remaining obligation is a fresh real iOS/Arc trace beginning directly on cellular and a
-Wi-Fi-to-cellular handover trace. The software result is not declared complete before both show
-continuous audible playout.
+The automated obligation is a fresh captured initial-cellular trace and a loss/recovery handover
+trace. Real iOS/Arc background and lock-screen playback remains a separate empirical obligation.
+
+### Fourteenth Independent Review
+
+The captured initial-cellular trace refuted reliable SCTP media even after local bounded admission:
+`16 KiB` messages under `300 +/- 150 ms` delay and `5%` loss collapsed a `52 KiB` segment to roughly
+ten seconds. Setting partial reliability on the same channel restored media throughput but also made
+startup control lossy. Fixed repair timers then mistook not-yet-sent chunks for missing chunks and
+created duplicate-response pressure.
+
+The accepted protocol assigns each invariant one owner. Reliable ordered control owns requests,
+timeline, handoff, and `asset_attempt_finished`. Unordered `maxRetransmits=0` media owns only
+`1,200` byte coordinate frames. Hero computes a missing-coordinate complement only after the Host
+closes that exact attempt; one short cross-stream reorder grace precedes the next repair attempt.
+The original network namespace harness now passes both a session that starts inside the captured
+cellular profile and a playback session with a two-second total-loss handover. Neither trace emits
+native waiting, pause, or SupplyEpoch replacement after the real boundary.
 
 ### Fourteenth Independent Review
 

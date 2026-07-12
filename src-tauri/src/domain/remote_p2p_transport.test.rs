@@ -19,7 +19,7 @@ use std::time::Duration;
 
 #[test]
 fn hls_asset_chunks_carry_stable_request_coordinates() {
-    assert_eq!(HLS_ASSET_CHUNK_SIZE, 16 * 1024 - 12);
+    assert_eq!(HLS_ASSET_CHUNK_SIZE, 1_200 - 12);
     assert_eq!(
         HLS_ASSET_CHUNK_SIZE + HLS_ASSET_CHUNK_HEADER_SIZE,
         HLS_ASSET_MAX_MESSAGE_SIZE
@@ -40,15 +40,16 @@ fn hls_asset_chunk_frame_fits_the_data_channel_message_limit() {
 #[test]
 fn concurrent_send_window_is_the_maximal_bounded_frame_colimit() {
     let mut window = RemoteP2pSendWindow::default();
-    for _ in 0..4 {
+    while window.bytes + HLS_ASSET_MAX_MESSAGE_SIZE <= HLS_DATA_CHANNEL_HIGH_WATERMARK {
         assert!(window.admit(HLS_ASSET_MAX_MESSAGE_SIZE));
     }
-    assert_eq!(window.bytes, HLS_DATA_CHANNEL_HIGH_WATERMARK);
-    assert!(!window.admit(1));
+    assert!(window.bytes <= HLS_DATA_CHANNEL_HIGH_WATERMARK);
+    assert!(HLS_DATA_CHANNEL_HIGH_WATERMARK - window.bytes < HLS_ASSET_MAX_MESSAGE_SIZE);
+    assert!(!window.admit(HLS_ASSET_MAX_MESSAGE_SIZE));
 
     window.complete(HLS_ASSET_MAX_MESSAGE_SIZE);
     assert!(window.admit(HLS_ASSET_MAX_MESSAGE_SIZE));
-    assert_eq!(window.bytes, HLS_DATA_CHANNEL_HIGH_WATERMARK);
+    assert!(window.bytes <= HLS_DATA_CHANNEL_HIGH_WATERMARK);
 }
 
 #[test]
@@ -59,6 +60,8 @@ fn scheduler_capacity_projection_equals_its_emitted_transmission() {
         content_type: "video/mp2t".to_owned(),
         body: Bytes::from(vec![1; HLS_ASSET_CHUNK_SIZE * 3]),
         priority: RemoteP2pAssetPriority::Foreground,
+        attempt: 0,
+        chunk_indices: None,
     });
     scheduler.push(RemoteP2pOutboundResponse::Text {
         body: "timeline".to_owned(),
@@ -88,6 +91,8 @@ fn capacity_projection_does_not_capture_a_stale_priority_decision() {
         content_type: "video/mp2t".to_owned(),
         body: Bytes::from(vec![7; HLS_ASSET_CHUNK_SIZE * 2]),
         priority: RemoteP2pAssetPriority::Reserve,
+        attempt: 0,
+        chunk_indices: None,
     });
     let reserve_projection = scheduler
         .next_transmission_bytes()
@@ -121,6 +126,8 @@ fn scheduling_and_unordered_completion_naturally_reassemble_the_same_asset() {
         content_type: "video/mp2t".to_owned(),
         body: Bytes::from(expected.clone()),
         priority: RemoteP2pAssetPriority::Reserve,
+        attempt: 0,
+        chunk_indices: None,
     });
 
     let mut emitted = scheduler.next_transmission().expect("asset opening");
@@ -134,6 +141,8 @@ fn scheduling_and_unordered_completion_naturally_reassemble_the_same_asset() {
         content_type: "application/vnd.apple.mpegurl".to_owned(),
         body: Bytes::from_static(b"#EXTM3U"),
         priority: RemoteP2pAssetPriority::Foreground,
+        attempt: 0,
+        chunk_indices: None,
     });
     while let Some(transmission) = scheduler.next_transmission() {
         emitted.extend(transmission);
@@ -169,6 +178,32 @@ fn scheduling_and_unordered_completion_naturally_reassemble_the_same_asset() {
 }
 
 #[test]
+fn repair_projection_emits_only_unique_valid_chunk_coordinates() {
+    let mut scheduler = RemoteP2pOutboundScheduler::default();
+    scheduler.push(RemoteP2pOutboundResponse::Register { request_id: 51 });
+    scheduler.push(RemoteP2pOutboundResponse::Asset {
+        request_id: 51,
+        content_type: "video/mp2t".to_owned(),
+        body: Bytes::from(vec![0x51; HLS_ASSET_CHUNK_SIZE * 3]),
+        priority: RemoteP2pAssetPriority::Foreground,
+        attempt: 0,
+        chunk_indices: Some(vec![2, 0, 2, 99]),
+    });
+
+    let mut coordinates = Vec::new();
+    while let Some(transmission) = scheduler.next_transmission() {
+        coordinates.extend(transmission.into_iter().filter_map(|frame| match frame {
+            RemoteP2pOutboundFrame::Binary(packet) => Some(u32::from_be_bytes(
+                packet[8..12].try_into().expect("chunk coordinate"),
+            )),
+            RemoteP2pOutboundFrame::Text(_) => None,
+        }));
+    }
+
+    assert_eq!(coordinates, vec![2, 0]);
+}
+
+#[test]
 fn empty_asset_opening_contains_only_its_header_and_releases_the_request() {
     let mut scheduler = RemoteP2pOutboundScheduler::default();
     scheduler.push(RemoteP2pOutboundResponse::Register { request_id: 3 });
@@ -177,11 +212,17 @@ fn empty_asset_opening_contains_only_its_header_and_releases_the_request() {
         content_type: "application/vnd.apple.mpegurl".to_owned(),
         body: Bytes::new(),
         priority: RemoteP2pAssetPriority::Foreground,
+        attempt: 0,
+        chunk_indices: None,
     });
 
     assert!(matches!(
         scheduler.next_transmission().as_deref(),
-        Some([RemoteP2pOutboundFrame::Text(header)]) if header.contains("\"chunks\":0")
+        Some([
+            RemoteP2pOutboundFrame::Text(header),
+            RemoteP2pOutboundFrame::Text(finish),
+        ]) if header.contains("\"chunks\":0")
+            && finish.contains("\"type\":\"hls_asset_attempt_finished\"")
     ));
     assert!(!scheduler.requested.contains(&3));
     assert!(scheduler.next_transmission().is_none());
@@ -196,8 +237,12 @@ fn cancellation_discards_queued_frames_and_late_asset_completion() {
         content_type: "video/mp2t".to_owned(),
         body: Bytes::from(vec![9; HLS_ASSET_CHUNK_SIZE + 1]),
         priority: RemoteP2pAssetPriority::Reserve,
+        attempt: 0,
+        chunk_indices: None,
     });
-    scheduler.push(RemoteP2pOutboundResponse::CancelThrough { request_id: 9 });
+    scheduler.push(RemoteP2pOutboundResponse::Cancel {
+        request_ids: vec![9],
+    });
     assert!(scheduler.next_transmission().is_none());
 
     scheduler.push(RemoteP2pOutboundResponse::Asset {
@@ -205,18 +250,74 @@ fn cancellation_discards_queued_frames_and_late_asset_completion() {
         content_type: "video/mp2t".to_owned(),
         body: Bytes::from_static(b"late"),
         priority: RemoteP2pAssetPriority::Reserve,
+        attempt: 0,
+        chunk_indices: None,
     });
     assert!(scheduler.next_transmission().is_none());
 
-    scheduler.push(RemoteP2pOutboundResponse::CancelThrough { request_id: 10 });
     scheduler.push(RemoteP2pOutboundResponse::Register { request_id: 10 });
+    scheduler.push(RemoteP2pOutboundResponse::Cancel {
+        request_ids: vec![10],
+    });
     scheduler.push(RemoteP2pOutboundResponse::Asset {
         request_id: 10,
         content_type: "video/mp2t".to_owned(),
         body: Bytes::from_static(b"reordered-late"),
         priority: RemoteP2pAssetPriority::Reserve,
+        attempt: 0,
+        chunk_indices: None,
     });
     assert!(scheduler.next_transmission().is_none());
+    assert!(scheduler.cancelled.is_empty());
+}
+
+#[test]
+fn cancellation_tombstones_are_bounded_to_the_published_request_window() {
+    let mut scheduler = RemoteP2pOutboundScheduler::default();
+    for request_id in 1..=(HLS_CANCELLATION_CAPACITY as u32 + 32) {
+        scheduler.push(RemoteP2pOutboundResponse::Register { request_id });
+    }
+    scheduler.push(RemoteP2pOutboundResponse::Cancel {
+        request_ids: (1..=(HLS_CANCELLATION_CAPACITY as u32 + 32)).collect(),
+    });
+
+    assert_eq!(scheduler.cancelled.len(), HLS_CANCELLATION_CAPACITY);
+    assert!(!scheduler.cancelled.contains(&0));
+
+    scheduler.push(RemoteP2pOutboundResponse::Cancel {
+        request_ids: vec![u32::MAX],
+    });
+    assert_eq!(scheduler.cancelled.len(), HLS_CANCELLATION_CAPACITY);
+    assert!(!scheduler.cancelled.contains(&u32::MAX));
+}
+
+#[test]
+fn exact_cancellation_preserves_other_published_request_ids() {
+    let mut scheduler = RemoteP2pOutboundScheduler::default();
+    for request_id in [1, 2] {
+        scheduler.push(RemoteP2pOutboundResponse::Register { request_id });
+        scheduler.push(RemoteP2pOutboundResponse::Asset {
+            request_id,
+            content_type: "video/mp2t".to_owned(),
+            body: Bytes::from_static(b"media"),
+            priority: RemoteP2pAssetPriority::Reserve,
+            attempt: 0,
+            chunk_indices: None,
+        });
+    }
+    scheduler.push(RemoteP2pOutboundResponse::Cancel {
+        request_ids: vec![1],
+    });
+
+    assert!(matches!(
+        scheduler.next_transmission().as_deref(),
+        Some([
+            RemoteP2pOutboundFrame::Text(header),
+            RemoteP2pOutboundFrame::Binary(chunk),
+            RemoteP2pOutboundFrame::Text(_),
+        ]) if header.contains("\"id\":2")
+            && &chunk[4..8] == 2_u32.to_be_bytes().as_slice()
+    ));
 }
 
 #[test]
@@ -227,6 +328,8 @@ fn asset_opening_is_atomic_before_foreground_overtakes_remaining_reserve_chunks(
         content_type: "video/mp2t".to_owned(),
         body: Bytes::from(vec![1; HLS_ASSET_CHUNK_SIZE + 1]),
         priority: RemoteP2pAssetPriority::Reserve,
+        attempt: 0,
+        chunk_indices: None,
     });
     let reserve_opening = scheduler.next_transmission().expect("reserve opening");
     assert!(matches!(
@@ -242,19 +345,30 @@ fn asset_opening_is_atomic_before_foreground_overtakes_remaining_reserve_chunks(
         content_type: "application/vnd.apple.mpegurl".to_owned(),
         body: Bytes::from_static(b"#EXTM3U"),
         priority: RemoteP2pAssetPriority::Foreground,
+        attempt: 0,
+        chunk_indices: None,
     });
     let foreground_opening = scheduler.next_transmission().expect("foreground opening");
     assert!(matches!(
         foreground_opening.as_slice(),
-        [RemoteP2pOutboundFrame::Text(header), RemoteP2pOutboundFrame::Binary(chunk)]
+        [
+            RemoteP2pOutboundFrame::Text(header),
+            RemoteP2pOutboundFrame::Binary(chunk),
+            RemoteP2pOutboundFrame::Text(finish),
+        ]
             if header.contains("\"id\":2")
                 && &chunk[4..8] == 2_u32.to_be_bytes().as_slice()
+                && finish.contains("\"attempt\":0")
     ));
     let reserve_tail = scheduler.next_transmission().expect("reserve tail");
     assert!(matches!(
         reserve_tail.as_slice(),
-        [RemoteP2pOutboundFrame::Binary(chunk)]
+        [
+            RemoteP2pOutboundFrame::Binary(chunk),
+            RemoteP2pOutboundFrame::Text(finish),
+        ]
             if &chunk[4..8] == 1_u32.to_be_bytes().as_slice()
+                && finish.contains("\"attempt\":0")
     ));
 }
 
@@ -266,6 +380,8 @@ fn causal_control_preempts_foreground_media_tails() {
         content_type: "video/mp2t".to_owned(),
         body: Bytes::from(vec![1; HLS_ASSET_CHUNK_SIZE * 3]),
         priority: RemoteP2pAssetPriority::Foreground,
+        attempt: 0,
+        chunk_indices: None,
     });
     let opening = scheduler.next_transmission().expect("media opening");
     assert!(matches!(
@@ -291,6 +407,8 @@ fn causal_control_preempts_foreground_media_tails() {
         content_type: "application/vnd.apple.mpegurl".to_owned(),
         body: Bytes::from_static(b"#EXTM3U"),
         priority: RemoteP2pAssetPriority::Foreground,
+        attempt: 0,
+        chunk_indices: None,
     });
     assert!(matches!(
         scheduler.next_transmission().as_deref(),
@@ -299,9 +417,14 @@ fn causal_control_preempts_foreground_media_tails() {
     ));
     assert!(matches!(
         scheduler.next_transmission().as_deref(),
-        Some([RemoteP2pOutboundFrame::Text(header), RemoteP2pOutboundFrame::Binary(chunk)])
+        Some([
+            RemoteP2pOutboundFrame::Text(header),
+            RemoteP2pOutboundFrame::Binary(chunk),
+            RemoteP2pOutboundFrame::Text(finish),
+        ])
             if header.contains("\"id\":2")
                 && &chunk[4..8] == 2_u32.to_be_bytes().as_slice()
+                && finish.contains("\"attempt\":0")
     ));
 }
 
@@ -313,6 +436,8 @@ fn causal_control_has_a_bounded_burst_before_media_progress() {
         content_type: "video/mp2t".to_owned(),
         body: Bytes::from(vec![1; HLS_ASSET_CHUNK_SIZE * 3]),
         priority: RemoteP2pAssetPriority::Foreground,
+        attempt: 0,
+        chunk_indices: None,
     });
     scheduler.next_transmission().expect("media opening");
     for body in ["timeline-1", "timeline-2"] {
@@ -347,7 +472,9 @@ fn cancellation_discards_correlated_text_responses() {
         priority: RemoteP2pOutboundPriority::Control,
         request_id: Some(7),
     });
-    scheduler.push(RemoteP2pOutboundResponse::CancelThrough { request_id: 7 });
+    scheduler.push(RemoteP2pOutboundResponse::Cancel {
+        request_ids: vec![7],
+    });
 
     assert!(scheduler.next_transmission().is_none());
 
@@ -369,12 +496,16 @@ fn promoting_a_published_reserve_asset_moves_its_next_frame_to_foreground() {
         content_type: "video/mp2t".to_owned(),
         body: Bytes::from(vec![1; HLS_ASSET_CHUNK_SIZE + 1]),
         priority: RemoteP2pAssetPriority::Reserve,
+        attempt: 0,
+        chunk_indices: None,
     });
     scheduler.push(RemoteP2pOutboundResponse::Asset {
         request_id: 2,
         content_type: "video/mp2t".to_owned(),
         body: Bytes::from(vec![2; HLS_ASSET_CHUNK_SIZE + 1]),
         priority: RemoteP2pAssetPriority::Reserve,
+        attempt: 0,
+        chunk_indices: None,
     });
     let opening = scheduler.next_transmission().expect("reserve opening");
     assert_eq!(opening.len(), 2);
@@ -383,8 +514,12 @@ fn promoting_a_published_reserve_asset_moves_its_next_frame_to_foreground() {
 
     assert!(matches!(
         scheduler.next_transmission().as_deref(),
-        Some([RemoteP2pOutboundFrame::Binary(frame)])
+        Some([
+            RemoteP2pOutboundFrame::Binary(frame),
+            RemoteP2pOutboundFrame::Text(finish),
+        ])
             if &frame[4..8] == 1_u32.to_be_bytes().as_slice()
+                && finish.contains("\"attempt\":0")
     ));
 }
 
@@ -398,19 +533,28 @@ fn promotion_is_retained_when_it_arrives_before_the_asset_response() {
         content_type: "video/mp2t".to_owned(),
         body: Bytes::from_static(b"reserve"),
         priority: RemoteP2pAssetPriority::Reserve,
+        attempt: 0,
+        chunk_indices: None,
     });
     scheduler.push(RemoteP2pOutboundResponse::Asset {
         request_id: 7,
         content_type: "video/mp2t".to_owned(),
         body: Bytes::from_static(b"playback"),
         priority: RemoteP2pAssetPriority::Reserve,
+        attempt: 0,
+        chunk_indices: None,
     });
 
     assert!(matches!(
         scheduler.next_transmission().as_deref(),
-        Some([RemoteP2pOutboundFrame::Text(header), RemoteP2pOutboundFrame::Binary(chunk)])
+        Some([
+            RemoteP2pOutboundFrame::Text(header),
+            RemoteP2pOutboundFrame::Binary(chunk),
+            RemoteP2pOutboundFrame::Text(finish),
+        ])
             if header.contains("\"id\":7")
                 && &chunk[4..8] == 7_u32.to_be_bytes().as_slice()
+                && finish.contains("\"attempt\":0")
     ));
 }
 
@@ -479,6 +623,8 @@ async fn a_full_response_queue_backpressures_instead_of_losing_the_asset() {
         "video/mp2t",
         Bytes::from_static(b"asset"),
         RemoteP2pAssetPriority::Foreground,
+        0,
+        None,
     );
     tokio::pin!(send);
     assert!(
@@ -506,6 +652,8 @@ async fn an_asset_larger_than_the_protocol_bound_is_rejected_before_queueing() {
         "video/mp2t",
         Bytes::from(vec![0; HLS_ASSET_MAX_BYTES + 1]),
         RemoteP2pAssetPriority::Foreground,
+        0,
+        None,
     )
     .await;
 
@@ -834,7 +982,7 @@ async fn duplicate_offer_replay_is_serialized_and_idempotent() -> Result<()> {
             .await?,
     );
     let _data = browser
-        .create_data_channel(HLS_DATA_CHANNEL_LABEL, None)
+        .create_data_channel(HLS_CONTROL_CHANNEL_LABEL, None)
         .await?;
     let initial_offer = browser.create_offer(None).await?;
     browser.set_local_description(initial_offer.clone()).await?;
@@ -919,7 +1067,7 @@ async fn a_closed_peer_is_replaced_before_accepting_the_next_offer() -> Result<(
             .await?,
     );
     let _data = browser
-        .create_data_channel(HLS_DATA_CHANNEL_LABEL, None)
+        .create_data_channel(HLS_CONTROL_CHANNEL_LABEL, None)
         .await?;
     let offer = browser.create_offer(None).await?;
     browser.set_local_description(offer.clone()).await?;
@@ -1004,18 +1152,37 @@ async fn negotiated_data_channel_delivers_hls_asset_coordinates() -> Result<()> 
     );
     let data = browser
         .create_data_channel(
-            HLS_DATA_CHANNEL_LABEL,
+            HLS_CONTROL_CHANNEL_LABEL,
+            Some(
+                webrtc::data_channel::data_channel_init::RTCDataChannelInit {
+                    ordered: Some(true),
+                    ..Default::default()
+                },
+            ),
+        )
+        .await?;
+    let media = browser
+        .create_data_channel(
+            HLS_MEDIA_CHANNEL_LABEL,
             Some(
                 webrtc::data_channel::data_channel_init::RTCDataChannelInit {
                     ordered: Some(false),
+                    max_retransmits: Some(0),
                     ..Default::default()
                 },
             ),
         )
         .await?;
     let (opened_tx, mut opened_rx) = unbounded_channel();
+    let media_opened_tx = opened_tx.clone();
     data.on_open(Box::new(move || {
         let opened_tx = opened_tx.clone();
+        Box::pin(async move {
+            let _ = opened_tx.send(());
+        })
+    }));
+    media.on_open(Box::new(move || {
+        let opened_tx = media_opened_tx.clone();
         Box::pin(async move {
             let _ = opened_tx.send(());
         })
@@ -1023,13 +1190,19 @@ async fn negotiated_data_channel_delivers_hls_asset_coordinates() -> Result<()> 
     let (asset_chunk_tx, mut asset_chunk_rx) = unbounded_channel();
     let (control_tx, mut control_rx) = unbounded_channel();
     data.on_message(Box::new(move |message: DataChannelMessage| {
-        let asset_chunk_tx = asset_chunk_tx.clone();
         let control_tx = control_tx.clone();
         Box::pin(async move {
+            if message.is_string
+                && let Ok(body) = String::from_utf8(message.data.to_vec())
+            {
+                let _ = control_tx.send(body);
+            }
+        })
+    }));
+    media.on_message(Box::new(move |message: DataChannelMessage| {
+        let asset_chunk_tx = asset_chunk_tx.clone();
+        Box::pin(async move {
             if message.is_string {
-                if let Ok(body) = String::from_utf8(message.data.to_vec()) {
-                    let _ = control_tx.send(body);
-                }
                 return;
             }
             if message.data.len() < HLS_ASSET_CHUNK_HEADER_SIZE {
@@ -1067,11 +1240,15 @@ async fn negotiated_data_channel_delivers_hls_asset_coordinates() -> Result<()> 
     .await?;
 
     tokio::time::timeout(Duration::from_secs(5), async {
+        let mut opened_channels = 0;
         loop {
             tokio::select! {
                 opened = opened_rx.recv() => {
                     if opened.is_some() {
-                        break Ok::<(), anyhow::Error>(());
+                        opened_channels += 1;
+                        if opened_channels == 2 {
+                            break Ok::<(), anyhow::Error>(());
+                        }
                     }
                 }
                 candidate = candidate_rx.recv() => {
@@ -1135,6 +1312,8 @@ async fn negotiated_data_channel_delivers_hls_asset_coordinates() -> Result<()> 
         request_id,
         url,
         playout_seconds,
+        attempt,
+        chunk_indices,
         responses,
         ..
     } = event
@@ -1145,6 +1324,8 @@ async fn negotiated_data_channel_delivers_hls_asset_coordinates() -> Result<()> 
     assert_eq!(request_id, 17);
     assert_eq!(url, "p2p-hls://session/4/index.m3u8");
     assert_eq!(playout_seconds, Some(12.5));
+    assert_eq!(attempt, 0);
+    assert_eq!(chunk_indices, None);
 
     let asset = Bytes::from(vec![0x5a; HLS_DATA_CHANNEL_HIGH_WATERMARK * 2 + 123]);
     let expected_bytes = asset.len();
@@ -1155,6 +1336,8 @@ async fn negotiated_data_channel_delivers_hls_asset_coordinates() -> Result<()> 
         "video/mp2t",
         asset,
         RemoteP2pAssetPriority::Foreground,
+        0,
+        None,
     )
     .await?;
     let received = tokio::time::timeout(Duration::from_secs(5), async {
@@ -1184,6 +1367,52 @@ async fn negotiated_data_channel_delivers_hls_asset_coordinates() -> Result<()> 
             .map(|chunk_index| (17, chunk_index as u32))
             .collect::<Vec<_>>()
     );
+    let finish = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let body = control_rx
+                .recv()
+                .await
+                .ok_or_else(|| anyhow!("control response channel closed"))?;
+            let value: serde_json::Value = serde_json::from_str(&body)?;
+            if value["type"] == "hls_asset_attempt_finished" {
+                break Ok::<_, anyhow::Error>(value);
+            }
+        }
+    })
+    .await
+    .map_err(|_| anyhow!("asset attempt finish evidence timed out"))??;
+    assert_eq!(finish["id"], 17);
+    assert_eq!(finish["attempt"], 0);
+
+    data.send_text(
+        serde_json::json!({
+            "type": "hls_asset_repair",
+            "id": 18,
+            "url": "p2p-hls://session/4/track/0/segment/2.ts",
+            "chunks": [3, 1],
+            "attempt": 3,
+            "playoutSeconds": 14.5,
+            "priority": "foreground",
+        })
+        .to_string(),
+    )
+    .await?;
+    let repair = tokio::time::timeout(Duration::from_secs(2), events.recv())
+        .await
+        .map_err(|_| anyhow!("HLS asset repair was not delivered"))?
+        .ok_or_else(|| anyhow!("P2P transport event channel closed"))?;
+    let RemoteP2pTransportEvent::HlsAssetRequested {
+        request_id,
+        attempt,
+        chunk_indices,
+        ..
+    } = repair
+    else {
+        panic!("expected HLS asset repair request");
+    };
+    assert_eq!(request_id, 18);
+    assert_eq!(attempt, 3);
+    assert_eq!(chunk_indices, Some(vec![3, 1]));
 
     data.send_text(
         serde_json::json!({
