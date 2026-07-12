@@ -1,5 +1,9 @@
 # Remote Share WebRTC Architecture
 
+> **Superseded:** This document describes the removed RTP-track design. The canonical architecture
+> is `remote-p2p-buffered-hls-architecture.md`. Do not use this document to justify new behavior or
+> recovery changes.
+
 ## Decision
 
 Remote Share has one media semantics: one persistent WebRTC audio track from the Slisic Host
