@@ -22,7 +22,7 @@ function WindowButton({ className, onClick, icon }: WindowButtonProps) {
       className={cn([
         "flex items-center justify-center",
         "text-center",
-        "h-3 w-3 rounded-full bg-[#e5e5e5] dark:bg-[#171717]",
+        "h-3 w-3 rounded-full bg-[#e5e5e5]/50 dark:bg-[#171717]/50",
         "duration-300 transition",
         className,
       ])}
