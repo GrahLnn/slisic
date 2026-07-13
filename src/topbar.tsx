@@ -293,26 +293,24 @@ export const LeftControls = memo(function LeftControlsComponent({
         _: () => null,
       })}
       {import.meta.env.DEV && (
-        <>
-          <CtrlButton
-            label="Reset DB"
-            icon={<icons.trashXmark size={14} />}
-            onClick={handleResetDevDatabase}
-            className="cursor-pointer hover:text-red-600"
-            o="opacity-30"
-          />
-          {surface === "config" && (
-            <CtrlButton
-              label="Batch paste"
-              icon={<icons.clipboardLines size={14} />}
-              onClick={handleBatchPaste}
-              className="cursor-pointer hover:text-sky-600"
-              o="opacity-30"
-            />
-          )}
-          <RemoteShareControl />
-        </>
+        <CtrlButton
+          label="Reset DB"
+          icon={<icons.trashXmark size={14} />}
+          onClick={handleResetDevDatabase}
+          className="cursor-pointer hover:text-red-600"
+          o="opacity-30"
+        />
       )}
+      {import.meta.env.DEV && surface === "config" && (
+        <CtrlButton
+          label="Batch paste"
+          icon={<icons.clipboardLines size={14} />}
+          onClick={handleBatchPaste}
+          className="cursor-pointer hover:text-sky-600"
+          o="opacity-30"
+        />
+      )}
+      <RemoteShareControl />
     </div>
   );
 });
