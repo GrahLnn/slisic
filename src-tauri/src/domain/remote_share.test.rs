@@ -1,24 +1,5 @@
 use super::*;
 
-#[test]
-fn periodic_hls_manifests_do_not_enter_normal_info_tracing() {
-    assert!(!should_trace_remote_p2p_hls_asset(
-        1,
-        "p2p-hls://session/index.m3u8"
-    ));
-    assert!(!should_trace_remote_p2p_hls_asset(
-        82_134,
-        "p2p-hls://session/reserve.m3u8",
-    ));
-    assert!(should_trace_remote_p2p_hls_asset(
-        1,
-        "p2p-hls://session/track/0/segment/0.ts",
-    ));
-    assert!(!should_trace_remote_p2p_hls_asset(
-        9,
-        "p2p-hls://session/track/0/segment/8.ts",
-    ));
-}
 use futures_util::future::pending;
 use std::path::PathBuf;
 

@@ -559,41 +559,14 @@ async fn run_remote_p2p_events(
                 chunk_indices,
                 responses,
             } => {
-                let trace_asset = should_trace_remote_p2p_hls_asset(request_id, &url);
-                let asset_kind = if url.ends_with(".m3u8") {
-                    "manifest"
-                } else if url.ends_with(".ts") {
-                    "segment"
-                } else {
-                    "other"
-                };
-                if trace_asset {
-                    log::info!(
-                        target: REMOTE_SHARE_LOG_TARGET,
-                        "remote_p2p_hls_asset_request_received request_id={} kind={} priority={priority:?}",
-                        request_id,
-                        asset_kind
-                    );
-                }
                 let runtime = Arc::clone(&runtime);
                 tauri::async_runtime::spawn(async move {
-                    let started = Instant::now();
                     match runtime
                         .p2p_hls
                         .resolve_asset(&client_id, &url, playout_seconds)
                         .await
                     {
                         Ok(asset) => {
-                            if trace_asset {
-                                log::info!(
-                                    target: REMOTE_SHARE_LOG_TARGET,
-                                    "remote_p2p_hls_asset_resolved request_id={} kind={} bytes={} elapsed_ms={}",
-                                    request_id,
-                                    asset_kind,
-                                    asset.body.len(),
-                                    started.elapsed().as_millis()
-                                );
-                            }
                             if url.ends_with(".m3u8") {
                                 if let Ok(snapshot) = runtime.p2p_hls.snapshot(&client_id) {
                                     let view = RemoteHlsSessionView::from(snapshot);
@@ -624,14 +597,6 @@ async fn run_remote_p2p_events(
                                     target: REMOTE_SHARE_LOG_TARGET,
                                     "remote_p2p_hls_asset_send_failed error=\"{}\"",
                                     escape_remote_log_value(&error.to_string())
-                                );
-                            } else if trace_asset {
-                                log::info!(
-                                    target: REMOTE_SHARE_LOG_TARGET,
-                                    "remote_p2p_hls_asset_queued request_id={} kind={} elapsed_ms={}",
-                                    request_id,
-                                    asset_kind,
-                                    started.elapsed().as_millis()
                                 );
                             }
                         }
@@ -764,10 +729,6 @@ async fn run_remote_p2p_events(
             }
         }
     }
-}
-
-fn should_trace_remote_p2p_hls_asset(request_id: u32, url: &str) -> bool {
-    request_id <= 8 && !url.ends_with(".m3u8")
 }
 
 fn install_remote_tls_crypto_provider() {
@@ -1957,10 +1918,6 @@ impl RemoteShareRuntime {
             self.p2p_hls
                 .set_reserve_buffer_seconds(client_id, buffer_seconds)
                 .map_err(|error| RemoteShareError::internal(error.to_string()))?;
-            log::info!(
-                target: REMOTE_SHARE_LOG_TARGET,
-                "remote_prefetch_reserve_updated target_tracks={target_tracks} buffer_seconds={buffer_seconds}"
-            );
         }
         self.spawn_remote_next_queue_fill(client_id.to_owned());
         Ok(())
