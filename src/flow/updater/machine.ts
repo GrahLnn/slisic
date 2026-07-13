@@ -1,7 +1,7 @@
 import { src } from "./src";
 import { invoker, ss } from "./events";
 
-const ONE_HOUR = 60 * 60 * 1000;
+export const ONE_HOUR = 60 * 60 * 1000;
 
 export const machine = src.createMachine({
   initial: ss.mainx.State.idle,
@@ -16,17 +16,28 @@ export const machine = src.createMachine({
       invoke: {
         id: invoker.checkUpdate.id,
         src: invoker.checkUpdate.src,
-        onDone: ss.resultx.State.ok,
-        onError: ss.resultx.State.err,
+        onDone: [
+          {
+            guard: ({ event }) => event.output.kind === "available",
+            target: ss.mainx.State.ready,
+          },
+          {
+            target: ss.mainx.State.waiting,
+          },
+        ],
+        onError: ss.mainx.State.waiting,
       },
     },
-    [ss.resultx.State.ok]: {
-      type: "final",
-    },
-    [ss.resultx.State.err]: {
+    [ss.mainx.State.waiting]: {
       after: {
         [ONE_HOUR]: ss.mainx.State.check,
       },
+      on: {
+        run: ss.mainx.State.check,
+      },
+    },
+    [ss.mainx.State.ready]: {
+      type: "final",
     },
   },
 });
