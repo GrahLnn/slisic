@@ -108,6 +108,7 @@ impl ClientHlsSession {
         self.revision = self.revision.saturating_add(1);
     }
 
+    #[cfg(test)]
     fn commit_handoff_at(&mut self, current_sequence: u64) -> bool {
         if self.tracks.is_empty() || self.handoff_sequence.is_some() {
             return false;

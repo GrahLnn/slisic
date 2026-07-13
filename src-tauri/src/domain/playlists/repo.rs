@@ -478,6 +478,7 @@ impl PlaylistPlaybackCollectionRef {
         }
     }
 
+    #[cfg(test)]
     pub fn contains_collection_folder(&self, folder: &str) -> bool {
         self.folder == folder
     }
@@ -533,6 +534,7 @@ impl PlaylistPlaybackGroupRef {
         }
     }
 
+    #[cfg(test)]
     pub fn contains_music_source(&self, source: &PlaylistPlaybackTrackSource) -> bool {
         self.url == source.music.group.url
             && (self.parent_collection_records.is_empty()
@@ -551,12 +553,14 @@ impl PlaylistPlaybackExtraRef {
         Self { record }
     }
 
+    #[cfg(test)]
     pub fn matches_canonical_music_id(&self, canonical_music_id: &str) -> bool {
         self.record.key.to_sql() == stable_record_key(canonical_music_id)
     }
 }
 
 impl PlaylistPlaybackSelection {
+    #[cfg(test)]
     pub fn contains_track_source(&self, source: &PlaylistPlaybackTrackSource) -> bool {
         self.collections
             .iter()
@@ -1176,6 +1180,7 @@ async fn apply_music_mutation_to_record(
     }
 }
 
+#[cfg(test)]
 pub async fn trim_collection_music_ends_by_identity(
     collection_url: &str,
     trims: &[MusicEndTrim],
@@ -3793,6 +3798,7 @@ async fn resolve_playlist_group_ref(
     Ok(record)
 }
 
+#[cfg(test)]
 async fn playlist_storage_row_from_request(
     playlist: &PlayListWriteRequest,
     foreign_ids: &PlaylistForeignRecordIds,

@@ -2,20 +2,22 @@
 use super::event::WINDOW_READY;
 #[cfg(not(test))]
 use super::window;
-#[cfg(not(test))]
+#[cfg(all(not(test), debug_assertions))]
 use appdb::prelude::reset_db_and_remove_path;
 use std::fs;
 use std::path::{Path, PathBuf};
-#[cfg(not(test))]
+#[cfg(all(not(test), debug_assertions))]
 use std::process::Command;
 #[cfg(not(test))]
 use std::sync::atomic::Ordering;
+#[cfg(all(not(test), debug_assertions))]
+use tauri::Manager;
 #[cfg(not(test))]
-use tauri::{AppHandle, Manager, WebviewWindow};
+use tauri::{AppHandle, WebviewWindow};
 
 pub const APP_DB_FILE_NAME: &str = "surreal.db";
 pub const STARTUP_PROJECTION_FILE_NAME: &str = "startup-projection.json";
-#[cfg(windows)]
+#[cfg(all(windows, not(test), debug_assertions))]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 #[tauri::command]
@@ -128,12 +130,12 @@ fn remove_optional_artifact(path: &Path) -> Result<(), String> {
     }
 }
 
-#[cfg(not(test))]
+#[cfg(all(not(test), debug_assertions))]
 fn schedule_dev_reset_cleanup(paths: &[PathBuf]) -> Result<(), String> {
     spawn_delayed_reset_cleanup(std::process::id(), paths)
 }
 
-#[cfg(all(windows, not(test)))]
+#[cfg(all(windows, not(test), debug_assertions))]
 fn spawn_delayed_reset_cleanup(owner_pid: u32, paths: &[PathBuf]) -> Result<(), String> {
     use std::os::windows::process::CommandExt;
 
@@ -169,7 +171,7 @@ fn spawn_delayed_reset_cleanup(owner_pid: u32, paths: &[PathBuf]) -> Result<(), 
         .map_err(|error| format!("failed to schedule dev reset cleanup: {error}"))
 }
 
-#[cfg(all(not(windows), not(test)))]
+#[cfg(all(not(windows), not(test), debug_assertions))]
 fn spawn_delayed_reset_cleanup(owner_pid: u32, paths: &[PathBuf]) -> Result<(), String> {
     let escaped_paths = paths
         .iter()
@@ -196,12 +198,12 @@ fn spawn_delayed_reset_cleanup(owner_pid: u32, paths: &[PathBuf]) -> Result<(), 
         .map_err(|error| format!("failed to schedule dev reset cleanup: {error}"))
 }
 
-#[cfg(all(not(windows), not(test)))]
+#[cfg(all(not(windows), not(test), debug_assertions))]
 fn shell_single_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
-#[cfg(all(windows, not(test)))]
+#[cfg(all(windows, not(test), debug_assertions))]
 fn escape_powershell_single_quoted(path: &Path) -> String {
     path.to_string_lossy().replace('\'', "''")
 }

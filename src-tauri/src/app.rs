@@ -12,6 +12,7 @@ use tauri_specta::{Builder, collect_commands, collect_events};
 use tokio::task::block_in_place;
 use utils::event;
 
+#[cfg(debug_assertions)]
 const COMMANDS_TYPESCRIPT_HEADER: &str = include_str!("commands.header.ts");
 const ANSI_RESET: &str = "\x1b[0m";
 const ANSI_DIM: &str = "\x1b[2m";
