@@ -29,6 +29,7 @@ import {
   resolveWaveformInitialViewport,
   resolveWaveformMaximumPixelsPerSecond,
   resolveWaveformMaximumRenderPixelsPerSecond,
+  resolveWaveformMagnificationDeltaY,
   resolveWaveformMinimumPixelsPerSecond,
   resolveWaveformPixelsPerSecond,
   resolveWaveformPlayheadCssVariables,
@@ -450,6 +451,80 @@ describe("SpectrumVisualizer input interpretation", () => {
         deltaMode: 0,
         deltaX: 0,
         deltaY: 50,
+        shiftKey: true,
+      }),
+      {
+        deltaMode: 0,
+        deltaX: 50,
+        deltaY: 0,
+      },
+    );
+  });
+
+  test("maps macOS trackpad horizontal scroll to pan and pinch to zoom", () => {
+    assert.deepEqual(
+      resolveWaveformWheelAxisDeltas({
+        deltaMode: 0,
+        deltaX: 100,
+        deltaY: 8,
+        macosGestures: true,
+      }),
+      {
+        deltaMode: 0,
+        deltaX: 100,
+        deltaY: 0,
+      },
+    );
+    assert.deepEqual(
+      resolveWaveformWheelAxisDeltas({
+        ctrlKey: true,
+        deltaMode: 0,
+        deltaX: 12,
+        deltaY: -24,
+        macosGestures: true,
+      }),
+      {
+        deltaMode: 0,
+        deltaX: 0,
+        deltaY: -48,
+      },
+    );
+    assert.equal(
+      resolveWaveformMagnificationDeltaY({
+        previousScale: 1,
+        scale: 2,
+      }),
+      -720,
+    );
+    assert.equal(
+      resolveWaveformMagnificationDeltaY({
+        previousScale: 2,
+        scale: 1,
+      }),
+      720,
+    );
+  });
+
+  test("preserves mouse wheel zoom and shift-pan with macOS gestures enabled", () => {
+    assert.deepEqual(
+      resolveWaveformWheelAxisDeltas({
+        deltaMode: 0,
+        deltaX: 0,
+        deltaY: 50,
+        macosGestures: true,
+      }),
+      {
+        deltaMode: 0,
+        deltaX: 0,
+        deltaY: 50,
+      },
+    );
+    assert.deepEqual(
+      resolveWaveformWheelAxisDeltas({
+        deltaMode: 0,
+        deltaX: 0,
+        deltaY: 50,
+        macosGestures: true,
         shiftKey: true,
       }),
       {

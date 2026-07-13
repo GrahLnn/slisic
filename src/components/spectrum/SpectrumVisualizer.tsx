@@ -11,7 +11,7 @@ import {
   type RefObject,
 } from "react";
 import { motion } from "motion/react";
-import { cn } from "@/lib/utils";
+import { cn, os } from "@/lib/utils";
 import { crab, type HardwareHorizontalWheelEvent, type PlaybackStatusPayload } from "@/src/cmd";
 import { usePrefersDarkColorScheme } from "../colorScheme";
 import {
@@ -30,6 +30,7 @@ import {
   resolveWaveformDataPlanScopedRequests,
   resolveWaveformHardwareHorizontalWheelDelta,
   resolveWaveformInitialViewportFrame,
+  resolveWaveformMagnificationDeltaY,
   resolveWaveformPeakFromTileCache,
   resolveWaveformPlayheadCssVariables,
   resolveWaveformPointerAnchorViewportX,
@@ -93,6 +94,7 @@ export {
   resolveWaveformHorizontalScrollLeft,
   resolveWaveformInitialViewportFrame,
   resolveWaveformInitialViewport,
+  resolveWaveformMagnificationDeltaY,
   resolveWaveformMaximumPixelsPerSecond,
   resolveWaveformMaximumRenderPixelsPerSecond,
   resolveWaveformMinimumPixelsPerSecond,
@@ -1381,6 +1383,7 @@ function TrackSpectrumSession(props: TrackSpectrumProps) {
     provided: props.renderDataStore,
   });
   const hostRef = useRef<HTMLDivElement | null>(null);
+  const magnificationScaleRef = useRef<number | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const loadingCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const prefersDarkColorScheme = usePrefersDarkColorScheme();
@@ -1579,11 +1582,41 @@ function TrackSpectrumSession(props: TrackSpectrumProps) {
       return undefined;
     }
 
+    const macosGestures = os.match({
+      macos: () => true,
+      _: () => false,
+    });
+    const zoomAtClientX = (deltaY: number, clientX: number) => {
+      const anchorViewportX = resolveWaveformPointerAnchorViewportX({
+        clientX,
+        viewportLeft: host.getBoundingClientRect().left,
+        viewportWidth: viewport.viewportWidth,
+      });
+      updateViewportWithOwnership({
+        resolve: (current) =>
+          resolveWaveformViewportTransition({
+            command: {
+              anchorViewportX,
+              deltaY,
+              kind: "zoom",
+            },
+            current,
+          }).viewport,
+        zoomOwnership: "explicit",
+      });
+    };
     const handleWheel = (event: WheelEvent) => {
+      if (macosGestures && event.ctrlKey && magnificationScaleRef.current !== null) {
+        event.preventDefault();
+        return;
+      }
+
       const intent = resolveWaveformWheelOperation({
+        ctrlKey: event.ctrlKey,
         deltaMode: event.deltaMode,
         deltaX: event.deltaX,
         deltaY: event.deltaY,
+        macosGestures,
         shiftKey: event.shiftKey,
         viewportHeight: WAVEFORM_CANVAS_HEIGHT,
         viewportWidth: viewport.viewportWidth,
@@ -1594,23 +1627,7 @@ function TrackSpectrumSession(props: TrackSpectrumProps) {
 
       event.preventDefault();
       if (intent.kind === "zoom") {
-        const anchorViewportX = resolveWaveformPointerAnchorViewportX({
-          clientX: event.clientX,
-          viewportLeft: host.getBoundingClientRect().left,
-          viewportWidth: viewport.viewportWidth,
-        });
-        updateViewportWithOwnership({
-          resolve: (current) =>
-            resolveWaveformViewportTransition({
-              command: {
-                anchorViewportX,
-                deltaY: intent.deltaY,
-                kind: "zoom",
-              },
-              current,
-            }).viewport,
-          zoomOwnership: "explicit",
-        });
+        zoomAtClientX(intent.deltaY, event.clientX);
         return;
       }
 
@@ -1629,8 +1646,48 @@ function TrackSpectrumSession(props: TrackSpectrumProps) {
     host.addEventListener("wheel", handleWheel, {
       passive: false,
     });
-    return () => host.removeEventListener("wheel", handleWheel);
-  }, [updateViewportWithOwnership, viewport]);
+    if (!macosGestures) {
+      return () => host.removeEventListener("wheel", handleWheel);
+    }
+
+    const handleGestureStart = (event: Event) => {
+      const gestureEvent = event as Event & { scale?: number };
+      event.preventDefault();
+      magnificationScaleRef.current =
+        typeof gestureEvent.scale === "number" && gestureEvent.scale > 0 ? gestureEvent.scale : 1;
+    };
+    const handleGestureChange = (event: Event) => {
+      const gestureEvent = event as Event & { clientX?: number; scale?: number };
+      const previousScale = magnificationScaleRef.current;
+      const scale = gestureEvent.scale;
+      if (previousScale === null || typeof scale !== "number") {
+        return;
+      }
+
+      event.preventDefault();
+      magnificationScaleRef.current = scale;
+      const deltaY = resolveWaveformMagnificationDeltaY({ previousScale, scale });
+      if (deltaY === 0) {
+        return;
+      }
+
+      const bounds = host.getBoundingClientRect();
+      zoomAtClientX(deltaY, gestureEvent.clientX ?? bounds.left + bounds.width / 2);
+    };
+    const handleGestureEnd = () => {
+      magnificationScaleRef.current = null;
+    };
+
+    host.addEventListener("gesturestart", handleGestureStart, { passive: false });
+    host.addEventListener("gesturechange", handleGestureChange, { passive: false });
+    host.addEventListener("gestureend", handleGestureEnd);
+    return () => {
+      host.removeEventListener("wheel", handleWheel);
+      host.removeEventListener("gesturestart", handleGestureStart);
+      host.removeEventListener("gesturechange", handleGestureChange);
+      host.removeEventListener("gestureend", handleGestureEnd);
+    };
+  }, [updateViewportWithOwnership, viewport.viewportWidth]);
 
   useEffect(() => {
     let disposed = false;

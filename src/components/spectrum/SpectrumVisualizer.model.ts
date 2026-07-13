@@ -7,6 +7,7 @@ const WAVEFORM_FALLBACK_MAX_PIXELS_PER_SECOND = 320;
 const WAVEFORM_FALLBACK_PIXELS_PER_SECOND = 24;
 const WAVEFORM_WHEEL_DELTA_FOR_DOUBLE_ZOOM = 360;
 const WAVEFORM_MAX_WHEEL_ZOOM_DELTA = WAVEFORM_WHEEL_DELTA_FOR_DOUBLE_ZOOM / 2;
+const WAVEFORM_MACOS_MAGNIFICATION_SENSITIVITY = 2;
 const WAVEFORM_PIXELS_PER_SECOND_PRECISION = 100;
 export const WAVEFORM_CANVAS_HEIGHT = 208;
 export const WAVEFORM_DATA_TILE_WIDTH = 2_048;
@@ -794,6 +795,23 @@ export function resolveWaveformWheelPixelsPerSecond(args: {
   return resolveWaveformPixelsPerSecond(args.currentPixelsPerSecond * scale, args);
 }
 
+export function resolveWaveformMagnificationDeltaY(args: { previousScale: number; scale: number }) {
+  if (
+    !Number.isFinite(args.previousScale) ||
+    !Number.isFinite(args.scale) ||
+    args.previousScale <= 0 ||
+    args.scale <= 0
+  ) {
+    return 0;
+  }
+
+  return (
+    -WAVEFORM_WHEEL_DELTA_FOR_DOUBLE_ZOOM *
+    Math.log2(args.scale / args.previousScale) *
+    WAVEFORM_MACOS_MAGNIFICATION_SENSITIVITY
+  );
+}
+
 export function resolveWaveformPointerAnchorViewportX(args: {
   clientX: number;
   viewportLeft: number;
@@ -931,9 +949,29 @@ export function resolveWaveformWheelDeltas(args: {
 
 export function resolveWaveformWheelAxisDeltas(
   args: WaveformWheelDeltas & {
+    ctrlKey?: boolean;
+    macosGestures?: boolean;
     shiftKey?: boolean;
   },
 ): WaveformWheelDeltas {
+  if (args.macosGestures === true) {
+    if (args.ctrlKey === true) {
+      return {
+        deltaMode: args.deltaMode,
+        deltaX: 0,
+        deltaY: args.deltaY * WAVEFORM_MACOS_MAGNIFICATION_SENSITIVITY,
+      };
+    }
+
+    if (args.deltaX !== 0) {
+      return {
+        deltaMode: args.deltaMode,
+        deltaX: args.deltaX,
+        deltaY: 0,
+      };
+    }
+  }
+
   return args.shiftKey === true && args.deltaY !== 0
     ? {
         deltaMode: args.deltaMode,
@@ -1002,6 +1040,8 @@ export function resolveWaveformWheelIntent(args: {
 
 export function resolveWaveformWheelOperation(
   args: WaveformWheelDeltas & {
+    ctrlKey?: boolean;
+    macosGestures?: boolean;
     shiftKey?: boolean;
     viewportHeight: number;
     viewportWidth: number;
