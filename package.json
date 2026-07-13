@@ -9,6 +9,7 @@
     "preview": "rsbuild preview",
     "sidecar:build:bun-runtime": "node scripts/build-bun-runtime.mjs",
     "sidecar:build": "bun run sidecar:build:bun-runtime",
+    "icon:macos": "node scripts/generate-macos-icon.mjs",
     "fmt": "oxfmt",
     "fmt:check": "oxfmt --check",
     "lint": "oxlint .",
