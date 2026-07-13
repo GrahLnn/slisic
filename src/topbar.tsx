@@ -7,6 +7,7 @@ import { type PropsWithChildren, type ReactNode, memo, useEffect, useRef, useSta
 import { sileo } from "sileo";
 import { app as bootstrapApp } from "./flow/bootstrap";
 import { action as pasteDownloadAction } from "./flow/pasteDownload";
+import { showSimulatedUpdateReady } from "./flow/updater";
 import { useIsBarVisible } from "./flow/barVisible";
 import { useIsWindowFocus } from "./flow/windowFocus";
 import { GlassSurface } from "./components/glass/GlassSurface";
@@ -293,6 +294,15 @@ export const LeftControls = memo(function LeftControlsComponent({
           icon={<icons.trashXmark size={14} />}
           onClick={handleResetDevDatabase}
           className="cursor-pointer hover:text-red-600"
+          o="opacity-30"
+        />
+      )}
+      {import.meta.env.DEV && (
+        <CtrlButton
+          label="Simulate update"
+          icon={<icons.arrowDown size={14} />}
+          onClick={showSimulatedUpdateReady}
+          className="cursor-pointer hover:text-emerald-600"
           o="opacity-30"
         />
       )}

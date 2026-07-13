@@ -27,6 +27,14 @@ export const transfer = allTransfer(ss);
 
 export type UpdateCheckResult = { kind: "available"; version: string } | { kind: "up_to_date" };
 
+export type UpdateReadyBehavior = {
+  version: string;
+  runInstallation: () => Promise<void>;
+  completedTitle?: string;
+};
+
+type UpdateReadyNotifier = Pick<typeof sileo, "success" | "promise">;
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -36,12 +44,15 @@ async function installAndRelaunch(update: Update): Promise<void> {
   await relaunch();
 }
 
-function showUpdateReady(update: Update) {
+export function showUpdateReady(
+  behavior: UpdateReadyBehavior,
+  notifier: UpdateReadyNotifier = sileo,
+) {
   let installationStarted = false;
 
-  sileo.success({
+  notifier.success({
     title: "Update ready",
-    description: `Version ${update.version} has been downloaded`,
+    description: `Version ${behavior.version} has been downloaded`,
     duration: null,
     button: {
       title: "Restart",
@@ -51,14 +62,14 @@ function showUpdateReady(update: Update) {
         }
 
         installationStarted = true;
-        void sileo
-          .promise(() => installAndRelaunch(update), {
+        void notifier
+          .promise(() => behavior.runInstallation(), {
             loading: {
               title: "Installing update",
-              description: `Preparing Slisic ${update.version}`,
+              description: `Preparing Slisic ${behavior.version}`,
             },
             success: {
-              title: "Restarting Slisic",
+              title: behavior.completedTitle ?? "Restarting Slisic",
             },
             error: (error) => ({
               title: "Update installation failed",
@@ -71,6 +82,14 @@ function showUpdateReady(update: Update) {
           });
       },
     },
+  });
+}
+
+export function showSimulatedUpdateReady() {
+  showUpdateReady({
+    version: "dev-simulation",
+    completedTitle: "Restart simulated",
+    runInstallation: () => new Promise((resolve) => setTimeout(resolve, 800)),
   });
 }
 
@@ -102,7 +121,10 @@ export const invoker = createActors({
       }
 
       console.log("update downloaded");
-      showUpdateReady(update);
+      showUpdateReady({
+        version: update.version,
+        runInstallation: () => installAndRelaunch(update),
+      });
       return { kind: "available", version: update.version };
     } catch (error) {
       console.error("update check failed", error);
