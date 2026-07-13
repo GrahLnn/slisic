@@ -8,6 +8,7 @@ use tauri_specta::Event;
 #[serde(rename_all = "snake_case")]
 pub enum PlaybackSurfaceStatus {
     Preparing,
+    Finished,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type, Event)]

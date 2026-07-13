@@ -1418,6 +1418,15 @@ async fn fill_playlist_track_queue(
                 true,
             )
             .await?;
+            if should_stop_playlist_queue_fill_after_refresh(refresh_outcome) {
+                log::info!(
+                    target: PLAYLIST_PLAYBACK_LOG_TARGET,
+                    "next queue fill worker stopped playlist=\"{}\" reason=no_distinct_next anchor_title=\"{}\"",
+                    escape_log_value(&playlist_name),
+                    escape_log_value(&active_track.music_name)
+                );
+                return Ok(());
+            }
             if should_retry_playlist_queue_fill_after_refresh(refresh_outcome) {
                 log::info!(
                     target: PLAYLIST_PLAYBACK_LOG_TARGET,
@@ -1500,6 +1509,7 @@ pub(crate) enum PlaylistTrackQueueRefreshOutcome {
     Committed,
     StaleAnchor,
     NoCandidates,
+    NoDistinctCandidate,
     MissingNext,
 }
 
@@ -1514,6 +1524,16 @@ pub(crate) fn should_retry_playlist_queue_fill_after_refresh(
     outcome: PlaylistTrackQueueRefreshOutcome,
 ) -> bool {
     outcome == PlaylistTrackQueueRefreshOutcome::StaleAnchor
+}
+
+pub(crate) fn should_stop_playlist_queue_fill_after_refresh(
+    outcome: PlaylistTrackQueueRefreshOutcome,
+) -> bool {
+    matches!(
+        outcome,
+        PlaylistTrackQueueRefreshOutcome::NoCandidates
+            | PlaylistTrackQueueRefreshOutcome::NoDistinctCandidate
+    )
 }
 
 pub(crate) async fn wait_for_playlist_queue_fill_revision_or_poll<F, E>(
@@ -1705,6 +1725,23 @@ async fn refresh_playlist_track_queue_for_anchor(
                 .status("empty_candidate_window"),
         );
         return Ok(PlaylistTrackQueueRefreshOutcome::NoCandidates);
+    }
+
+    if !source
+        .resolution
+        .tracks
+        .iter()
+        .any(|candidate| !are_playlist_playback_tracks_equal(candidate, &current_track))
+    {
+        emit_playlist_playback_trace(
+            "playlist-playback-next-slot-no-distinct-candidate",
+            PlaylistPlaybackTrace::new(app)
+                .playlist_name(playlist_name)
+                .track(&current_track)
+                .queue_count(source.resolution.tracks.len())
+                .status("no_distinct_next"),
+        );
+        return Ok(PlaylistTrackQueueRefreshOutcome::NoDistinctCandidate);
     }
 
     if !player_service::is_session_current(session)? {

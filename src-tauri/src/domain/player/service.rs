@@ -10,7 +10,6 @@ use super::model::PlaybackContinuationMode;
 #[cfg(not(test))]
 use super::model::PlaybackStatusPayload;
 use super::model::PlaybackTrack;
-#[cfg(not(test))]
 use super::strategy::PlaybackQueueMode;
 #[cfg(not(test))]
 use super::strategy::PlaybackStrategySet;
@@ -2121,6 +2120,26 @@ impl PlayerRuntime {
         Ok(())
     }
 
+    fn clear_active_session_for_generation(&self, session_generation: u64) -> Result<bool> {
+        let mut session = self
+            .session
+            .lock()
+            .map_err(|_| anyhow!("player runtime session lock is poisoned"))?;
+        if !session
+            .as_ref()
+            .is_some_and(|active| active.session_generation == session_generation)
+        {
+            return Ok(false);
+        }
+        *session = None;
+        drop(session);
+        self.clear_active_request_track()?;
+        self.clear_active_playback_range()?;
+        self.clear_spectrum_playback_scope()?;
+        self.clear_spectrum_playback_loop_signal()?;
+        Ok(true)
+    }
+
     fn set_continuation_mode(&self, mode: PlaybackContinuationMode) -> Result<()> {
         let mut current = self
             .continuation_mode
@@ -2215,6 +2234,7 @@ async fn run_playback_session(
 ) -> Result<()> {
     let trace_start = Instant::now();
     let mut track_revision = session.subscribe_track_revision();
+    let mut has_completed_track = false;
     loop {
         if runtime.playback_run_generation.load(Ordering::SeqCst) != generation {
             emit_player_trace(
@@ -2265,6 +2285,28 @@ async fn run_playback_session(
                     PlayerTrace::new(&runtime.app)
                         .playlist_name(&session.playlist_name)
                         .elapsed(trace_start),
+                );
+                return Ok(());
+            }
+            if should_finish_playback_session_after_queue_exhaustion(
+                session.queue_mode,
+                has_completed_track,
+            ) {
+                if runtime.clear_active_session_for_generation(session.session_generation)? {
+                    emit_playback_surface_status(
+                        &runtime,
+                        session.session_generation,
+                        &session.playlist_name,
+                        PlaybackSurfaceStatus::Finished,
+                    )?;
+                }
+                emit_player_trace(
+                    "player-run-session-finished",
+                    PlayerTrace::new(&runtime.app)
+                        .playlist_name(&session.playlist_name)
+                        .elapsed(trace_start)
+                        .queue_count(tracks.len())
+                        .status("queue_exhausted"),
                 );
                 return Ok(());
             }
@@ -2522,7 +2564,15 @@ async fn run_playback_session(
                 .is_some_and(|request| request.pause_after_start),
         );
         wait_until_track_finishes(&runtime, &playback, generation, &track.file_path).await?;
+        has_completed_track = true;
     }
+}
+
+pub(crate) fn should_finish_playback_session_after_queue_exhaustion(
+    queue_mode: PlaybackQueueMode,
+    has_completed_track: bool,
+) -> bool {
+    queue_mode == PlaybackQueueMode::Ordered && has_completed_track
 }
 
 #[cfg(not(test))]

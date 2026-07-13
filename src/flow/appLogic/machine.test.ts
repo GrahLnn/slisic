@@ -1280,6 +1280,136 @@ describe("appLogic machine", () => {
     assert.equal(actor.getSnapshot().context.nowPlayingTrackUrl, music.url);
   });
 
+  test("returns to ready when the accepted ordered playback session finishes", async () => {
+    const collection = createCollection([createMusic()]);
+    const actor = createActor(
+      machine.provide({
+        actors: {
+          loadCollections: fromPromise<BootstrapResult>(async () =>
+            createBootstrapResult([collection]),
+          ),
+        },
+      }),
+    );
+
+    actor.start();
+    actor.send(sig.mainx.run);
+    await waitForState(actor, "ready");
+    actor.send(payloads["playlist.play"].load({ playlistName: "Focus Session", requestId: 1 }));
+    actor.send(
+      payloads["playlist.playback.accepted"].load({
+        playlistName: "Focus Session",
+        requestId: 1,
+        session: createStartedPlaybackSession(1),
+      }),
+    );
+
+    actor.send(
+      playbackSurfaceStatusChanged.load(
+        createPlaybackSurfaceStatusChangedEvent(1, "Focus Session", { status: "finished" }),
+      ),
+    );
+
+    assert.equal(actor.getSnapshot().value, "ready");
+    assert.equal(actor.getSnapshot().context.playingPlaylistName, null);
+    assert.equal(actor.getSnapshot().context.playingSessionGeneration, null);
+  });
+
+  test("ignores finished status from a stale playback session", async () => {
+    const collection = createCollection([createMusic()]);
+    const actor = createActor(
+      machine.provide({
+        actors: {
+          loadCollections: fromPromise<BootstrapResult>(async () =>
+            createBootstrapResult([collection]),
+          ),
+        },
+      }),
+    );
+
+    actor.start();
+    actor.send(sig.mainx.run);
+    await waitForState(actor, "ready");
+    actor.send(payloads["playlist.play"].load({ playlistName: "Focus Session", requestId: 1 }));
+    actor.send(
+      payloads["playlist.playback.accepted"].load({
+        playlistName: "Focus Session",
+        requestId: 1,
+        session: createStartedPlaybackSession(2),
+      }),
+    );
+
+    actor.send(
+      playbackSurfaceStatusChanged.load(
+        createPlaybackSurfaceStatusChangedEvent(1, "Focus Session", { status: "finished" }),
+      ),
+    );
+
+    assert.equal(actor.getSnapshot().value, "play");
+    assert.equal(actor.getSnapshot().context.playingSessionGeneration, 2);
+  });
+
+  test("keeps spectrum state when the underlying playback session finishes", async () => {
+    const music = createMusic();
+    const collection = createCollection([music]);
+    const actor = createActor(
+      machine.provide({
+        actors: {
+          loadCollections: fromPromise<BootstrapResult>(async () =>
+            createBootstrapResult([collection]),
+          ),
+          loadSpectrumMusicDrafts: fromPromise<
+            SpectrumMusicDraftBootstrapResult,
+            SpectrumMusicDraftBootstrapInput
+          >(async () => ({
+            source: null,
+            drafts: [
+              {
+                kind: "persisted" as const,
+                baselineName: music.alias,
+                baselineStartMs: music.start_ms,
+                baselineEndMs: music.end_ms,
+                name: music.alias,
+                url: music.url,
+                startMs: music.start_ms,
+                endMs: music.end_ms,
+              },
+            ],
+          })),
+        },
+      }),
+    );
+
+    actor.start();
+    actor.send(sig.mainx.run);
+    await waitForState(actor, "ready");
+    actor.send(payloads["playlist.play"].load({ playlistName: "Focus Session", requestId: 1 }));
+    actor.send(
+      payloads["playlist.playback.accepted"].load({
+        playlistName: "Focus Session",
+        requestId: 1,
+        session: createStartedPlaybackSession(1),
+      }),
+    );
+    actor.send(
+      payloads["player.now_playing_track.changed"].load(
+        createNowPlayingTrackChangedEvent(music, 1),
+      ),
+    );
+    actor.send(sig.mainx.openspectrum);
+    await waitForState(actor, "spectrum");
+    const spectrumContext = actor.getSnapshot().context;
+
+    actor.send(
+      playbackSurfaceStatusChanged.load(
+        createPlaybackSurfaceStatusChangedEvent(1, "Focus Session", { status: "finished" }),
+      ),
+    );
+
+    assert.equal(actor.getSnapshot().value, "spectrum");
+    assert.deepEqual(actor.getSnapshot().context, spectrumContext);
+  });
+
   test("projects preparing from an accepted empty first-slot session", async () => {
     const collection = createCollection([createMusic()]);
     const actor = createActor(

@@ -501,16 +501,14 @@ function createInitialPlaybackTrackEvidence(
   };
 }
 
-function sessionStartsPreparing(
-  event?: {
-    output: {
-      session: {
-        initial_track: PlaybackTrackPayload | null;
-        track_count: number;
-      };
+function sessionStartsPreparing(event?: {
+  output: {
+    session: {
+      initial_track: PlaybackTrackPayload | null;
+      track_count: number;
     };
-  },
-) {
+  };
+}) {
   return (
     !!event && event.output.session.initial_track === null && event.output.session.track_count === 0
   );
@@ -519,7 +517,9 @@ function sessionStartsPreparing(
 function createPlayReadyContext(
   context: Context,
   playlistName: string,
-  event?: { output: { session: { initial_track: PlaybackTrackPayload | null; track_count: number } } },
+  event?: {
+    output: { session: { initial_track: PlaybackTrackPayload | null; track_count: number } };
+  },
 ) {
   const pendingEvidence =
     context.pendingNowPlayingTrackEvidence?.playlist_name === playlistName &&
@@ -584,6 +584,43 @@ function createPlayReadyContext(
       chart: resetLifecycleAction("closed", "playlist-playback-pending"),
       lease: resetLifecycleAction("closed", null),
       transaction: resetLifecycleAction("closed", "playlist-playback-start"),
+    }),
+  );
+}
+
+function matchesFinishedPlaybackSurfaceStatus(
+  context: Context,
+  event: { output: PlaybackSurfaceStatusEvidence },
+) {
+  return (
+    event.output.status === "finished" &&
+    context.playingPlaylistName === event.output.playlist_name &&
+    context.playingSessionGeneration === event.output.session_generation
+  );
+}
+
+function createPlaybackFinishedReadyContext(context: Context) {
+  return resetContextWith(
+    {
+      shape: {
+        hasPlayList: context.hasPlayList,
+        playlists: context.playlists,
+        pendingPlaylistPreview: context.pendingPlaylistPreview,
+        collections: context.collections,
+        configLibrary: context.configLibrary,
+        savePath: context.savePath,
+      },
+      runtime: {
+        playingPlaylistName: null,
+        playingSessionGeneration: null,
+        nowPlayingTrackName: null,
+      },
+    },
+    resetLifecycle({
+      reason: "finish playback after ordered queue exhaustion",
+      chart: resetLifecycleAction("closed", "playback"),
+      lease: resetLifecycleAction("closed", null),
+      transaction: resetLifecycleAction("closed", null),
     }),
   );
 }
@@ -1086,6 +1123,10 @@ export const machine = src.createMachine({
           playbackSurfaceStatus: context.playbackSurfaceStatus,
         });
 
+        if (event.output.status === "finished") {
+          return {};
+        }
+
         if (!matchesAcceptedPlayback) {
           if (matchesPendingPlayback) {
             recordTrace("player-playback-surface-status-reducer-stashed-pending", {
@@ -1325,6 +1366,11 @@ export const machine = src.createMachine({
     [ss.mainx.State.play]: {
       on: {
         run: ss.mainx.State.loading,
+        [playbackSurfaceStatusChanged.evt]: {
+          guard: ({ context, event }) => matchesFinishedPlaybackSurfaceStatus(context, event),
+          target: ss.mainx.State.ready,
+          actions: assign(({ context }) => createPlaybackFinishedReadyContext(context)),
+        },
         back: {
           target: ss.mainx.State.ready,
           actions: assign(({ context }) =>

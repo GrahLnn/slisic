@@ -17,8 +17,9 @@ use super::service::{
     resolve_spectrum_loop_signal_active_range, resolve_spectrum_loop_signal_seek_position,
     resolve_spectrum_music_playback_range, resolve_spectrum_playback_loop_signal,
     should_accept_spectrum_playback_signal, should_commit_spectrum_playback_scope_exit,
-    should_resume_playback_seek_cancel,
+    should_finish_playback_session_after_queue_exhaustion, should_resume_playback_seek_cancel,
 };
+use super::strategy::PlaybackQueueMode;
 use super::track_identity_substitution::{
     PlaybackTrackIdentityUpdate, resolve_active_request_track_identity_update,
     resolve_session_track_identity_update,
@@ -67,6 +68,30 @@ fn backend_playback_normalization_targets_negative_eighteen_lufs() {
     assert_eq!(normalization.target_lufs, -18.0);
     assert_eq!(normalization.integrated_lufs, None);
     assert_eq!(normalization.true_peak_dbtp, None);
+}
+
+#[test]
+fn ordered_session_finishes_after_completed_track_exhausts_queue() {
+    assert!(should_finish_playback_session_after_queue_exhaustion(
+        PlaybackQueueMode::Ordered,
+        true,
+    ));
+}
+
+#[test]
+fn ordered_session_keeps_waiting_when_initial_queue_is_empty() {
+    assert!(!should_finish_playback_session_after_queue_exhaustion(
+        PlaybackQueueMode::Ordered,
+        false,
+    ));
+}
+
+#[test]
+fn random_session_does_not_use_ordered_queue_completion() {
+    assert!(!should_finish_playback_session_after_queue_exhaustion(
+        PlaybackQueueMode::Random,
+        true,
+    ));
 }
 
 #[test]

@@ -20,8 +20,8 @@ use super::service::{
     resolve_playlist_playback_continuation_mode, resolve_playlist_playback_source_resolution,
     should_commit_playlist_queue_refresh, should_refresh_playlist_queue_for_anchor_after_startup,
     should_refresh_playlist_queue_for_same_anchor, should_retry_playlist_queue_fill_after_refresh,
-    should_seed_playlist_next_from_prepared_pool, shuffle_playback_tracks,
-    wait_for_playlist_queue_fill_revision_or_poll,
+    should_seed_playlist_next_from_prepared_pool, should_stop_playlist_queue_fill_after_refresh,
+    shuffle_playback_tracks, wait_for_playlist_queue_fill_revision_or_poll,
 };
 use crate::domain::downloads::model::{
     DownloadLeaf, DownloadLeafStatus, DownloadTask, DownloadTaskStatus, DownloadTrigger,
@@ -1074,6 +1074,19 @@ fn playlist_queue_fill_retries_immediately_when_refresh_result_is_stale_anchor()
     ));
     assert!(!should_retry_playlist_queue_fill_after_refresh(
         PlaylistTrackQueueRefreshOutcome::MissingNext
+    ));
+}
+
+#[test]
+fn playlist_queue_fill_stops_when_no_distinct_next_candidate_exists() {
+    assert!(should_stop_playlist_queue_fill_after_refresh(
+        PlaylistTrackQueueRefreshOutcome::NoCandidates,
+    ));
+    assert!(should_stop_playlist_queue_fill_after_refresh(
+        PlaylistTrackQueueRefreshOutcome::NoDistinctCandidate,
+    ));
+    assert!(!should_stop_playlist_queue_fill_after_refresh(
+        PlaylistTrackQueueRefreshOutcome::MissingNext,
     ));
 }
 

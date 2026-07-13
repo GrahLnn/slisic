@@ -18,6 +18,12 @@ thread_local! {
 
 pub const WINDOW_KIND_CHANGED_EVENT: &str = "factory://window-kind-changed";
 
+#[cfg(target_os = "macos")]
+const MAIN_WINDOW_DEFAULT_WIDTH: f64 = 1000.0;
+#[cfg(not(target_os = "macos"))]
+const MAIN_WINDOW_DEFAULT_WIDTH: f64 = 1400.0;
+const MAIN_WINDOW_DEFAULT_HEIGHT: f64 = 750.0;
+
 #[derive(Debug, Clone, Serialize, Type)]
 pub struct WindowKindInfo {
     pub window: Option<WindowName>,
@@ -92,8 +98,8 @@ const WINDOW_DESCRIPTORS: [WindowDescriptor; 2] = [
         user_window_policy: UserWindowPolicy::PrimaryAndIndexed,
         prewarm_enabled: true,
         uses_primary_window_setup: true,
-        default_width: 1400.0,
-        default_height: 750.0,
+        default_width: MAIN_WINDOW_DEFAULT_WIDTH,
+        default_height: MAIN_WINDOW_DEFAULT_HEIGHT,
         min_width: 768.0,
         min_height: 500.0,
     },
@@ -748,6 +754,15 @@ pub fn apply_window_setup(window: &WebviewWindow, is_main: bool) {
     {
         use super::macos_titlebar;
         use objc2::MainThreadMarker;
+
+        if is_main {
+            let descriptor = window_descriptor(WindowName::Main);
+            let _ = window.set_size(Size::Logical(LogicalSize::new(
+                descriptor.default_width,
+                descriptor.default_height,
+            )));
+            let _ = window.center();
+        }
 
         macos_titlebar::setup_custom_macos_titlebar(window);
 

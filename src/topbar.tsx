@@ -1,4 +1,4 @@
-import { cn } from "@/lib/utils";
+import { cn, os } from "@/lib/utils";
 import { icons } from "@/src/assets/icons";
 import { invoke } from "@tauri-apps/api/core";
 import { AnimatePresence, motion } from "motion/react";
@@ -9,7 +9,6 @@ import { app as bootstrapApp } from "./flow/bootstrap";
 import { action as pasteDownloadAction } from "./flow/pasteDownload";
 import { useIsBarVisible } from "./flow/barVisible";
 import { useIsWindowFocus } from "./flow/windowFocus";
-import { os } from "@/lib/utils";
 import { GlassSurface } from "./components/glass/GlassSurface";
 import { remoteShareCodeFeedback } from "./remoteShareCodeFeedback";
 
@@ -288,10 +287,6 @@ export const LeftControls = memo(function LeftControlsComponent({
 
   return (
     <div className="flex items-center px-2 text-(--content)">
-      {os.match({
-        macos: () => <div className="w-21" />,
-        _: () => null,
-      })}
       {import.meta.env.DEV && (
         <CtrlButton
           label="Reset DB"
@@ -412,7 +407,10 @@ const TopBar = memo(function TopBarComponent({ surface = "support" }: { surface?
             "app-titlebar-glass",
           ])}
         >
-          <GlassSurface variant="titlebar" className="inset-0 z-0" />
+          {os.match({
+            macos: () => null,
+            _: () => <GlassSurface variant="titlebar" className="inset-0 z-0" />,
+          })}
           <div
             className={cn([
               "relative z-10 grid grid-cols-[1fr_auto_1fr] w-full h-full",
@@ -424,13 +422,24 @@ const TopBar = memo(function TopBarComponent({ surface = "support" }: { surface?
             {allowBarInteraction && (
               <>
                 <div data-tauri-drag-region className={cn(["flex justify-start pl-1"])}>
-                  <LeftControls surface={surface} />
+                  {os.match({
+                    macos: () => <div className="w-21" />,
+                    _: () => <LeftControls surface={surface} />,
+                  })}
                 </div>
                 <div data-tauri-drag-region className={cn(["flex justify-center"])}>
                   <MiddleControls />
                 </div>
                 <div data-tauri-drag-region className={cn(["flex justify-end"])}>
-                  <RightControls />
+                  {os.match({
+                    macos: () => (
+                      <>
+                        <LeftControls surface={surface} />
+                        <RightControls />
+                      </>
+                    ),
+                    _: () => <RightControls />,
+                  })}
                 </div>
               </>
             )}

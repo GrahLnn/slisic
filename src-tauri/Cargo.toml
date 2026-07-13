@@ -43,18 +43,6 @@ surrealdb = { version = "3.1.2", features = ["kv-surrealkv"] }
 surrealdb-types = "3.1.2"
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-dialog = "2"
-windows = "0.62.2"
-windows-sys = { version = "0.61.2", features = [
-  "Win32_Devices_HumanInterfaceDevice",
-  "Win32_Foundation",
-  "Win32_Graphics_Gdi",
-  "Win32_System_LibraryLoader",
-  "Win32_System_Threading",
-  "Win32_UI_Input",
-  "Win32_UI_Shell",
-  "Win32_UI_WindowsAndMessaging",
-] }
-webview2-com = "0.39.1"
 tauri-plugin-process = "2"
 ffplayr = { git = "https://github.com/GrahLnn/ffplayr.git", rev = "2ea076f", version = "0.1.5" }
 reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "rustls"] }
@@ -91,6 +79,20 @@ block2 = "0.6.2"
 objc2 = "0.6.4"
 objc2-app-kit = "0.3.2"
 objc2-foundation = "0.3.2"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = "0.62.2"
+windows-sys = { version = "0.61.2", features = [
+  "Win32_Devices_HumanInterfaceDevice",
+  "Win32_Foundation",
+  "Win32_Graphics_Gdi",
+  "Win32_System_LibraryLoader",
+  "Win32_System_Threading",
+  "Win32_UI_Input",
+  "Win32_UI_Shell",
+  "Win32_UI_WindowsAndMessaging",
+] }
+webview2-com = "0.39.1"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-updater = "2"
