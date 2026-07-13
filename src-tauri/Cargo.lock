@@ -280,9 +280,8 @@ checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
 name = "appdb"
-version = "0.2.23"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d03e221c422338246f2a33e6e6614827b73841e3b1b6ccf4a8cf4d7fc93cb063"
+version = "0.2.24"
+source = "git+https://github.com/GrahLnn/appdb.git?rev=a7b11948175b53f872ac55b351508aaefae6974a#a7b11948175b53f872ac55b351508aaefae6974a"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -305,9 +304,8 @@ dependencies = [
 
 [[package]]
 name = "appdb-macros"
-version = "0.2.23"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a8a743be591f2e0b1c85f59e58120e7c8a51dfb0e2388cbe6d097915b77629c"
+version = "0.2.24"
+source = "git+https://github.com/GrahLnn/appdb.git?rev=a7b11948175b53f872ac55b351508aaefae6974a#a7b11948175b53f872ac55b351508aaefae6974a"
 dependencies = [
  "proc-macro2",
  "quote",

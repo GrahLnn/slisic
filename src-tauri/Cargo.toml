@@ -6,7 +6,7 @@ authors = ["GrahLnn"]
 license = ""
 repository = ""
 edition = "2024"
-rust-version = "1.94.0"
+rust-version = "1.95.0"
 
 [workspace]
 members = []
@@ -35,7 +35,7 @@ tokio = { version = "1.52.3", features = ["macros", "net", "process", "rt-multi-
 specta = "2.0.0-rc.25"
 specta-typescript = "0.0.12"
 tauri-plugin-os = "2"
-appdb = "0.2.23"
+appdb = { git = "https://github.com/GrahLnn/appdb.git", rev = "a7b11948175b53f872ac55b351508aaefae6974a", version = "0.2.24" }
 anyhow = "1.0.102"
 async-trait = "0.1.89"
 inventory = "0.3.24"
