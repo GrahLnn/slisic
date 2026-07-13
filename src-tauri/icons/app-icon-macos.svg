@@ -5,5 +5,6 @@
       <path d="M512 100C695 100 797 100 861 163C924 227 924 329 924 512C924 695 924 797 861 861C797 924 695 924 512 924C329 924 227 924 163 861C100 797 100 695 100 512C100 329 100 227 163 163C227 100 329 100 512 100Z" />
     </clipPath>
   </defs>
-  <image href="app-icon-light.png" x="80" y="80" width="864" height="864" clip-path="url(#macos-icon-mask)" />
+  <!-- Overscan keeps the source image's baked rectangular rim outside the macOS mask. -->
+  <image href="app-icon-light.png" x="52" y="52" width="920" height="920" clip-path="url(#macos-icon-mask)" />
 </svg>
