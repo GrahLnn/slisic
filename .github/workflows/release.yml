@@ -17,7 +17,7 @@ jobs:
       changed: ${{ steps.out.outputs.changed }}
       new_version: ${{ steps.out.outputs.new_version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -48,7 +48,7 @@ jobs:
     outputs:
       release_id: ${{ steps.gh.outputs.release_id }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - id: gh
         env:
           GH_TOKEN: ${{ github.token }} # 关键：给 gh 授权
@@ -75,7 +75,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     permissions: { contents: write }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
