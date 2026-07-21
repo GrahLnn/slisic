@@ -128,10 +128,7 @@ export const invoker = createActors({
       return { kind: "available", version: update.version };
     } catch (error) {
       console.error("update check failed", error);
-      sileo.error({
-        title: "Update check failed",
-        description: `${errorMessage(error)}. Slisic will retry in one hour.`,
-      });
+      // Background checks are best-effort; the state machine owns retry without interrupting users.
       throw error;
     }
   },
