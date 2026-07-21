@@ -428,6 +428,9 @@ impl RemoteP2pOutboundScheduler {
                 return;
             }
             RemoteP2pOutboundResponse::Register { request_id } => {
+                if self.cancelled.contains(&request_id) {
+                    return;
+                }
                 self.requested.insert(request_id);
                 return;
             }
@@ -469,7 +472,6 @@ impl RemoteP2pOutboundScheduler {
     fn cancel_requests(&mut self, request_ids: Vec<u32>) {
         let cancelled_now = request_ids
             .into_iter()
-            .filter(|request_id| self.has_live_request(*request_id))
             .take(HLS_CANCELLATION_CAPACITY)
             .collect::<HashSet<_>>();
         for request_id in cancelled_now.iter().copied() {
@@ -497,16 +499,6 @@ impl RemoteP2pOutboundScheduler {
             scheduled_request_id(response)
                 .is_none_or(|request_id| !cancelled_now.contains(&request_id))
         });
-    }
-
-    fn has_live_request(&self, request_id: u32) -> bool {
-        self.requested.contains(&request_id)
-            || self
-                .control
-                .iter()
-                .chain(self.foreground.iter())
-                .chain(self.reserve.iter())
-                .any(|response| scheduled_request_id(response) == Some(request_id))
     }
 
     fn take_cancelled(&mut self, request_id: u32) -> bool {

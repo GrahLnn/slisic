@@ -272,7 +272,28 @@ fn cancellation_discards_queued_frames_and_late_asset_completion() {
 }
 
 #[test]
-fn cancellation_tombstones_are_bounded_to_the_published_request_window() {
+fn cancellation_before_registration_closes_the_request_lifecycle() {
+    let mut scheduler = RemoteP2pOutboundScheduler::default();
+    scheduler.push(RemoteP2pOutboundResponse::Cancel {
+        request_ids: vec![11],
+    });
+    scheduler.push(RemoteP2pOutboundResponse::Register { request_id: 11 });
+    scheduler.push(RemoteP2pOutboundResponse::Asset {
+        request_id: 11,
+        content_type: "video/mp2t".to_owned(),
+        body: Bytes::from_static(b"late-after-cancel"),
+        priority: RemoteP2pAssetPriority::Reserve,
+        attempt: 0,
+        chunk_indices: None,
+    });
+
+    assert!(!scheduler.requested.contains(&11));
+    assert!(scheduler.next_transmission().is_none());
+    assert!(scheduler.cancelled.is_empty());
+}
+
+#[test]
+fn cancellation_tombstones_remain_bounded_across_async_request_ordering() {
     let mut scheduler = RemoteP2pOutboundScheduler::default();
     for request_id in 1..=(HLS_CANCELLATION_CAPACITY as u32 + 32) {
         scheduler.push(RemoteP2pOutboundResponse::Register { request_id });
@@ -288,7 +309,15 @@ fn cancellation_tombstones_are_bounded_to_the_published_request_window() {
         request_ids: vec![u32::MAX],
     });
     assert_eq!(scheduler.cancelled.len(), HLS_CANCELLATION_CAPACITY);
-    assert!(!scheduler.cancelled.contains(&u32::MAX));
+    assert!(scheduler.cancelled.contains(&u32::MAX));
+    assert_eq!(
+        scheduler
+            .cancelled
+            .iter()
+            .filter(|request_id| **request_id != u32::MAX)
+            .count(),
+        HLS_CANCELLATION_CAPACITY - 1
+    );
 }
 
 #[test]

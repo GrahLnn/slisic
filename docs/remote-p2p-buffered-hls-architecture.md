@@ -101,6 +101,13 @@ this scheduler and becomes part of `CachePrefix` only after its IndexedDB write 
 buffer target or host-side prepared track is not cache evidence. Cache hit and miss alter latency
 only, never timeline order, track state, or playback time.
 
+Asset cancellation is terminal for its request identity inside the current `SupplyEpoch`. The
+Host scheduler retains a bounded cancellation tombstone even when asynchronous callback ordering
+delivers cancellation before request registration. A late register cannot reopen that identity;
+the corresponding late asset or error response consumes the tombstone without emitting a frame.
+The scheduler is replaced with the `SupplyEpoch`, so request identities remain reusable only in a
+fresh epoch rather than through an implicit local resurrection.
+
 Playback-manifest visibility is the greatest contiguous reserve prefix that satisfies both the
 temporal projection frontier and local byte evidence on the unreleased playback suffix. Completed
 tracks are historical quotient objects and need no future readability; memory and committed
