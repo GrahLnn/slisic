@@ -613,7 +613,7 @@ export type PlaybackStatusPayload = {
 	playback_end_ms: number | null,
 };
 
-export type PlaybackSurfaceStatus = "preparing";
+export type PlaybackSurfaceStatus = "preparing" | "finished";
 
 export type PlaybackSurfaceStatusChangedEvent = {
 	session_generation: number,
