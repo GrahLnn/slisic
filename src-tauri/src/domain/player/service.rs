@@ -33,6 +33,7 @@ use anyhow::{Context, Result, anyhow, bail};
 #[cfg(not(test))]
 use ffplayr::Playback;
 use ffplayr::{PlaybackNormalization, PlaybackRequest, PlaybackTimeRange};
+#[cfg(not(test))]
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(not(test))]
@@ -1137,7 +1138,7 @@ pub async fn update_spectrum_playback_loop_signal(
         start_ms: seek_position_ms,
         end_ms: signal.range.end_ms,
     };
-    let request = playback_request_for_path_position(&active_track.file_path, range.start_ms);
+    let request = playback_request_for_track_range(&active_track, range);
     playback
         .play_request(request)
         .await
@@ -1257,10 +1258,7 @@ pub async fn seek_playback(position_ms: u32, end_ms: u32) -> Result<Option<Playb
     let Some(range) = resolve_playback_seek_range(position_ms, end_ms) else {
         return Ok(None);
     };
-    let request = playback_request_for_path_position(
-        &active_track.file_path,
-        resolve_playback_request_position(range),
-    );
+    let request = playback_request_for_track_range(&active_track, range);
     playback
         .play_request(request)
         .await
@@ -2957,27 +2955,18 @@ fn sync_playback_track_source_music(track: &mut PlaybackTrack) {
     music.loudness_profile = track.loudness_profile;
 }
 
-fn playback_request_for_path_position(path: &Path, position_ms: u32) -> PlaybackRequest {
-    let request = PlaybackRequest::new(path.to_path_buf());
-
-    if position_ms > 0 {
-        return request.with_time_range(PlaybackTimeRange {
-            start_ms: position_ms,
-            duration_ms: None,
-        });
-    }
-
-    request
-}
-
 pub(crate) fn playback_request_for_track_range(
     track: &PlaybackTrack,
     range: ActivePlaybackRange,
 ) -> PlaybackRequest {
-    let mut request = playback_request_for_path_position(
-        &track.file_path,
-        resolve_playback_request_position(range),
-    );
+    let mut request = PlaybackRequest::new(track.file_path.clone());
+    let position_ms = resolve_playback_request_position(range);
+    if position_ms > 0 {
+        request = request.with_time_range(PlaybackTimeRange {
+            start_ms: position_ms,
+            duration_ms: None,
+        });
+    }
     if let Some(normalization) =
         playback_normalization_for_track_loudness_profile(track.loudness_profile.as_ref())
     {
@@ -3880,7 +3869,10 @@ async fn wait_until_track_finishes(
                             trace_detail("activeScopeId", trace_scope_id(active_scope)),
                         ]),
                 );
-                let request = playback_request_for_path_position(current_path, loop_range.start_ms);
+                let track = active_track.as_ref().ok_or_else(|| {
+                    anyhow!("cannot repeat spectrum loop without an active track")
+                })?;
+                let request = playback_request_for_track_range(track, loop_range);
                 playback
                     .play_request(request)
                     .await

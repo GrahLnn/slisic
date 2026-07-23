@@ -1111,3 +1111,33 @@ fn playback_request_for_track_range_keeps_end_out_of_engine_time_range() {
         }),
     );
 }
+
+#[test]
+fn playback_request_for_track_range_preserves_loudness_normalization_at_new_position() {
+    let mut current = track("a");
+    current.start_ms = 1_863_000;
+    current.end_ms = 1_898_000;
+    current.loudness_profile = LoudnessProfile::from_integrated_lufs(-24.0);
+
+    let request = playback_request_for_track_range(
+        &current,
+        ActivePlaybackRange {
+            start_ms: 1_875_000,
+            end_ms: current.end_ms,
+        },
+    );
+
+    assert_eq!(
+        request.time_range,
+        Some(ffplayr::PlaybackTimeRange {
+            start_ms: 1_875_000,
+            duration_ms: None,
+        }),
+    );
+    let normalization = request
+        .normalization
+        .expect("seeking a measured track must preserve its loudness normalization");
+    assert_eq!(normalization.target_lufs, BACKEND_PLAYBACK_TARGET_LUFS);
+    assert_eq!(normalization.integrated_lufs, Some(-24.0));
+    assert_eq!(normalization.true_peak_dbtp, None);
+}
