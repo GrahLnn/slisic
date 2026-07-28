@@ -281,7 +281,8 @@ checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 [[package]]
 name = "appdb"
 version = "0.2.24"
-source = "git+https://github.com/GrahLnn/appdb.git?rev=a7b11948175b53f872ac55b351508aaefae6974a#a7b11948175b53f872ac55b351508aaefae6974a"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "270962e2b65ac934e14322386c9a3db3e46fa4cdc32a416a2ccebb246a934860"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -305,7 +306,8 @@ dependencies = [
 [[package]]
 name = "appdb-macros"
 version = "0.2.24"
-source = "git+https://github.com/GrahLnn/appdb.git?rev=a7b11948175b53f872ac55b351508aaefae6974a#a7b11948175b53f872ac55b351508aaefae6974a"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f253a0921fa6037dcf506dc56446d0877c7dbb732ec0e93d9a9c8109a40193d0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3076,7 +3078,8 @@ dependencies = [
 [[package]]
 name = "ffplayr"
 version = "0.1.5"
-source = "git+https://github.com/GrahLnn/ffplayr.git?rev=2ea076f#2ea076fb481495bbcfacbce739773135e9bd85a1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6eb24c77af0950c010acb41a6e8a1bbfb463ee9348354f429078fe6b8aaefc3c"
 dependencies = [
  "base64 0.22.1",
  "rodio",

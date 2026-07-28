@@ -35,7 +35,7 @@ tokio = { version = "1.52.3", features = ["macros", "net", "process", "rt-multi-
 specta = "2.0.0-rc.25"
 specta-typescript = "0.0.12"
 tauri-plugin-os = "2"
-appdb = { git = "https://github.com/GrahLnn/appdb.git", rev = "a7b11948175b53f872ac55b351508aaefae6974a", version = "0.2.24" }
+appdb = "0.2.24"
 anyhow = "1.0.102"
 async-trait = "0.1.89"
 inventory = "0.3.24"
@@ -44,7 +44,7 @@ surrealdb-types = "3.1.2"
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-process = "2"
-ffplayr = { git = "https://github.com/GrahLnn/ffplayr.git", rev = "2ea076f", version = "0.1.5" }
+ffplayr = "0.1.5"
 reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "rustls"] }
 sha2 = "0.11.0"
 hex = "0.4.3"
