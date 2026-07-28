@@ -854,15 +854,7 @@ mod platform {
     }
 }
 
-#[cfg(not(target_os = "windows"))]
-mod platform {
-    use tauri::WebviewWindow;
-
-    pub fn install(_window: &WebviewWindow) -> Result<(), String> {
-        Ok(())
-    }
-}
-
+#[cfg(target_os = "windows")]
 pub fn install_hardware_horizontal_wheel_monitor(window: &WebviewWindow) {
     if let Err(error) = platform::install(window) {
         eprintln!("[hardwareHorizontalWheel] {error}");

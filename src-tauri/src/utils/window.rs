@@ -858,7 +858,7 @@ fn build_window(
     descriptor: &WindowDescriptor,
     visible: bool,
 ) -> Result<WebviewWindow, String> {
-    let mut builder = WebviewWindowBuilder::new(app, label, WebviewUrl::App("index.html".into()))
+    let builder = WebviewWindowBuilder::new(app, label, WebviewUrl::App("index.html".into()))
         .title(descriptor.title)
         .visible(visible)
         .focused(visible)
@@ -867,13 +867,15 @@ fn build_window(
         .min_inner_size(descriptor.min_width, descriptor.min_height);
 
     #[cfg(not(any(target_os = "macos", target_os = "ios")))]
-    {
+    let builder = {
         if let Ok(app_local_data_dir) = app.path().app_local_data_dir() {
             let webview_data_dir = app_local_data_dir.join("webview-profile");
             let _ = std::fs::create_dir_all(&webview_data_dir);
-            builder = builder.data_directory(webview_data_dir);
+            builder.data_directory(webview_data_dir)
+        } else {
+            builder
         }
-    }
+    };
 
     builder.build().map_err(|error| error.to_string())
 }

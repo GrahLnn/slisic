@@ -18,7 +18,7 @@ use tauri_specta::Event;
 use crate::utils::event::FullScreenEvent;
 
 // --- Helper to show/hide traffic lights ---
-unsafe fn set_native_traffic_lights_hidden(
+fn set_native_traffic_lights_hidden(
     ns_window: &Retained<NSWindow>,
     hidden: bool,
     _mtm: MainThreadMarker,
@@ -38,10 +38,7 @@ unsafe fn set_native_traffic_lights_hidden(
 }
 
 // --- Public function to initially hide (called once) ---
-unsafe fn hide_native_traffic_lights_initial(
-    ns_window: &Retained<NSWindow>,
-    mtm: MainThreadMarker,
-) {
+fn hide_native_traffic_lights_initial(ns_window: &Retained<NSWindow>, mtm: MainThreadMarker) {
     set_native_traffic_lights_hidden(ns_window, true, mtm);
 }
 
@@ -66,10 +63,7 @@ pub fn setup_custom_macos_titlebar(window: &WebviewWindow) {
     match unsafe { Retained::retain(ns_window_ptr) } {
         Some(ns_window_id) => {
             if let Some(mtm) = MainThreadMarker::new() {
-                unsafe {
-                    // Call the initial hide function
-                    hide_native_traffic_lights_initial(&ns_window_id, mtm);
-                }
+                hide_native_traffic_lights_initial(&ns_window_id, mtm);
             } else {
                 eprintln!("Failed to get MainThreadMarker for initial traffic light hide.");
             }
@@ -94,8 +88,8 @@ impl FullscreenStateManager {
         }
         let ns_window_id = unsafe { Retained::retain(ns_window_ptr)? };
 
-        let notification_center = unsafe { NSNotificationCenter::defaultCenter() };
-        let main_queue = unsafe { NSOperationQueue::mainQueue() };
+        let notification_center = NSNotificationCenter::defaultCenter();
+        let main_queue = NSOperationQueue::mainQueue();
 
         // --- Observer for DidExitFullScreen (now only for event emission) ---
         let tauri_webview_clone_exit = webview_window.clone();
@@ -126,7 +120,7 @@ impl FullscreenStateManager {
         let mtm_clone_will_exit = mtm;
 
         let will_exit_block = RcBlock::new(
-            move |_notification_ptr: std::ptr::NonNull<NSNotification>| unsafe {
+            move |_notification_ptr: std::ptr::NonNull<NSNotification>| {
                 // Hide traffic lights immediately when starting to exit fullscreen
                 set_native_traffic_lights_hidden(
                     &window_clone_will_exit,
@@ -156,7 +150,7 @@ impl FullscreenStateManager {
         let tauri_webview_clone_enter = webview_window.clone();
 
         let enter_block = RcBlock::new(
-            move |_notification_ptr: std::ptr::NonNull<NSNotification>| unsafe {
+            move |_notification_ptr: std::ptr::NonNull<NSNotification>| {
                 set_native_traffic_lights_hidden(&window_clone_enter, false, mtm_clone_enter);
 
                 FullScreenEvent {
@@ -186,7 +180,7 @@ impl FullscreenStateManager {
 
 impl Drop for FullscreenStateManager {
     fn drop(&mut self) {
-        let center = unsafe { NSNotificationCenter::defaultCenter() };
+        let center = NSNotificationCenter::defaultCenter();
         if let Some(token) = self.enter_fullscreen_token.take() {
             let observer_as_nsobject: Retained<NSObject> =
                 unsafe { Retained::cast_unchecked(token) };
