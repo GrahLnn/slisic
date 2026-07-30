@@ -1,7 +1,8 @@
 # Audio Style Path Fairness Rust Probe
 
-This crate reproduces the conserved audio-style path-fairness experiment in
-Rust without linking the Tauri application or invoking Python.
+This crate contains Rust reproductions of the conserved-flow control and the
+neural symbolic audio-program traversal experiment without linking the Tauri
+application at runtime.
 
 The implementation keeps three owners separate:
 
@@ -59,3 +60,51 @@ The generation-90 Rust run recovered `beta = 56`, continuity `0.2925304183`,
 reciprocal flow `0.9491017762`, and exact zero backtracking. Adjacent-session
 nearest style cosine changed by `-0.01402324`; seven of eight seeds improved and
 the paired 95% interval was `[-0.02500203, -0.00304445]`.
+
+## Symbolic program reproduction
+
+The symbolic probe does not let each runtime reconstruct its own floating
+top-k relation. ANN's neural compiler emits one generation-owned finite
+encoding containing:
+
+- the stable track-order signature;
+- the complete top-96 candidate relation and its signature;
+- the expected complete-successor program lineages and aggregate signature.
+
+Rust reads that encoding, independently recompiles every cyclic candidate-rank
+presentation into a perfect matching, quotients identical successor laws, and
+rejects any lineage or signature mismatch. The encoded relation owns program
+identity; a Rust-local embedding calculation is used only for observation
+metrics.
+
+Generate the encoding and Python evidence from the ANN repository:
+
+```text
+uv run python experiments/audio_style_trajectory_dynamics/symbolic_audio_program_traversal_probe.py \
+  --device cpu \
+  --tracks-per-list 32 \
+  --output outputs/audio_style_trajectory_dynamics/symbolic-audio-program-32.json \
+  --program-encoding-output outputs/audio_style_trajectory_dynamics/generation-90-program-encoding.json
+```
+
+Then reproduce the same finite program in Rust:
+
+```text
+cargo test --manifest-path src-tauri/probes/path-fairness/Cargo.toml \
+  --bin symbolic_audio_program_probe
+
+cargo run --release \
+  --manifest-path src-tauri/probes/path-fairness/Cargo.toml \
+  --bin symbolic_audio_program_probe -- \
+  <stable.json> <generation-90-program-encoding.json> <report.json> 32
+```
+
+The generation-90 receipts are
+[`receipts/symbolic-program-generation-90-32.json`](receipts/symbolic-program-generation-90-32.json)
+and
+[`receipts/symbolic-program-generation-90-64.json`](receipts/symbolic-program-generation-90-64.json).
+Both execute all 2,825 real starts with zero realized-track replay and zero
+cross-list overlap. Python and Rust produce the same 96 program lineages,
+departure counts (`729` and `982`), median residence (`64` and `128`), target
+occurrences (`75` and `144`), and future/history-overlap summaries. This is
+path-level reproduction, not a tolerance-based aggregate comparison.
