@@ -1,0 +1,96 @@
+{
+  "experiment": "rust_lifted_flow_spacing_composition_probe",
+  "status": "reproduced",
+  "input": {
+    "generation": 90,
+    "tracks": 2825,
+    "embedding_dimension": 4352,
+    "candidate_window": 96,
+    "basins_diagnostic_only": 55
+  },
+  "structural_receipt": {
+    "similarity_dual": 56.0,
+    "expected_continuity": 0.2925304183417827,
+    "maximum_row_error": 4.440892098500626e-16,
+    "maximum_column_error": 2.220446049250313e-16,
+    "maximum_reciprocal_flow": 0.9491017762004186,
+    "quantized_f32_input_maximum_outgoing_marginal_error": 2.9513748944776097e-8,
+    "maximum_backtrack_probability": 0.0
+  },
+  "structural_only": {
+    "mean_cross_session_track_repeat_rate": 0.078125,
+    "mean_previous_session_track_repeat_rate": 0.009588068181818182,
+    "mean_previous_session_nearest_style_cosine": 0.17729340189469606,
+    "p90_previous_session_nearest_style_cosine": 0.2616132631897927,
+    "mean_previous_session_bidirectional_style_cosine": 0.1777108572498181,
+    "mean_previous_session_centroid_style_cosine": 0.011948583442559042,
+    "mean_previous_session_basin_overlap_rate": 0.5184659090909091,
+    "mean_adjacent_cosine": 0.29265919385818384,
+    "mean_unique_track_fraction": 1.0,
+    "immediate_backtrack_rate": 0.0
+  },
+  "structural_plus_track_only_anti_fsrs_control": {
+    "mean_cross_session_track_repeat_rate": 0.017045454545454544,
+    "mean_previous_session_track_repeat_rate": 0.0031960227272727275,
+    "mean_previous_session_nearest_style_cosine": 0.17217684788093635,
+    "p90_previous_session_nearest_style_cosine": 0.26196524370461705,
+    "mean_previous_session_bidirectional_style_cosine": 0.17207414664781853,
+    "mean_previous_session_centroid_style_cosine": 0.011137175990205087,
+    "mean_previous_session_basin_overlap_rate": 0.4936079545454545,
+    "mean_adjacent_cosine": 0.29026955194390747,
+    "mean_unique_track_fraction": 1.0,
+    "immediate_backtrack_rate": 0.0
+  },
+  "structural_plus_anti_fsrs": {
+    "mean_cross_session_track_repeat_rate": 0.019886363636363633,
+    "mean_previous_session_track_repeat_rate": 0.0021306818181818185,
+    "mean_previous_session_nearest_style_cosine": 0.16327016152271512,
+    "p90_previous_session_nearest_style_cosine": 0.2533313129097224,
+    "mean_previous_session_bidirectional_style_cosine": 0.1633783154351146,
+    "mean_previous_session_centroid_style_cosine": -0.06307624315509615,
+    "mean_previous_session_basin_overlap_rate": 0.39169034090909094,
+    "mean_adjacent_cosine": 0.2998067726235917,
+    "mean_unique_track_fraction": 1.0,
+    "immediate_backtrack_rate": 0.0
+  },
+  "paired_seed_style_delta": {
+    "values": [
+      -0.012433218208818958,
+      -0.004417996975296962,
+      -0.0044612539303753584,
+      -0.01669428575868634,
+      0.007221621662293648,
+      -0.028519010856557142,
+      -0.021773090504046355,
+      -0.03110868840436029
+    ],
+    "mean": -0.01402324037198097,
+    "standard_error": 0.004642196169936432,
+    "ci95": [
+      -0.02500203431388063,
+      -0.0030444464300813084
+    ],
+    "improvement_fraction": 0.875
+  },
+  "delta": {
+    "previous_session_nearest_style_cosine": -0.014023240371980938,
+    "previous_session_style_p90_cosine": -0.008281950280070338,
+    "previous_session_bidirectional_style_cosine": -0.014332541814703503,
+    "previous_session_centroid_style_cosine": -0.07502482659765519,
+    "previous_session_basin_overlap_rate": -0.12677556818181812,
+    "adjacent_cosine": 0.007147578765407836
+  },
+  "mechanism_attribution": {
+    "track_only_local_nearest": 0.17217684788093635,
+    "full_local_nearest": 0.16327016152271512,
+    "track_only_centroid": 0.011137175990205087,
+    "full_centroid": -0.06307624315509615,
+    "track_only_basin_overlap": 0.4936079545454545,
+    "full_basin_overlap": 0.39169034090909094
+  },
+  "owner_boundary": {
+    "structural": "model-generation track-uniform conserved flow and current directed edge",
+    "temporal": "listener-keyed exposure projected through the current model after structural probabilities",
+    "forbidden": "listener history fitting structural flow, persisted basin identity, or per-session structural regeneration"
+  }
+}
