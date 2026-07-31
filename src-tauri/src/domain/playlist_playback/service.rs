@@ -45,6 +45,8 @@ use crate::domain::playlists::repo::{PlaylistPlaybackSelection, PlaylistPlayback
 #[cfg(not(test))]
 use anyhow::{Result, anyhow, bail};
 use rand::RngExt;
+#[cfg(not(test))]
+use std::collections::HashMap;
 use std::collections::HashSet;
 #[cfg(not(test))]
 use std::fmt::Write as _;
@@ -55,6 +57,8 @@ use std::sync::Arc;
 use std::sync::Mutex;
 #[cfg(not(test))]
 use std::sync::OnceLock;
+#[cfg(not(test))]
+use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(not(test))]
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 #[cfg(not(test))]
@@ -84,6 +88,14 @@ type SharedAudioStyleSymbolicPlaybackSession = Arc<Mutex<AudioStyleSymbolicPlayb
 #[cfg(not(test))]
 static PLAYLIST_PLAYBACK_TEMPORAL_MEMORY: OnceLock<Mutex<PlaylistPlaybackTemporalMemory>> =
     OnceLock::new();
+
+#[cfg(not(test))]
+static PLAYLIST_SYMBOLIC_PLAYBACK_SESSIONS: OnceLock<
+    Mutex<HashMap<String, AudioStyleSymbolicPlaybackSession>>,
+> = OnceLock::new();
+
+#[cfg(not(test))]
+static PLAYLIST_QUEUE_REFRESH_ATTEMPT_ID: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Default)]
 pub(crate) struct PlaylistPlaybackRecentHistory {
@@ -133,6 +145,41 @@ fn current_playback_time_ms() -> u64 {
 fn playlist_playback_temporal_memory() -> &'static Mutex<PlaylistPlaybackTemporalMemory> {
     PLAYLIST_PLAYBACK_TEMPORAL_MEMORY
         .get_or_init(|| Mutex::new(PlaylistPlaybackTemporalMemory::default()))
+}
+
+#[cfg(not(test))]
+fn playlist_symbolic_playback_sessions()
+-> &'static Mutex<HashMap<String, AudioStyleSymbolicPlaybackSession>> {
+    PLAYLIST_SYMBOLIC_PLAYBACK_SESSIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[cfg(not(test))]
+fn new_playlist_symbolic_playback_session(
+    playlist_name: &str,
+) -> Result<SharedAudioStyleSymbolicPlaybackSession> {
+    let persisted = playlist_symbolic_playback_sessions()
+        .lock()
+        .map_err(|_| anyhow!("playlist symbolic playback session cache lock poisoned"))?
+        .get(playlist_name)
+        .map(AudioStyleSymbolicPlaybackSession::committed_snapshot)
+        .unwrap_or_default();
+    Ok(Arc::new(Mutex::new(persisted)))
+}
+
+#[cfg(not(test))]
+fn persist_playlist_symbolic_playback_session(
+    playlist_name: &str,
+    session: &SharedAudioStyleSymbolicPlaybackSession,
+) -> Result<()> {
+    let snapshot = session
+        .lock()
+        .map_err(|_| anyhow!("symbolic playback session lock poisoned"))?
+        .committed_snapshot();
+    playlist_symbolic_playback_sessions()
+        .lock()
+        .map_err(|_| anyhow!("playlist symbolic playback session cache lock poisoned"))?
+        .insert(playlist_name.to_string(), snapshot);
+    Ok(())
 }
 
 #[cfg(not(test))]
@@ -409,7 +456,7 @@ pub async fn play_playlist(app: &AppHandle, name: String) -> Result<PlayPlaylist
     let track_count = tracks.len() as u32;
     let shared_recent_history = Arc::new(Mutex::new(recent_history));
     let queue_refresh_gate = Arc::new(tokio::sync::Mutex::new(()));
-    let symbolic_session = Arc::new(Mutex::new(AudioStyleSymbolicPlaybackSession::default()));
+    let symbolic_session = new_playlist_symbolic_playback_session(&playlist_name)?;
 
     ensure_playlist_playback_request_current(&request)?;
     emit_playlist_playback_trace(
@@ -1335,7 +1382,7 @@ async fn wait_for_playlist_initial_track_and_start_queue(
         PlaylistPlaybackRecentHistory::from_initial_track(initial.track.clone()),
     ));
     let queue_refresh_gate = Arc::new(tokio::sync::Mutex::new(()));
-    let symbolic_session = Arc::new(Mutex::new(AudioStyleSymbolicPlaybackSession::default()));
+    let symbolic_session = new_playlist_symbolic_playback_session(&playlist_name)?;
     spawn_playlist_track_queue_fill(
         app.clone(),
         playlist_name.clone(),
@@ -1860,13 +1907,23 @@ async fn refresh_playlist_track_queue_for_anchor(
     should_log_selection: bool,
     symbolic_session: &SharedAudioStyleSymbolicPlaybackSession,
 ) -> Result<PlaylistTrackQueueRefreshOutcome> {
-    let scope_revision = playable_index::current_index_revision()?;
+    let attempt_id = PLAYLIST_QUEUE_REFRESH_ATTEMPT_ID.fetch_add(1, Ordering::Relaxed) + 1;
+    let refresh_started = Instant::now();
+    let scope_revision = playable_index::current_playlist_scope_revision(playlist_name)?;
     {
         let mut session = symbolic_session
             .lock()
             .map_err(|_| anyhow!("symbolic playback session lock poisoned"))?;
         session.observe_scope_revision(scope_revision);
     }
+    log::info!(
+        target: PLAYLIST_PLAYBACK_LOG_TARGET,
+        "next queue fill refresh attempt started playlist=\"{}\" anchor_title=\"{}\" attempt_id={} scope_revision={}",
+        escape_log_value(playlist_name),
+        escape_log_value(&current_track.music_name),
+        attempt_id,
+        scope_revision,
+    );
     let readiness = audio_style_playlist_queue_readiness_for_anchor(&current_track);
     if !readiness.is_ready() {
         emit_playlist_playback_trace(
@@ -1891,6 +1948,7 @@ async fn refresh_playlist_track_queue_for_anchor(
         .filter_map(|snapshot| snapshot.symbolic_track_count())
         .max();
     let symbolic_next = if let Some(scope_limit) = symbolic_scope_limit {
+        let candidate_load_started = Instant::now();
         let cached_candidates = {
             let session = symbolic_session
                 .lock()
@@ -1906,6 +1964,7 @@ async fn refresh_playlist_track_queue_for_anchor(
                 load_playlist_track_resolution_window(app, playlist_name, scope_limit).await?;
             (source.resolution.tracks, "playlist_resolution")
         };
+        let candidate_load_elapsed_ms = candidate_load_started.elapsed().as_millis();
         if scope_source == "session_cache" {
             emit_playlist_playback_trace(
                 "playlist-playback-symbolic-scope-cache-reused",
@@ -1916,6 +1975,7 @@ async fn refresh_playlist_track_queue_for_anchor(
                     .status("session_materialized_scope"),
             );
         }
+        let symbolic_proposal_started = Instant::now();
         match propose_playlist_symbolic_next_track(
             symbolic_session,
             snapshots,
@@ -1925,13 +1985,31 @@ async fn refresh_playlist_track_queue_for_anchor(
         )
         .await
         {
-            Ok(next) => Some(next),
+            Ok(next) => {
+                log::info!(
+                    target: PLAYLIST_PLAYBACK_LOG_TARGET,
+                    "symbolic next track prepared playlist=\"{}\" anchor_title=\"{}\" attempt_id={} scope_source={} candidate_load_ms={} proposal_ms={} total_ms={}",
+                    escape_log_value(playlist_name),
+                    escape_log_value(&current_track.music_name),
+                    attempt_id,
+                    scope_source,
+                    candidate_load_elapsed_ms,
+                    symbolic_proposal_started.elapsed().as_millis(),
+                    refresh_started.elapsed().as_millis(),
+                );
+                Some(next)
+            }
             Err(error) => {
                 log::warn!(
                     target: PLAYLIST_PLAYBACK_LOG_TARGET,
-                    "symbolic playlist traversal unavailable playlist=\"{}\" anchor_title=\"{}\" reason=\"{}\" fallback=random_candidate",
+                    "symbolic playlist traversal unavailable playlist=\"{}\" anchor_title=\"{}\" attempt_id={} scope_source={} candidate_load_ms={} proposal_ms={} total_ms={} reason=\"{}\" fallback=random_candidate",
                     escape_log_value(playlist_name),
                     escape_log_value(&current_track.music_name),
+                    attempt_id,
+                    scope_source,
+                    candidate_load_elapsed_ms,
+                    symbolic_proposal_started.elapsed().as_millis(),
+                    refresh_started.elapsed().as_millis(),
                     escape_log_value(&error.to_string())
                 );
                 emit_playlist_playback_trace(
@@ -2031,15 +2109,27 @@ async fn refresh_playlist_track_queue_for_anchor(
         }
         (proposal.tracks, "random_fallback")
     };
-    if queue_source == "symbolic_program"
-        && playable_index::current_index_revision()? != scope_revision
-    {
-        symbolic_session
-            .lock()
-            .map_err(|_| anyhow!("symbolic playback session lock poisoned"))?
-            .rollback_proposal()
-            .map_err(|error| anyhow!(error))?;
-        return Ok(PlaylistTrackQueueRefreshOutcome::StaleAnchor);
+    if queue_source == "symbolic_program" {
+        let current_scope_revision =
+            playable_index::current_playlist_scope_revision(playlist_name)?;
+        if current_scope_revision != scope_revision {
+            symbolic_session
+                .lock()
+                .map_err(|_| anyhow!("symbolic playback session lock poisoned"))?
+                .rollback_proposal()
+                .map_err(|error| anyhow!(error))?;
+            log::info!(
+                target: PLAYLIST_PLAYBACK_LOG_TARGET,
+                "next queue fill refresh became stale playlist=\"{}\" anchor_title=\"{}\" attempt_id={} reason=symbolic_scope_changed scope_revision={} current_revision={} total_ms={}",
+                escape_log_value(playlist_name),
+                escape_log_value(&current_track.music_name),
+                attempt_id,
+                scope_revision,
+                current_scope_revision,
+                refresh_started.elapsed().as_millis(),
+            );
+            return Ok(PlaylistTrackQueueRefreshOutcome::StaleAnchor);
+        }
     }
     if !should_commit_playlist_queue_refresh(
         PlaylistPlaybackRecommendationMode::KeepCurrent,
@@ -2090,14 +2180,30 @@ async fn refresh_playlist_track_queue_for_anchor(
         }
     }
     let updated = update_result?;
+    if updated && queue_source == "symbolic_program" {
+        persist_playlist_symbolic_playback_session(playlist_name, symbolic_session)?;
+    }
+    if !updated {
+        log::info!(
+            target: PLAYLIST_PLAYBACK_LOG_TARGET,
+            "next queue fill refresh became stale playlist=\"{}\" anchor_title=\"{}\" attempt_id={} reason=session_anchor_changed queue_source={} total_ms={}",
+            escape_log_value(playlist_name),
+            escape_log_value(&current_track.music_name),
+            attempt_id,
+            queue_source,
+            refresh_started.elapsed().as_millis(),
+        );
+    }
     log::info!(
         target: PLAYLIST_PLAYBACK_LOG_TARGET,
-        "next track queued source=proposal queue_source={} mode=keep_current playlist=\"{}\" anchor_title=\"{}\" title=\"{}\" updated={}",
+        "next track queued source=proposal queue_source={} mode=keep_current playlist=\"{}\" anchor_title=\"{}\" title=\"{}\" updated={} attempt_id={} total_ms={}",
         queue_source,
         escape_log_value(playlist_name),
         escape_log_value(&current_track.music_name),
         next_title,
-        updated
+        updated,
+        attempt_id,
+        refresh_started.elapsed().as_millis(),
     );
     if updated {
         Ok(PlaylistTrackQueueRefreshOutcome::Committed)

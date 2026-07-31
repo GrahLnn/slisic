@@ -63,13 +63,13 @@ reuse_scope =
   Memoize MaterializePlaylistScope
 
 successor_frontier =
-  Work AdvanceSymbolicProgram PreparedContinuation Iteration 1
+  Work advance_recommendation PreparedContinuation Global 1
+
+reuse_successor_frontier =
+  Memoize advance_recommendation
 
 queue_observation =
   Work observe_queue SessionObservation Iteration 1
-
-recommendation_frontier =
-  Work advance_recommendation PreparedContinuation Iteration 1
 
 first_slot_consumption =
   Work consume_first_slot StartupQueue Iteration 1
@@ -79,10 +79,20 @@ scope_reuse_invalidated =
 ```
 
 The stable symbolic program is evaluated over a materialized playlist scope.
-Repeated successor steps in one unchanged generation reuse that materialized
-scope instead of reloading the complete library window. Playlist, exclusion,
-download, file-availability, or model-generation changes invalidate the
-reused scope; this is a correctness boundary, not a tuning parameter.
+Scope construction materializes the generation-owned candidate rank and local
+overlap relations once; every scoped program consumes those shared relations,
+and closure membership is carried as reusable state rather than recreated for
+each candidate exchange. This is a structural work-sharing law, not a changed
+candidate width or a latency threshold.
+Repeated successor steps, including a later playback cycle for the same
+playlist, reuse the committed generation-owned scope and traversal frontier
+instead of reloading and restarting the complete library window. Only committed
+execution is persisted; an in-flight proposal is never carried into a new
+session. The playlist symbolic scope token advances for membership, exclusion,
+playability, or playlist-name changes; model generation remains an independent
+execution check. First-slot cargo consumption, refill, and loudness enrichment
+use a separate preparation revision and do not invalidate the symbolic scope.
+These are correctness boundaries, not tuning parameters.
 
 ## Search `search`
 
@@ -110,10 +120,10 @@ search_budget =
 ```
 
 The search space includes lifecycle, representation, and ownership repairs.
-The observed 19-second track followed by a 30-second recommendation is a
-counterexample to treating queue exhaustion as a terminal without a producer
-receipt. The old `audio_style` first-slot cache tag is a compatibility input,
-not permission to discard the entire prepared pool.
+The observed recommendation that outlived its current track is a counterexample
+to treating queue exhaustion as a terminal without a producer receipt. The old
+`audio_style` first-slot cache tag is a compatibility input, not permission to
+discard the entire prepared pool.
 
 ## Implementation `architecture`
 
@@ -130,7 +140,12 @@ cache restore, generation stamping, invalidation, and credential consumption.
 @forma implements method AudioStyleSymbolicPlaybackSession::propose_next as src-tauri/src/domain/playlist_playback/recommendation.rs
 @forma summary reuses an unchanged generation-owned materialized symbolic scope
 @forma implements method AudioStyleSymbolicPlaybackSession::observe_scope_revision as src-tauri/src/domain/playlist_playback/recommendation.rs
-@forma summary invalidates the materialized scope when the playable-index revision changes
+@forma summary invalidates the materialized scope when its playlist-scoped candidate token changes
+@forma summary persists only committed symbolic traversal state across playback cycles
+@forma summary separates playlist symbolic scope invalidation from first-slot cargo revision
+@forma implements function restrict_neural_program_atlas_to_playlist as src-tauri/src/domain/playlist_playback/symbolic_program.rs
+@forma implements function close_neural_program_atlas_cycles as src-tauri/src/domain/playlist_playback/symbolic_program.rs
+@forma summary shares generation-owned candidate rank and overlap relations across scoped program closure
 @forma implements function mark_session_queue_terminal as src-tauri/src/domain/player/service.rs
 @forma summary makes producer termination an explicit player-owned lifecycle receipt
 ```

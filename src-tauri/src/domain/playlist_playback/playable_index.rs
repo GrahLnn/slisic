@@ -238,6 +238,7 @@ struct PlayableIndexState {
     playlists: HashMap<String, PlaylistPlayableIndexPool>,
     pending_playlists: HashMap<String, PendingPlaylistSourcePool>,
     playlist_generations: HashMap<String, u64>,
+    playlist_scope_revisions: HashMap<String, u64>,
     global_generation: u64,
     playlist_bootstrap_ready: bool,
     startup_cache_restore_finished: bool,
@@ -483,6 +484,7 @@ fn request_audio_style_model_available_refresh_impl() {
 fn request_audio_style_model_available_refresh_impl() {}
 
 pub(crate) fn notify_playlist_changed(playlist_name: &str) {
+    invalidate_playlist_scope_revision(playlist_name);
     notify_playlist_changed_impl(playlist_name);
 }
 
@@ -500,6 +502,7 @@ pub(crate) fn notify_playlist_deleted(playlist_name: &str) {
     if let Ok(runtime) = try_runtime() {
         let generation = runtime.generation.fetch_add(1, Ordering::SeqCst) + 1;
         if let Ok(mut state) = runtime.state.lock() {
+            bump_playlist_scope_revision(&mut state, playlist_name);
             removed = state.playlists.remove(playlist_name).is_some();
             state.active_refreshes.remove(playlist_name);
             state
@@ -526,11 +529,14 @@ pub(crate) fn notify_playlist_renamed(previous_name: &str, next_name: &str) {
 }
 
 pub(crate) fn notify_library_changed(reason: PlayableIndexRefreshReason) {
+    if reason.invalidates_existing_snapshots() {
+        invalidate_all_playlist_scope_revisions();
+    }
     notify_library_changed_impl(reason);
 }
 
 pub(crate) fn notify_exclude_changed() {
-    notify_library_changed_impl(PlayableIndexRefreshReason::ExcludeChanged);
+    notify_library_changed(PlayableIndexRefreshReason::ExcludeChanged);
 }
 
 pub(crate) fn consume_playlist_source(snapshot: &PlaylistPlayableIndexSnapshot) -> Result<bool> {
@@ -805,6 +811,10 @@ fn notify_playlist_renamed_impl(previous_name: &str, next_name: &str) {
     if let Ok(runtime) = try_runtime() {
         let generation = runtime.generation.fetch_add(1, Ordering::SeqCst) + 1;
         if let Ok(mut state) = runtime.state.lock() {
+            if previous_name != next_name {
+                bump_playlist_scope_revision(&mut state, previous_name);
+                bump_playlist_scope_revision(&mut state, next_name);
+            }
             moved = move_playlist_source_pool(&mut state, previous_name, next_name, generation);
         }
         if moved {
@@ -828,7 +838,13 @@ fn notify_playlist_renamed_impl(previous_name: &str, next_name: &str) {
     if let Ok(runtime) = try_runtime() {
         let generation = runtime.generation.fetch_add(1, Ordering::SeqCst) + 1;
         if let Ok(mut state) = runtime.state.lock()
-            && move_playlist_source_pool(&mut state, previous_name, next_name, generation)
+            && {
+                if previous_name != next_name {
+                    bump_playlist_scope_revision(&mut state, previous_name);
+                    bump_playlist_scope_revision(&mut state, next_name);
+                }
+                move_playlist_source_pool(&mut state, previous_name, next_name, generation)
+            }
         {
             notify_index_revision(runtime.as_ref());
         }
@@ -1069,6 +1085,9 @@ pub(crate) async fn refresh_playlist_now_for_reason_for_test(
     reason: PlayableIndexRefreshReason,
 ) -> Result<()> {
     let generation = next_generation()?;
+    if reason.invalidates_existing_snapshots() {
+        invalidate_playlist_scope_revision(&selection.playlist_name);
+    }
     commit_playlist_snapshot(selection.playlist_name, generation, source, reason)
 }
 
@@ -1118,10 +1137,62 @@ fn notify_index_revision(runtime: &PlayableIndexRuntime) {
     let _previous = runtime.revision.send_replace(next_revision);
 }
 
+fn bump_playlist_scope_revision(state: &mut PlayableIndexState, playlist_name: &str) {
+    let revision = state
+        .playlist_scope_revisions
+        .entry(playlist_name.to_string())
+        .or_default();
+    *revision = revision.checked_add(1).unwrap_or_default();
+}
+
+fn invalidate_playlist_scope_revision(playlist_name: &str) {
+    if let Ok(runtime) = try_runtime()
+        && let Ok(mut state) = runtime.state.lock()
+    {
+        bump_playlist_scope_revision(&mut state, playlist_name);
+    }
+}
+
+fn invalidate_all_playlist_scope_revisions() {
+    let Ok(runtime) = try_runtime() else {
+        return;
+    };
+    let Ok(mut state) = runtime.state.lock() else {
+        return;
+    };
+    let playlist_names = state
+        .playlists
+        .keys()
+        .chain(state.pending_playlists.keys())
+        .chain(state.playlist_generations.keys())
+        .cloned()
+        .collect::<HashSet<_>>();
+    for playlist_name in playlist_names {
+        bump_playlist_scope_revision(&mut state, &playlist_name);
+    }
+}
+
+// This token tracks changes to the candidate universe, not first-slot cargo.
+// Consuming, refilling, or enriching a prepared first-slot source must not
+// reset a playlist's committed symbolic traversal frontier.
+pub(crate) fn current_playlist_scope_revision(playlist_name: &str) -> Result<u64> {
+    let runtime = try_runtime()?;
+    let state = runtime
+        .state
+        .lock()
+        .map_err(|_| anyhow!("playlist playable index lock is poisoned"))?;
+    Ok(state
+        .playlist_scope_revisions
+        .get(playlist_name)
+        .copied()
+        .unwrap_or_default())
+}
+
 pub(crate) fn subscribe_index_revision() -> Result<watch::Receiver<u64>> {
     Ok(try_runtime()?.revision.subscribe())
 }
 
+#[cfg(test)]
 pub(crate) fn current_index_revision() -> Result<u64> {
     Ok(*try_runtime()?.revision.borrow())
 }

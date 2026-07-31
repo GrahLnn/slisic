@@ -17,7 +17,11 @@ selection, queue planning, recommendation fallback, refresh, and cancellation.
   planning, startup queue composition, recent-history exclusion, the listener-
   owned inverse-FSRS safety memory, and queue refresh.
 - `playlist_playback::recommendation` owns symbolic program compilation and
-  persistent symbolic traversal for an already materialized candidate universe.
+  persistent symbolic traversal for an already materialized candidate universe;
+  committed traversal state may survive a later playback cycle for the same
+  playlist, while in-flight proposals never cross the session boundary. Its
+  invalidation token is playlist-scoped; first-slot cargo consumption, refill,
+  and loudness enrichment use a separate preparation revision.
 - `player::service` owns playback lifecycle, active request identity, queue
   consumption, producer-terminal coordination, and process control.
 - `player::strategy` owns only consumption of the queue it is given. It does not

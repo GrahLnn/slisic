@@ -234,6 +234,42 @@ fn symbolic_playback_session_exposes_reusable_materialized_scope() {
 }
 
 #[test]
+fn symbolic_snapshot_drops_pending_proposal_before_persistence() {
+    let tracks = (0..6)
+        .map(|index| track(&format!("snapshot-symbolic-{index}")))
+        .collect::<Vec<_>>();
+    let snapshot = AudioStyleModelSnapshot::from_test_embeddings(
+        90,
+        tracks
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(index, track)| (track, dense_embedding(&[(index, 1.0)]))),
+    );
+    let mut session = AudioStyleSymbolicPlaybackSession::default();
+    session
+        .propose_next(&snapshot, &tracks[0], &tracks, &[])
+        .expect("symbolic proposal should prepare");
+    let mut pending_snapshot = session.committed_snapshot();
+    let mut fresh = AudioStyleSymbolicPlaybackSession::default();
+    let pending_next = pending_snapshot
+        .propose_next(&snapshot, &tracks[0], &tracks, &[])
+        .expect("persisted committed state should remain usable");
+    let fresh_next = fresh
+        .propose_next(&snapshot, &tracks[0], &tracks, &[])
+        .expect("fresh state should remain usable");
+    assert_eq!(pending_next.track.music_url, fresh_next.track.music_url);
+
+    session
+        .commit_proposal()
+        .expect("symbolic proposal should commit");
+    let mut committed = session.committed_snapshot();
+    committed
+        .propose_next(&snapshot, &pending_next.track, &tracks, &[])
+        .expect("committed snapshot should remain usable");
+}
+
+#[test]
 fn legacy_stable_model_migrates_symbolic_encoding_without_audio_reencoding() {
     let root = temp_cache_root("stable-model-symbolic-migration");
     std::fs::create_dir_all(&root).expect("stable model test root should be created");

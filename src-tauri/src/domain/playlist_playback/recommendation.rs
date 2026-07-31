@@ -726,7 +726,7 @@ pub(crate) struct AudioStyleModelSnapshot {
     state: Arc<AudioStyleModelState>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct AudioStyleSymbolicPlaybackSession {
     execution: Option<AudioStyleSymbolicPlaylistExecution>,
     pending_checkpoint: Option<Box<Option<AudioStyleSymbolicPlaylistExecution>>>,
@@ -5687,6 +5687,19 @@ impl AudioStyleModelSnapshot {
 }
 
 impl AudioStyleSymbolicPlaybackSession {
+    pub(crate) fn committed_snapshot(&self) -> Self {
+        let execution = self
+            .pending_checkpoint
+            .as_ref()
+            .map(|checkpoint| (**checkpoint).clone())
+            .unwrap_or_else(|| self.execution.clone());
+        Self {
+            execution,
+            pending_checkpoint: None,
+            scope_revision: self.scope_revision,
+        }
+    }
+
     // @forma implements architecture Domain.PlaybackSessionProgramState as propose_next
     pub(crate) fn observe_scope_revision(&mut self, revision: u64) {
         if self.scope_revision != Some(revision) {

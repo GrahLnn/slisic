@@ -435,21 +435,13 @@ fn close_successor_law_to_single_cycle(
     neighbors: &[usize],
     candidate_separations: &[usize],
     candidate_local_overlaps: &[usize],
+    candidate_ranks_by_source: &[Vec<usize>],
     track_keys: &[String],
 ) -> Option<Vec<usize>> {
     let original = successors.to_vec();
     let mut closed = original.clone();
-    let candidate_ranks = neighbors
-        .chunks_exact(candidate_count)
-        .map(|row| {
-            row.iter()
-                .copied()
-                .enumerate()
-                .map(|(rank, destination)| (destination, rank))
-                .collect::<HashMap<_, _>>()
-        })
-        .collect::<Vec<_>>();
-    let mut changed_sources = HashSet::<usize>::new();
+    let mut changed_sources = Vec::<usize>::new();
+    let mut changed_flags = vec![false; closed.len()];
 
     loop {
         let cycle_ids = permutation_cycle_ids(&closed);
@@ -470,33 +462,26 @@ fn close_successor_law_to_single_cycle(
                 if cycle_ids[left_source] == cycle_ids[right_source] {
                     continue;
                 }
-                let Some(right_rank) = candidate_ranks[right_source]
-                    .get(&left_destination)
-                    .copied()
-                else {
+                let right_rank = candidate_ranks_by_source[right_source][left_destination];
+                if right_rank == usize::MAX {
                     continue;
-                };
-                let proposed = [
-                    (left_source, right_destination),
-                    (right_source, left_destination),
-                ];
-                let mut proposed_changed = changed_sources.clone();
-                proposed_changed.remove(&left_source);
-                proposed_changed.remove(&right_source);
-                for (source, destination) in proposed {
-                    if destination != original[source] {
-                        proposed_changed.insert(source);
-                    }
                 }
-                if proposed_changed.iter().any(|source| {
-                    let destination = proposed
-                        .iter()
-                        .find_map(|(candidate_source, destination)| {
-                            (*candidate_source == *source).then_some(*destination)
-                        })
-                        .unwrap_or(closed[*source]);
-                    proposed_changed.contains(&destination)
-                }) {
+                let left_changed = right_destination != original[left_source];
+                let right_changed = left_destination != original[right_source];
+                let previous_left_changed = changed_flags[left_source];
+                let previous_right_changed = changed_flags[right_source];
+                changed_flags[left_source] = left_changed;
+                changed_flags[right_source] = right_changed;
+                let changed_mapping_is_closed = changed_sources
+                    .iter()
+                    .copied()
+                    .filter(|source| *source != left_source && *source != right_source)
+                    .any(|source| changed_flags[closed[source]])
+                    || (left_changed && changed_flags[right_destination])
+                    || (right_changed && changed_flags[left_destination]);
+                if changed_mapping_is_closed {
+                    changed_flags[left_source] = previous_left_changed;
+                    changed_flags[right_source] = previous_right_changed;
                     continue;
                 }
                 let left_separation =
@@ -527,12 +512,15 @@ fn close_successor_law_to_single_cycle(
         let left_destination = closed[left_source];
         closed[left_source] = closed[right_source];
         closed[right_source] = left_destination;
-        changed_sources = original
-            .iter()
-            .zip(&closed)
-            .enumerate()
-            .filter_map(|(source, (before, after))| (before != after).then_some(source))
-            .collect();
+        changed_sources.retain(|source| *source != left_source && *source != right_source);
+        if closed[left_source] != original[left_source] {
+            changed_sources.push(left_source);
+        }
+        if closed[right_source] != original[right_source] {
+            changed_sources.push(right_source);
+        }
+        changed_flags[left_source] = closed[left_source] != original[left_source];
+        changed_flags[right_source] = closed[right_source] != original[right_source];
     }
 }
 
@@ -551,16 +539,27 @@ pub(crate) fn close_neural_program_atlas_cycles(
     let candidate_separations = program_cycle_separations(atlas, neighbors)?;
     let candidate_local_overlaps =
         candidate_neighborhood_overlaps(atlas.track_count, atlas.candidate_count, neighbors)?;
+    let candidate_ranks_by_source = neighbors
+        .chunks_exact(atlas.candidate_count)
+        .map(|row| {
+            let mut ranks = vec![usize::MAX; atlas.track_count];
+            for (rank, destination) in row.iter().copied().enumerate() {
+                ranks[destination] = rank;
+            }
+            ranks
+        })
+        .collect::<Vec<_>>();
     let overlap_by_destination = (0..atlas.track_count)
         .map(|source| {
             let row =
                 &neighbors[source * atlas.candidate_count..(source + 1) * atlas.candidate_count];
             let overlap_row = &candidate_local_overlaps
                 [source * atlas.candidate_count..(source + 1) * atlas.candidate_count];
-            row.iter()
-                .copied()
-                .zip(overlap_row.iter().copied())
-                .collect::<HashMap<_, _>>()
+            let mut overlaps = vec![0; atlas.track_count];
+            for (destination, overlap) in row.iter().copied().zip(overlap_row.iter().copied()) {
+                overlaps[destination] = overlap;
+            }
+            overlaps
         })
         .collect::<Vec<_>>();
     let mut programs = Vec::<ProgramMorphism>::new();
@@ -573,6 +572,7 @@ pub(crate) fn close_neural_program_atlas_cycles(
             neighbors,
             &candidate_separations,
             &candidate_local_overlaps,
+            &candidate_ranks_by_source,
             track_keys,
         ) else {
             retracted.extend(program.presentation_ordinals.iter().copied());
@@ -586,8 +586,8 @@ pub(crate) fn close_neural_program_atlas_cycles(
             .enumerate()
             .filter_map(|(source, (before, after))| {
                 (before != after
-                    && overlap_by_destination[source][&after]
-                        < overlap_by_destination[source][&before])
+                    && overlap_by_destination[source][after]
+                        < overlap_by_destination[source][before])
                     .then_some(source)
             })
             .collect::<Vec<_>>();
@@ -649,26 +649,74 @@ pub(crate) fn restrict_neural_program_atlas_to_playlist(
     let mut programs = Vec::<ProgramMorphism>::new();
     let mut program_by_code = HashMap::<(Vec<usize>, Vec<usize>), usize>::new();
     for program in &atlas.programs {
+        let mut boundary_flags = vec![false; atlas.track_count];
+        for source in program.boundary_sources.iter().copied() {
+            boundary_flags[source] = true;
+        }
+        let mut visited = vec![false; atlas.track_count];
+        let mut returned_locals = vec![usize::MAX; atlas.track_count];
+        let mut crossed_boundaries = vec![false; atlas.track_count];
+        for root in 0..atlas.track_count {
+            if visited[root] {
+                continue;
+            }
+            let mut cycle = Vec::new();
+            let mut node = root;
+            while !visited[node] {
+                visited[node] = true;
+                cycle.push(node);
+                node = program.successors[node];
+            }
+            let cycle_length = cycle.len();
+            if cycle_length == 0 {
+                continue;
+            }
+            let mut next_selected_positions = vec![usize::MAX; cycle_length];
+            let mut next_selected = usize::MAX;
+            for doubled_position in (0..cycle_length * 2).rev() {
+                let position = doubled_position % cycle_length;
+                next_selected_positions[position] = next_selected;
+                if local_by_global[cycle[position]].is_some() {
+                    next_selected = position;
+                }
+            }
+            let mut boundary_prefix = vec![0usize; cycle_length * 2 + 1];
+            for doubled_position in 0..cycle_length * 2 {
+                boundary_prefix[doubled_position + 1] = boundary_prefix[doubled_position]
+                    + usize::from(boundary_flags[cycle[doubled_position % cycle_length]]);
+            }
+            for position in 0..cycle_length {
+                let global_source = cycle[position];
+                if local_by_global[global_source].is_none() {
+                    continue;
+                }
+                let next_position = next_selected_positions[position];
+                if next_position == usize::MAX {
+                    return Err("program orbit has no playlist return".to_string());
+                }
+                let global_destination = cycle[next_position];
+                returned_locals[global_source] = local_by_global[global_destination]
+                    .ok_or_else(|| "program orbit has no playlist return".to_string())?;
+                let interval_end = if next_position > position {
+                    next_position
+                } else {
+                    next_position + cycle_length
+                };
+                crossed_boundaries[global_source] =
+                    boundary_prefix[interval_end] > boundary_prefix[position];
+            }
+        }
         let mut successors = Vec::with_capacity(selected.len());
         let mut boundary_sources = Vec::new();
         for (local_source, global_source) in selected.iter().copied().enumerate() {
-            let mut global_node = global_source;
-            let mut crosses_boundary = false;
-            let mut returned = None;
-            for _ in 0..atlas.track_count {
-                crosses_boundary |= program.boundary_sources.contains(&global_node);
-                let global_destination = program.successors[global_node];
-                if let Some(local_destination) = local_by_global[global_destination] {
-                    returned = Some(local_destination);
-                    if crosses_boundary {
-                        boundary_sources.push(local_source);
-                    }
-                    break;
-                }
-                global_node = global_destination;
+            let returned = returned_locals[global_source];
+            if returned == usize::MAX {
+                return Err("program orbit has no playlist return".to_string());
             }
-            successors
-                .push(returned.ok_or_else(|| "program orbit has no playlist return".to_string())?);
+            if crossed_boundaries[global_source] {
+                boundary_sources.push(local_source);
+            }
+            successors.push(returned);
         }
         let code = (successors.clone(), boundary_sources.clone());
         if let Some(index) = program_by_code.get(&code).copied() {

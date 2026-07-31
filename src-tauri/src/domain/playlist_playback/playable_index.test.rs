@@ -2,10 +2,11 @@ use super::playable_index::{
     PlayableIndexRefreshReason, PlaylistPlayableIndexSourceKind, cache_file_json_for_test,
     claim_global_refresh_for_test, claim_playlist_refresh_for_test,
     commit_global_snapshot_for_test, commit_playlist_snapshot_for_test, consume_playlist_source,
-    defer_global_refresh_for_test, discard_playlist_source,
-    first_slot_loudness_request_order_for_test, initialize_runtime_for_test,
-    mark_playlist_source_kind_for_test, mark_startup_cache_restore_finished_for_test,
-    notify_playlist_renamed, pending_global_refresh_for_test, playlist_bootstrap_ready_for_test,
+    current_index_revision, current_playlist_scope_revision, defer_global_refresh_for_test,
+    discard_playlist_source, first_slot_loudness_request_order_for_test,
+    initialize_runtime_for_test, mark_playlist_source_kind_for_test,
+    mark_startup_cache_restore_finished_for_test, notify_playlist_renamed,
+    pending_global_refresh_for_test, playlist_bootstrap_ready_for_test,
     publish_first_slot_loudness_evidence, queue_global_refresh_for_test, read_playlist_source,
     record_playlist_bootstrap_ready, refresh_playlist_now_for_reason_for_test,
     refresh_playlist_now_for_test, request_global_refresh_while_active_for_test, reset_for_test,
@@ -155,6 +156,50 @@ async fn playable_index_reads_prepared_playlist_source_without_rebuilding() {
 }
 
 #[tokio::test]
+async fn first_slot_cargo_revision_does_not_invalidate_playlist_symbolic_scope() {
+    let _guard = setup_playable_index_test();
+    refresh_playlist_now_for_test(selection("Focus"), Some(source(3)))
+        .await
+        .expect("test snapshot should commit");
+    let scope_before =
+        current_playlist_scope_revision("Focus").expect("scope revision should be readable");
+    let cargo_before = current_index_revision().expect("cargo revision should be readable");
+    let snapshot = read_playlist_source("Focus")
+        .expect("index read should succeed")
+        .expect("prepared source should exist");
+
+    assert!(consume_playlist_source(&snapshot).expect("first-slot source should be consumable"));
+
+    let scope_after =
+        current_playlist_scope_revision("Focus").expect("scope revision should be readable");
+    let cargo_after = current_index_revision().expect("cargo revision should be readable");
+    assert_eq!(scope_after, scope_before);
+    assert_ne!(cargo_after, cargo_before);
+}
+
+#[tokio::test]
+async fn playlist_candidate_change_advances_symbolic_scope_revision() {
+    let _guard = setup_playable_index_test();
+    refresh_playlist_now_for_test(selection("Focus"), Some(source(3)))
+        .await
+        .expect("test snapshot should commit");
+    let scope_before =
+        current_playlist_scope_revision("Focus").expect("scope revision should be readable");
+
+    refresh_playlist_now_for_reason_for_test(
+        selection("Focus"),
+        Some(source(4)),
+        PlayableIndexRefreshReason::PlaylistChanged,
+    )
+    .await
+    .expect("changed playlist snapshot should commit");
+
+    let scope_after =
+        current_playlist_scope_revision("Focus").expect("scope revision should be readable");
+    assert_ne!(scope_after, scope_before);
+}
+
+#[tokio::test]
 async fn playable_index_loudness_evidence_updates_prepared_first_slot_cargo_without_consuming_it() {
     let _guard = setup_playable_index_test();
     let pending_source = source_without_loudness(3);
@@ -164,6 +209,8 @@ async fn playable_index_loudness_evidence_updates_prepared_first_slot_cargo_with
     let initial = read_playlist_source("Focus")
         .expect("index read should succeed")
         .expect("first-slot cargo should be visible before loudness evidence");
+    let scope_before =
+        current_playlist_scope_revision("Focus").expect("scope revision should be readable");
     assert!(
         initial
             .track
@@ -215,6 +262,12 @@ async fn playable_index_loudness_evidence_updates_prepared_first_slot_cargo_with
             .expect("source music should carry loudness profile")
             .integrated_lufs,
         -14.25
+    );
+    let scope_after =
+        current_playlist_scope_revision("Focus").expect("scope revision should be readable");
+    assert_eq!(
+        scope_after, scope_before,
+        "first-slot loudness enrichment must not invalidate the symbolic candidate scope"
     );
     assert!(
         consume_playlist_source(&updated).expect("updated first-slot credential should consume"),
