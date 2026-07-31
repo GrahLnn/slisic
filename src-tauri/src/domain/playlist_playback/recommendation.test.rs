@@ -186,6 +186,54 @@ fn symbolic_playback_session_commits_and_rolls_back_program_state() {
 }
 
 #[test]
+fn symbolic_playback_session_exposes_reusable_materialized_scope() {
+    let tracks = (0..6)
+        .map(|index| track(&format!("cached-symbolic-{index}")))
+        .collect::<Vec<_>>();
+    let snapshot = AudioStyleModelSnapshot::from_test_embeddings(
+        90,
+        tracks
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(index, track)| (track, dense_embedding(&[(index, 1.0)]))),
+    );
+    let mut session = AudioStyleSymbolicPlaybackSession::default();
+    session
+        .propose_next(&snapshot, &tracks[0], &tracks, &[])
+        .expect("symbolic scope should be materialized");
+    session
+        .commit_proposal()
+        .expect("materialized scope proposal should commit");
+
+    let cached = session
+        .cached_scope_tracks_for(&snapshot, &tracks[0])
+        .expect("same generation and anchor should reuse the materialized scope");
+    assert_eq!(cached.len(), tracks.len());
+    session.observe_scope_revision(1);
+    session.observe_scope_revision(2);
+    assert!(
+        session
+            .cached_scope_tracks_for(&snapshot, &tracks[0])
+            .is_none()
+    );
+
+    let next_generation = AudioStyleModelSnapshot::from_test_embeddings(
+        91,
+        tracks
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(index, track)| (track, dense_embedding(&[(index, 1.0)]))),
+    );
+    assert!(
+        session
+            .cached_scope_tracks_for(&next_generation, &tracks[0])
+            .is_none()
+    );
+}
+
+#[test]
 fn legacy_stable_model_migrates_symbolic_encoding_without_audio_reencoding() {
     let root = temp_cache_root("stable-model-symbolic-migration");
     std::fs::create_dir_all(&root).expect("stable model test root should be created");

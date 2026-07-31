@@ -730,6 +730,7 @@ pub(crate) struct AudioStyleModelSnapshot {
 pub(crate) struct AudioStyleSymbolicPlaybackSession {
     execution: Option<AudioStyleSymbolicPlaylistExecution>,
     pending_checkpoint: Option<Box<Option<AudioStyleSymbolicPlaylistExecution>>>,
+    scope_revision: Option<u64>,
 }
 
 #[derive(Clone)]
@@ -5687,6 +5688,42 @@ impl AudioStyleModelSnapshot {
 
 impl AudioStyleSymbolicPlaybackSession {
     // @forma implements architecture Domain.PlaybackSessionProgramState as propose_next
+    pub(crate) fn observe_scope_revision(&mut self, revision: u64) {
+        if self.scope_revision != Some(revision) {
+            if self.scope_revision.is_some() && self.pending_checkpoint.is_none() {
+                self.execution = None;
+            }
+            self.scope_revision = Some(revision);
+        }
+    }
+
+    fn cached_scope_matches(
+        &self,
+        snapshot: &AudioStyleModelSnapshot,
+        current_track: &PlaybackTrack,
+    ) -> bool {
+        let current_key = PlaybackTrackKey::from_track(current_track);
+        self.execution.as_ref().is_some_and(|execution| {
+            execution.generation == snapshot.generation
+                && execution.local_by_key.contains_key(&current_key)
+        })
+    }
+
+    pub(crate) fn cached_scope_tracks_for(
+        &self,
+        snapshot: &AudioStyleModelSnapshot,
+        current_track: &PlaybackTrack,
+    ) -> Option<Vec<PlaybackTrack>> {
+        self.cached_scope_matches(snapshot, current_track).then(|| {
+            self.execution
+                .as_ref()
+                .expect("cached symbolic scope has an execution")
+                .tracks
+                .as_ref()
+                .clone()
+        })
+    }
+
     pub(crate) fn propose_next(
         &mut self,
         snapshot: &AudioStyleModelSnapshot,
@@ -5708,106 +5745,114 @@ impl AudioStyleSymbolicPlaybackSession {
         if !encoding.ordinal_by_key.contains_key(&current_key) {
             return Err("current track is outside the stable symbolic encoding".to_string());
         }
-        let mut track_by_global = HashMap::<usize, PlaybackTrack>::new();
-        for track in candidates.iter().chain(std::iter::once(current_track)) {
-            let key = PlaybackTrackKey::from_track(track);
-            if let Some(global) = encoding.ordinal_by_key.get(&key).copied() {
-                track_by_global
-                    .entry(global)
-                    .or_insert_with(|| track.clone());
+        let mut execution = if self.cached_scope_matches(snapshot, current_track) {
+            self.execution
+                .as_ref()
+                .expect("cached symbolic scope has an execution")
+                .clone()
+        } else {
+            let mut track_by_global = HashMap::<usize, PlaybackTrack>::new();
+            for track in candidates.iter().chain(std::iter::once(current_track)) {
+                let key = PlaybackTrackKey::from_track(track);
+                if let Some(global) = encoding.ordinal_by_key.get(&key).copied() {
+                    track_by_global
+                        .entry(global)
+                        .or_insert_with(|| track.clone());
+                }
             }
-        }
-        if track_by_global.len() < 3 {
-            return Err(
-                "playlist has fewer than three materialized stable symbolic tracks".to_string(),
-            );
-        }
-        let mut scope_globals = track_by_global.keys().copied().collect::<Vec<_>>();
-        scope_globals.sort_unstable();
-        let scope_track_keys = scope_globals
-            .iter()
-            .map(|global| encoding.track_keys[*global].clone())
-            .collect::<Vec<_>>();
-        let scope_signature = ordered_track_key_signature(&scope_track_keys);
-        let scope_changed = self.execution.as_ref().is_none_or(|execution| {
-            execution.generation != snapshot.generation
-                || execution.scope_signature != scope_signature
-        });
-        let mut execution = if scope_changed {
-            let previous = self.execution.as_ref();
-            let scoped = restrict_neural_program_atlas_to_playlist(
-                &encoding.atlas,
-                &encoding.track_keys,
-                &scope_globals,
-            )?;
-            let scoped_candidates = candidate_relation_from_program_atlas(&scoped.atlas)?;
-            let local_track_keys = scoped
-                .global_track_ordinals
+            if track_by_global.len() < 3 {
+                return Err(
+                    "playlist has fewer than three materialized stable symbolic tracks".to_string(),
+                );
+            }
+            let mut scope_globals = track_by_global.keys().copied().collect::<Vec<_>>();
+            scope_globals.sort_unstable();
+            let scope_track_keys = scope_globals
                 .iter()
                 .map(|global| encoding.track_keys[*global].clone())
                 .collect::<Vec<_>>();
-            let closure = close_neural_program_atlas_cycles(
-                &scoped.atlas,
-                &scoped_candidates,
-                &local_track_keys,
-            )?;
-            let atlas = Arc::new(closure.atlas.ok_or_else(|| {
-                format!(
-                    "playlist symbolic presentations were retracted: {:?}",
-                    closure.retracted_presentations
-                )
-            })?);
-            let orbit_index = Arc::new(compile_program_orbit_index(atlas.as_ref())?);
-            let local_by_key = Arc::new(
-                scoped
+            let scope_signature = ordered_track_key_signature(&scope_track_keys);
+            let scope_changed = self.execution.as_ref().is_none_or(|execution| {
+                execution.generation != snapshot.generation
+                    || execution.scope_signature != scope_signature
+            });
+            if scope_changed {
+                let previous = self.execution.as_ref();
+                let scoped = restrict_neural_program_atlas_to_playlist(
+                    &encoding.atlas,
+                    &encoding.track_keys,
+                    &scope_globals,
+                )?;
+                let scoped_candidates = candidate_relation_from_program_atlas(&scoped.atlas)?;
+                let local_track_keys = scoped
                     .global_track_ordinals
                     .iter()
-                    .enumerate()
-                    .map(|(local, global)| (encoding.ordered_keys[*global].clone(), local))
-                    .collect::<HashMap<_, _>>(),
-            );
-            let tracks = Arc::new(
-                scoped
-                    .global_track_ordinals
-                    .iter()
-                    .map(|global| {
-                        track_by_global.get(global).cloned().ok_or_else(|| {
-                            "playlist symbolic scope lost materialized track metadata".to_string()
+                    .map(|global| encoding.track_keys[*global].clone())
+                    .collect::<Vec<_>>();
+                let closure = close_neural_program_atlas_cycles(
+                    &scoped.atlas,
+                    &scoped_candidates,
+                    &local_track_keys,
+                )?;
+                let atlas = Arc::new(closure.atlas.ok_or_else(|| {
+                    format!(
+                        "playlist symbolic presentations were retracted: {:?}",
+                        closure.retracted_presentations
+                    )
+                })?);
+                let orbit_index = Arc::new(compile_program_orbit_index(atlas.as_ref())?);
+                let local_by_key = Arc::new(
+                    scoped
+                        .global_track_ordinals
+                        .iter()
+                        .enumerate()
+                        .map(|(local, global)| (encoding.ordered_keys[*global].clone(), local))
+                        .collect::<HashMap<_, _>>(),
+                );
+                let tracks = Arc::new(
+                    scoped
+                        .global_track_ordinals
+                        .iter()
+                        .map(|global| {
+                            track_by_global.get(global).cloned().ok_or_else(|| {
+                                "playlist symbolic scope lost materialized track metadata"
+                                    .to_string()
+                            })
                         })
+                        .collect::<Result<Vec<_>, _>>()?,
+                );
+                let current_local = *local_by_key.get(&current_key).ok_or_else(|| {
+                    "current track disappeared from playlist symbolic scope".to_string()
+                })?;
+                let realized = recently_played_tracks
+                    .iter()
+                    .filter_map(|track| {
+                        local_by_key
+                            .get(&PlaybackTrackKey::from_track(track))
+                            .copied()
                     })
-                    .collect::<Result<Vec<_>, _>>()?,
-            );
-            let current_local = *local_by_key.get(&current_key).ok_or_else(|| {
-                "current track disappeared from playlist symbolic scope".to_string()
-            })?;
-            let realized = recently_played_tracks
-                .iter()
-                .filter_map(|track| {
-                    local_by_key
-                        .get(&PlaybackTrackKey::from_track(track))
-                        .copied()
-                })
-                .collect::<Vec<_>>();
-            let state = transport_traversal_state(
-                previous.map(|execution| (execution.atlas.as_ref(), &execution.state)),
-                atlas.as_ref(),
-                &[current_local],
-                &[realized],
-            )?;
-            AudioStyleSymbolicPlaylistExecution {
-                generation: snapshot.generation,
-                scope_signature,
-                atlas,
-                orbit_index,
-                state,
-                local_by_key,
-                tracks,
+                    .collect::<Vec<_>>();
+                let state = transport_traversal_state(
+                    previous.map(|execution| (execution.atlas.as_ref(), &execution.state)),
+                    atlas.as_ref(),
+                    &[current_local],
+                    &[realized],
+                )?;
+                AudioStyleSymbolicPlaylistExecution {
+                    generation: snapshot.generation,
+                    scope_signature,
+                    atlas,
+                    orbit_index,
+                    state,
+                    local_by_key,
+                    tracks,
+                }
+            } else {
+                self.execution
+                    .as_ref()
+                    .expect("unchanged scope has a symbolic execution")
+                    .clone()
             }
-        } else {
-            self.execution
-                .as_ref()
-                .expect("unchanged scope has a symbolic execution")
-                .clone()
         };
         let current_local = *execution
             .local_by_key

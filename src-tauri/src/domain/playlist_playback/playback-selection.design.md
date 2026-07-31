@@ -19,7 +19,7 @@ selection, queue planning, recommendation fallback, refresh, and cancellation.
 - `playlist_playback::recommendation` owns symbolic program compilation and
   persistent symbolic traversal for an already materialized candidate universe.
 - `player::service` owns playback lifecycle, active request identity, queue
-  consumption, and process control.
+  consumption, producer-terminal coordination, and process control.
 - `player::strategy` owns only consumption of the queue it is given. It does not
   load playlist records and does not widen the candidate universe.
 
@@ -45,6 +45,10 @@ selection, queue planning, recommendation fallback, refresh, and cancellation.
 - Startup next-track selection is part of the post-acceptance backend queue
   fill transaction. Once the centerless first-track anchor is accepted by the
   player session, the recommendation planner must be invoked in the background.
+- A playlist session uses an open-queue exhaustion policy: an empty queue after
+  a completed track is a temporary producer gap and remains `Preparing` until
+  the queue producer commits a next track or explicitly marks the producer
+  terminal. Finite player sessions retain immediate ordered exhaustion.
 - Later next-track selection is owned by the recommendation planner and uses
   the playlist-scoped candidate universe.
 - The first track is not derived from a deterministic seed, first row, first
@@ -186,10 +190,11 @@ selection, queue planning, recommendation fallback, refresh, and cancellation.
 - Session generation checks.
 - Active request track identity.
 - Ordered consumption of a prepared queue.
+- Playlist open-queue waiting and producer-terminal coordination.
 - Cancellation and late result rejection.
-- Track-boundary queue exhaustion reporting. It does not wait for ordered queue
-  supply as a normal continuation path; the upstream playlist playback owner
-  must provide the continuation before the boundary is reached.
+- Track-boundary queue exhaustion reporting for finite sessions. The playlist
+  owner may intentionally leave the queue open while its background producer
+  is resolving the next track.
 
 ## Stable Domains
 
@@ -345,11 +350,13 @@ changes or the current queue lacks an unconsumed next track. A superseded sessio
 cannot update the active queue. Late player results are owned by
 `player::service` generation checks.
 
-The player session consumes only the queue it is given. In ordered playlist
-playback, reaching the end of the queue is a terminal observation for that
-queue, not a signal to block and wait for upstream planning. The upstream
-playlist playback owner must have supplied the first continuation from its
-background queue-planning loop before the first track can finish.
+The player session consumes only the queue it is given. Finite ordered sessions
+finish when their queue is exhausted. Playlist sessions are explicitly open
+queues: reaching the end after a completed track enters `Preparing` and waits
+for a track-revision signal from the queue producer. Only an explicit producer
+terminal signal (no candidates, no distinct candidate, or an unrecoverable
+queue-worker error) allows the player to emit `Finished`; a temporary
+recommendation gap cannot return the UI to `ready`.
 
 ## Exceptions
 

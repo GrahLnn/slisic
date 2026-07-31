@@ -1,0 +1,40 @@
+project AnnConnectedStateLineage 1516 {
+  module N1513 kind material {
+    object GlobalActiveWrite : historical-mechanism;
+    object CrossSupportContamination : counterexample;
+    object LocalOwnership : residual;
+    arrow exposes_contamination : GlobalActiveWrite -> CrossSupportContamination;
+    arrow leaves_local_ownership : CrossSupportContamination -> LocalOwnership;
+  }
+  module N1514 kind material {
+    object ActiveResidualProximity : historical-mechanism;
+    object PassiveTransportFailure : counterexample;
+    object CommutingContinuation : residual;
+    arrow proximity_does_not_transport : ActiveResidualProximity -> PassiveTransportFailure;
+    arrow leaves_commuting_receipt : PassiveTransportFailure -> CommutingContinuation;
+  }
+  module N1515 kind material {
+    object OneOwnedReturn : historical-mechanism;
+    object OwnerAmbiguity : counterexample;
+    object ResponseHistory : residual;
+    arrow one_return_is_ambiguous : OneOwnedReturn -> OwnerAmbiguity;
+    arrow leaves_response_history : OwnerAmbiguity -> ResponseHistory;
+  }
+  module N1516 kind material {
+    object ReachabilityCeiling : evidence;
+    object MissingEstimator : residual;
+    object ExistingCoordinate : invariant;
+    object TargetBlind : invariant;
+    object SameBoundary : invariant;
+    object OwnerTyped : owner;
+    object LocalObservability : admission;
+    object RankOwnedStopping : admission;
+    object FrozenDynamics : invariant;
+    object IndependentContinuation : heldout;
+    object TargetFuture : forbidden;
+    object DurableWeightWrite : forbidden;
+    object SuppliedHistoryWindow : forbidden;
+    arrow ceiling_leaves_estimator : ReachabilityCeiling -> MissingEstimator;
+    arrow ceiling_preserves_coordinate : ReachabilityCeiling -> ExistingCoordinate;
+  }
+}

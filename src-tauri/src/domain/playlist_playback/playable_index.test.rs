@@ -958,6 +958,59 @@ async fn playable_index_cache_restore_preserves_source_kind_without_serializing_
     );
 }
 
+#[tokio::test]
+async fn playable_index_legacy_audio_style_cache_tag_restores_symbolic_sources() {
+    let _guard = setup_playable_index_test();
+    refresh_playlist_now_for_test(selection("Focus"), Some(source(3)))
+        .await
+        .expect("first test snapshot should commit");
+    refresh_playlist_now_for_reason_for_test(
+        selection("Focus"),
+        Some(source(4)),
+        PlayableIndexRefreshReason::SlotVacancy,
+    )
+    .await
+    .expect("second test snapshot should commit");
+    refresh_playlist_now_for_reason_for_test(
+        selection("Focus"),
+        Some(source(5)),
+        PlayableIndexRefreshReason::SlotVacancy,
+    )
+    .await
+    .expect("third test snapshot should commit");
+    let payload = cache_file_json_for_test().expect("cache payload should encode");
+    let legacy_payload = payload.replace("symbolic_program", "audio_style");
+
+    reset_for_test();
+    initialize_runtime_for_test();
+    restore_cache_file_json_for_test(&legacy_payload)
+        .expect("legacy source kind should migrate during cache restore");
+
+    let first = read_playlist_source("Focus")
+        .expect("index read should succeed")
+        .expect("first restored source should exist");
+    assert_eq!(
+        first.source_kind,
+        Some(PlaylistPlayableIndexSourceKind::SymbolicProgram)
+    );
+    assert!(consume_playlist_source(&first).expect("first restored source should be consumed"));
+    let second = read_playlist_source("Focus")
+        .expect("index read should succeed")
+        .expect("second restored source should exist");
+    assert_eq!(
+        second.source_kind,
+        Some(PlaylistPlayableIndexSourceKind::SymbolicProgram)
+    );
+    assert!(consume_playlist_source(&second).expect("second restored source should be consumed"));
+    let third = read_playlist_source("Focus")
+        .expect("index read should succeed")
+        .expect("third restored source should exist");
+    assert_eq!(
+        third.source_kind,
+        Some(PlaylistPlayableIndexSourceKind::SymbolicProgram)
+    );
+}
+
 #[test]
 fn playable_index_startup_refresh_waits_for_playlist_bootstrap_ready() {
     let _guard = setup_playable_index_test();

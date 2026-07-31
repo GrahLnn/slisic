@@ -17,7 +17,7 @@ use crate::domain::player::event::{
 };
 use crate::domain::player::model::{PlaybackContinuationMode, PlaybackTrack};
 #[cfg(not(test))]
-use crate::domain::player::service as player_service;
+use crate::domain::player::service::{self as player_service, PlaybackQueueExhaustionPolicy};
 #[cfg(not(test))]
 use crate::domain::player::strategy::PlaybackQueueMode;
 #[cfg(not(test))]
@@ -363,6 +363,7 @@ pub async fn play_playlist(app: &AppHandle, name: String) -> Result<PlayPlaylist
                 &request,
                 name.clone(),
                 PlaybackQueueMode::Ordered,
+                PlaybackQueueExhaustionPolicy::AwaitProducerTerminal,
             )
             .await?;
             let session_generation = session.session_generation;
@@ -444,6 +445,7 @@ pub async fn play_playlist(app: &AppHandle, name: String) -> Result<PlayPlaylist
             tracks,
             initial_track.clone(),
             PlaybackQueueMode::Ordered,
+            PlaybackQueueExhaustionPolicy::AwaitProducerTerminal,
         )
         .await;
     let session = match session_result {
@@ -1179,6 +1181,7 @@ fn spawn_playlist_track_queue_fill(
     symbolic_session: SharedAudioStyleSymbolicPlaybackSession,
 ) {
     let task_playlist_name = playlist_name.clone();
+    let terminal_session = session.clone();
     tauri::async_runtime::spawn(async move {
         log::info!(
             target: PLAYLIST_PLAYBACK_LOG_TARGET,
@@ -1201,6 +1204,20 @@ fn spawn_playlist_track_queue_fill(
             eprintln!(
                 "[playlist_playback] failed to fill playback queue for `{task_playlist_name}`: {error}"
             );
+            match player_service::mark_session_queue_terminal(&terminal_session) {
+                Ok(true) => log::warn!(
+                    target: PLAYLIST_PLAYBACK_LOG_TARGET,
+                    "next queue fill worker marked producer terminal playlist=\"{}\" reason=worker_error",
+                    escape_log_value(&task_playlist_name)
+                ),
+                Ok(false) => {}
+                Err(mark_error) => log::error!(
+                    target: PLAYLIST_PLAYBACK_LOG_TARGET,
+                    "next queue fill worker failed to mark producer terminal playlist=\"{}\" error=\"{}\"",
+                    escape_log_value(&task_playlist_name),
+                    escape_log_value(&mark_error.to_string())
+                ),
+            }
         }
     });
 }
@@ -1246,6 +1263,7 @@ fn spawn_playlist_initial_track_wait(
     download_changes: tokio::sync::broadcast::Receiver<download_service::DownloadTaskChangeSignal>,
 ) {
     let task_playlist_name = playlist_name.clone();
+    let terminal_session = session.clone();
     tauri::async_runtime::spawn(async move {
         if let Err(error) = wait_for_playlist_initial_track_and_start_queue(
             app,
@@ -1262,6 +1280,7 @@ fn spawn_playlist_initial_track_wait(
             eprintln!(
                 "[playlist_playback] failed to start playback after first-slot arrival for `{task_playlist_name}`: {error}"
             );
+            let _ = player_service::mark_session_queue_terminal(&terminal_session);
         }
     });
 }
@@ -1529,6 +1548,7 @@ async fn fill_playlist_track_queue(
                     escape_log_value(&playlist_name),
                     escape_log_value(&active_track.music_name)
                 );
+                let _ = player_service::mark_session_queue_terminal(&session)?;
                 return Ok(());
             }
             if should_retry_playlist_queue_fill_after_refresh(refresh_outcome) {
@@ -1840,6 +1860,13 @@ async fn refresh_playlist_track_queue_for_anchor(
     should_log_selection: bool,
     symbolic_session: &SharedAudioStyleSymbolicPlaybackSession,
 ) -> Result<PlaylistTrackQueueRefreshOutcome> {
+    let scope_revision = playable_index::current_index_revision()?;
+    {
+        let mut session = symbolic_session
+            .lock()
+            .map_err(|_| anyhow!("symbolic playback session lock poisoned"))?;
+        session.observe_scope_revision(scope_revision);
+    }
     let readiness = audio_style_playlist_queue_readiness_for_anchor(&current_track);
     if !readiness.is_ready() {
         emit_playlist_playback_trace(
@@ -1864,12 +1891,36 @@ async fn refresh_playlist_track_queue_for_anchor(
         .filter_map(|snapshot| snapshot.symbolic_track_count())
         .max();
     let symbolic_next = if let Some(scope_limit) = symbolic_scope_limit {
-        let source = load_playlist_track_resolution_window(app, playlist_name, scope_limit).await?;
+        let cached_candidates = {
+            let session = symbolic_session
+                .lock()
+                .map_err(|_| anyhow!("symbolic playback session lock poisoned"))?;
+            snapshots.iter().find_map(|snapshot| {
+                session.cached_scope_tracks_for(snapshot.as_ref(), &current_track)
+            })
+        };
+        let (candidates, scope_source) = if let Some(candidates) = cached_candidates {
+            (candidates, "session_cache")
+        } else {
+            let source =
+                load_playlist_track_resolution_window(app, playlist_name, scope_limit).await?;
+            (source.resolution.tracks, "playlist_resolution")
+        };
+        if scope_source == "session_cache" {
+            emit_playlist_playback_trace(
+                "playlist-playback-symbolic-scope-cache-reused",
+                PlaylistPlaybackTrace::new(app)
+                    .playlist_name(playlist_name)
+                    .track(&current_track)
+                    .queue_count(candidates.len())
+                    .status("session_materialized_scope"),
+            );
+        }
         match propose_playlist_symbolic_next_track(
             symbolic_session,
             snapshots,
             current_track.clone(),
-            source.resolution.tracks,
+            candidates,
             recently_played_tracks.to_vec(),
         )
         .await
@@ -1980,6 +2031,16 @@ async fn refresh_playlist_track_queue_for_anchor(
         }
         (proposal.tracks, "random_fallback")
     };
+    if queue_source == "symbolic_program"
+        && playable_index::current_index_revision()? != scope_revision
+    {
+        symbolic_session
+            .lock()
+            .map_err(|_| anyhow!("symbolic playback session lock poisoned"))?
+            .rollback_proposal()
+            .map_err(|error| anyhow!(error))?;
+        return Ok(PlaylistTrackQueueRefreshOutcome::StaleAnchor);
+    }
     if !should_commit_playlist_queue_refresh(
         PlaylistPlaybackRecommendationMode::KeepCurrent,
         &tracks,

@@ -107,6 +107,10 @@ pub(crate) struct PlaylistPlayableIndexSnapshot {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum PlaylistPlayableIndexSourceKind {
+    // `first-slot-cache.v2` already persisted this source kind as
+    // `audio_style`; accept that tag during migration while keeping the
+    // canonical on-disk representation as `symbolic_program`.
+    #[serde(alias = "audio_style")]
     SymbolicProgram,
     RandomFallback,
 }
@@ -1116,6 +1120,10 @@ fn notify_index_revision(runtime: &PlayableIndexRuntime) {
 
 pub(crate) fn subscribe_index_revision() -> Result<watch::Receiver<u64>> {
     Ok(try_runtime()?.revision.subscribe())
+}
+
+pub(crate) fn current_index_revision() -> Result<u64> {
+    Ok(*try_runtime()?.revision.borrow())
 }
 
 #[cfg(not(test))]

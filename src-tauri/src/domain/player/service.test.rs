@@ -2,22 +2,25 @@ use super::model::{
     ActivePlaybackRange, PlaybackTrack, PlaybackTrackPayload, PlaybackTrackProjectionError,
 };
 use super::service::{
-    BACKEND_PLAYBACK_TARGET_LUFS, PlaybackRangeCompletion, PlaybackRangeCompletionPlaybackAction,
-    PlaybackStartRequestRegistry, PlaybackTrackLikedUpdate, SpectrumPlaybackScope,
-    are_playback_tracks_equal, backend_playback_normalization, playback_loudness_plan_for_profile,
-    playback_normalization_for_track_loudness_profile, playback_request_for_track_range,
-    playback_tracks_match, resolve_active_request_track_liked_update,
-    resolve_identity_update_active_playback_range, resolve_plain_playback_status_completion,
-    resolve_playback_absolute_position_ms, resolve_playback_clock_position_ms,
-    resolve_playback_completion_playback_action, resolve_playback_range_completion,
-    resolve_playback_range_deadline_ms, resolve_playback_request_position,
-    resolve_playback_seek_pause_after_request, resolve_playback_seek_range,
-    resolve_playback_status_track_identity, resolve_repeated_playback_range_override,
-    resolve_session_track_liked_update, resolve_spectrum_loop_playback_range,
-    resolve_spectrum_loop_signal_active_range, resolve_spectrum_loop_signal_seek_position,
-    resolve_spectrum_music_playback_range, resolve_spectrum_playback_loop_signal,
-    should_accept_spectrum_playback_signal, should_commit_spectrum_playback_scope_exit,
-    should_finish_playback_session_after_queue_exhaustion, should_resume_playback_seek_cancel,
+    BACKEND_PLAYBACK_TARGET_LUFS, PlaybackQueueExhaustionPolicy, PlaybackRangeCompletion,
+    PlaybackRangeCompletionPlaybackAction, PlaybackStartRequestRegistry, PlaybackTrackLikedUpdate,
+    SpectrumPlaybackScope, are_playback_tracks_equal, backend_playback_normalization,
+    playback_loudness_plan_for_profile, playback_normalization_for_track_loudness_profile,
+    playback_request_for_track_range, playback_tracks_match,
+    resolve_active_request_track_liked_update, resolve_identity_update_active_playback_range,
+    resolve_plain_playback_status_completion, resolve_playback_absolute_position_ms,
+    resolve_playback_clock_position_ms, resolve_playback_completion_playback_action,
+    resolve_playback_range_completion, resolve_playback_range_deadline_ms,
+    resolve_playback_request_position, resolve_playback_seek_pause_after_request,
+    resolve_playback_seek_range, resolve_playback_status_track_identity,
+    resolve_repeated_playback_range_override, resolve_session_track_liked_update,
+    resolve_spectrum_loop_playback_range, resolve_spectrum_loop_signal_active_range,
+    resolve_spectrum_loop_signal_seek_position, resolve_spectrum_music_playback_range,
+    resolve_spectrum_playback_loop_signal, should_accept_spectrum_playback_signal,
+    should_commit_spectrum_playback_scope_exit,
+    should_finish_playback_session_after_queue_exhaustion,
+    should_finish_playback_session_after_queue_exhaustion_with_policy,
+    should_resume_playback_seek_cancel,
 };
 use super::strategy::PlaybackQueueMode;
 use super::track_identity_substitution::{
@@ -92,6 +95,38 @@ fn random_session_does_not_use_ordered_queue_completion() {
         PlaybackQueueMode::Random,
         true,
     ));
+}
+
+#[test]
+fn producer_owned_queue_waits_after_completed_track_until_terminal() {
+    assert!(
+        !should_finish_playback_session_after_queue_exhaustion_with_policy(
+            PlaybackQueueMode::Ordered,
+            PlaybackQueueExhaustionPolicy::AwaitProducerTerminal,
+            true,
+            false,
+        )
+    );
+    assert!(
+        should_finish_playback_session_after_queue_exhaustion_with_policy(
+            PlaybackQueueMode::Ordered,
+            PlaybackQueueExhaustionPolicy::AwaitProducerTerminal,
+            true,
+            true,
+        )
+    );
+}
+
+#[test]
+fn finite_queue_policy_preserves_ordered_completion() {
+    assert!(
+        should_finish_playback_session_after_queue_exhaustion_with_policy(
+            PlaybackQueueMode::Ordered,
+            PlaybackQueueExhaustionPolicy::FinishWhenExhausted,
+            true,
+            false,
+        )
+    );
 }
 
 #[test]

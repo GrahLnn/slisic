@@ -35,6 +35,8 @@ use ffplayr::Playback;
 use ffplayr::{PlaybackNormalization, PlaybackRequest, PlaybackTimeRange};
 #[cfg(not(test))]
 use std::path::Path;
+#[cfg(not(test))]
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(not(test))]
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
@@ -116,6 +118,9 @@ type SharedPlaybackTracks = Arc<RwLock<Vec<PlaybackTrack>>>;
 type SharedPlaybackTrackRevisionSender = watch::Sender<u64>;
 
 #[cfg(not(test))]
+type SharedPlaybackQueueTerminal = Arc<AtomicBool>;
+
+#[cfg(not(test))]
 type SharedPlaybackTrackRevisionReceiver = watch::Receiver<u64>;
 
 #[cfg(not(test))]
@@ -147,6 +152,8 @@ struct ActivePlaybackSession {
     track_revision: SharedPlaybackTrackRevisionSender,
     strategy: SharedPlaybackStrategy,
     queue_mode: PlaybackQueueMode,
+    queue_exhaustion_policy: PlaybackQueueExhaustionPolicy,
+    queue_terminal: SharedPlaybackQueueTerminal,
 }
 
 #[cfg(not(test))]
@@ -185,6 +192,12 @@ pub(crate) fn is_playback_start_request_superseded(error: &anyhow::Error) -> boo
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SpectrumPlaybackScope {
     pub(crate) id: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PlaybackQueueExhaustionPolicy {
+    FinishWhenExhausted,
+    AwaitProducerTerminal,
 }
 
 #[cfg(not(test))]
@@ -394,12 +407,14 @@ pub(crate) async fn play_tracks_from_initial_track_for_request_with_queue_mode(
     tracks: Vec<PlaybackTrack>,
     initial_track: PlaybackTrack,
     queue_mode: PlaybackQueueMode,
+    queue_exhaustion_policy: PlaybackQueueExhaustionPolicy,
 ) -> Result<PlaybackSessionHandle> {
     play_tracks_with_initial_track(
         playlist_name,
         tracks,
         Some(initial_track),
         queue_mode,
+        queue_exhaustion_policy,
         Some(*request),
     )
     .await
@@ -410,8 +425,17 @@ pub(crate) async fn start_empty_session_for_request_with_queue_mode(
     request: &PlaybackStartRequestHandle,
     playlist_name: String,
     queue_mode: PlaybackQueueMode,
+    queue_exhaustion_policy: PlaybackQueueExhaustionPolicy,
 ) -> Result<PlaybackSessionHandle> {
-    play_tracks_with_initial_track(playlist_name, vec![], None, queue_mode, Some(*request)).await
+    play_tracks_with_initial_track(
+        playlist_name,
+        vec![],
+        None,
+        queue_mode,
+        queue_exhaustion_policy,
+        Some(*request),
+    )
+    .await
 }
 
 #[cfg(not(test))]
@@ -420,6 +444,7 @@ async fn play_tracks_with_initial_track(
     tracks: Vec<PlaybackTrack>,
     initial_track: Option<PlaybackTrack>,
     queue_mode: PlaybackQueueMode,
+    queue_exhaustion_policy: PlaybackQueueExhaustionPolicy,
     start_request: Option<PlaybackStartRequestHandle>,
 ) -> Result<PlaybackSessionHandle> {
     let trace_start = Instant::now();
@@ -528,6 +553,7 @@ async fn play_tracks_with_initial_track(
     let shared_tracks = Arc::new(RwLock::new(tracks));
     let (track_revision, _) = watch::channel(0);
     let shared_strategy = Arc::new(Mutex::new(PlaybackStrategySet::new()));
+    let queue_terminal = Arc::new(AtomicBool::new(false));
     let should_wait_for_initial_start = initial_track.is_some();
     runtime.replace_active_session(
         playlist_name.clone(),
@@ -536,6 +562,8 @@ async fn play_tracks_with_initial_track(
         track_revision.clone(),
         Arc::clone(&shared_strategy),
         queue_mode,
+        queue_exhaustion_policy,
+        Arc::clone(&queue_terminal),
     )?;
     emit_player_trace(
         "player-session-active-replaced",
@@ -551,6 +579,8 @@ async fn play_tracks_with_initial_track(
         track_revision,
         strategy: shared_strategy,
         queue_mode,
+        queue_exhaustion_policy,
+        queue_terminal,
         initial_request: initial_track.map(|track| InitialPlaybackRequest {
             pause_after_start: false,
             range: ActivePlaybackRange {
@@ -664,6 +694,11 @@ pub(crate) fn update_session_tracks(
     tracks: Vec<PlaybackTrack>,
 ) -> Result<bool> {
     runtime()?.replace_session_tracks(handle, tracks)
+}
+
+#[cfg(not(test))]
+pub(crate) fn mark_session_queue_terminal(handle: &PlaybackSessionHandle) -> Result<bool> {
+    runtime()?.mark_session_queue_terminal(handle)
 }
 
 #[cfg(not(test))]
@@ -1537,6 +1572,8 @@ impl PlayerRuntime {
         track_revision: SharedPlaybackTrackRevisionSender,
         strategy: SharedPlaybackStrategy,
         queue_mode: PlaybackQueueMode,
+        queue_exhaustion_policy: PlaybackQueueExhaustionPolicy,
+        queue_terminal: SharedPlaybackQueueTerminal,
     ) -> Result<()> {
         let mut session = self
             .session
@@ -1550,6 +1587,8 @@ impl PlayerRuntime {
             track_revision,
             strategy,
             queue_mode,
+            queue_exhaustion_policy,
+            queue_terminal,
         });
         drop(session);
         self.clear_active_request_track()?;
@@ -1860,6 +1899,8 @@ impl PlayerRuntime {
                 track_revision: active.track_revision.clone(),
                 strategy: Arc::clone(&active.strategy),
                 queue_mode: active.queue_mode,
+                queue_exhaustion_policy: active.queue_exhaustion_policy,
+                queue_terminal: Arc::clone(&active.queue_terminal),
                 initial_request: Some(InitialPlaybackRequest {
                     pause_after_start,
                     range: initial_range,
@@ -2105,6 +2146,26 @@ impl PlayerRuntime {
         }))
     }
 
+    fn mark_session_queue_terminal(&self, handle: &PlaybackSessionHandle) -> Result<bool> {
+        let session = self
+            .session
+            .lock()
+            .map_err(|_| anyhow!("player runtime session lock is poisoned"))?;
+        let Some(active) = session.as_ref() else {
+            return Ok(false);
+        };
+        if active.session_generation != handle.session_generation
+            || active.playlist_name != handle.playlist_name
+        {
+            return Ok(false);
+        }
+
+        if !active.queue_terminal.swap(true, Ordering::SeqCst) {
+            notify_playback_track_revision(&active.track_revision);
+        }
+        Ok(true)
+    }
+
     fn clear_active_session(&self) -> Result<()> {
         let mut session = self
             .session
@@ -2196,6 +2257,8 @@ struct PlaybackSession {
     track_revision: SharedPlaybackTrackRevisionSender,
     strategy: SharedPlaybackStrategy,
     queue_mode: PlaybackQueueMode,
+    queue_exhaustion_policy: PlaybackQueueExhaustionPolicy,
+    queue_terminal: SharedPlaybackQueueTerminal,
     initial_request: Option<InitialPlaybackRequest>,
 }
 
@@ -2286,9 +2349,12 @@ async fn run_playback_session(
                 );
                 return Ok(());
             }
-            if should_finish_playback_session_after_queue_exhaustion(
+            let producer_terminal = session.queue_terminal.load(Ordering::SeqCst);
+            if should_finish_playback_session_after_queue_exhaustion_with_policy(
                 session.queue_mode,
+                session.queue_exhaustion_policy,
                 has_completed_track,
+                producer_terminal,
             ) {
                 if runtime.clear_active_session_for_generation(session.session_generation)? {
                     emit_playback_surface_status(
@@ -2304,7 +2370,11 @@ async fn run_playback_session(
                         .playlist_name(&session.playlist_name)
                         .elapsed(trace_start)
                         .queue_count(tracks.len())
-                        .status("queue_exhausted"),
+                        .status(if producer_terminal {
+                            "producer_terminal"
+                        } else {
+                            "queue_exhausted"
+                        }),
                 );
                 return Ok(());
             }
@@ -2571,6 +2641,20 @@ pub(crate) fn should_finish_playback_session_after_queue_exhaustion(
     has_completed_track: bool,
 ) -> bool {
     queue_mode == PlaybackQueueMode::Ordered && has_completed_track
+}
+
+pub(crate) fn should_finish_playback_session_after_queue_exhaustion_with_policy(
+    queue_mode: PlaybackQueueMode,
+    queue_exhaustion_policy: PlaybackQueueExhaustionPolicy,
+    has_completed_track: bool,
+    producer_terminal: bool,
+) -> bool {
+    producer_terminal
+        || (queue_exhaustion_policy == PlaybackQueueExhaustionPolicy::FinishWhenExhausted
+            && should_finish_playback_session_after_queue_exhaustion(
+                queue_mode,
+                has_completed_track,
+            ))
 }
 
 #[cfg(not(test))]

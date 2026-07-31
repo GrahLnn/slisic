@@ -1,0 +1,148 @@
+# PlaylistPlaybackRecommendationLiveness 1
+
+The system owns continuous playlist playback: after a playable current track
+finishes, a recommendation producer may still be computing the next track.
+The player must not convert that temporary empty frontier into a finished
+session. First-slot preparation remains a generation-stamped cross-domain
+preparation owner; its cached credentials, startup warmup, invalidation, and
+consumption lifecycle are not replaced by the normal queue planner.
+
+## Domain `architecture`
+
+```Forma
+PlaylistSession = Construction
+  (CurrentTrack `P` OrderedQueue `P` RecommendationProducer)
+FirstSlotCargo = Construction
+  (PlaylistScope `P` PreparedSource `P` Generation `P` Credential)
+QueueObservation = Construction (Playing `S` Preparing `S` Finished)
+
+observe_queue :: PlaylistSession `AR` QueueObservation
+advance_recommendation :: RecommendationProducer `TR` PreparedContinuation
+consume_first_slot :: FirstSlotCargo `TR` StartupQueue
+```
+
+The player consumes an explicit queue. The playlist owner supplies
+recommendations and owns candidate-scope materialization. First-slot cargo is
+an independent preparation path and must preserve its cross-domain state and
+linear credential consumption.
+
+## Behavior `architecture`
+
+```Forma
+queue_liveness =
+  Transport
+    advance_recommendation
+    observe_queue
+    PreparedContinuation
+
+temporary_frontier_gap =
+  MissingNext `P` RecommendationWork `P` NotTerminal
+
+producer_terminal =
+  ProducerTerminal `TR` Finished
+
+first_slot_continuity =
+  Transport
+    consume_first_slot
+    observe_queue
+    StartupQueue
+```
+
+An open playlist queue remains in `Preparing` while the producer is working.
+Only an explicit producer terminal may emit `Finished`; an ordinary ordered
+queue retains its existing finite-session terminal behavior. A stale producer
+result cannot mutate a superseded session.
+
+## Performance `architecture`
+
+```Forma
+materialize_scope =
+  Work MaterializePlaylistScope CandidateWindow Iteration 1
+
+reuse_scope =
+  Memoize MaterializePlaylistScope
+
+successor_frontier =
+  Work AdvanceSymbolicProgram PreparedContinuation Iteration 1
+
+queue_observation =
+  Work observe_queue SessionObservation Iteration 1
+
+recommendation_frontier =
+  Work advance_recommendation PreparedContinuation Iteration 1
+
+first_slot_consumption =
+  Work consume_first_slot StartupQueue Iteration 1
+
+scope_reuse_invalidated =
+  Invalidates PlaylistMembershipChanged CandidateWindow
+```
+
+The stable symbolic program is evaluated over a materialized playlist scope.
+Repeated successor steps in one unchanged generation reuse that materialized
+scope instead of reloading the complete library window. Playlist, exclusion,
+download, file-availability, or model-generation changes invalidate the
+reused scope; this is a correctness boundary, not a tuning parameter.
+
+## Search `search`
+
+```Forma
+required =
+  TemporaryFrontierGapNotTerminal
+  `P` ExplicitProducerTerminal
+  `P` FirstSlotCacheCompatibility
+  `P` BoundedSuccessorWork
+
+forbidden =
+  CacheRestoreFailureDiscardsPreparedCargo
+  `S` QueueProducerStillWorking
+  `S` PermanentOrderedTerminal
+
+search_order =
+  Lexicographic
+    LifecycleOwnership
+    CrossDomainStatePreservation
+    MaterializedScopeReuse
+    IndependentValidation
+
+search_budget =
+  BranchBudget 8 1
+```
+
+The search space includes lifecycle, representation, and ownership repairs.
+The observed 19-second track followed by a 30-second recommendation is a
+counterexample to treating queue exhaustion as a terminal without a producer
+receipt. The old `audio_style` first-slot cache tag is a compatibility input,
+not permission to discard the entire prepared pool.
+
+## Implementation `architecture`
+
+The queue policy belongs to `player::service` session state, while the
+playlist queue producer owns the terminal receipt and symbolic scope reuse.
+`playlist_playback::playable_index` remains the sole owner of first-slot
+cache restore, generation stamping, invalidation, and credential consumption.
+
+```text
+@forma implements enum PlaylistPlayableIndexSourceKind as src-tauri/src/domain/playlist_playback/playable_index.rs
+@forma summary accepts the legacy audio_style cache tag while writing the canonical symbolic_program tag
+@forma implements function run_playback_session as src-tauri/src/domain/player/service.rs
+@forma summary keeps an open playlist queue preparing until its producer signals terminal
+@forma implements method AudioStyleSymbolicPlaybackSession::propose_next as src-tauri/src/domain/playlist_playback/recommendation.rs
+@forma summary reuses an unchanged generation-owned materialized symbolic scope
+@forma implements method AudioStyleSymbolicPlaybackSession::observe_scope_revision as src-tauri/src/domain/playlist_playback/recommendation.rs
+@forma summary invalidates the materialized scope when the playable-index revision changes
+@forma implements function mark_session_queue_terminal as src-tauri/src/domain/player/service.rs
+@forma summary makes producer termination an explicit player-owned lifecycle receipt
+```
+
+## Open Residuals
+
+```Forma
+open_residual =
+  IndependentRuntimeLatencyEvidence
+```
+
+## Cite
+
+- [ANN N1517 retrospective](./forma/materials/ann-n1517-retrospective.fm)
+- [ANN N1513-N1516 mechanism lineage](./forma/materials/ann-n1513-n1516.fm)

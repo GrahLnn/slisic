@@ -1,0 +1,64 @@
+# ANN N1517 Retrospective 2
+
+Recover the smallest target-blind successor that identifies the missing
+estimator without changing the established coordinate, boundary, ownership, or
+frozen dynamics.
+
+## Historical Lineage `material`
+
+The material records four historical residuals. A global active write exposed
+cross-support contamination; passive proximity did not transport; one returned
+value did not identify a unique owner; and N1516 left estimator identification
+open while preserving the coordinate and frozen dynamics.
+
+```Forma
+exposes_contamination   :: GlobalActiveWrite `AR` CrossSupportContamination
+leaves_local_ownership  :: CrossSupportContamination `AR` LocalOwnership
+proximity_does_not_transport :: ActiveResidualProximity `AR` PassiveTransportFailure
+leaves_commuting_receipt :: PassiveTransportFailure `AR` CommutingContinuation
+one_return_is_ambiguous :: OneOwnedReturn `AR` OwnerAmbiguity
+leaves_response_history :: OwnerAmbiguity `AR` ResponseHistory
+ceiling_leaves_estimator :: ReachabilityCeiling `AR` MissingEstimator
+ceiling_preserves_coordinate :: ReachabilityCeiling `AR` ExistingCoordinate
+```
+
+```Forma
+boundary =
+  MissingEstimator
+  `P` ExistingCoordinate
+  `P` TargetBlind
+  `P` SameBoundary
+  `P` OwnerTyped
+  `P` LocalObservability
+  `P` RankOwnedStopping
+  `P` FrozenDynamics
+  `P` IndependentContinuation
+
+theory =
+  UnresolvedDependenceOnly
+  `P` FixedLeaderRemainder
+```
+
+The surviving mechanisms include boundary replay, owner probing, local
+observation, rank closure, and frozen rollout. Target-future information,
+durable model-state writes, and supplied history windows remain forbidden.
+
+```Forma
+required = boundary `P` theory
+
+forbidden =
+  TargetFuture
+  `S` DurableWeightWrite
+  `S` SuppliedHistoryWindow
+
+successor ::
+  BranchBudget `AR____`
+  ResearchProjection `TR` (MechanismProduct `S` InseparableCore)
+
+search_budget = BranchBudget 6 1
+search_order = Lexicographic Mechanisms ExtraFacets PresentationOrder
+successor = ?
+```
+
+The cited historical result is material evidence about ownership, transport,
+and unresolved residuals; it does not select a playlist architecture.
