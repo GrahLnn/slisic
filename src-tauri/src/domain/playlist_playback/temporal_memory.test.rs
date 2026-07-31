@@ -14,8 +14,7 @@ fn temporal_memory_is_fully_familiar_at_playback_and_ninety_percent_at_stability
 
     assert!((temporal_memory_retrievability(10, exposure) - 1.0).abs() < 1.0e-6);
     assert!(
-        (temporal_memory_retrievability(10 + exposure.stability_ms, exposure) - 0.9).abs()
-            < 1.0e-6
+        (temporal_memory_retrievability(10 + exposure.stability_ms, exposure) - 0.9).abs() < 1.0e-6
     );
 }
 
@@ -32,6 +31,26 @@ fn repeated_track_exposure_extends_its_soft_cooldown() {
 }
 
 #[test]
+fn familiar_music_ids_follow_the_fsrs_target_retention() {
+    let mut memory = PlaylistPlaybackTemporalMemory::default();
+    memory.observe("source:familiar:0:60000", 0);
+
+    let familiar = memory
+        .familiar_music_ids(20 * HOUR_MS)
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+
+    assert!(familiar.iter().any(|id| id == "source:familiar:0:60000"));
+
+    memory.observe("source:released:0:60000", 0);
+    let released = memory
+        .familiar_music_ids(100 * HOUR_MS)
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    assert!(!released.iter().any(|id| id == "source:released:0:60000"));
+}
+
+#[test]
 fn expired_exposure_is_pruned_without_affecting_recent_memory() {
     let mut memory = PlaylistPlaybackTemporalMemory::default();
     memory.observe("source:old:0:60000", 0);
@@ -40,7 +59,10 @@ fn expired_exposure_is_pruned_without_affecting_recent_memory() {
 
     memory.prune_expired(MUCH_LATER_MS);
 
-    assert_eq!(memory.retrievability_for("source:old:0:60000", MUCH_LATER_MS), 0.0);
+    assert_eq!(
+        memory.retrievability_for("source:old:0:60000", MUCH_LATER_MS),
+        0.0
+    );
     assert!(memory.retrievability_for("source:recent:0:60000", MUCH_LATER_MS) > 0.99);
 }
 
@@ -48,10 +70,19 @@ fn expired_exposure_is_pruned_without_affecting_recent_memory() {
 fn basin_pressure_is_rebuilt_from_the_current_model_projection() {
     let mut memory = PlaylistPlaybackTemporalMemory::default();
     memory.observe("source:one:0:60000", 0);
-    let old_model = [("source:one:0:60000", "old"), ("source:two:0:60000", "other")];
-    let promoted_model = [("source:one:0:60000", "new"), ("source:two:0:60000", "other")];
+    let old_model = [
+        ("source:one:0:60000", "old"),
+        ("source:two:0:60000", "other"),
+    ];
+    let promoted_model = [
+        ("source:one:0:60000", "new"),
+        ("source:two:0:60000", "other"),
+    ];
 
     assert!(memory.basin_retrievability("old", HOUR_MS, old_model) > 0.9);
-    assert_eq!(memory.basin_retrievability("old", HOUR_MS, promoted_model), 0.0);
+    assert_eq!(
+        memory.basin_retrievability("old", HOUR_MS, promoted_model),
+        0.0
+    );
     assert!(memory.basin_retrievability("new", HOUR_MS, promoted_model) > 0.9);
 }

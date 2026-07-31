@@ -107,7 +107,7 @@ pub(crate) struct PlaylistPlayableIndexSnapshot {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum PlaylistPlayableIndexSourceKind {
-    AudioStyle,
+    SymbolicProgram,
     RandomFallback,
 }
 
@@ -1330,7 +1330,7 @@ fn playlist_source_key(source: &PlaylistPlaybackTrackSource) -> String {
 
 pub(crate) fn source_kind_as_str(source_kind: PlaylistPlayableIndexSourceKind) -> &'static str {
     match source_kind {
-        PlaylistPlayableIndexSourceKind::AudioStyle => "audio_style",
+        PlaylistPlayableIndexSourceKind::SymbolicProgram => "symbolic_program",
         PlaylistPlayableIndexSourceKind::RandomFallback => "random_fallback",
     }
 }
@@ -1571,7 +1571,7 @@ fn preserved_source_keys_for_refresh(
         )
         .filter(|source| {
             reason != PlayableIndexRefreshReason::AudioStyleModelAvailable
-                || source.source_kind == PlaylistPlayableIndexSourceKind::AudioStyle
+                || source.source_kind == PlaylistPlayableIndexSourceKind::SymbolicProgram
         })
         .map(|source| playlist_source_key(&source.source))
         .collect()
@@ -1636,7 +1636,7 @@ fn commit_prepared_sources_to_pool(
     let has_audio_style_upgrade = reason == PlayableIndexRefreshReason::AudioStyleModelAvailable
         && prepared_sources
             .iter()
-            .any(|source| source.source_kind == PlaylistPlayableIndexSourceKind::AudioStyle);
+            .any(|source| source.source_kind == PlaylistPlayableIndexSourceKind::SymbolicProgram);
     if has_audio_style_upgrade {
         pool.sources
             .retain(|source| source.source_kind != PlaylistPlayableIndexSourceKind::RandomFallback);
@@ -2517,7 +2517,7 @@ async fn prepare_playlist_source(
             Ok(Some(PreparedPlaylistSource {
                 source,
                 track,
-                source_kind: PlaylistPlayableIndexSourceKind::AudioStyle,
+                source_kind: PlaylistPlayableIndexSourceKind::SymbolicProgram,
             }))
         }
         AudioStyleCenterlessSourceStatus::ModelUnavailable => {
@@ -2587,7 +2587,7 @@ fn prepared_audio_style_source_from_selection(
     PreparedPlaylistSource {
         source,
         track,
-        source_kind: PlaylistPlayableIndexSourceKind::AudioStyle,
+        source_kind: PlaylistPlayableIndexSourceKind::SymbolicProgram,
     }
 }
 
@@ -3150,7 +3150,7 @@ pub(crate) fn commit_global_snapshot_for_test(
             let prepared_sources = vec![PreparedPlaylistSource {
                 source,
                 track,
-                source_kind: PlaylistPlayableIndexSourceKind::AudioStyle,
+                source_kind: PlaylistPlayableIndexSourceKind::SymbolicProgram,
             }];
             let pool = commit_prepared_sources_to_pool(
                 runtime,
@@ -3222,7 +3222,7 @@ pub(crate) fn commit_playlist_snapshot_for_test(
                     let prepared_sources = vec![PreparedPlaylistSource {
                         source,
                         track,
-                        source_kind: PlaylistPlayableIndexSourceKind::AudioStyle,
+                        source_kind: PlaylistPlayableIndexSourceKind::SymbolicProgram,
                     }];
                     if let Some(pool) = commit_prepared_sources_to_pool(
                         runtime,
@@ -3383,7 +3383,7 @@ fn commit_playlist_snapshot(
         let prepared_sources = vec![PreparedPlaylistSource {
             source,
             track,
-            source_kind: PlaylistPlayableIndexSourceKind::AudioStyle,
+            source_kind: PlaylistPlayableIndexSourceKind::SymbolicProgram,
         }];
         if let Some(pool) = commit_prepared_sources_to_pool(
             runtime,

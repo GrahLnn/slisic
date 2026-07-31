@@ -6,10 +6,11 @@ const TEMPORAL_MEMORY_TRACK_STABILITY_MS: u64 = 20 * 60 * 60 * 1_000;
 const TEMPORAL_MEMORY_STABILITY_REPEAT_GAIN: f32 = 0.35;
 const TEMPORAL_MEMORY_STABILITY_CAP_MS: u64 = 120 * 60 * 60 * 1_000;
 const TEMPORAL_MEMORY_PRUNE_RETRIEVABILITY: f32 = 0.05;
+// FSRS's default target retention; this is a memory semantic, not a model knob.
+const TEMPORAL_MEMORY_TARGET_RETENTION: f32 = 0.9;
 
-/// Listener-owned temporal state.  It is intentionally keyed by the stable
-/// music identity only: audio basin identifiers are model-generation-local and
-/// must be reconstructed from the current embedding geometry during ranking.
+/// Listener-owned temporal state. It is keyed by stable music identity so
+/// model-generation-local basin identifiers never leak across promotions.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub(crate) struct PlaylistPlaybackTemporalMemory {
     exposures: HashMap<String, PlaylistPlaybackTemporalExposure>,
@@ -33,7 +34,10 @@ impl PlaylistPlaybackTemporalMemory {
             .map(|previous| {
                 ((previous.stability_ms as f32 * (1.0 + TEMPORAL_MEMORY_STABILITY_REPEAT_GAIN))
                     .round() as u64)
-                    .clamp(TEMPORAL_MEMORY_TRACK_STABILITY_MS, TEMPORAL_MEMORY_STABILITY_CAP_MS)
+                    .clamp(
+                        TEMPORAL_MEMORY_TRACK_STABILITY_MS,
+                        TEMPORAL_MEMORY_STABILITY_CAP_MS,
+                    )
             })
             .unwrap_or(TEMPORAL_MEMORY_TRACK_STABILITY_MS);
         self.exposures.insert(
@@ -45,6 +49,7 @@ impl PlaylistPlaybackTemporalMemory {
         );
     }
 
+    #[cfg(test)]
     pub(crate) fn retrievability_for(&self, canonical_music_id: &str, now_ms: u64) -> f32 {
         self.exposures
             .get(canonical_music_id)
@@ -52,20 +57,33 @@ impl PlaylistPlaybackTemporalMemory {
             .unwrap_or(0.0)
     }
 
+    #[cfg(test)]
     pub(crate) fn active_exposures(
         &self,
         now_ms: u64,
     ) -> impl Iterator<Item = (&str, PlaylistPlaybackTemporalExposure)> {
-        self.exposures.iter().filter_map(move |(music_id, exposure)| {
-            (temporal_memory_retrievability(now_ms, *exposure)
-                >= TEMPORAL_MEMORY_PRUNE_RETRIEVABILITY)
-                .then_some((music_id.as_str(), *exposure))
-        })
+        self.exposures
+            .iter()
+            .filter_map(move |(music_id, exposure)| {
+                (temporal_memory_retrievability(now_ms, *exposure)
+                    >= TEMPORAL_MEMORY_PRUNE_RETRIEVABILITY)
+                    .then_some((music_id.as_str(), *exposure))
+            })
     }
 
-    /// The caller supplies the current model's `music_id -> basin` projection.
-    /// This deliberately prevents a persisted exposure from carrying a stale
-    /// basin identifier across an audio-style model promotion.
+    pub(crate) fn familiar_music_ids(&self, now_ms: u64) -> impl Iterator<Item = &str> {
+        self.exposures
+            .iter()
+            .filter_map(move |(music_id, exposure)| {
+                (temporal_memory_retrievability(now_ms, *exposure)
+                    >= TEMPORAL_MEMORY_TARGET_RETENTION)
+                    .then_some(music_id.as_str())
+            })
+    }
+
+    /// Rebuild basin pressure from the current model projection instead of
+    /// persisting model-generation-local basin identifiers.
+    #[cfg(test)]
     pub(crate) fn basin_retrievability<'a>(
         &self,
         candidate_basin: &str,
@@ -82,13 +100,14 @@ impl PlaylistPlaybackTemporalMemory {
 
     pub(crate) fn prune_expired(&mut self, now_ms: u64) {
         self.exposures.retain(|_, exposure| {
-            temporal_memory_retrievability(now_ms, *exposure) >= TEMPORAL_MEMORY_PRUNE_RETRIEVABILITY
+            temporal_memory_retrievability(now_ms, *exposure)
+                >= TEMPORAL_MEMORY_PRUNE_RETRIEVABILITY
         });
     }
 }
 
-/// FSRS-6 forgetting curve in milliseconds.  Ranking uses this as a soft
-/// anti-repetition signal: R=1 is maximally familiar, R=0 is fully released.
+/// FSRS-6 forgetting curve. Production callers use its inverse as a soft
+/// anti-repetition signal: familiar items receive less selection pressure.
 pub(crate) fn temporal_memory_retrievability(
     now_ms: u64,
     exposure: PlaylistPlaybackTemporalExposure,

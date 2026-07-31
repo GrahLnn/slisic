@@ -1,5 +1,4 @@
 use super::recommendation::{
-    AudioStyleCandidateSelectionSource, AudioStyleModelSnapshot,
     filter_recently_played_recommendation_candidates,
     recommendation_candidate_allowed_by_recent_history,
 };
@@ -8,14 +7,13 @@ use super::service::{
     PlaylistPlaybackRecommendationRequest, PlaylistPlaybackRecommender,
     PlaylistQueueFillDemandWake, PlaylistQueueRecommendationReadiness,
     PlaylistTrackQueueRefreshOutcome, RandomPlaylistPlaybackRecommender,
-    apply_initial_track_loudness_profile, audio_style_playlist_playback_proposal_is_complete,
-    create_exclude_current_cargo_queue, create_start_anchor_playback_queue,
-    exclude_current_next_cargo_queue, initial_track_release_requires_loudness_gate,
-    place_track_at_queue_start, playlist_playback_proposal_contains_next_track,
+    apply_initial_track_loudness_profile, create_exclude_current_cargo_queue,
+    create_start_anchor_playback_queue, exclude_current_next_cargo_queue,
+    initial_track_release_requires_loudness_gate, place_track_at_queue_start,
+    playlist_playback_proposal_contains_next_track,
     playlist_playback_queue_contains_next_track_after_anchor,
     playlist_selection_has_relevant_active_downloads, playlist_track_needs_loudness_evidence,
     prepared_first_track_can_replace_excluded_current,
-    propose_audio_style_playlist_playback_queue_from_snapshots,
     propose_playlist_playback_queue_without_audio_style_model, propose_random_queue_after_exclude,
     resolve_playlist_playback_continuation_mode, resolve_playlist_playback_source_resolution,
     should_commit_playlist_queue_refresh, should_refresh_playlist_queue_for_anchor_after_startup,
@@ -1249,125 +1247,5 @@ fn playlist_queue_recommendation_readiness_reports_model_state_without_owning_tr
     assert_eq!(
         PlaylistQueueRecommendationReadiness::ready(8).diagnostic_status(),
         "playlist_playback_ready",
-    );
-}
-
-#[test]
-fn keep_current_audio_style_random_fallback_source_is_not_a_complete_recommendation() {
-    let current_track = playback_track("current");
-    let candidate = playback_track("candidate");
-
-    assert!(!audio_style_playlist_playback_proposal_is_complete(
-        PlaylistPlaybackRecommendationMode::KeepCurrent,
-        &[current_track, candidate],
-        Some(AudioStyleCandidateSelectionSource::RandomFallback),
-    ));
-}
-
-#[test]
-fn keep_current_audio_style_source_is_a_complete_recommendation_with_distinct_next() {
-    let current_track = playback_track("current");
-    let candidate = playback_track("candidate");
-
-    assert!(audio_style_playlist_playback_proposal_is_complete(
-        PlaylistPlaybackRecommendationMode::KeepCurrent,
-        &[current_track, candidate],
-        Some(AudioStyleCandidateSelectionSource::AudioStyle),
-    ));
-}
-
-#[test]
-fn keep_current_audio_style_proposal_falls_back_to_older_complete_snapshot() {
-    let current = playback_track("current");
-    let unusable_next = playback_track("unusable_next");
-    let older_next = playback_track("older_next");
-    let latest = std::sync::Arc::new(AudioStyleModelSnapshot::from_test_embeddings(
-        12,
-        [(current.clone(), test_embedding(2))],
-    ));
-    let older = std::sync::Arc::new(AudioStyleModelSnapshot::from_test_embeddings(
-        11,
-        [
-            (current.clone(), test_embedding(2)),
-            (older_next.clone(), test_embedding(2)),
-        ],
-    ));
-
-    let proposal = propose_audio_style_playlist_playback_queue_from_snapshots(
-        PlaylistPlaybackRecommendationRequest {
-            playlist_name: "Focus".to_string(),
-            current_track: current.clone(),
-            candidates: vec![unusable_next, older_next.clone()],
-            recently_played_tracks: vec![],
-        },
-        PlaylistPlaybackRecommendationMode::KeepCurrent,
-        [latest, older],
-    )
-    .expect("older complete audio-style snapshot should still serve the queue");
-
-    assert_eq!(proposal.tracks.len(), 2);
-    assert_eq!(proposal.tracks[0].music_url, current.music_url);
-    assert_eq!(proposal.tracks[1].music_url, older_next.music_url);
-    assert_eq!(
-        proposal
-            .selection
-            .as_ref()
-            .map(|selection| selection.source),
-        Some(AudioStyleCandidateSelectionSource::AudioStyle)
-    );
-    assert_eq!(
-        proposal
-            .selection
-            .as_ref()
-            .and_then(|selection| selection.model_generation),
-        Some(11)
-    );
-}
-
-#[test]
-fn keep_current_audio_style_proposal_uses_centerless_next_when_anchor_is_missing() {
-    let current = playback_track("current");
-    let embedded_next = playback_track("embedded_next");
-    let embedded_other = playback_track("embedded_other");
-    let missing_next = playback_track("missing_next");
-    let snapshot = std::sync::Arc::new(AudioStyleModelSnapshot::from_test_embeddings(
-        12,
-        [
-            (embedded_next.clone(), test_embedding(2)),
-            (embedded_other.clone(), test_embedding(3)),
-        ],
-    ));
-
-    let proposal = propose_audio_style_playlist_playback_queue_from_snapshots(
-        PlaylistPlaybackRecommendationRequest {
-            playlist_name: "Focus".to_string(),
-            current_track: current.clone(),
-            candidates: vec![missing_next, embedded_next.clone(), embedded_other],
-            recently_played_tracks: vec![],
-        },
-        PlaylistPlaybackRecommendationMode::KeepCurrent,
-        [snapshot],
-    )
-    .expect("stable model should still serve centerless next when anchor lacks embedding");
-
-    assert_eq!(proposal.tracks.len(), 2);
-    assert_eq!(proposal.tracks[0].music_url, current.music_url);
-    assert!(
-        proposal.tracks[1].music_url == embedded_next.music_url
-            || proposal.tracks[1].music_url == "https://example.com/embedded_other"
-    );
-    assert_eq!(
-        proposal
-            .selection
-            .as_ref()
-            .map(|selection| selection.source),
-        Some(AudioStyleCandidateSelectionSource::AudioStyle)
-    );
-    assert_eq!(
-        proposal
-            .selection
-            .as_ref()
-            .and_then(|selection| selection.model_generation),
-        Some(12)
     );
 }

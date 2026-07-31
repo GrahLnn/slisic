@@ -14,10 +14,10 @@ selection, queue planning, recommendation fallback, refresh, and cancellation.
   preparation, generation-stamped refresh, invalidation, and the current
   centerless prepared startup option for each playlist.
 - `playlist_playback::service` owns first-track source elimination, next-track
-  planning, startup queue composition, recent-history exclusion, and queue
-  refresh.
-- `playlist_playback::recommendation` owns audio-style ranking for an already
-  materialized candidate universe.
+  planning, startup queue composition, recent-history exclusion, the listener-
+  owned inverse-FSRS safety memory, and queue refresh.
+- `playlist_playback::recommendation` owns symbolic program compilation and
+  persistent symbolic traversal for an already materialized candidate universe.
 - `player::service` owns playback lifecycle, active request identity, queue
   consumption, and process control.
 - `player::strategy` owns only consumption of the queue it is given. It does not
@@ -34,14 +34,14 @@ selection, queue planning, recommendation fallback, refresh, and cancellation.
 - The player-submit success path consumes the current prepared option by
   playlist and generation. Consumption immediately schedules replacement
   preparation for that playlist.
-- First-track preparation chooses a centerless audio-style startup anchor from
+- First-track preparation chooses a centerless symbolic-program startup anchor from
   the playlist scope when a stable model exists. If no stable model exists
   during cold start, it prepares a playlist-scoped repository random source in
   the same backend first-slot pool.
 - Prepared first-slot snapshots carry source kind evidence. A later
   audio-style-model-available refresh may replace an unconsumed
   `random_fallback` snapshot, but it must not replace an unconsumed
-  `audio_style` snapshot.
+  `symbolic_program` snapshot.
 - Startup next-track selection is part of the post-acceptance backend queue
   fill transaction. Once the centerless first-track anchor is accepted by the
   player session, the recommendation planner must be invoked in the background.
@@ -49,8 +49,8 @@ selection, queue planning, recommendation fallback, refresh, and cancellation.
   the playlist-scoped candidate universe.
 - The first track is not derived from a deterministic seed, first row, first
   collection, or fixed random seed.
-- Centerless startup sampling uses the stable published audio-style model
-  inside the playlist scope. Its draw is live per prepared-source refresh and
+- Centerless startup sampling uses the stable published symbolic program
+  encoding inside the playlist scope. Its draw is live per prepared-source refresh and
   must not persist a seeded order across sessions. The repository random
   projection is allowed only when no stable model exists; it is cold-start
   preparation, not click-path fallback.
@@ -61,6 +61,11 @@ selection, queue planning, recommendation fallback, refresh, and cancellation.
   prepared startup option; they do not replace an unconsumed option.
 - Queue refresh may reduce latency, fill later continuations, or improve
   recommendation quality, but it must not change playlist membership.
+- The symbolic program is the primary route. Production anti-FSRS is a soft
+  guard over the same candidate window: it marks tracks at the FSRS target
+  retention as already familiar, without rebuilding or reweighting the
+  symbolic program. Research probes may disable this guard to expose the
+  structural model's effect.
 - Queue refresh is driven by anchor consumption or a missing next track. Model
   generation changes, download changes, and repeated ready transitions may
   improve future inputs, but must not replace an already prepared unconsumed
@@ -105,7 +110,7 @@ selection, queue planning, recommendation fallback, refresh, and cancellation.
 
 - Raw sources become `PlaybackTrack` only after their file path is resolved
   against the save root and the file exists.
-- Startup options are sampled by centerless audio-style selection inside the
+- Startup options are sampled by centerless symbolic-program selection inside the
   whole playlist scope, not from a deterministic prefix of one collection.
 - Startup queue composition is `[centerless first]`. It is a fast handoff from
   prepared first-track evidence to `player`, not a recommendation planning
@@ -122,24 +127,29 @@ selection, queue planning, recommendation fallback, refresh, and cancellation.
   that does not cover the anchor must not block a completed older model from
   serving the queue.
 - If `stable` exists but cannot rank the current anchor in `KeepCurrent` mode,
-  the queue planner uses centerless audio-style selection over embedded
+  the queue planner uses the persistent symbolic traversal session over embedded
   candidates from the already materialized playlist-scoped candidate window to
-  compose `[current, audio_style_next]`.
-- If no stable model exists, or stable audio-style selection cannot produce a
-  distinct embedded next track, the queue planner uses the already materialized
+  compose `[current, symbolic_program_next]`.
+- If no stable model exists, or symbolic traversal cannot produce a distinct
+  embedded next track, the queue planner uses the already materialized
   playlist-scoped SQL random candidate window to compose `[current,
   random_next]`.
-- `KeepCurrent` accepts only `audio_style` selection evidence as a complete
-  audio-style recommendation. Service-owned SQL random fallback is a separate
-  queue-planning degradation path, not audio-style evidence.
+- `KeepCurrent` accepts only `symbolic_program` selection evidence as a complete
+  recommendation. Service-owned SQL random fallback is an explicit
+  queue-planning degradation path, not symbolic-program evidence.
 - Random recovery is also allowed for `ExcludeCurrent`, where the current track
   has been explicitly removed and the system needs a replacement candidate.
 - Recent history filters non-liked tracks without deleting liked tracks.
+- Temporal memory is keyed by stable music identity and survives playlist
+  session boundaries. Its inverse FSRS retrievability is only a familiarity
+  veto; model-generation-local basin identifiers are never persisted in it.
 
 `playlist_playback::recommendation` owns:
 
-- Audio-style probabilities for an already materialized candidate window.
-- Fallback selection metadata when the model cannot rank candidates.
+- Symbolic program compilation and persistent traversal for an already
+  materialized candidate window.
+- Explicit random degradation metadata when symbolic traversal cannot rank or
+  reach a candidate.
 - The double-buffered model lifecycle: `stable` serves playback and first-slot
   reads; `nightly` receives progressive training output; each complete nightly
   snapshot may atomically replace `stable` when the stable surface is idle; the
@@ -206,7 +216,7 @@ selection, queue planning, recommendation fallback, refresh, and cancellation.
   changed.
 - Evidence: each snapshot carries playlist name, generation, and at most one raw
   source evidence value projected by `playlists::repo`, either selected through
-  stable audio-style centerless sampling or through cold-start repository random
+  stable symbolic-program centerless sampling or through cold-start repository random
   projection when stable is absent.
 
 ## Transitions
@@ -263,13 +273,14 @@ transition owner is the `playlist_playback::service` queue planning path:
 - model-backed first-slot preparation belongs only to the playable index; it is
   not a hidden play-click compatibility path;
 - initial queue construction commits only the centerless prepared first track;
-- background next-track planning uses `propose_playlist_playback_queue_with_mode`
-  immediately after player acceptance when the startup queue lacks a next track,
-  and later when the active anchor changed or the queue lacks a next track;
-- next-track planning reads `stable` first and falls back to the same
-  playlist-scoped centerless audio-style candidate window when `stable` exists
-  but lacks the anchor embedding; SQL random is used only when `stable` is
-  absent or stable audio-style cannot produce a distinct next track;
+- background next-track planning uses the persistent
+  `propose_playlist_symbolic_next_track` session immediately after player
+  acceptance when the startup queue lacks a next track, and later when the
+  active anchor changed or the queue lacks a next track;
+- next-track planning reads `stable` first and traverses the symbolic program
+  over the same playlist-scoped candidate window when `stable` exists but lacks
+  the anchor embedding; SQL random is used only when `stable` is absent or
+  symbolic traversal cannot produce a distinct next track;
 - queue refresh from periodic fill and download-change events is gated per
   session, and rechecks the active queue after entering the gate so an
   unconsumed next track cannot be replaced by duplicate sampling;
@@ -278,18 +289,19 @@ transition owner is the `playlist_playback::service` queue planning path:
 
 ## Fallback
 
-Audio-style fallback is explicit:
+Symbolic-program degradation is explicit:
 
 - First-slot cold start may use repository random projection only when no stable
   model exists, and only in the backend preparation pool.
 - A cold-start random fallback first slot remains replaceable by the first
   stable model-available event until it is consumed. Once replaced by
-  audio-style, ordinary ready/model progress events cannot churn it before
+  `symbolic_program`, ordinary ready/model progress events cannot churn it before
   consumption.
-- In `KeepCurrent` mode, a stable model with a missing anchor embedding degrades
-  to centerless audio-style next-track selection over embedded candidates from
-  the candidate window already materialized by the playback queue planner.
-- In `KeepCurrent` mode, complete model unavailability degrades to a
+- In `KeepCurrent` mode, a stable model with a missing anchor embedding uses
+  the persistent symbolic traversal session over embedded candidates from the
+  candidate window already materialized by the playback queue planner.
+- In `KeepCurrent` mode, symbolic obstruction or complete model unavailability
+  degrades to a
   playlist-scoped SQL random next track after the current anchor, using only the
   candidate window already materialized by the playback queue planner.
 - A partially refreshed model is not allowed to starve playback queue planning
@@ -305,8 +317,8 @@ Audio-style fallback is explicit:
 
 Audio-style embedding cache can accelerate model availability. It does not
 define whether a track belongs to the playlist or whether a track is playable.
-Cache hit and miss only change whether audio-style ranking or an explicit
-degraded path is used.
+Cache hit and miss only change whether symbolic-program traversal or an
+explicit degraded path is used.
 
 The playable-source index is not a semantic cache. It is a preparation owner
 with explicit generation and invalidation. Hit and miss can change latency, but

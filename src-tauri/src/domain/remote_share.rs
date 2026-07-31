@@ -1,12 +1,15 @@
 use crate::domain::player::model::PlaybackTrack;
 use crate::domain::player::service::{PlaybackLoudnessPlan, playback_loudness_plan_for_profile};
-use crate::domain::playlist_playback::service::{
-    PlaylistPlaybackRecommendationMode, PlaylistPlaybackRecommendationRequest,
-};
+use crate::domain::playlist_playback::recommendation::AudioStyleSymbolicPlaybackSession;
+#[cfg(not(test))]
+use crate::domain::playlist_playback::recommendation::published_audio_style_model_snapshots_for_anchor;
 #[cfg(not(test))]
 use crate::domain::playlist_playback::service::{
+    PlaylistPlaybackRecommendationMode, PlaylistPlaybackRecommendationRequest,
     consume_prepared_playlist_initial_track, load_random_playlist_playback_tracks,
-    propose_playlist_playback_queue_with_mode,
+    observe_playlist_playback_temporal_memory,
+    propose_playlist_playback_queue_without_audio_style_model,
+    propose_playlist_symbolic_next_track,
 };
 use crate::domain::playlists::model::PlayListListView;
 use crate::domain::playlists::repo as playlist_repo;
@@ -192,6 +195,7 @@ struct RemoteShareSession {
     current_hls_entry_id: Option<String>,
     queue: VecDeque<PlaybackTrack>,
     recently_played: Vec<PlaybackTrack>,
+    symbolic_session: Arc<Mutex<AudioStyleSymbolicPlaybackSession>>,
     state: RemotePlaybackState,
     prefetch_target_tracks: usize,
     prefetch_revision: u32,
@@ -207,6 +211,7 @@ impl Default for RemoteShareSession {
             current_hls_entry_id: None,
             queue: VecDeque::new(),
             recently_played: Vec::new(),
+            symbolic_session: Arc::new(Mutex::new(AudioStyleSymbolicPlaybackSession::default())),
             state: RemotePlaybackState::Ready,
             prefetch_target_tracks: REMOTE_PREFETCH_MIN_FUTURE_TRACKS,
             prefetch_revision: 0,
@@ -219,6 +224,7 @@ struct RemoteQueueFillPlan {
     current: PlaybackTrack,
     existing_queue: Vec<PlaybackTrack>,
     recent_history: Vec<PlaybackTrack>,
+    symbolic_session: Arc<Mutex<AudioStyleSymbolicPlaybackSession>>,
     target_tracks: usize,
 }
 
@@ -1370,37 +1376,82 @@ async fn resolve_remote_initial_track(
         .ok_or_else(|| anyhow!("playlist `{playlist_name}` has no playable remote tracks"))
 }
 
-async fn propose_remote_next_queue(
+#[cfg(not(test))]
+async fn propose_remote_next_track(
     app: &AppHandle,
+    symbolic_session: &Arc<Mutex<AudioStyleSymbolicPlaybackSession>>,
     current: &PlaybackTrack,
     recently_played: &[PlaybackTrack],
-) -> Result<Vec<PlaybackTrack>> {
+    blocked_tracks: &[PlaybackTrack],
+) -> Result<Option<PlaybackTrack>> {
     let candidates = load_random_playlist_playback_tracks(
         app,
         &current.playlist_name,
         REMOTE_CANDIDATE_WINDOW_LIMIT,
     )
     .await?;
+    let snapshots = published_audio_style_model_snapshots_for_anchor(current);
+    if !snapshots.is_empty() {
+        match propose_playlist_symbolic_next_track(
+            symbolic_session,
+            snapshots,
+            current.clone(),
+            candidates.clone(),
+            recently_played.to_vec(),
+        )
+        .await
+        {
+            Ok(next) => {
+                if !blocked_tracks
+                    .iter()
+                    .any(|blocked| same_remote_track(blocked, &next.track))
+                {
+                    symbolic_session
+                        .lock()
+                        .map_err(|_| anyhow!("remote symbolic playback session lock poisoned"))?
+                        .commit_proposal()
+                        .map_err(|error| anyhow!(error))?;
+                    return Ok(Some(next.track));
+                }
+                symbolic_session
+                    .lock()
+                    .map_err(|_| anyhow!("remote symbolic playback session lock poisoned"))?
+                    .rollback_proposal()
+                    .map_err(|error| anyhow!(error))?;
+            }
+            Err(error) => {
+                log::warn!(
+                    target: REMOTE_SHARE_LOG_TARGET,
+                    "remote symbolic traversal unavailable playlist=\"{}\" anchor_title=\"{}\" reason=\"{}\" fallback=random_candidate",
+                    escape_remote_log_value(&current.playlist_name),
+                    escape_remote_log_value(&current.music_name),
+                    escape_remote_log_value(&error.to_string())
+                );
+            }
+        }
+    }
+
     let request = PlaylistPlaybackRecommendationRequest {
         playlist_name: current.playlist_name.clone(),
         current_track: current.clone(),
         candidates,
         recently_played_tracks: recently_played.to_vec(),
     };
-    let queue = propose_playlist_playback_queue_with_mode(
+    let queue = propose_playlist_playback_queue_without_audio_style_model(
         request,
         PlaylistPlaybackRecommendationMode::KeepCurrent,
-        true,
     );
-    Ok(if queue.get(1).is_some() {
-        queue
-    } else {
-        Vec::new()
-    })
+    Ok(queue.into_iter().skip(1).find(|candidate| {
+        !blocked_tracks
+            .iter()
+            .any(|blocked| same_remote_track(blocked, candidate))
+    }))
 }
 
+#[cfg(not(test))]
 async fn propose_remote_queue_suffix(
     app: &AppHandle,
+    symbolic_session: &Arc<Mutex<AudioStyleSymbolicPlaybackSession>>,
     current: &PlaybackTrack,
     existing_queue: &[PlaybackTrack],
     recently_played: &[PlaybackTrack],
@@ -1419,19 +1470,35 @@ async fn propose_remote_queue_suffix(
     while frontier.len() < target_tracks {
         let anchor = frontier.last().unwrap_or(current);
         observe_remote_recent_track(&mut planned_history, anchor.clone());
-        let proposal = propose_remote_next_queue(app, anchor, &planned_history).await?;
-        let next = proposal.into_iter().find(|candidate| {
-            !same_remote_track(candidate, current)
-                && !frontier
-                    .iter()
-                    .any(|planned| same_remote_track(planned, candidate))
-        });
+        let mut blocked_tracks = Vec::with_capacity(frontier.len() + 1);
+        blocked_tracks.push(current.clone());
+        blocked_tracks.extend(frontier.iter().cloned());
+        let next = propose_remote_next_track(
+            app,
+            symbolic_session,
+            anchor,
+            &planned_history,
+            &blocked_tracks,
+        )
+        .await?;
         let Some(next) = next else {
             break;
         };
         frontier.push(next);
     }
     Ok(frontier.drain(existing_len..).collect())
+}
+
+#[cfg(test)]
+async fn propose_remote_queue_suffix(
+    _app: &AppHandle,
+    _symbolic_session: &Arc<Mutex<AudioStyleSymbolicPlaybackSession>>,
+    _current: &PlaybackTrack,
+    _existing_queue: &[PlaybackTrack],
+    _recently_played: &[PlaybackTrack],
+    _target_tracks: usize,
+) -> Result<Vec<PlaybackTrack>> {
+    Ok(Vec::new())
 }
 
 #[cfg(test)]
@@ -1449,15 +1516,6 @@ async fn load_random_playlist_playback_tracks(
     _limit: usize,
 ) -> Result<Vec<PlaybackTrack>> {
     Ok(Vec::new())
-}
-
-#[cfg(test)]
-fn propose_playlist_playback_queue_with_mode(
-    _request: PlaylistPlaybackRecommendationRequest,
-    _mode: PlaylistPlaybackRecommendationMode,
-    _should_log_selection: bool,
-) -> Vec<PlaybackTrack> {
-    Vec::new()
 }
 
 impl RemoteShareRuntime {
@@ -1800,6 +1858,7 @@ impl RemoteShareRuntime {
             session.current_hls_entry_id = None;
             session.queue.clear();
             session.recently_played.clear();
+            session.reset_symbolic_session()?;
             session.queue_fill_in_progress = false;
             session.state = RemotePlaybackState::Preparing;
         }
@@ -1885,6 +1944,8 @@ impl RemoteShareRuntime {
             session.current = None;
             session.current_hls_entry_id = None;
             session.queue.clear();
+            session.recently_played.clear();
+            session.reset_symbolic_session()?;
             session.queue_fill_in_progress = false;
             session.prefetch_target_tracks = REMOTE_PREFETCH_MIN_FUTURE_TRACKS;
             session.state = RemotePlaybackState::Ready;
@@ -1943,6 +2004,7 @@ impl RemoteShareRuntime {
             let started = Instant::now();
             let proposed = propose_remote_queue_suffix(
                 &runtime.app,
+                &plan.symbolic_session,
                 &current,
                 &plan.existing_queue,
                 &plan.recent_history,
@@ -2099,6 +2161,8 @@ impl RemoteShareRuntime {
         session.current = None;
         session.current_hls_entry_id = None;
         session.queue.clear();
+        session.recently_played.clear();
+        session.reset_symbolic_session()?;
         session.queue_fill_in_progress = false;
         session.state = RemotePlaybackState::Ready;
         Ok(())
@@ -2246,6 +2310,14 @@ fn rollback_remote_queue_append(
 }
 
 impl RemoteShareSession {
+    fn reset_symbolic_session(&mut self) -> RemoteResult<()> {
+        let mut symbolic = self.symbolic_session.lock().map_err(|_| {
+            RemoteShareError::internal("remote symbolic playback session lock is poisoned")
+        })?;
+        *symbolic = AudioStyleSymbolicPlaybackSession::default();
+        Ok(())
+    }
+
     fn set_prefetch_target(&mut self, revision: u32, target_tracks: usize) -> bool {
         if revision <= self.prefetch_revision {
             return false;
@@ -2275,6 +2347,7 @@ impl RemoteShareSession {
             current,
             existing_queue: self.queue.iter().cloned().collect(),
             recent_history: self.recently_played.clone(),
+            symbolic_session: Arc::clone(&self.symbolic_session),
             target_tracks: self.prefetch_target_tracks,
         })
     }
@@ -2465,8 +2538,16 @@ fn normalize_remote_client_id(client_id: Option<&str>) -> String {
 }
 
 fn observe_remote_recent_track(history: &mut Vec<PlaybackTrack>, track: PlaybackTrack) {
+    #[cfg(not(test))]
+    let changed = history
+        .last()
+        .is_none_or(|recorded| !same_remote_track(recorded, &track));
     history.retain(|item| !same_remote_track(item, &track));
-    history.push(track);
+    history.push(track.clone());
+    #[cfg(not(test))]
+    if changed {
+        observe_playlist_playback_temporal_memory(&track);
+    }
     const MAX_RECENT_HISTORY: usize = 48;
     if history.len() > MAX_RECENT_HISTORY {
         let excess = history.len() - MAX_RECENT_HISTORY;

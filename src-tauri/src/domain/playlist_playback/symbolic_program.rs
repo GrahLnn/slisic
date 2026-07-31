@@ -6,10 +6,12 @@
 // field. Execution state survives queue boundaries and complete finite
 // coverage without rebuilding a request-local candidate relation.
 
+#[cfg(test)]
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet, VecDeque};
 
+#[cfg(test)]
 #[derive(Debug, Clone)]
 pub(crate) struct SymbolicCatalog<'a> {
     pub(crate) generation: u64,
@@ -117,6 +119,7 @@ impl std::fmt::Display for TraversalExhausted {
 
 impl std::error::Error for TraversalExhausted {}
 
+#[cfg(test)]
 impl ProgramList {
     fn row(&self, path: usize) -> &[usize] {
         let start = path * self.tracks_per_list;
@@ -1035,6 +1038,7 @@ pub(crate) fn execute_program_list(
     })
 }
 
+#[cfg(test)]
 #[derive(Debug)]
 struct PathFairClosureAudit {
     value: Value,
@@ -1045,6 +1049,7 @@ struct PathFairClosureAudit {
     all_boundaries_are_candidate_edges: bool,
 }
 
+#[cfg(test)]
 fn path_fair_closure_audit(
     original: &NeuralProgramAtlas,
     closed: &NeuralProgramAtlas,
@@ -1279,6 +1284,7 @@ fn path_fair_closure_audit(
     })
 }
 
+#[cfg(test)]
 // @forma implements architecture Domain.PlaylistScopedPathFairExecution as build_symbolic_playlist_scope_report
 // @forma implements architecture Domain.CrossRuntimeScopedBoundaryNaturality as build_symbolic_playlist_scope_report
 // @forma observes observation Domain.PlaybackSessionProgramState
@@ -1598,6 +1604,7 @@ pub(crate) fn build_symbolic_playlist_scope_report(
     }))
 }
 
+#[cfg(test)]
 // @forma implements material ResearchCandidateTransfer.audit_typed_morphism_paths as build_symbolic_program_report
 pub(crate) fn build_symbolic_program_report(
     catalog: &SymbolicCatalog<'_>,
@@ -1833,6 +1840,7 @@ pub(crate) fn build_symbolic_program_report(
     }))
 }
 
+#[cfg(test)]
 fn concatenate_rows<T: Clone>(
     first: &ProgramList,
     second: &ProgramList,
@@ -1849,6 +1857,7 @@ fn concatenate_rows<T: Clone>(
     output
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy)]
 struct ExecutionContinuity {
     resident_count: usize,
@@ -1857,6 +1866,7 @@ struct ExecutionContinuity {
     departure_mean: f64,
 }
 
+#[cfg(test)]
 fn execution_continuity(
     catalog: &SymbolicCatalog<'_>,
     anchors: &[usize],
@@ -1886,6 +1896,7 @@ fn execution_continuity(
     }
 }
 
+#[cfg(test)]
 fn residence_summary(programs: &[usize], path_count: usize, steps: usize) -> Value {
     let mut lengths = Vec::new();
     for path in 0..path_count {
@@ -1904,6 +1915,7 @@ fn residence_summary(programs: &[usize], path_count: usize, steps: usize) -> Val
     metric_summary(&lengths)
 }
 
+#[cfg(test)]
 fn target_audit(
     catalog: &SymbolicCatalog<'_>,
     order: &[usize],
@@ -1975,6 +1987,7 @@ fn target_audit(
     })
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy)]
 struct CrossListMetrics {
     track_overlap_max: f64,
@@ -1983,6 +1996,7 @@ struct CrossListMetrics {
     prefix_centroid_mean: f64,
 }
 
+#[cfg(test)]
 fn cross_list_metrics(
     catalog: &SymbolicCatalog<'_>,
     first: &ProgramList,
@@ -2030,6 +2044,7 @@ fn cross_list_metrics(
     }
 }
 
+#[cfg(test)]
 fn normalized_centroid(catalog: &SymbolicCatalog<'_>, tracks: &[usize]) -> Vec<f64> {
     let mut centroid = vec![0.0_f64; catalog.embedding_dimension];
     for track in tracks {
@@ -2053,6 +2068,7 @@ fn normalized_centroid(catalog: &SymbolicCatalog<'_>, tracks: &[usize]) -> Vec<f
     centroid
 }
 
+#[cfg(test)]
 fn embedding_cosine(catalog: &SymbolicCatalog<'_>, left: usize, right: usize) -> f64 {
     let left_start = left * catalog.embedding_dimension;
     let right_start = right * catalog.embedding_dimension;
@@ -2063,6 +2079,7 @@ fn embedding_cosine(catalog: &SymbolicCatalog<'_>, left: usize, right: usize) ->
         .sum()
 }
 
+#[cfg(test)]
 fn program_union_is_strongly_connected(atlas: &NeuralProgramAtlas) -> bool {
     let mut outgoing = vec![Vec::new(); atlas.track_count];
     let mut incoming = vec![Vec::new(); atlas.track_count];
@@ -2076,6 +2093,7 @@ fn program_union_is_strongly_connected(atlas: &NeuralProgramAtlas) -> bool {
         && reachable_count(&incoming, 0) == atlas.track_count
 }
 
+#[cfg(test)]
 fn reachable_count(edges: &[Vec<usize>], root: usize) -> usize {
     let mut visited = vec![false; edges.len()];
     visited[root] = true;
@@ -2093,6 +2111,7 @@ fn reachable_count(edges: &[Vec<usize>], root: usize) -> usize {
     count
 }
 
+#[cfg(test)]
 fn metric_summary(values: &[f64]) -> Value {
     json!({
         "mean": mean(values),
@@ -2105,14 +2124,17 @@ fn metric_summary(values: &[f64]) -> Value {
     })
 }
 
+#[cfg(test)]
 fn mean(values: &[f64]) -> f64 {
     values.iter().sum::<f64>() / values.len().max(1) as f64
 }
 
+#[cfg(test)]
 fn optional_mean(values: &[f64]) -> Option<f64> {
     (!values.is_empty()).then(|| mean(values))
 }
 
+#[cfg(test)]
 fn quantile(values: &[f64], probability: f64) -> f64 {
     if values.is_empty() {
         return 0.0;

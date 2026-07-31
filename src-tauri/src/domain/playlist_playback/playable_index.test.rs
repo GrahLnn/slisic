@@ -658,7 +658,7 @@ async fn playable_index_model_available_refresh_can_replace_random_fallback_sour
     );
     assert_eq!(
         current.source_kind,
-        Some(PlaylistPlayableIndexSourceKind::AudioStyle)
+        Some(PlaylistPlayableIndexSourceKind::SymbolicProgram)
     );
 }
 
@@ -718,7 +718,7 @@ async fn playable_index_model_available_refresh_replaces_only_random_fallback_so
     );
     assert_eq!(
         current.source_kind,
-        Some(PlaylistPlayableIndexSourceKind::AudioStyle)
+        Some(PlaylistPlayableIndexSourceKind::SymbolicProgram)
     );
     assert!(consume_playlist_source(&current).expect("audio-style source should be consumed"));
     let replacement = read_playlist_source("Focus")
