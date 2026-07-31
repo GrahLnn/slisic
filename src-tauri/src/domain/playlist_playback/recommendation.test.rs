@@ -2552,32 +2552,18 @@ fn legacy_stable_model_migrates_symbolic_encoding_without_audio_reencoding() {
 #[test]
 #[ignore = "requires the current generation-90 stable model and validated finite encoding"]
 fn current_stable_model_consumes_validated_symbolic_encoding_without_reconstruction() {
-    let stable_path =
+    let migrated_path =
         PathBuf::from(r"C:\Users\admin\AppData\Local\slisic\audio-style-stable-model\stable.json");
     let encoding_path = PathBuf::from(
         r"C:\Users\admin\ann\outputs\audio_style_trajectory_dynamics\generation-90-symbolic-audio-program-encoding-cuda-20260731.json",
     );
-    let root = temp_cache_root("current-stable-symbolic-encoding");
-    std::fs::create_dir_all(&root).expect("stable model test root should be created");
-    let migrated_path = root.join("stable.json");
-    let mut stable: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(&stable_path).expect("current stable model should be readable"),
-    )
-    .expect("current stable model should be valid JSON");
     let encoding: serde_json::Value = serde_json::from_slice(
         &std::fs::read(&encoding_path).expect("validated encoding should be readable"),
     )
     .expect("validated encoding should be valid JSON");
-    stable["version"] = serde_json::Value::String("audio-style-stable-model-v2".to_string());
-    stable["state"]["symbolic_program_encoding"] = encoding.clone();
-    std::fs::write(
-        &migrated_path,
-        serde_json::to_vec(&stable).expect("migrated stable model should encode"),
-    )
-    .expect("migrated stable model should be written");
 
     let snapshot = read_audio_style_stable_model_for_test(&migrated_path)
-        .expect("production stable loader should admit the validated encoding");
+        .expect("production stable loader should admit the Rust migration candidate");
     let signatures = snapshot
         .symbolic_program_signatures_for_test()
         .expect("validated symbolic encoding should remain generation-owned");
@@ -2596,8 +2582,6 @@ fn current_stable_model_consumes_validated_symbolic_encoding_without_reconstruct
             .as_str()
             .expect("encoding program signature should be a string")
     );
-
-    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]

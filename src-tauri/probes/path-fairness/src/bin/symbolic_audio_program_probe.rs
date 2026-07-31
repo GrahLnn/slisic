@@ -8,17 +8,21 @@ mod symbolic_program;
 #[path = "../../../../src/domain/playlist_playback/path_fairness.test.rs"]
 mod path_fairness_test;
 #[cfg(test)]
+#[path = "symbolic_audio_program_probe.test.rs"]
+mod symbolic_audio_program_probe_test;
+#[cfg(test)]
 #[path = "../../../../src/domain/playlist_playback/symbolic_program.test.rs"]
 mod symbolic_program_test;
 
 use path_fairness::{FairnessConfig, load_stable_catalog};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use symbolic_program::{
     SymbolicCatalog, build_symbolic_playlist_scope_report, build_symbolic_program_report,
-    ordered_track_key_signature,
+    candidate_relation_signature, compile_neural_program_atlas, ordered_track_key_signature,
+    program_encoding_signature,
 };
 
 #[derive(Debug, Deserialize)]
@@ -56,7 +60,7 @@ struct StableTrack {
     music_name: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct ProgramEncoding {
     schema: String,
     stable_generation: u64,
@@ -97,7 +101,25 @@ fn main() -> Result<(), String> {
         .unwrap_or(32);
     let probe_mode = arguments.next().unwrap_or_else(|| "global".to_string());
     let metadata = load_track_metadata(&stable_path)?;
-    let encoding = load_program_encoding(&encoding_path, &metadata)?;
+    let (raw_encoding, encoding) = load_program_encoding(&encoding_path, &metadata)?;
+    if probe_mode == "migrate-stable-v2" {
+        write_migrated_stable_model(&stable_path, &output_path, &raw_encoding, &metadata)?;
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "output": output_path,
+                "status": "migration_candidate_written",
+                "generation": metadata.generation,
+                "track_count": metadata.track_keys.len(),
+                "candidate_relation_signature":
+                    raw_encoding.candidate_relation_signature,
+                "program_encoding_signature":
+                    raw_encoding.program_encoding_signature,
+            }))
+            .map_err(|error| format!("failed to encode migration summary: {error}"))?
+        );
+        return Ok(());
+    }
     let catalog = load_stable_catalog(&stable_path, &FairnessConfig::default())?;
     if metadata.track_keys.len() != catalog.embeddings.len() / catalog.embedding_dimension {
         return Err("stable metadata and embedding track counts differ".to_string());
@@ -125,7 +147,8 @@ fn main() -> Result<(), String> {
         )?,
         other => {
             return Err(format!(
-                "unsupported probe mode `{other}`; expected `global` or `playlist-scopes`"
+                "unsupported probe mode `{other}`; expected `global`, `playlist-scopes`, or \
+                 `migrate-stable-v2`"
             ));
         }
     };
@@ -224,7 +247,7 @@ fn real_directory_scopes(file_paths: &[String]) -> Vec<(String, Vec<usize>)> {
 fn load_program_encoding(
     path: &Path,
     metadata: &TrackMetadata,
-) -> Result<LoadedProgramEncoding, String> {
+) -> Result<(ProgramEncoding, LoadedProgramEncoding), String> {
     let encoding: ProgramEncoding = serde_json::from_slice(
         &fs::read(path).map_err(|error| format!("failed to read `{}`: {error}", path.display()))?,
     )
@@ -254,15 +277,125 @@ fn load_program_encoding(
     }
     let candidate_rows = encoding
         .candidate_rows
-        .into_iter()
+        .iter()
         .flatten()
+        .copied()
         .collect::<Vec<_>>();
-    Ok(LoadedProgramEncoding {
+    let candidate_signature = candidate_relation_signature(
+        &metadata.track_keys,
+        encoding.candidate_width,
+        &candidate_rows,
+    )?;
+    if candidate_signature != encoding.candidate_relation_signature {
+        return Err(
+            "finite program encoding candidate signature differs from its rows".to_string(),
+        );
+    }
+    let compilation = compile_neural_program_atlas(
+        &metadata.track_keys,
+        encoding.candidate_width,
+        &candidate_rows,
+    )?;
+    let atlas = compilation.atlas.ok_or_else(|| {
+        format!(
+            "finite program encoding has unclosed candidate presentations: {:?}",
+            compilation.unclosed_presentations
+        )
+    })?;
+    let lineages = atlas
+        .programs
+        .iter()
+        .map(|program| program.lineage.clone())
+        .collect::<Vec<_>>();
+    if lineages != encoding.program_lineages
+        || program_encoding_signature(&atlas.programs) != encoding.program_encoding_signature
+    {
+        return Err("finite program encoding program signature differs from its rows".to_string());
+    }
+    let loaded = LoadedProgramEncoding {
         candidate_width: encoding.candidate_width,
         candidate_rows,
-        candidate_relation_signature: encoding.candidate_relation_signature,
-        program_lineages: encoding.program_lineages,
-        program_encoding_signature: encoding.program_encoding_signature,
+        candidate_relation_signature: encoding.candidate_relation_signature.clone(),
+        program_lineages: encoding.program_lineages.clone(),
+        program_encoding_signature: encoding.program_encoding_signature.clone(),
+    };
+    Ok((encoding, loaded))
+}
+
+// @forma implements architecture Domain.CrossRuntimeProgramEncoding as write_migrated_stable_model
+// @forma summary Validate and persist one generation-owned finite encoding without audio re-encoding.
+// @forma evidence symbolic_audio_program_probe_test::stable_migration_writes_v2_candidate_without_overwriting_source
+fn write_migrated_stable_model(
+    stable_path: &Path,
+    output_path: &Path,
+    encoding: &ProgramEncoding,
+    metadata: &TrackMetadata,
+) -> Result<(), String> {
+    if stable_path == output_path {
+        return Err("migration output must differ from the source stable model".to_string());
+    }
+    if output_path.exists() {
+        return Err(format!(
+            "migration output already exists: `{}`",
+            output_path.display()
+        ));
+    }
+    if encoding.stable_generation != metadata.generation
+        || encoding.track_count != metadata.track_keys.len()
+    {
+        return Err("validated encoding no longer matches stable metadata".to_string());
+    }
+    let mut stable = serde_json::from_slice::<serde_json::Value>(
+        &fs::read(stable_path)
+            .map_err(|error| format!("failed to read `{}`: {error}", stable_path.display()))?,
+    )
+    .map_err(|error| format!("failed to decode `{}`: {error}", stable_path.display()))?;
+    let stable_object = stable
+        .as_object_mut()
+        .ok_or_else(|| "stable model root must be an object".to_string())?;
+    let state = stable_object
+        .get_mut("state")
+        .and_then(serde_json::Value::as_object_mut)
+        .ok_or_else(|| "stable model state must be an object".to_string())?;
+    state.insert(
+        "symbolic_program_encoding".to_string(),
+        serde_json::to_value(encoding)
+            .map_err(|error| format!("failed to encode symbolic program: {error}"))?,
+    );
+    stable_object.insert(
+        "version".to_string(),
+        serde_json::Value::String("audio-style-stable-model-v2".to_string()),
+    );
+    let bytes = serde_json::to_vec(&stable)
+        .map_err(|error| format!("failed to encode migrated stable model: {error}"))?;
+    if let Some(parent) = output_path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "failed to create migration output directory `{}`: {error}",
+                parent.display()
+            )
+        })?;
+    }
+    let output_name = output_path
+        .file_name()
+        .map(|name| name.to_string_lossy())
+        .unwrap_or_else(|| "stable.json".into());
+    let temporary_path = output_path.with_file_name(format!(
+        "{output_name}.{}.migration.tmp",
+        std::process::id()
+    ));
+    fs::write(&temporary_path, bytes).map_err(|error| {
+        format!(
+            "failed to write migration candidate `{}`: {error}",
+            temporary_path.display()
+        )
+    })?;
+    fs::rename(&temporary_path, output_path).map_err(|error| {
+        let _ = fs::remove_file(&temporary_path);
+        format!(
+            "failed to finalize migration candidate `{}`: {error}",
+            output_path.display()
+        )
     })
 }
 
