@@ -1,6 +1,6 @@
 use super::recommendation::{
     AUDIO_STYLE_EMBEDDING_VERSION_FOR_TEST, AudioStyleEmbeddingCache, AudioStyleModelSnapshot,
-    AudioStylePlaylistPlaybackRecommender,
+    AudioStylePlaylistPlaybackRecommender, AudioStyleSymbolicPlaybackSession,
     acknowledge_audio_style_pending_training_input_file_for_test,
     audio_style_agreement_aware_continuity_for_test, audio_style_alternative_route_gate_for_test,
     audio_style_current_stable_adaptive_distance_u_probe_for_test,
@@ -16,6 +16,7 @@ use super::recommendation::{
     choose_next_audio_style_candidate_with_generation_for_test,
     choose_next_audio_style_candidate_with_recent_history_for_test,
     filter_recently_played_recommendation_candidates,
+    read_and_migrate_audio_style_stable_model_for_test,
     read_audio_style_pending_training_input_file_for_test, read_audio_style_stable_model_for_test,
     upsert_audio_style_pending_training_input_file_for_test,
     write_audio_style_stable_model_for_test,
@@ -2445,6 +2446,156 @@ fn restored_audio_style_stable_model_restores_indexed_sources_and_geometry() {
         .centered_similarity_for_test(&current, &near)
         .expect("stable model should restore sampling geometry");
     assert!((before_similarity - after_similarity).abs() < 1.0e-6);
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn symbolic_playback_session_commits_and_rolls_back_program_state() {
+    let tracks = (0..6)
+        .map(|index| track(&format!("symbolic-{index}")))
+        .collect::<Vec<_>>();
+    let snapshot = AudioStyleModelSnapshot::from_test_embeddings(
+        90,
+        tracks
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(index, track)| (track, dense_embedding(&[(index, 1.0)]))),
+    );
+    let mut session = AudioStyleSymbolicPlaybackSession::default();
+    let first = session
+        .propose_next(&snapshot, &tracks[0], &tracks, &[tracks[0].clone()])
+        .expect("symbolic scope should prepare a next track");
+    session
+        .rollback_proposal()
+        .expect("uncommitted proposal should roll back");
+    let replayed = session
+        .propose_next(&snapshot, &tracks[0], &tracks, &[tracks[0].clone()])
+        .expect("rolled-back state should prepare again");
+
+    assert_eq!(first.track.music_url, replayed.track.music_url);
+    session
+        .commit_proposal()
+        .expect("prepared proposal should commit");
+    let second = session
+        .propose_next(
+            &snapshot,
+            &replayed.track,
+            &tracks,
+            &[tracks[0].clone(), replayed.track.clone()],
+        )
+        .expect("committed state should continue across queue boundaries");
+
+    assert_ne!(second.track.music_url, tracks[0].music_url);
+    assert_ne!(second.track.music_url, replayed.track.music_url);
+    session
+        .commit_proposal()
+        .expect("continued proposal should commit");
+}
+
+#[test]
+fn legacy_stable_model_migrates_symbolic_encoding_without_audio_reencoding() {
+    let root = temp_cache_root("stable-model-symbolic-migration");
+    std::fs::create_dir_all(&root).expect("stable model test root should be created");
+    let path = root.join("stable.json");
+    let tracks = (0..4)
+        .map(|index| track(&format!("migration-{index}")))
+        .collect::<Vec<_>>();
+    let snapshot = AudioStyleModelSnapshot::from_test_indexed_embeddings(
+        21,
+        tracks.iter().cloned().enumerate().map(|(index, track)| {
+            (
+                track,
+                dense_embedding(&[(index, 1.0)]),
+                "migration".to_string(),
+            )
+        }),
+    );
+    write_audio_style_stable_model_for_test(&path, &snapshot)
+        .expect("stable model should be written");
+    let mut payload: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).expect("stable model should be readable"))
+            .expect("stable model should be valid JSON");
+    payload["version"] = serde_json::Value::String("audio-style-stable-model-v1".to_string());
+    payload["state"]
+        .as_object_mut()
+        .expect("stable state should be an object")
+        .remove("symbolic_program_encoding");
+    std::fs::write(
+        &path,
+        serde_json::to_vec(&payload).expect("legacy stable model should encode"),
+    )
+    .expect("legacy stable model should be written");
+
+    let restored = read_and_migrate_audio_style_stable_model_for_test(&path)
+        .expect("legacy stable model should migrate");
+    let migrated_payload: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).expect("migrated cache should be readable"))
+            .expect("migrated cache should be valid JSON");
+
+    assert_eq!(restored.generation(), 21);
+    assert_eq!(restored.symbolic_track_count(), Some(4));
+    assert!(tracks.iter().all(|track| restored.has_embedding_for(track)));
+    assert_eq!(
+        migrated_payload["version"],
+        serde_json::Value::String("audio-style-stable-model-v2".to_string())
+    );
+    assert!(
+        migrated_payload["state"]["symbolic_program_encoding"].is_object(),
+        "migrated cache should persist the generation-owned symbolic program"
+    );
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+#[ignore = "requires the current generation-90 stable model and validated finite encoding"]
+fn current_stable_model_consumes_validated_symbolic_encoding_without_reconstruction() {
+    let stable_path =
+        PathBuf::from(r"C:\Users\admin\AppData\Local\slisic\audio-style-stable-model\stable.json");
+    let encoding_path = PathBuf::from(
+        r"C:\Users\admin\ann\outputs\audio_style_trajectory_dynamics\generation-90-symbolic-audio-program-encoding-cuda-20260731.json",
+    );
+    let root = temp_cache_root("current-stable-symbolic-encoding");
+    std::fs::create_dir_all(&root).expect("stable model test root should be created");
+    let migrated_path = root.join("stable.json");
+    let mut stable: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&stable_path).expect("current stable model should be readable"),
+    )
+    .expect("current stable model should be valid JSON");
+    let encoding: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&encoding_path).expect("validated encoding should be readable"),
+    )
+    .expect("validated encoding should be valid JSON");
+    stable["version"] = serde_json::Value::String("audio-style-stable-model-v2".to_string());
+    stable["state"]["symbolic_program_encoding"] = encoding.clone();
+    std::fs::write(
+        &migrated_path,
+        serde_json::to_vec(&stable).expect("migrated stable model should encode"),
+    )
+    .expect("migrated stable model should be written");
+
+    let snapshot = read_audio_style_stable_model_for_test(&migrated_path)
+        .expect("production stable loader should admit the validated encoding");
+    let signatures = snapshot
+        .symbolic_program_signatures_for_test()
+        .expect("validated symbolic encoding should remain generation-owned");
+
+    assert_eq!(snapshot.generation(), 90);
+    assert_eq!(snapshot.symbolic_track_count(), Some(2_825));
+    assert_eq!(
+        signatures.1,
+        encoding["candidate_relation_signature"]
+            .as_str()
+            .expect("encoding candidate signature should be a string")
+    );
+    assert_eq!(
+        signatures.2,
+        encoding["program_encoding_signature"]
+            .as_str()
+            .expect("encoding program signature should be a string")
+    );
 
     let _ = std::fs::remove_dir_all(root);
 }

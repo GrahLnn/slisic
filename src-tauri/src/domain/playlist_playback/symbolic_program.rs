@@ -1,9 +1,10 @@
-// Deterministic neural-program traversal shared by the Rust reproduction probe.
+// Deterministic neural-program traversal shared by production and probes.
 //
-// The executor remains in one compiled successor program while it produces
-// unread consequences. A proposed replay is the only fatigue event. Departure
-// then chooses an unread successor whose complete program future has minimum
-// overlap with realized history; program order rotates only among exact ties.
+// Generation-owned candidate presentations are restricted to the playlist
+// before path-fair closure. Graph splices become semantic sector departures
+// only under strict positive contrast against the existing local candidate
+// field. Execution state survives queue boundaries and complete finite
+// coverage without rebuilding a request-local candidate relation.
 
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -28,6 +29,7 @@ pub(crate) struct ProgramMorphism {
     pub(crate) lineage: String,
     pub(crate) presentation_ordinals: Vec<usize>,
     pub(crate) successors: Vec<usize>,
+    pub(crate) boundary_sources: Vec<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,9 +46,22 @@ pub(crate) struct CompilationResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PathFairCompilationResult {
+    pub(crate) atlas: Option<NeuralProgramAtlas>,
+    pub(crate) retracted_presentations: Vec<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PlaylistScopedProgramAtlas {
+    pub(crate) atlas: NeuralProgramAtlas,
+    pub(crate) global_track_ordinals: Vec<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ProgramOrbitIndex {
     cycle_ids: Vec<Vec<usize>>,
     cycle_masks: Vec<Vec<Vec<u64>>>,
+    coverage_successors: Vec<(usize, usize)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,12 +71,19 @@ pub(crate) struct ProgramPathState {
     tie_cursor: usize,
     realized_history: Vec<u64>,
     residence_steps: usize,
+    coverage_epoch: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ProgramOwnedTraversalState {
     paths: Vec<ProgramPathState>,
     pub(crate) playback_cycle: usize,
+}
+
+impl ProgramOwnedTraversalState {
+    pub(crate) fn current_track(&self, path_ordinal: usize) -> Option<usize> {
+        self.paths.get(path_ordinal).map(|path| path.current_track)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,6 +93,8 @@ pub(crate) struct ProgramList {
     pub(crate) order: Vec<usize>,
     pub(crate) program_ordinals: Vec<usize>,
     pub(crate) departures: Vec<bool>,
+    pub(crate) style_sector_departures: Vec<bool>,
+    pub(crate) coverage_epoch_transitions: Vec<bool>,
     pub(crate) departure_future_overlap: Vec<Option<usize>>,
     pub(crate) next_state: ProgramOwnedTraversalState,
 }
@@ -151,9 +175,10 @@ pub(crate) fn compile_neural_program_atlas(
             let program = programs.len();
             program_by_law.insert(successors.clone(), program);
             programs.push(ProgramMorphism {
-                lineage: successor_lineage(track_keys, &successors),
+                lineage: successor_lineage(track_keys, &successors, &[]),
                 presentation_ordinals: vec![presentation],
                 successors,
+                boundary_sources: Vec::new(),
             });
         }
     }
@@ -216,11 +241,28 @@ pub(crate) fn program_encoding_signature(programs: &[ProgramMorphism]) -> String
     for program in programs {
         digest.update(program.lineage.as_bytes());
         digest.update(b"\n");
+        if !program.boundary_sources.is_empty() {
+            digest.update(b"boundaries:");
+            digest.update(
+                program
+                    .boundary_sources
+                    .iter()
+                    .map(usize::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",")
+                    .as_bytes(),
+            );
+            digest.update(b"\n");
+        }
     }
     format!("audio-program-encoding:{}", hex_digest(digest.finalize()))
 }
 
-fn successor_lineage(track_keys: &[String], successors: &[usize]) -> String {
+fn successor_lineage(
+    track_keys: &[String],
+    successors: &[usize],
+    boundary_sources: &[usize],
+) -> String {
     let mut source_order = (0..track_keys.len()).collect::<Vec<_>>();
     source_order.sort_unstable_by(|left, right| track_keys[*left].cmp(&track_keys[*right]));
     let mut digest = Sha256::new();
@@ -228,6 +270,13 @@ fn successor_lineage(track_keys: &[String], successors: &[usize]) -> String {
         digest.update(track_keys[source].as_bytes());
         digest.update(b"\0");
         digest.update(track_keys[successors[source]].as_bytes());
+        digest.update(b"\n");
+    }
+    let mut boundary_order = boundary_sources.to_vec();
+    boundary_order.sort_unstable_by(|left, right| track_keys[*left].cmp(&track_keys[*right]));
+    for source in boundary_order {
+        digest.update(b"boundary\0");
+        digest.update(track_keys[source].as_bytes());
         digest.update(b"\n");
     }
     format!("audio-program:{}", hex_digest(digest.finalize()))
@@ -308,6 +357,383 @@ fn augment_matching(
     false
 }
 
+fn permutation_cycle_ids(successors: &[usize]) -> Vec<usize> {
+    let mut cycle_ids = vec![usize::MAX; successors.len()];
+    let mut cycle = 0;
+    for root in 0..successors.len() {
+        if cycle_ids[root] != usize::MAX {
+            continue;
+        }
+        let mut node = root;
+        while cycle_ids[node] == usize::MAX {
+            cycle_ids[node] = cycle;
+            node = successors[node];
+        }
+        cycle += 1;
+    }
+    cycle_ids
+}
+
+pub(crate) fn program_cycle_separations(
+    atlas: &NeuralProgramAtlas,
+    neighbors: &[usize],
+) -> Result<Vec<usize>, String> {
+    if neighbors.len() != atlas.track_count * atlas.candidate_count {
+        return Err("candidate relation and program atlas must align".to_string());
+    }
+    let cycle_ids = atlas
+        .programs
+        .iter()
+        .map(|program| permutation_cycle_ids(&program.successors))
+        .collect::<Vec<_>>();
+    let mut separations = vec![0; neighbors.len()];
+    for source in 0..atlas.track_count {
+        for (rank, destination) in neighbors
+            [source * atlas.candidate_count..(source + 1) * atlas.candidate_count]
+            .iter()
+            .copied()
+            .enumerate()
+        {
+            separations[source * atlas.candidate_count + rank] = cycle_ids
+                .iter()
+                .filter(|program_cycles| program_cycles[source] != program_cycles[destination])
+                .count();
+        }
+    }
+    Ok(separations)
+}
+
+pub(crate) fn candidate_neighborhood_overlaps(
+    track_count: usize,
+    candidate_count: usize,
+    neighbors: &[usize],
+) -> Result<Vec<usize>, String> {
+    if neighbors.len() != track_count * candidate_count {
+        return Err("candidate relation shape is invalid".to_string());
+    }
+    let sets = neighbors
+        .chunks_exact(candidate_count)
+        .map(|row| row.iter().copied().collect::<HashSet<_>>())
+        .collect::<Vec<_>>();
+    Ok(neighbors
+        .chunks_exact(candidate_count)
+        .enumerate()
+        .flat_map(|(source, row)| {
+            row.iter()
+                .map(|destination| sets[source].intersection(&sets[*destination]).count())
+                .collect::<Vec<_>>()
+        })
+        .collect())
+}
+
+fn close_successor_law_to_single_cycle(
+    successors: &[usize],
+    candidate_count: usize,
+    neighbors: &[usize],
+    candidate_separations: &[usize],
+    candidate_local_overlaps: &[usize],
+    track_keys: &[String],
+) -> Option<Vec<usize>> {
+    let original = successors.to_vec();
+    let mut closed = original.clone();
+    let candidate_ranks = neighbors
+        .chunks_exact(candidate_count)
+        .map(|row| {
+            row.iter()
+                .copied()
+                .enumerate()
+                .map(|(rank, destination)| (destination, rank))
+                .collect::<HashMap<_, _>>()
+        })
+        .collect::<Vec<_>>();
+    let mut changed_sources = HashSet::<usize>::new();
+
+    loop {
+        let cycle_ids = permutation_cycle_ids(&closed);
+        if cycle_ids.iter().copied().max().unwrap_or(0) == 0 {
+            return Some(closed);
+        }
+        let mut predecessor = vec![0; closed.len()];
+        for (source, destination) in closed.iter().copied().enumerate() {
+            predecessor[destination] = source;
+        }
+        let mut best = None;
+        for left_source in 0..closed.len() {
+            let left_destination = closed[left_source];
+            let left_row =
+                &neighbors[left_source * candidate_count..(left_source + 1) * candidate_count];
+            for (left_rank, right_destination) in left_row.iter().copied().enumerate() {
+                let right_source = predecessor[right_destination];
+                if cycle_ids[left_source] == cycle_ids[right_source] {
+                    continue;
+                }
+                let Some(right_rank) = candidate_ranks[right_source]
+                    .get(&left_destination)
+                    .copied()
+                else {
+                    continue;
+                };
+                let proposed = [
+                    (left_source, right_destination),
+                    (right_source, left_destination),
+                ];
+                let mut proposed_changed = changed_sources.clone();
+                proposed_changed.remove(&left_source);
+                proposed_changed.remove(&right_source);
+                for (source, destination) in proposed {
+                    if destination != original[source] {
+                        proposed_changed.insert(source);
+                    }
+                }
+                if proposed_changed.iter().any(|source| {
+                    let destination = proposed
+                        .iter()
+                        .find_map(|(candidate_source, destination)| {
+                            (*candidate_source == *source).then_some(*destination)
+                        })
+                        .unwrap_or(closed[*source]);
+                    proposed_changed.contains(&destination)
+                }) {
+                    continue;
+                }
+                let left_separation =
+                    candidate_separations[left_source * candidate_count + left_rank];
+                let right_separation =
+                    candidate_separations[right_source * candidate_count + right_rank];
+                let left_overlap =
+                    candidate_local_overlaps[left_source * candidate_count + left_rank];
+                let right_overlap =
+                    candidate_local_overlaps[right_source * candidate_count + right_rank];
+                let score = (
+                    left_overlap.max(right_overlap),
+                    left_overlap + right_overlap,
+                    std::cmp::Reverse(left_separation.min(right_separation)),
+                    std::cmp::Reverse(left_separation + right_separation),
+                    track_keys[left_source].as_str(),
+                    track_keys[right_source].as_str(),
+                );
+                if best
+                    .as_ref()
+                    .is_none_or(|(best_score, _, _)| score < *best_score)
+                {
+                    best = Some((score, left_source, right_source));
+                }
+            }
+        }
+        let (_, left_source, right_source) = best?;
+        let left_destination = closed[left_source];
+        closed[left_source] = closed[right_source];
+        closed[right_source] = left_destination;
+        changed_sources = original
+            .iter()
+            .zip(&closed)
+            .enumerate()
+            .filter_map(|(source, (before, after))| (before != after).then_some(source))
+            .collect();
+    }
+}
+
+// @forma implements architecture Domain.PlaylistScopedPathFairExecution as close_neural_program_atlas_cycles
+// @forma implements architecture Domain.SemanticStyleSectorTraversal as close_neural_program_atlas_cycles
+pub(crate) fn close_neural_program_atlas_cycles(
+    atlas: &NeuralProgramAtlas,
+    neighbors: &[usize],
+    track_keys: &[String],
+) -> Result<PathFairCompilationResult, String> {
+    if track_keys.len() != atlas.track_count
+        || neighbors.len() != atlas.track_count * atlas.candidate_count
+    {
+        return Err("candidate relation and program atlas must align".to_string());
+    }
+    let candidate_separations = program_cycle_separations(atlas, neighbors)?;
+    let candidate_local_overlaps =
+        candidate_neighborhood_overlaps(atlas.track_count, atlas.candidate_count, neighbors)?;
+    let overlap_by_destination = (0..atlas.track_count)
+        .map(|source| {
+            let row =
+                &neighbors[source * atlas.candidate_count..(source + 1) * atlas.candidate_count];
+            let overlap_row = &candidate_local_overlaps
+                [source * atlas.candidate_count..(source + 1) * atlas.candidate_count];
+            row.iter()
+                .copied()
+                .zip(overlap_row.iter().copied())
+                .collect::<HashMap<_, _>>()
+        })
+        .collect::<Vec<_>>();
+    let mut programs = Vec::<ProgramMorphism>::new();
+    let mut program_by_code = HashMap::<(Vec<usize>, Vec<usize>), usize>::new();
+    let mut retracted = Vec::new();
+    for program in &atlas.programs {
+        let Some(successors) = close_successor_law_to_single_cycle(
+            &program.successors,
+            atlas.candidate_count,
+            neighbors,
+            &candidate_separations,
+            &candidate_local_overlaps,
+            track_keys,
+        ) else {
+            retracted.extend(program.presentation_ordinals.iter().copied());
+            continue;
+        };
+        let boundary_sources = program
+            .successors
+            .iter()
+            .copied()
+            .zip(successors.iter().copied())
+            .enumerate()
+            .filter_map(|(source, (before, after))| {
+                (before != after
+                    && overlap_by_destination[source][&after]
+                        < overlap_by_destination[source][&before])
+                    .then_some(source)
+            })
+            .collect::<Vec<_>>();
+        let code = (successors.clone(), boundary_sources.clone());
+        if let Some(index) = program_by_code.get(&code).copied() {
+            programs[index]
+                .presentation_ordinals
+                .extend(program.presentation_ordinals.iter().copied());
+            programs[index].presentation_ordinals.sort_unstable();
+            programs[index].presentation_ordinals.dedup();
+            continue;
+        }
+        program_by_code.insert(code, programs.len());
+        programs.push(ProgramMorphism {
+            lineage: successor_lineage(track_keys, &successors, &boundary_sources),
+            presentation_ordinals: program.presentation_ordinals.clone(),
+            successors,
+            boundary_sources,
+        });
+    }
+    retracted.sort_unstable();
+    Ok(PathFairCompilationResult {
+        atlas: (!programs.is_empty()).then_some(NeuralProgramAtlas {
+            track_count: atlas.track_count,
+            candidate_count: atlas.candidate_count,
+            programs,
+        }),
+        retracted_presentations: retracted,
+    })
+}
+
+// @forma implements architecture Domain.PlaylistScopedProgramExecution as restrict_neural_program_atlas_to_playlist
+pub(crate) fn restrict_neural_program_atlas_to_playlist(
+    atlas: &NeuralProgramAtlas,
+    track_keys: &[String],
+    playlist_track_ordinals: &[usize],
+) -> Result<PlaylistScopedProgramAtlas, String> {
+    if track_keys.len() != atlas.track_count {
+        return Err("program atlas and stable track keys must align".to_string());
+    }
+    let mut selected = playlist_track_ordinals.to_vec();
+    selected.sort_unstable();
+    selected.dedup();
+    if selected.is_empty() {
+        return Err("playlist program scope must contain an encoded track".to_string());
+    }
+    if selected.iter().any(|ordinal| *ordinal >= atlas.track_count) {
+        return Err("playlist program scope contains an invalid track".to_string());
+    }
+    selected.sort_unstable_by(|left, right| track_keys[*left].cmp(&track_keys[*right]));
+    let mut local_by_global = vec![None; atlas.track_count];
+    for (local, global) in selected.iter().copied().enumerate() {
+        local_by_global[global] = Some(local);
+    }
+    let scoped_track_keys = selected
+        .iter()
+        .map(|ordinal| track_keys[*ordinal].clone())
+        .collect::<Vec<_>>();
+    let mut programs = Vec::<ProgramMorphism>::new();
+    let mut program_by_code = HashMap::<(Vec<usize>, Vec<usize>), usize>::new();
+    for program in &atlas.programs {
+        let mut successors = Vec::with_capacity(selected.len());
+        let mut boundary_sources = Vec::new();
+        for (local_source, global_source) in selected.iter().copied().enumerate() {
+            let mut global_node = global_source;
+            let mut crosses_boundary = false;
+            let mut returned = None;
+            for _ in 0..atlas.track_count {
+                crosses_boundary |= program.boundary_sources.contains(&global_node);
+                let global_destination = program.successors[global_node];
+                if let Some(local_destination) = local_by_global[global_destination] {
+                    returned = Some(local_destination);
+                    if crosses_boundary {
+                        boundary_sources.push(local_source);
+                    }
+                    break;
+                }
+                global_node = global_destination;
+            }
+            successors
+                .push(returned.ok_or_else(|| "program orbit has no playlist return".to_string())?);
+        }
+        let code = (successors.clone(), boundary_sources.clone());
+        if let Some(index) = program_by_code.get(&code).copied() {
+            programs[index]
+                .presentation_ordinals
+                .extend(program.presentation_ordinals.iter().copied());
+            programs[index].presentation_ordinals.sort_unstable();
+            programs[index].presentation_ordinals.dedup();
+            continue;
+        }
+        program_by_code.insert(code, programs.len());
+        programs.push(ProgramMorphism {
+            lineage: successor_lineage(&scoped_track_keys, &successors, &boundary_sources),
+            presentation_ordinals: program.presentation_ordinals.clone(),
+            successors,
+            boundary_sources,
+        });
+    }
+    programs.sort_by_key(|program| {
+        (
+            program
+                .successors
+                .iter()
+                .enumerate()
+                .any(|(source, destination)| source == *destination),
+            program
+                .presentation_ordinals
+                .iter()
+                .copied()
+                .min()
+                .unwrap_or(0),
+        )
+    });
+    Ok(PlaylistScopedProgramAtlas {
+        atlas: NeuralProgramAtlas {
+            track_count: selected.len(),
+            candidate_count: atlas.candidate_count,
+            programs,
+        },
+        global_track_ordinals: selected,
+    })
+}
+
+pub(crate) fn candidate_relation_from_program_atlas(
+    atlas: &NeuralProgramAtlas,
+) -> Result<Vec<usize>, String> {
+    let mut owners = vec![None; atlas.candidate_count];
+    for (program_index, program) in atlas.programs.iter().enumerate() {
+        for presentation in &program.presentation_ordinals {
+            let Some(owner) = owners.get_mut(*presentation) else {
+                return Err("program presentation is outside candidate width".to_string());
+            };
+            *owner = Some(program_index);
+        }
+    }
+    if owners.iter().any(Option::is_none) {
+        return Err("program atlas does not own every candidate presentation".to_string());
+    }
+    Ok((0..atlas.track_count)
+        .flat_map(|source| {
+            owners
+                .iter()
+                .map(|owner| atlas.programs[owner.unwrap()].successors[source])
+                .collect::<Vec<_>>()
+        })
+        .collect())
+}
+
 // @forma implements material ResearchCandidateTransfer.split_and_merge_program_species as compile_program_orbit_index
 pub(crate) fn compile_program_orbit_index(
     atlas: &NeuralProgramAtlas,
@@ -343,16 +769,74 @@ pub(crate) fn compile_program_orbit_index(
         all_cycle_ids.push(cycle_ids);
         all_cycle_masks.push(cycle_masks);
     }
+    let coverage_successors = atlas
+        .programs
+        .iter()
+        .enumerate()
+        .map(|(program_ordinal, program)| {
+            atlas
+                .programs
+                .iter()
+                .enumerate()
+                .filter(|(candidate_ordinal, _)| *candidate_ordinal != program_ordinal)
+                .map(|(candidate_ordinal, candidate)| {
+                    (
+                        maximum_common_successor_run(program, candidate),
+                        program
+                            .successors
+                            .iter()
+                            .zip(&candidate.successors)
+                            .filter(|(left, right)| left == right)
+                            .count(),
+                        candidate.lineage.as_str(),
+                        candidate_ordinal,
+                    )
+                })
+                .min()
+                .map(|(_, _, _, candidate_ordinal)| (candidate_ordinal, 1))
+                .unwrap_or((program_ordinal, 0))
+        })
+        .collect();
     Ok(ProgramOrbitIndex {
         cycle_ids: all_cycle_ids,
         cycle_masks: all_cycle_masks,
+        coverage_successors,
     })
+}
+
+fn maximum_common_successor_run(left: &ProgramMorphism, right: &ProgramMorphism) -> usize {
+    let mut visited = HashSet::new();
+    let mut maximum = 0;
+    for root in 0..left.successors.len() {
+        if visited.contains(&root) {
+            continue;
+        }
+        let mut cycle = Vec::new();
+        let mut node = root;
+        while visited.insert(node) {
+            cycle.push(left.successors[node] == right.successors[node]);
+            node = left.successors[node];
+        }
+        if cycle.iter().all(|shared| *shared) {
+            maximum = maximum.max(cycle.len());
+            continue;
+        }
+        let mut run = 0;
+        for shared in cycle.iter().chain(&cycle) {
+            run = if *shared { run + 1 } else { 0 };
+            maximum = maximum.max(run.min(cycle.len()));
+        }
+    }
+    maximum
 }
 
 pub(crate) fn initialize_traversal_state(
     atlas: &NeuralProgramAtlas,
     anchors: &[usize],
 ) -> Result<ProgramOwnedTraversalState, String> {
+    if atlas.programs.is_empty() {
+        return Err("program atlas must contain an executable program".to_string());
+    }
     if anchors.iter().any(|anchor| *anchor >= atlas.track_count) {
         return Err("anchor contains an invalid track".to_string());
     }
@@ -369,11 +853,60 @@ pub(crate) fn initialize_traversal_state(
                     tie_cursor: 1 % atlas.programs.len(),
                     realized_history: history,
                     residence_steps: 0,
+                    coverage_epoch: 0,
                 }
             })
             .collect(),
         playback_cycle: 0,
     })
+}
+
+pub(crate) fn transport_traversal_state(
+    previous: Option<(&NeuralProgramAtlas, &ProgramOwnedTraversalState)>,
+    atlas: &NeuralProgramAtlas,
+    anchors: &[usize],
+    realized_histories: &[Vec<usize>],
+) -> Result<ProgramOwnedTraversalState, String> {
+    if anchors.len() != realized_histories.len() {
+        return Err("transported anchors and realized histories must align".to_string());
+    }
+    if let Some((_, state)) = previous
+        && state.paths.len() != anchors.len()
+    {
+        return Err("transported path count must remain stable".to_string());
+    }
+    let mut transported = initialize_traversal_state(atlas, anchors)?;
+    for path_ordinal in 0..anchors.len() {
+        let path = &mut transported.paths[path_ordinal];
+        for realized in &realized_histories[path_ordinal] {
+            if *realized >= atlas.track_count {
+                return Err("transported history contains an invalid track".to_string());
+            }
+            set_bit(&mut path.realized_history, *realized);
+        }
+        let Some((previous_atlas, previous_state)) = previous else {
+            continue;
+        };
+        let previous_path = &previous_state.paths[path_ordinal];
+        let presentation = previous_atlas.programs[previous_path.active_program]
+            .presentation_ordinals
+            .iter()
+            .copied()
+            .min()
+            .unwrap_or(0);
+        if let Some(program) = atlas
+            .programs
+            .iter()
+            .position(|program| program.presentation_ordinals.contains(&presentation))
+        {
+            path.active_program = program;
+            path.tie_cursor = (program + 1) % atlas.programs.len();
+            path.residence_steps = previous_path.residence_steps;
+        }
+        path.coverage_epoch = previous_path.coverage_epoch;
+    }
+    transported.playback_cycle = previous.map(|(_, state)| state.playback_cycle).unwrap_or(0);
+    Ok(transported)
 }
 
 // @forma implements material ResearchCandidateTransfer.propose_fresh_departure_from_learnable_future as select_fresh_departure
@@ -429,29 +962,55 @@ pub(crate) fn execute_program_list(
     let mut order = vec![0_usize; path_count * tracks_per_list];
     let mut program_ordinals = vec![0_usize; order.len()];
     let mut departures = vec![false; order.len()];
+    let mut style_sector_departures = vec![false; order.len()];
+    let mut coverage_epoch_transitions = vec![false; order.len()];
     let mut departure_future_overlap = vec![None; order.len()];
     for step in 0..tracks_per_list {
         for path_ordinal in 0..path_count {
             let path = &mut next_state.paths[path_ordinal];
             let mut program = path.active_program;
+            let mut crosses_style_sector = atlas.programs[program]
+                .boundary_sources
+                .contains(&path.current_track);
             let mut destination = atlas.programs[program].successors[path.current_track];
             let index = path_ordinal * tracks_per_list + step;
             if contains_bit(&path.realized_history, destination) {
-                let Some((fresh_program, fresh_destination, overlap)) =
+                if let Some((fresh_program, fresh_destination, overlap)) =
                     select_fresh_departure(atlas, orbit_index, path)
-                else {
-                    return Err(TraversalExhausted {
-                        path_ordinal,
-                        current_track: path.current_track,
-                    });
-                };
-                program = fresh_program;
-                destination = fresh_destination;
+                {
+                    program = fresh_program;
+                    destination = fresh_destination;
+                    crosses_style_sector = true;
+                    departures[index] = true;
+                    departure_future_overlap[index] = Some(overlap);
+                } else {
+                    if bit_count(&path.realized_history) != atlas.track_count
+                        || atlas.track_count < 2
+                    {
+                        return Err(TraversalExhausted {
+                            path_ordinal,
+                            current_track: path.current_track,
+                        });
+                    }
+                    let (coverage_program, encoded_power) =
+                        orbit_index.coverage_successors[program];
+                    program = coverage_program;
+                    let entry_power = if encoded_power == 0 {
+                        1 + path.coverage_epoch % (atlas.track_count - 1)
+                    } else {
+                        encoded_power
+                    };
+                    destination = path.current_track;
+                    for _ in 0..entry_power {
+                        destination = atlas.programs[program].successors[destination];
+                    }
+                    path.realized_history.fill(0);
+                    path.coverage_epoch += 1;
+                    coverage_epoch_transitions[index] = true;
+                }
                 path.active_program = program;
                 path.tie_cursor = (program + 1) % atlas.programs.len();
                 path.residence_steps = 1;
-                departures[index] = true;
-                departure_future_overlap[index] = Some(overlap);
             } else {
                 path.residence_steps += 1;
             }
@@ -459,6 +1018,7 @@ pub(crate) fn execute_program_list(
             set_bit(&mut path.realized_history, destination);
             order[index] = destination;
             program_ordinals[index] = program;
+            style_sector_departures[index] = crosses_style_sector;
         }
     }
     next_state.playback_cycle += 1;
@@ -468,9 +1028,515 @@ pub(crate) fn execute_program_list(
         order,
         program_ordinals,
         departures,
+        style_sector_departures,
+        coverage_epoch_transitions,
         departure_future_overlap,
         next_state,
     })
+}
+
+#[derive(Debug)]
+struct PathFairClosureAudit {
+    value: Value,
+    paired_cosine_difference: f64,
+    paired_neighborhood_overlap_difference: f64,
+    semantic_boundary_local_contrast_violations: usize,
+    resident_span_minimum: usize,
+    all_boundaries_are_candidate_edges: bool,
+}
+
+fn path_fair_closure_audit(
+    original: &NeuralProgramAtlas,
+    closed: &NeuralProgramAtlas,
+    candidate_neighbors: &[usize],
+    catalog: &SymbolicCatalog<'_>,
+    global_track_ordinals: &[usize],
+) -> Result<PathFairClosureAudit, String> {
+    if original.track_count != closed.track_count
+        || original.track_count != global_track_ordinals.len()
+        || candidate_neighbors.len() != original.track_count * original.candidate_count
+    {
+        return Err("path-fair closure audit inputs must align".to_string());
+    }
+    let overlaps = candidate_neighborhood_overlaps(
+        original.track_count,
+        original.candidate_count,
+        candidate_neighbors,
+    )?;
+    let closed_by_presentation = closed
+        .programs
+        .iter()
+        .flat_map(|program| {
+            program
+                .presentation_ordinals
+                .iter()
+                .map(move |presentation| (*presentation, program))
+        })
+        .collect::<HashMap<_, _>>();
+    let candidate_sets = (0..original.track_count)
+        .map(|source| {
+            let start = source * original.candidate_count;
+            candidate_neighbors[start..start + original.candidate_count]
+                .iter()
+                .copied()
+                .collect::<HashSet<_>>()
+        })
+        .collect::<Vec<_>>();
+    let local_overlap = |source: usize, destination: usize| -> Result<usize, String> {
+        let start = source * original.candidate_count;
+        let position = candidate_neighbors[start..start + original.candidate_count]
+            .iter()
+            .position(|candidate| *candidate == destination)
+            .ok_or_else(|| {
+                format!("program edge {source}->{destination} is outside the candidate relation")
+            })?;
+        Ok(overlaps[start + position])
+    };
+
+    let mut admitted_program_count = 0_usize;
+    let mut changed_program_count = 0_usize;
+    let mut semantic_boundary_program_count = 0_usize;
+    let mut graph_splice_edge_count = 0_usize;
+    let mut semantic_boundary_edge_count = 0_usize;
+    let mut resident_edge_count = 0_usize;
+    let mut semantic_boundary_local_contrast_violations = 0_usize;
+    let mut all_boundaries_are_candidate_edges = true;
+    let mut paired_cosine_differences = Vec::new();
+    let mut paired_neighborhood_overlap_differences = Vec::new();
+    let mut resident_spans = Vec::new();
+    let mut resident_cosines = Vec::new();
+    let mut boundary_cosines = Vec::new();
+    let mut resident_neighborhood_overlaps = Vec::new();
+    let mut boundary_neighborhood_overlaps = Vec::new();
+
+    for source_program in &original.programs {
+        let Some(program) = source_program
+            .presentation_ordinals
+            .iter()
+            .find_map(|presentation| closed_by_presentation.get(presentation).copied())
+        else {
+            continue;
+        };
+        admitted_program_count += 1;
+        let changed = source_program
+            .successors
+            .iter()
+            .zip(&program.successors)
+            .filter(|(before, after)| before != after)
+            .count();
+        graph_splice_edge_count += changed;
+        changed_program_count += usize::from(changed > 0);
+        semantic_boundary_program_count += usize::from(!program.boundary_sources.is_empty());
+        let boundary_sources = program
+            .boundary_sources
+            .iter()
+            .copied()
+            .collect::<HashSet<_>>();
+        let mut program_resident_cosines = Vec::new();
+        let mut program_boundary_cosines = Vec::new();
+        let mut program_resident_overlaps = Vec::new();
+        let mut program_boundary_overlaps = Vec::new();
+        for (source, destination) in program.successors.iter().copied().enumerate() {
+            let source_global = global_track_ordinals[source];
+            let destination_global = global_track_ordinals[destination];
+            let cosine = embedding_cosine(catalog, source_global, destination_global);
+            let neighborhood_overlap =
+                local_overlap(source, destination)? as f64 / original.candidate_count as f64;
+            if boundary_sources.contains(&source) {
+                semantic_boundary_edge_count += 1;
+                all_boundaries_are_candidate_edges &= candidate_sets[source].contains(&destination);
+                semantic_boundary_local_contrast_violations += usize::from(
+                    local_overlap(source, destination)?
+                        >= local_overlap(source, source_program.successors[source])?,
+                );
+                boundary_cosines.push(cosine);
+                boundary_neighborhood_overlaps.push(neighborhood_overlap);
+                program_boundary_cosines.push(cosine);
+                program_boundary_overlaps.push(neighborhood_overlap);
+            } else {
+                resident_edge_count += 1;
+                resident_cosines.push(cosine);
+                resident_neighborhood_overlaps.push(neighborhood_overlap);
+                program_resident_cosines.push(cosine);
+                program_resident_overlaps.push(neighborhood_overlap);
+            }
+        }
+        if !program.boundary_sources.is_empty() {
+            paired_cosine_differences
+                .push(mean(&program_boundary_cosines) - mean(&program_resident_cosines));
+            paired_neighborhood_overlap_differences
+                .push(mean(&program_boundary_overlaps) - mean(&program_resident_overlaps));
+
+            let start = program.boundary_sources[0];
+            let mut node = program.successors[start];
+            let mut resident_span = 0_usize;
+            while node != start {
+                if boundary_sources.contains(&node) {
+                    resident_spans.push(resident_span);
+                    resident_span = 0;
+                } else {
+                    resident_span += 1;
+                }
+                node = program.successors[node];
+            }
+            resident_spans.push(resident_span);
+        } else {
+            resident_spans.push(program.successors.len());
+        }
+    }
+
+    let paired_cosine_difference = mean(&paired_cosine_differences);
+    let paired_neighborhood_overlap_difference = mean(&paired_neighborhood_overlap_differences);
+    let resident_span_minimum = resident_spans.iter().copied().min().unwrap_or(0);
+    Ok(PathFairClosureAudit {
+        value: json!({
+            "admitted_original_program_count": admitted_program_count,
+            "changed_original_program_count": changed_program_count,
+            "semantic_boundary_program_count": semantic_boundary_program_count,
+            "semantic_boundary_local_contrast_violations":
+                semantic_boundary_local_contrast_violations,
+            "graph_splice_edge_count": graph_splice_edge_count,
+            "resident_edge_count": resident_edge_count,
+            "fatigue_bridge_edge_count": semantic_boundary_edge_count,
+            "resident_edge_cosine_mean": mean(&resident_cosines),
+            "fatigue_bridge_edge_cosine_mean": mean(&boundary_cosines),
+            "program_paired_bridge_minus_resident_cosine_mean":
+                paired_cosine_difference,
+            "resident_edge_neighborhood_overlap_mean":
+                mean(&resident_neighborhood_overlaps),
+            "fatigue_bridge_neighborhood_overlap_mean":
+                mean(&boundary_neighborhood_overlaps),
+            "program_paired_bridge_minus_resident_neighborhood_overlap_mean":
+                paired_neighborhood_overlap_difference,
+            "resident_span_between_bridges_minimum": resident_span_minimum,
+            "all_fatigue_bridges_are_candidate_edges":
+                all_boundaries_are_candidate_edges,
+        }),
+        paired_cosine_difference,
+        paired_neighborhood_overlap_difference,
+        semantic_boundary_local_contrast_violations,
+        resident_span_minimum,
+        all_boundaries_are_candidate_edges,
+    })
+}
+
+// @forma implements architecture Domain.PlaylistScopedPathFairExecution as build_symbolic_playlist_scope_report
+// @forma implements architecture Domain.CrossRuntimeScopedBoundaryNaturality as build_symbolic_playlist_scope_report
+// @forma observes observation Domain.PlaybackSessionProgramState
+pub(crate) fn build_symbolic_playlist_scope_report(
+    catalog: &SymbolicCatalog<'_>,
+    scopes: &[(String, Vec<usize>)],
+    target_title: &str,
+) -> Result<Value, String> {
+    let compilation = compile_neural_program_atlas(
+        catalog.track_keys,
+        catalog.candidate_count,
+        catalog.neighbors,
+    )?;
+    let Some(original_atlas) = compilation.atlas else {
+        return Err(format!(
+            "global candidate presentations are unclosed: {:?}",
+            compilation.unclosed_presentations
+        ));
+    };
+    let global_closure =
+        close_neural_program_atlas_cycles(&original_atlas, catalog.neighbors, catalog.track_keys)?;
+    let Some(global_atlas) = global_closure.atlas else {
+        return Err("no global candidate presentation closes to a path-fair cycle".to_string());
+    };
+    let global_ordinals = (0..original_atlas.track_count).collect::<Vec<_>>();
+    let global_audit = path_fair_closure_audit(
+        &original_atlas,
+        &global_atlas,
+        catalog.neighbors,
+        catalog,
+        &global_ordinals,
+    )?;
+    let target_global = catalog
+        .track_titles
+        .iter()
+        .position(|title| title.eq_ignore_ascii_case(target_title));
+
+    let mut scope_reports = Vec::with_capacity(scopes.len());
+    let mut executable_scope_count = 0_usize;
+    let mut insufficient_scope_count = 0_usize;
+    let mut total_fatigue_departures = 0_usize;
+    let mut maximum_common_step_preimages = 0_usize;
+    let mut all_capable_scopes_execute = true;
+    let mut all_programs_bijective = true;
+    let mut all_scopes_begin_with_resident_continuation = true;
+    let mut all_departures_have_resident_continuation = true;
+    let mut all_small_scopes_are_explicit = true;
+    let mut all_cross_list_overlap_is_zero = true;
+    let mut all_persistent_queues_are_nonreset = true;
+    let mut all_owned_states_are_distinct = true;
+    let mut all_scoped_boundaries_have_positive_contrast = true;
+
+    for (scope_name, scope_ordinals) in scopes {
+        if scope_ordinals.len() < 3 {
+            insufficient_scope_count += 1;
+            scope_reports.push(json!({
+                "scope": scope_name,
+                "track_count": scope_ordinals.len(),
+                "status": "explicit_insufficient_two_list_capacity",
+            }));
+            continue;
+        }
+        let scoped_proposals = restrict_neural_program_atlas_to_playlist(
+            &original_atlas,
+            catalog.track_keys,
+            scope_ordinals,
+        )?;
+        let scoped_candidates = candidate_relation_from_program_atlas(&scoped_proposals.atlas)?;
+        let scoped_closure = close_neural_program_atlas_cycles(
+            &scoped_proposals.atlas,
+            &scoped_candidates,
+            &scoped_proposals
+                .global_track_ordinals
+                .iter()
+                .map(|ordinal| catalog.track_keys[*ordinal].clone())
+                .collect::<Vec<_>>(),
+        )?;
+        let Some(atlas) = scoped_closure.atlas else {
+            all_capable_scopes_execute = false;
+            scope_reports.push(json!({
+                "scope": scope_name,
+                "track_count": scope_ordinals.len(),
+                "status": "explicit_scoped_program_retraction",
+                "retracted_presentations": scoped_closure.retracted_presentations,
+            }));
+            continue;
+        };
+        let local_audit = path_fair_closure_audit(
+            &scoped_proposals.atlas,
+            &atlas,
+            &scoped_candidates,
+            catalog,
+            &scoped_proposals.global_track_ordinals,
+        )?;
+        all_scoped_boundaries_have_positive_contrast &=
+            local_audit.semantic_boundary_local_contrast_violations == 0;
+        let orbit_index = compile_program_orbit_index(&atlas)?;
+        let anchors = (0..atlas.track_count).collect::<Vec<_>>();
+        let initial = initialize_traversal_state(&atlas, &anchors)?;
+        let tracks_per_list = 32.min(((atlas.track_count - 1) / 2).max(1));
+        let first = match execute_program_list(&atlas, &orbit_index, tracks_per_list, &initial) {
+            Ok(list) => list,
+            Err(error) => {
+                all_capable_scopes_execute = false;
+                scope_reports.push(json!({
+                    "scope": scope_name,
+                    "track_count": scope_ordinals.len(),
+                    "status": "explicit_scoped_traversal_exhaustion",
+                    "path_ordinal": error.path_ordinal,
+                    "current_track": error.current_track,
+                }));
+                continue;
+            }
+        };
+        let second =
+            match execute_program_list(&atlas, &orbit_index, tracks_per_list, &first.next_state) {
+                Ok(list) => list,
+                Err(error) => {
+                    all_capable_scopes_execute = false;
+                    scope_reports.push(json!({
+                        "scope": scope_name,
+                        "track_count": scope_ordinals.len(),
+                        "status": "explicit_scoped_traversal_exhaustion",
+                        "path_ordinal": error.path_ordinal,
+                        "current_track": error.current_track,
+                    }));
+                    continue;
+                }
+            };
+        let reset = execute_program_list(&atlas, &orbit_index, tracks_per_list, &initial)
+            .map_err(|error| error.to_string())?;
+        let scoped_bijective = atlas.programs.iter().all(|program| {
+            let mut successors = program.successors.clone();
+            successors.sort_unstable();
+            successors == (0..atlas.track_count).collect::<Vec<_>>()
+        });
+        let initial_continuation = atlas.programs[0]
+            .successors
+            .iter()
+            .enumerate()
+            .all(|(source, destination)| source != *destination);
+        let mut no_consecutive_style_departures = true;
+        let mut cross_list_overlap_maximum = 0_usize;
+        let mut fatigue_departures = 0_usize;
+        for path in 0..atlas.track_count {
+            let first_start = path * tracks_per_list;
+            let first_end = first_start + tracks_per_list;
+            let first_tracks = &first.order[first_start..first_end];
+            let second_tracks = &second.order[first_start..first_end];
+            let first_set = first_tracks.iter().copied().collect::<HashSet<_>>();
+            cross_list_overlap_maximum = cross_list_overlap_maximum.max(
+                second_tracks
+                    .iter()
+                    .filter(|track| first_set.contains(track))
+                    .count(),
+            );
+            let semantic_departures = first.style_sector_departures[first_start..first_end]
+                .iter()
+                .chain(&second.style_sector_departures[first_start..first_end])
+                .copied()
+                .collect::<Vec<_>>();
+            fatigue_departures += semantic_departures
+                .iter()
+                .filter(|departure| **departure)
+                .count();
+            no_consecutive_style_departures &= semantic_departures
+                .windows(2)
+                .all(|pair| !(pair[0] && pair[1]));
+        }
+        let owned_states_are_distinct = first
+            .next_state
+            .paths
+            .iter()
+            .map(|path| {
+                (
+                    path.current_track,
+                    path.active_program,
+                    path.tie_cursor,
+                    path.realized_history.clone(),
+                )
+            })
+            .collect::<HashSet<_>>()
+            .len()
+            == atlas.track_count;
+        let scope_maximum_common_step_preimages = (0..tracks_per_list)
+            .map(|step| {
+                let mut preimages = HashMap::<usize, usize>::new();
+                for path in 0..atlas.track_count {
+                    *preimages
+                        .entry(second.order[path * tracks_per_list + step])
+                        .or_default() += 1;
+                }
+                preimages.values().copied().max().unwrap_or(0)
+            })
+            .max()
+            .unwrap_or(0);
+        let persistent_is_not_reset = second.order != reset.order;
+        let target_local = target_global.and_then(|target| {
+            scoped_proposals
+                .global_track_ordinals
+                .iter()
+                .position(|ordinal| *ordinal == target)
+        });
+        let target_occurrences = target_local.map(|target| {
+            first
+                .order
+                .iter()
+                .chain(&second.order)
+                .filter(|track| **track == target)
+                .count()
+        });
+
+        executable_scope_count += 1;
+        total_fatigue_departures += fatigue_departures;
+        maximum_common_step_preimages =
+            maximum_common_step_preimages.max(scope_maximum_common_step_preimages);
+        all_programs_bijective &= scoped_bijective;
+        all_scopes_begin_with_resident_continuation &= initial_continuation;
+        all_departures_have_resident_continuation &= no_consecutive_style_departures;
+        all_cross_list_overlap_is_zero &= cross_list_overlap_maximum == 0;
+        all_persistent_queues_are_nonreset &= persistent_is_not_reset;
+        all_owned_states_are_distinct &= owned_states_are_distinct;
+        scope_reports.push(json!({
+            "scope": scope_name,
+            "track_count": scope_ordinals.len(),
+            "status": "passed",
+            "program_count": atlas.programs.len(),
+            "tracks_per_list": tracks_per_list,
+            "all_programs_bijective": scoped_bijective,
+            "initial_program_has_continuation_for_every_start": initial_continuation,
+            "first_step_is_resident_for_every_start":
+                (0..atlas.track_count).all(|path|
+                    !first.style_sector_departures[path * tracks_per_list]),
+            "no_consecutive_style_sector_departures":
+                no_consecutive_style_departures,
+            "cross_list_realized_track_overlap_maximum":
+                cross_list_overlap_maximum,
+            "persistent_second_is_not_reset_replay": persistent_is_not_reset,
+            "owned_states_remain_distinct": owned_states_are_distinct,
+            "maximum_common_step_preimages":
+                scope_maximum_common_step_preimages,
+            "fatigue_departures": fatigue_departures,
+            "semantic_closure": local_audit.value,
+            "target_occurrences": target_occurrences,
+            "target_uniform_expectation":
+                target_local.map(|_| tracks_per_list * 2),
+        }));
+    }
+
+    let capable_scope_count = scopes
+        .iter()
+        .filter(|(_, ordinals)| ordinals.len() >= 3)
+        .count();
+    all_capable_scopes_execute &= executable_scope_count == capable_scope_count;
+    all_small_scopes_are_explicit &= insufficient_scope_count
+        == scopes
+            .iter()
+            .filter(|(_, ordinals)| ordinals.len() < 3)
+            .count();
+    let acceptance = json!({
+        "every_two_list_capable_real_scope_executes": all_capable_scopes_execute,
+        "every_scoped_program_is_bijective": all_programs_bijective,
+        "every_scope_begins_with_resident_continuation":
+            all_scopes_begin_with_resident_continuation,
+        "every_departure_is_followed_by_resident_continuation":
+            all_departures_have_resident_continuation,
+        "playlist_membership_capacity_is_explicit": all_small_scopes_are_explicit,
+        "cross_list_state_never_replays_realized_tracks":
+            all_cross_list_overlap_is_zero,
+        "persistent_queue_state_is_not_reset_replay":
+            all_persistent_queues_are_nonreset,
+        "owned_path_states_do_not_merge": all_owned_states_are_distinct,
+        "resident_edges_are_more_continuous_than_fatigue_bridges":
+            global_audit.paired_cosine_difference < 0.0,
+        "fatigue_bridges_are_supported_neural_edges":
+            global_audit.all_boundaries_are_candidate_edges,
+        "fatigue_bridges_leave_resident_neural_neighborhoods":
+            global_audit.paired_neighborhood_overlap_difference < 0.0,
+        "every_scoped_fatigue_bridge_has_positive_local_contrast":
+            all_scoped_boundaries_have_positive_contrast,
+        "programs_reside_between_structural_fatigue_bridges":
+            global_audit.resident_span_minimum > 0,
+    });
+    let passed = acceptance
+        .as_object()
+        .expect("acceptance is an object")
+        .values()
+        .all(|value| value == &Value::Bool(true));
+    Ok(json!({
+        "experiment": "rust_symbolic_audio_playlist_scope_first_return_probe",
+        "status": if passed { "probe_passed" } else { "probe_failed" },
+        "input": {
+            "generation": catalog.generation,
+            "track_count": global_atlas.track_count,
+            "real_directory_scope_count": scopes.len(),
+            "candidate_width": global_atlas.candidate_count,
+            "admitted_single_cycle_programs": global_atlas.programs.len(),
+            "retracted_presentations":
+                global_closure.retracted_presentations,
+        },
+        "construction": {
+            "scope_law":
+                "first return of each generation-owned permutation program",
+            "runtime_candidate_relation_reconstruction": false,
+            "out_of_playlist_selection": false,
+            "tuned_parameters": [],
+        },
+        "summary": {
+            "executable_scope_count": executable_scope_count,
+            "singleton_obstruction_count": insufficient_scope_count,
+            "total_fatigue_departures": total_fatigue_departures,
+            "maximum_common_step_preimages": maximum_common_step_preimages,
+        },
+        "path_fair_closure": global_audit.value,
+        "acceptance": acceptance,
+        "scopes": scope_reports,
+    }))
 }
 
 // @forma implements material ResearchCandidateTransfer.audit_typed_morphism_paths as build_symbolic_program_report
@@ -1010,4 +2076,8 @@ fn intersection_count(left: &[u64], right: &[u64]) -> usize {
         .zip(right)
         .map(|(left, right)| (left & right).count_ones() as usize)
         .sum()
+}
+
+fn bit_count(bits: &[u64]) -> usize {
+    bits.iter().map(|word| word.count_ones() as usize).sum()
 }

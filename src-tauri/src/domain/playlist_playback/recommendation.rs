@@ -1,6 +1,13 @@
 use crate::domain::player::model::PlaybackTrack;
 #[cfg(not(test))]
 use crate::domain::playlist_playback::playable_index;
+use crate::domain::playlist_playback::symbolic_program::{
+    NeuralProgramAtlas, ProgramOrbitIndex, ProgramOwnedTraversalState,
+    candidate_relation_from_program_atlas, candidate_relation_signature,
+    close_neural_program_atlas_cycles, compile_neural_program_atlas, compile_program_orbit_index,
+    execute_program_list, ordered_track_key_signature, program_encoding_signature,
+    restrict_neural_program_atlas_to_playlist, transport_traversal_state,
+};
 use crate::domain::playlists::model::AudioStyleTrainingTrackInput;
 #[cfg(not(test))]
 use crate::domain::playlists::model::{CollectionGroupOwner, Group, Music};
@@ -40,7 +47,8 @@ use tauri::{AppHandle, Manager};
 const AUDIO_STYLE_EMBEDDING_VERSION: &str = "audio-style-watermark-transition-v3-measured-flow";
 #[cfg(test)]
 pub(crate) const AUDIO_STYLE_EMBEDDING_VERSION_FOR_TEST: &str = AUDIO_STYLE_EMBEDDING_VERSION;
-const AUDIO_STYLE_STABLE_MODEL_VERSION: &str = "audio-style-stable-model-v1";
+const AUDIO_STYLE_STABLE_MODEL_VERSION: &str = "audio-style-stable-model-v2";
+const AUDIO_STYLE_LEGACY_STABLE_MODEL_VERSION: &str = "audio-style-stable-model-v1";
 pub(crate) const AUDIO_STYLE_STABLE_MODEL_DIR_NAME: &str = "audio-style-stable-model";
 pub(crate) const AUDIO_STYLE_LEGACY_MODEL_EVIDENCE_DIR_NAME: &str = "audio-style-model-evidence";
 const AUDIO_STYLE_TRAINING_INVALIDATION_FILE_VERSION: &str = "audio-style-training-invalidation-v1";
@@ -87,6 +95,9 @@ const AUDIO_STYLE_LISTENER_COMFORT_STRENGTH: f32 = 0.35;
 const AUDIO_STYLE_LISTENER_SHOCK_STRENGTH: f32 = 0.40;
 const AUDIO_STYLE_LISTENER_SHOCK_DISTANCE: f32 = 1.15;
 const AUDIO_STYLE_LOCAL_DENSITY_TOP_K: usize = 10;
+const AUDIO_STYLE_SYMBOLIC_PROGRAM_CANDIDATE_COUNT: usize = 96;
+const AUDIO_STYLE_SYMBOLIC_PROGRAM_ENCODING_SCHEMA: &str =
+    "slisic.symbolic-audio-program-encoding.v1";
 const AUDIO_STYLE_SELF_SUPERVISED_BASIN_GAP_WEIGHT: f32 = 0.35;
 const AUDIO_STYLE_SELF_SUPERVISED_BASIN_SEPARATION_MIN: f32 = 0.55;
 const AUDIO_STYLE_SELF_SUPERVISED_BASIN_SEPARATION_MAX: f32 = 0.92;
@@ -435,6 +446,21 @@ struct CachedAudioStyleModelState {
     indexed_tracks: Vec<CachedAudioStyleIndexedTrack>,
     neighbor_index: CachedAudioStyleNeighborIndex,
     sampling_geometry: Option<CachedAudioStyleSamplingGeometry>,
+    #[serde(default)]
+    symbolic_program_encoding: Option<CachedAudioStyleSymbolicProgramEncoding>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CachedAudioStyleSymbolicProgramEncoding {
+    schema: String,
+    stable_generation: u64,
+    track_count: usize,
+    track_key_signature: String,
+    candidate_width: usize,
+    candidate_relation_signature: String,
+    candidate_rows: Vec<Vec<usize>>,
+    program_lineages: Vec<String>,
+    program_encoding_signature: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -599,6 +625,20 @@ struct AudioStyleModelState {
     indexed_tracks: HashMap<PlaybackTrackKey, AudioStyleIndexedTrack>,
     neighbor_index: AudioStyleNeighborIndex,
     sampling_geometry: Option<AudioStyleSamplingGeometry>,
+    symbolic_program_encoding: Option<Arc<AudioStyleSymbolicProgramEncoding>>,
+}
+
+#[derive(Clone)]
+struct AudioStyleSymbolicProgramEncoding {
+    ordered_keys: Vec<PlaybackTrackKey>,
+    ordinal_by_key: HashMap<PlaybackTrackKey, usize>,
+    track_keys: Vec<String>,
+    candidate_count: usize,
+    candidate_neighbors: Vec<usize>,
+    atlas: NeuralProgramAtlas,
+    track_key_signature: String,
+    candidate_relation_signature: String,
+    program_encoding_signature: String,
 }
 
 struct AudioStyleModelUpdateFailure {
@@ -700,6 +740,29 @@ pub(crate) struct AudioStyleModelSnapshot {
     generation: u64,
     state: Arc<AudioStyleModelState>,
     recommender: Arc<AudioStylePlaylistPlaybackRecommender>,
+}
+
+#[derive(Default)]
+pub(crate) struct AudioStyleSymbolicPlaybackSession {
+    execution: Option<AudioStyleSymbolicPlaylistExecution>,
+    pending_checkpoint: Option<Box<Option<AudioStyleSymbolicPlaylistExecution>>>,
+}
+
+#[derive(Clone)]
+struct AudioStyleSymbolicPlaylistExecution {
+    generation: u64,
+    scope_signature: String,
+    atlas: Arc<NeuralProgramAtlas>,
+    orbit_index: Arc<ProgramOrbitIndex>,
+    state: ProgramOwnedTraversalState,
+    local_by_key: Arc<HashMap<PlaybackTrackKey, usize>>,
+    tracks: Arc<Vec<PlaybackTrack>>,
+}
+
+pub(crate) struct AudioStyleSymbolicNextTrack {
+    pub(crate) track: PlaybackTrack,
+    pub(crate) style_sector_departure: bool,
+    pub(crate) coverage_epoch_transition: bool,
 }
 
 pub(crate) struct AudioStylePlaylistPlaybackProposal {
@@ -926,8 +989,8 @@ impl From<CachedCollectionGroupOwner> for CollectionGroupOwner {
     }
 }
 
-impl From<&AudioStyleModelState> for CachedAudioStyleModelState {
-    fn from(state: &AudioStyleModelState) -> Self {
+impl CachedAudioStyleModelState {
+    fn from_state(state: &AudioStyleModelState, generation: u64) -> Self {
         Self {
             embeddings: sorted_audio_style_embedding_keys(&state.embeddings)
                 .into_iter()
@@ -959,6 +1022,10 @@ impl From<&AudioStyleModelState> for CachedAudioStyleModelState {
                 .sampling_geometry
                 .as_ref()
                 .map(CachedAudioStyleSamplingGeometry::from),
+            symbolic_program_encoding: state
+                .symbolic_program_encoding
+                .as_deref()
+                .map(|encoding| encoding.to_cached(generation)),
         }
     }
 }
@@ -1008,11 +1075,18 @@ impl TryFrom<CachedAudioStyleModelState> for AudioStyleModelState {
                 AudioStyleSamplingGeometry::try_from(geometry, &embeddings, &neighbor_index)
             })
             .transpose()?;
+        let symbolic_program_encoding = cached
+            .symbolic_program_encoding
+            .map(|encoding| {
+                AudioStyleSymbolicProgramEncoding::from_cached(encoding, &embeddings).map(Arc::new)
+            })
+            .transpose()?;
         Ok(Self {
             embeddings,
             indexed_tracks,
             neighbor_index,
             sampling_geometry,
+            symbolic_program_encoding,
         })
     }
 }
@@ -2216,7 +2290,7 @@ impl AudioStyleRecommendationRuntime {
             }
         };
         let restore_result = tauri::async_runtime::spawn_blocking(move || {
-            read_audio_style_stable_model(&stable_model_path)
+            read_and_migrate_audio_style_stable_model(&stable_model_path)
         })
         .await;
         let snapshot = match restore_result {
@@ -3722,6 +3796,7 @@ impl AudioStyleModelState {
             indexed_tracks: indexed_by_key,
             neighbor_index: previous.neighbor_index.clone(),
             sampling_geometry: previous.sampling_geometry.clone(),
+            symbolic_program_encoding: previous.symbolic_program_encoding.clone(),
         }
     }
 
@@ -3941,11 +4016,24 @@ impl AudioStyleModelState {
             AudioStyleNeighborIndex::refresh_from(previous, &embeddings, &stats, previous_reused);
         let sampling_geometry =
             AudioStyleSamplingGeometry::from_model_parts(&embeddings, &stats, &neighbor_index);
+        let symbolic_program_encoding =
+            match AudioStyleSymbolicProgramEncoding::from_embeddings(&embeddings) {
+                Ok(encoding) => Some(Arc::new(encoding)),
+                Err(error) => {
+                    log::warn!(
+                        target: AUDIO_STYLE_LOG_TARGET,
+                        "audio_style_symbolic_program_unavailable reason=\"{}\"",
+                        escape_log_value(&error)
+                    );
+                    None
+                }
+            };
         Self {
             embeddings,
             indexed_tracks,
             neighbor_index,
             sampling_geometry,
+            symbolic_program_encoding,
         }
     }
 }
@@ -4778,6 +4866,262 @@ impl AudioStyleNeighborIndex {
     ) -> HashMap<PlaybackTrackKey, f32> {
         audio_style_local_density_from_neighbors(embeddings, mean, &self.neighbors)
     }
+}
+
+impl AudioStyleSymbolicProgramEncoding {
+    fn from_embeddings(embeddings: &AudioStyleEmbeddingMap) -> Result<Self, String> {
+        if embeddings.len() < 2 {
+            return Err(
+                "symbolic program encoding needs at least two stable embeddings".to_string(),
+            );
+        }
+        let ordered_keys = sorted_audio_style_embedding_keys(embeddings);
+        let track_keys = ordered_keys
+            .iter()
+            .map(symbolic_audio_style_track_key)
+            .collect::<Result<Vec<_>, _>>()?;
+        let candidate_count =
+            AUDIO_STYLE_SYMBOLIC_PROGRAM_CANDIDATE_COUNT.min(ordered_keys.len() - 1);
+        let mean = AudioStyleStats::from_embeddings(embeddings).mean();
+        let mut candidate_lists = ordered_keys
+            .iter()
+            .cloned()
+            .map(|key| (key, Vec::<(PlaybackTrackKey, f32)>::new()))
+            .collect::<HashMap<_, _>>();
+        if !AudioStyleTensorRuntime::new().visit_centered_similarity_pairs(
+            embeddings,
+            &mean,
+            |left, right, similarity| {
+                push_audio_style_symbolic_candidate(
+                    candidate_lists.get_mut(left),
+                    right.clone(),
+                    similarity,
+                    candidate_count,
+                );
+                push_audio_style_symbolic_candidate(
+                    candidate_lists.get_mut(right),
+                    left.clone(),
+                    similarity,
+                    candidate_count,
+                );
+            },
+        ) {
+            for left_index in 0..ordered_keys.len() {
+                for right_index in (left_index + 1)..ordered_keys.len() {
+                    let left = &ordered_keys[left_index];
+                    let right = &ordered_keys[right_index];
+                    let Some(left_embedding) = embeddings.get(left) else {
+                        continue;
+                    };
+                    let Some(right_embedding) = embeddings.get(right) else {
+                        continue;
+                    };
+                    let Some(similarity) = centered_cosine(left_embedding, right_embedding, &mean)
+                    else {
+                        continue;
+                    };
+                    push_audio_style_symbolic_candidate(
+                        candidate_lists.get_mut(left),
+                        right.clone(),
+                        similarity,
+                        candidate_count,
+                    );
+                    push_audio_style_symbolic_candidate(
+                        candidate_lists.get_mut(right),
+                        left.clone(),
+                        similarity,
+                        candidate_count,
+                    );
+                }
+            }
+        }
+        let ordinal_by_key = ordered_keys
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(ordinal, key)| (key, ordinal))
+            .collect::<HashMap<_, _>>();
+        let mut candidate_neighbors = Vec::with_capacity(ordered_keys.len() * candidate_count);
+        for key in &ordered_keys {
+            let candidates = candidate_lists
+                .remove(key)
+                .ok_or_else(|| "symbolic candidate row is missing".to_string())?;
+            if candidates.len() != candidate_count {
+                return Err("symbolic candidate relation has an incomplete row".to_string());
+            }
+            for (candidate, _) in candidates {
+                candidate_neighbors.push(
+                    *ordinal_by_key
+                        .get(&candidate)
+                        .ok_or_else(|| "symbolic candidate is outside stable order".to_string())?,
+                );
+            }
+        }
+        Self::from_parts(
+            ordered_keys,
+            track_keys,
+            candidate_count,
+            candidate_neighbors,
+            None,
+        )
+    }
+
+    fn from_cached(
+        cached: CachedAudioStyleSymbolicProgramEncoding,
+        embeddings: &AudioStyleEmbeddingMap,
+    ) -> Result<Self, String> {
+        if cached.schema != AUDIO_STYLE_SYMBOLIC_PROGRAM_ENCODING_SCHEMA {
+            return Err(format!(
+                "unsupported symbolic program encoding schema `{}`",
+                cached.schema
+            ));
+        }
+        let ordered_keys = sorted_audio_style_embedding_keys(embeddings);
+        let track_keys = ordered_keys
+            .iter()
+            .map(symbolic_audio_style_track_key)
+            .collect::<Result<Vec<_>, _>>()?;
+        if cached.track_count != ordered_keys.len()
+            || cached.candidate_width == 0
+            || cached.candidate_rows.len() != cached.track_count
+            || cached
+                .candidate_rows
+                .iter()
+                .any(|row| row.len() != cached.candidate_width)
+        {
+            return Err("cached symbolic program encoding has a ragged relation".to_string());
+        }
+        if cached.track_key_signature != ordered_track_key_signature(&track_keys) {
+            return Err(
+                "cached symbolic program encoding and stable track order differ".to_string(),
+            );
+        }
+        let expected = (
+            cached.candidate_relation_signature,
+            cached.program_lineages,
+            cached.program_encoding_signature,
+        );
+        Self::from_parts(
+            ordered_keys,
+            track_keys,
+            cached.candidate_width,
+            cached.candidate_rows.into_iter().flatten().collect(),
+            Some(expected),
+        )
+    }
+
+    fn from_parts(
+        ordered_keys: Vec<PlaybackTrackKey>,
+        track_keys: Vec<String>,
+        candidate_count: usize,
+        candidate_neighbors: Vec<usize>,
+        expected: Option<(String, Vec<String>, String)>,
+    ) -> Result<Self, String> {
+        let compilation =
+            compile_neural_program_atlas(&track_keys, candidate_count, &candidate_neighbors)?;
+        if !compilation.unclosed_presentations.is_empty() {
+            return Err(format!(
+                "symbolic candidate presentations are unclosed: {:?}",
+                compilation.unclosed_presentations
+            ));
+        }
+        let atlas = compilation
+            .atlas
+            .ok_or_else(|| "symbolic candidate relation has no executable program".to_string())?;
+        let track_key_signature = ordered_track_key_signature(&track_keys);
+        let candidate_relation_signature =
+            candidate_relation_signature(&track_keys, candidate_count, &candidate_neighbors)?;
+        let program_encoding_signature = program_encoding_signature(&atlas.programs);
+        if let Some((expected_candidate_signature, expected_lineages, expected_program_signature)) =
+            expected
+        {
+            let lineages = atlas
+                .programs
+                .iter()
+                .map(|program| program.lineage.clone())
+                .collect::<Vec<_>>();
+            if candidate_relation_signature != expected_candidate_signature
+                || lineages != expected_lineages
+                || program_encoding_signature != expected_program_signature
+            {
+                return Err(
+                    "cached symbolic program signatures do not match their finite relation"
+                        .to_string(),
+                );
+            }
+        }
+        Ok(Self {
+            ordinal_by_key: ordered_keys
+                .iter()
+                .cloned()
+                .enumerate()
+                .map(|(ordinal, key)| (key, ordinal))
+                .collect(),
+            ordered_keys,
+            track_keys,
+            candidate_count,
+            candidate_neighbors,
+            atlas,
+            track_key_signature,
+            candidate_relation_signature,
+            program_encoding_signature,
+        })
+    }
+
+    fn to_cached(&self, generation: u64) -> CachedAudioStyleSymbolicProgramEncoding {
+        CachedAudioStyleSymbolicProgramEncoding {
+            schema: AUDIO_STYLE_SYMBOLIC_PROGRAM_ENCODING_SCHEMA.to_string(),
+            stable_generation: generation,
+            track_count: self.ordered_keys.len(),
+            track_key_signature: self.track_key_signature.clone(),
+            candidate_width: self.candidate_count,
+            candidate_relation_signature: self.candidate_relation_signature.clone(),
+            candidate_rows: self
+                .candidate_neighbors
+                .chunks_exact(self.candidate_count)
+                .map(<[usize]>::to_vec)
+                .collect(),
+            program_lineages: self
+                .atlas
+                .programs
+                .iter()
+                .map(|program| program.lineage.clone())
+                .collect(),
+            program_encoding_signature: self.program_encoding_signature.clone(),
+        }
+    }
+}
+
+fn symbolic_audio_style_track_key(key: &PlaybackTrackKey) -> Result<String, String> {
+    serde_json::to_string(&(
+        &key.music_url,
+        key.file_path.to_string_lossy(),
+        key.start_ms,
+        key.end_ms,
+    ))
+    .map_err(|error| format!("failed to encode symbolic audio track key: {error}"))
+}
+
+fn push_audio_style_symbolic_candidate(
+    candidates: Option<&mut Vec<(PlaybackTrackKey, f32)>>,
+    key: PlaybackTrackKey,
+    similarity: f32,
+    candidate_count: usize,
+) {
+    let Some(candidates) = candidates else {
+        return;
+    };
+    if !similarity.is_finite() {
+        return;
+    }
+    candidates.push((key, similarity));
+    candidates.sort_by(|left, right| {
+        right.1.total_cmp(&left.1).then_with(|| {
+            audio_style_track_key_sort_value(&left.0)
+                .cmp(&audio_style_track_key_sort_value(&right.0))
+        })
+    });
+    candidates.truncate(candidate_count);
 }
 
 fn push_audio_style_neighbor(
@@ -5865,6 +6209,23 @@ impl AudioStyleModelSnapshot {
         self.recommender.has_embedding_for(track)
     }
 
+    pub(crate) fn symbolic_track_count(&self) -> Option<usize> {
+        self.state
+            .symbolic_program_encoding
+            .as_ref()
+            .map(|encoding| encoding.ordered_keys.len())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn symbolic_program_signatures_for_test(&self) -> Option<(&str, &str, &str)> {
+        let encoding = self.state.symbolic_program_encoding.as_deref()?;
+        Some((
+            &encoding.track_key_signature,
+            &encoding.candidate_relation_signature,
+            &encoding.program_encoding_signature,
+        ))
+    }
+
     pub(crate) fn balance_candidate_field_for_anchor(
         &self,
         anchor: &PlaybackTrack,
@@ -5950,6 +6311,192 @@ impl AudioStyleModelSnapshot {
             .embeddings
             .get(&PlaybackTrackKey::from_track(track))
             .cloned()
+    }
+}
+
+impl AudioStyleSymbolicPlaybackSession {
+    // @forma implements architecture Domain.PlaybackSessionProgramState as propose_next
+    pub(crate) fn propose_next(
+        &mut self,
+        snapshot: &AudioStyleModelSnapshot,
+        current_track: &PlaybackTrack,
+        candidates: &[PlaybackTrack],
+        recently_played_tracks: &[PlaybackTrack],
+    ) -> Result<AudioStyleSymbolicNextTrack, String> {
+        if self.pending_checkpoint.is_some() {
+            return Err("previous symbolic proposal is not committed".to_string());
+        }
+        let encoding = snapshot
+            .state
+            .symbolic_program_encoding
+            .as_deref()
+            .ok_or_else(|| {
+                "stable generation has no executable symbolic program encoding".to_string()
+            })?;
+        let current_key = PlaybackTrackKey::from_track(current_track);
+        if !encoding.ordinal_by_key.contains_key(&current_key) {
+            return Err("current track is outside the stable symbolic encoding".to_string());
+        }
+        let mut track_by_global = HashMap::<usize, PlaybackTrack>::new();
+        for track in candidates.iter().chain(std::iter::once(current_track)) {
+            let key = PlaybackTrackKey::from_track(track);
+            if let Some(global) = encoding.ordinal_by_key.get(&key).copied() {
+                track_by_global
+                    .entry(global)
+                    .or_insert_with(|| track.clone());
+            }
+        }
+        if track_by_global.len() < 3 {
+            return Err(
+                "playlist has fewer than three materialized stable symbolic tracks".to_string(),
+            );
+        }
+        let mut scope_globals = track_by_global.keys().copied().collect::<Vec<_>>();
+        scope_globals.sort_unstable();
+        let scope_track_keys = scope_globals
+            .iter()
+            .map(|global| encoding.track_keys[*global].clone())
+            .collect::<Vec<_>>();
+        let scope_signature = ordered_track_key_signature(&scope_track_keys);
+        let scope_changed = self.execution.as_ref().is_none_or(|execution| {
+            execution.generation != snapshot.generation
+                || execution.scope_signature != scope_signature
+        });
+        let mut execution = if scope_changed {
+            let previous = self.execution.as_ref();
+            let scoped = restrict_neural_program_atlas_to_playlist(
+                &encoding.atlas,
+                &encoding.track_keys,
+                &scope_globals,
+            )?;
+            let scoped_candidates = candidate_relation_from_program_atlas(&scoped.atlas)?;
+            let local_track_keys = scoped
+                .global_track_ordinals
+                .iter()
+                .map(|global| encoding.track_keys[*global].clone())
+                .collect::<Vec<_>>();
+            let closure = close_neural_program_atlas_cycles(
+                &scoped.atlas,
+                &scoped_candidates,
+                &local_track_keys,
+            )?;
+            let atlas = Arc::new(closure.atlas.ok_or_else(|| {
+                format!(
+                    "playlist symbolic presentations were retracted: {:?}",
+                    closure.retracted_presentations
+                )
+            })?);
+            let orbit_index = Arc::new(compile_program_orbit_index(atlas.as_ref())?);
+            let local_by_key = Arc::new(
+                scoped
+                    .global_track_ordinals
+                    .iter()
+                    .enumerate()
+                    .map(|(local, global)| (encoding.ordered_keys[*global].clone(), local))
+                    .collect::<HashMap<_, _>>(),
+            );
+            let tracks = Arc::new(
+                scoped
+                    .global_track_ordinals
+                    .iter()
+                    .map(|global| {
+                        track_by_global.get(global).cloned().ok_or_else(|| {
+                            "playlist symbolic scope lost materialized track metadata".to_string()
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+            );
+            let current_local = *local_by_key.get(&current_key).ok_or_else(|| {
+                "current track disappeared from playlist symbolic scope".to_string()
+            })?;
+            let realized = recently_played_tracks
+                .iter()
+                .filter_map(|track| {
+                    local_by_key
+                        .get(&PlaybackTrackKey::from_track(track))
+                        .copied()
+                })
+                .collect::<Vec<_>>();
+            let state = transport_traversal_state(
+                previous.map(|execution| (execution.atlas.as_ref(), &execution.state)),
+                atlas.as_ref(),
+                &[current_local],
+                &[realized],
+            )?;
+            AudioStyleSymbolicPlaylistExecution {
+                generation: snapshot.generation,
+                scope_signature,
+                atlas,
+                orbit_index,
+                state,
+                local_by_key,
+                tracks,
+            }
+        } else {
+            self.execution
+                .as_ref()
+                .expect("unchanged scope has a symbolic execution")
+                .clone()
+        };
+        let current_local = *execution
+            .local_by_key
+            .get(&current_key)
+            .ok_or_else(|| "current track is outside the active symbolic scope".to_string())?;
+        if execution.state.current_track(0) != Some(current_local) {
+            let previous_state = execution.state.clone();
+            let realized = recently_played_tracks
+                .iter()
+                .filter_map(|track| {
+                    execution
+                        .local_by_key
+                        .get(&PlaybackTrackKey::from_track(track))
+                        .copied()
+                })
+                .collect::<Vec<_>>();
+            execution.state = transport_traversal_state(
+                Some((execution.atlas.as_ref(), &previous_state)),
+                execution.atlas.as_ref(),
+                &[current_local],
+                &[realized],
+            )?;
+        }
+        let list = execute_program_list(
+            execution.atlas.as_ref(),
+            execution.orbit_index.as_ref(),
+            1,
+            &execution.state,
+        )
+        .map_err(|error| error.to_string())?;
+        let next_local = list.order[0];
+        let track = execution
+            .tracks
+            .get(next_local)
+            .cloned()
+            .ok_or_else(|| "symbolic execution selected an invalid local track".to_string())?;
+        execution.state = list.next_state;
+        self.pending_checkpoint = Some(Box::new(self.execution.clone()));
+        self.execution = Some(execution);
+        Ok(AudioStyleSymbolicNextTrack {
+            track,
+            style_sector_departure: list.style_sector_departures[0],
+            coverage_epoch_transition: list.coverage_epoch_transitions[0],
+        })
+    }
+
+    pub(crate) fn commit_proposal(&mut self) -> Result<(), String> {
+        if self.pending_checkpoint.take().is_none() {
+            return Err("symbolic session has no prepared proposal to commit".to_string());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn rollback_proposal(&mut self) -> Result<(), String> {
+        let checkpoint = self
+            .pending_checkpoint
+            .take()
+            .ok_or_else(|| "symbolic session has no prepared proposal to roll back".to_string())?;
+        self.execution = *checkpoint;
+        Ok(())
     }
 }
 
@@ -10274,7 +10821,10 @@ fn cached_audio_style_stable_model_from_snapshot(
         version: AUDIO_STYLE_STABLE_MODEL_VERSION.to_string(),
         embedding_version: AUDIO_STYLE_EMBEDDING_VERSION.to_string(),
         generation: snapshot.generation(),
-        state: CachedAudioStyleModelState::from(snapshot.state.as_ref()),
+        state: CachedAudioStyleModelState::from_state(
+            snapshot.state.as_ref(),
+            snapshot.generation(),
+        ),
     }
 }
 
@@ -10282,7 +10832,9 @@ fn snapshot_from_cached_audio_style_stable_model(
     cached: CachedAudioStyleStableModel,
     path: &Path,
 ) -> Result<AudioStyleModelSnapshot, String> {
-    if cached.version != AUDIO_STYLE_STABLE_MODEL_VERSION {
+    if cached.version != AUDIO_STYLE_STABLE_MODEL_VERSION
+        && cached.version != AUDIO_STYLE_LEGACY_STABLE_MODEL_VERSION
+    {
         return Err(format!(
             "audio style stable model `{}` has unsupported version `{}`",
             path.display(),
@@ -10296,19 +10848,53 @@ fn snapshot_from_cached_audio_style_stable_model(
             cached.embedding_version
         ));
     }
-    let state = AudioStyleModelState::try_from(cached.state).map_err(|error| {
+    if cached
+        .state
+        .symbolic_program_encoding
+        .as_ref()
+        .is_some_and(|encoding| encoding.stable_generation != cached.generation)
+    {
+        return Err(format!(
+            "audio style stable model `{}` has a symbolic encoding from another generation",
+            path.display()
+        ));
+    }
+    let mut state = AudioStyleModelState::try_from(cached.state).map_err(|error| {
         format!(
             "audio style stable model `{}` has invalid state: {error}",
             path.display()
         )
     })?;
+    if state.symbolic_program_encoding.is_none() {
+        match AudioStyleSymbolicProgramEncoding::from_embeddings(&state.embeddings) {
+            Ok(encoding) => {
+                log::info!(
+                    target: AUDIO_STYLE_LOG_TARGET,
+                    "audio_style_symbolic_program_migrated source=stable_embeddings generation={} tracks={} policy=\"no_audio_reencoding\"",
+                    cached.generation,
+                    encoding.ordered_keys.len()
+                );
+                state.symbolic_program_encoding = Some(Arc::new(encoding));
+            }
+            Err(error) => {
+                log::warn!(
+                    target: AUDIO_STYLE_LOG_TARGET,
+                    "audio_style_symbolic_program_unavailable source=stable_embeddings generation={} reason=\"{}\"",
+                    cached.generation,
+                    escape_log_value(&error)
+                );
+            }
+        }
+    }
     Ok(AudioStyleModelSnapshot::from_state(
         cached.generation,
         Arc::new(state),
     ))
 }
 
-fn read_audio_style_stable_model(path: &Path) -> Result<AudioStyleModelSnapshot, String> {
+fn read_audio_style_stable_model_with_migration_status(
+    path: &Path,
+) -> Result<(AudioStyleModelSnapshot, bool), String> {
     let bytes = fs::read(path).map_err(|error| {
         format!(
             "failed to read audio style stable model `{}`: {error}",
@@ -10322,7 +10908,24 @@ fn read_audio_style_stable_model(path: &Path) -> Result<AudioStyleModelSnapshot,
                 path.display()
             )
         })?;
+    let requires_migration = cached.version == AUDIO_STYLE_LEGACY_STABLE_MODEL_VERSION
+        || cached.state.symbolic_program_encoding.is_none();
     snapshot_from_cached_audio_style_stable_model(cached, path)
+        .map(|snapshot| (snapshot, requires_migration))
+}
+
+fn read_audio_style_stable_model(path: &Path) -> Result<AudioStyleModelSnapshot, String> {
+    read_audio_style_stable_model_with_migration_status(path).map(|(snapshot, _)| snapshot)
+}
+
+fn read_and_migrate_audio_style_stable_model(
+    path: &Path,
+) -> Result<AudioStyleModelSnapshot, String> {
+    let (snapshot, requires_migration) = read_audio_style_stable_model_with_migration_status(path)?;
+    if requires_migration {
+        write_audio_style_stable_model(path, &snapshot)?;
+    }
+    Ok(snapshot)
 }
 
 #[cfg(test)]
@@ -10330,6 +10933,13 @@ pub(crate) fn read_audio_style_stable_model_for_test(
     path: &Path,
 ) -> Result<AudioStyleModelSnapshot, String> {
     read_audio_style_stable_model(path)
+}
+
+#[cfg(test)]
+pub(crate) fn read_and_migrate_audio_style_stable_model_for_test(
+    path: &Path,
+) -> Result<AudioStyleModelSnapshot, String> {
+    read_and_migrate_audio_style_stable_model(path)
 }
 
 #[cfg(test)]

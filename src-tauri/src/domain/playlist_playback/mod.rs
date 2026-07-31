@@ -4,6 +4,7 @@ pub mod model;
 pub mod playable_index;
 pub mod recommendation;
 pub mod service;
+pub(crate) mod symbolic_program;
 pub(crate) mod temporal_memory;
 
 #[cfg(not(test))]
@@ -24,3 +25,7 @@ mod playable_index_test;
 #[cfg(test)]
 #[path = "temporal_memory.test.rs"]
 mod temporal_memory_test;
+
+#[cfg(test)]
+#[path = "symbolic_program.test.rs"]
+mod symbolic_program_test;

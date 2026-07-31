@@ -1,7 +1,10 @@
 use super::symbolic_program::{
-    NeuralProgramAtlas, ProgramMorphism, TraversalExhausted, candidate_relation_signature,
-    compile_neural_program_atlas, compile_program_orbit_index, execute_program_list,
-    initialize_traversal_state, ordered_track_key_signature, program_encoding_signature,
+    NeuralProgramAtlas, ProgramMorphism, TraversalExhausted, candidate_neighborhood_overlaps,
+    candidate_relation_from_program_atlas, candidate_relation_signature,
+    close_neural_program_atlas_cycles, compile_neural_program_atlas, compile_program_orbit_index,
+    execute_program_list, initialize_traversal_state, ordered_track_key_signature,
+    program_encoding_signature, restrict_neural_program_atlas_to_playlist,
+    transport_traversal_state,
 };
 
 fn synthetic_relation() -> (Vec<String>, Vec<usize>) {
@@ -23,16 +26,19 @@ fn residence_departure_atlas() -> NeuralProgramAtlas {
                 lineage: "program:0".to_string(),
                 presentation_ordinals: vec![0],
                 successors: vec![1, 0, 3, 2, 5, 4],
+                boundary_sources: Vec::new(),
             },
             ProgramMorphism {
                 lineage: "program:1".to_string(),
                 presentation_ordinals: vec![1],
                 successors: vec![1, 2, 3, 4, 5, 0],
+                boundary_sources: Vec::new(),
             },
             ProgramMorphism {
                 lineage: "program:2".to_string(),
                 presentation_ordinals: vec![2],
                 successors: vec![2, 4, 3, 0, 5, 1],
+                boundary_sources: Vec::new(),
             },
         ],
     }
@@ -142,4 +148,174 @@ fn exhausted_unread_successors_fail_closed() {
             current_track: 5,
         }
     );
+}
+
+#[test]
+fn candidate_cycle_cover_closes_to_path_fair_single_cycles() {
+    let source = NeuralProgramAtlas {
+        candidate_count: 5,
+        ..residence_departure_atlas()
+    };
+    let neighbors = (0..6)
+        .flat_map(|source| (0..6).filter(move |destination| *destination != source))
+        .collect::<Vec<_>>();
+
+    let result = close_neural_program_atlas_cycles(&source, &neighbors, &track_keys(6)).unwrap();
+    let atlas = result.atlas.unwrap();
+
+    assert!(result.retracted_presentations.is_empty());
+    assert!(
+        atlas
+            .programs
+            .iter()
+            .all(|program| successor_cycle_count(&program.successors) == 1)
+    );
+    assert!(
+        atlas
+            .programs
+            .iter()
+            .all(|program| program.boundary_sources.is_empty())
+    );
+}
+
+#[test]
+fn style_sector_boundaries_require_positive_local_contrast() {
+    let fixture = residence_departure_atlas();
+    let atlas = NeuralProgramAtlas {
+        track_count: 6,
+        candidate_count: 4,
+        programs: vec![fixture.programs[0].clone()],
+    };
+    let neighbors = vec![
+        1, 2, 3, 4, 0, 2, 3, 4, 3, 4, 5, 0, 2, 4, 5, 1, 5, 0, 1, 2, 4, 0, 1, 3,
+    ];
+
+    let result = close_neural_program_atlas_cycles(&atlas, &neighbors, &track_keys(6)).unwrap();
+    let program = &result.atlas.unwrap().programs[0];
+    let overlaps = candidate_neighborhood_overlaps(6, 4, &neighbors).unwrap();
+    let overlap_by_destination = (0..6)
+        .map(|source| {
+            neighbors[source * 4..(source + 1) * 4]
+                .iter()
+                .copied()
+                .zip(overlaps[source * 4..(source + 1) * 4].iter().copied())
+                .collect::<std::collections::HashMap<_, _>>()
+        })
+        .collect::<Vec<_>>();
+
+    assert!(!program.boundary_sources.is_empty());
+    assert!(program.boundary_sources.iter().all(|source| {
+        overlap_by_destination[*source][&program.successors[*source]]
+            < overlap_by_destination[*source][&fixture.programs[0].successors[*source]]
+    }));
+}
+
+#[test]
+fn playlist_scope_reifies_all_generation_owned_presentations() {
+    // @forma observes observation Domain.CrossRuntimeScopedBoundaryNaturality
+    let (keys, neighbors) = synthetic_relation();
+    let global = compile_neural_program_atlas(&keys, 3, &neighbors)
+        .unwrap()
+        .atlas
+        .unwrap();
+    let scoped = restrict_neural_program_atlas_to_playlist(&global, &keys, &[0, 1, 2]).unwrap();
+
+    let candidates = candidate_relation_from_program_atlas(&scoped.atlas).unwrap();
+
+    assert_eq!(candidates.len(), 9);
+    for presentation in 0..3 {
+        let owner = scoped
+            .atlas
+            .programs
+            .iter()
+            .find(|program| program.presentation_ordinals.contains(&presentation))
+            .unwrap();
+        assert_eq!(
+            (0..3)
+                .map(|source| candidates[source * 3 + presentation])
+                .collect::<Vec<_>>(),
+            owner.successors
+        );
+    }
+}
+
+#[test]
+fn complete_coverage_transports_to_nonreset_program_epoch() {
+    let source = NeuralProgramAtlas {
+        candidate_count: 5,
+        ..residence_departure_atlas()
+    };
+    let neighbors = (0..6)
+        .flat_map(|source| (0..6).filter(move |destination| *destination != source))
+        .collect::<Vec<_>>();
+    let closed = close_neural_program_atlas_cycles(&source, &neighbors, &track_keys(6))
+        .unwrap()
+        .atlas
+        .unwrap();
+    let scoped = restrict_neural_program_atlas_to_playlist(&closed, &track_keys(6), &[0, 2, 4])
+        .unwrap()
+        .atlas;
+    let orbits = compile_program_orbit_index(&scoped).unwrap();
+    let initial = initialize_traversal_state(&scoped, &[0, 1, 2]).unwrap();
+
+    let first = execute_program_list(&scoped, &orbits, 2, &initial).unwrap();
+    let second = execute_program_list(&scoped, &orbits, 2, &first.next_state).unwrap();
+    let reset = execute_program_list(&scoped, &orbits, 2, &initial).unwrap();
+
+    assert_eq!(
+        second.coverage_epoch_transitions,
+        vec![true, false, true, false, true, false]
+    );
+    assert_ne!(second.order, reset.order);
+    for step in 0..2 {
+        let values = (0..3)
+            .map(|path| second.order[path * 2 + step])
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(values.len(), 3);
+    }
+}
+
+#[test]
+fn state_transport_preserves_program_incidence_and_realized_history() {
+    let atlas = residence_departure_atlas();
+    let orbits = compile_program_orbit_index(&atlas).unwrap();
+    let initial = initialize_traversal_state(&atlas, &[0]).unwrap();
+    let first = execute_program_list(&atlas, &orbits, 2, &initial).unwrap();
+    let direct = execute_program_list(&atlas, &orbits, 1, &first.next_state).unwrap();
+    let transported = transport_traversal_state(
+        Some((&atlas, &first.next_state)),
+        &atlas,
+        &[*first.order.last().unwrap()],
+        &[vec![0, first.order[0], first.order[1]]],
+    )
+    .unwrap();
+    let resumed = execute_program_list(&atlas, &orbits, 1, &transported).unwrap();
+
+    assert_eq!(resumed.order, direct.order);
+    assert_eq!(resumed.program_ordinals, direct.program_ordinals);
+    assert_eq!(
+        resumed.next_state.playback_cycle,
+        direct.next_state.playback_cycle
+    );
+}
+
+fn track_keys(count: usize) -> Vec<String> {
+    (0..count).map(|index| format!("track:{index}")).collect()
+}
+
+fn successor_cycle_count(successors: &[usize]) -> usize {
+    let mut visited = vec![false; successors.len()];
+    let mut cycles = 0;
+    for source in 0..successors.len() {
+        if visited[source] {
+            continue;
+        }
+        cycles += 1;
+        let mut current = source;
+        while !visited[current] {
+            visited[current] = true;
+            current = successors[current];
+        }
+    }
+    cycles
 }

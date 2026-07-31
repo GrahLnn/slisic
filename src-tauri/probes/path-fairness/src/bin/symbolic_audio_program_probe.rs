@@ -17,7 +17,8 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use symbolic_program::{
-    SymbolicCatalog, build_symbolic_program_report, ordered_track_key_signature,
+    SymbolicCatalog, build_symbolic_playlist_scope_report, build_symbolic_program_report,
+    ordered_track_key_signature,
 };
 
 #[derive(Debug, Deserialize)]
@@ -94,6 +95,7 @@ fn main() -> Result<(), String> {
         })
         .transpose()?
         .unwrap_or(32);
+    let probe_mode = arguments.next().unwrap_or_else(|| "global".to_string());
     let metadata = load_track_metadata(&stable_path)?;
     let encoding = load_program_encoding(&encoding_path, &metadata)?;
     let catalog = load_stable_catalog(&stable_path, &FairnessConfig::default())?;
@@ -112,7 +114,21 @@ fn main() -> Result<(), String> {
         expected_program_lineages: &encoding.program_lineages,
         expected_program_encoding_signature: &encoding.program_encoding_signature,
     };
-    let report = build_symbolic_program_report(&view, tracks_per_list, "747 - Ludwig Göransson")?;
+    let report = match probe_mode.as_str() {
+        "global" => {
+            build_symbolic_program_report(&view, tracks_per_list, "747 - Ludwig Göransson")?
+        }
+        "playlist-scopes" => build_symbolic_playlist_scope_report(
+            &view,
+            &real_directory_scopes(&metadata.file_paths),
+            "747 - Ludwig Göransson",
+        )?,
+        other => {
+            return Err(format!(
+                "unsupported probe mode `{other}`; expected `global` or `playlist-scopes`"
+            ));
+        }
+    };
     if let Some(parent) = output_path.parent() {
         fs::create_dir_all(parent).map_err(|error| {
             format!(
@@ -137,6 +153,7 @@ fn main() -> Result<(), String> {
         serde_json::to_string_pretty(&serde_json::json!({
             "output": output_path,
             "status": report["status"],
+            "summary": report["summary"],
             "program_structure": report["program_structure"],
             "cross_cycle_audit": report["cross_cycle_audit"],
             "reported_target": report["reported_target"],
@@ -151,6 +168,7 @@ struct TrackMetadata {
     generation: u64,
     track_keys: Vec<String>,
     track_titles: Vec<String>,
+    file_paths: Vec<String>,
 }
 
 fn load_track_metadata(path: &Path) -> Result<TrackMetadata, String> {
@@ -160,23 +178,47 @@ fn load_track_metadata(path: &Path) -> Result<TrackMetadata, String> {
     .map_err(|error| format!("failed to decode `{}`: {error}", path.display()))?;
     let mut track_keys = Vec::with_capacity(payload.state.indexed_tracks.len());
     let mut track_titles = Vec::with_capacity(payload.state.indexed_tracks.len());
+    let mut file_paths = Vec::with_capacity(payload.state.indexed_tracks.len());
     for indexed in payload.state.indexed_tracks {
         track_keys.push(
             serde_json::to_string(&(
                 indexed.key.music_url,
-                indexed.key.file_path,
+                &indexed.key.file_path,
                 indexed.key.start_ms,
                 indexed.key.end_ms,
             ))
             .map_err(|error| format!("failed to encode stable track key: {error}"))?,
         );
         track_titles.push(indexed.track.music_name);
+        file_paths.push(indexed.key.file_path);
     }
     Ok(TrackMetadata {
         generation: payload.generation,
         track_keys,
         track_titles,
+        file_paths,
     })
+}
+
+fn real_directory_scopes(file_paths: &[String]) -> Vec<(String, Vec<usize>)> {
+    let mut scopes = std::collections::HashMap::<String, Vec<usize>>::new();
+    for (ordinal, file_path) in file_paths.iter().enumerate() {
+        let scope = Path::new(file_path)
+            .parent()
+            .unwrap_or_else(|| Path::new(""))
+            .to_string_lossy()
+            .into_owned();
+        scopes.entry(scope).or_default().push(ordinal);
+    }
+    let mut scopes = scopes.into_iter().collect::<Vec<_>>();
+    scopes.sort_unstable_by(|left, right| {
+        right
+            .1
+            .len()
+            .cmp(&left.1.len())
+            .then_with(|| left.0.cmp(&right.0))
+    });
+    scopes
 }
 
 fn load_program_encoding(
