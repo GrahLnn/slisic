@@ -136,7 +136,7 @@ fn main() -> Result<(), String> {
         expected_program_lineages: &encoding.program_lineages,
         expected_program_encoding_signature: &encoding.program_encoding_signature,
     };
-    let report = match probe_mode.as_str() {
+    let mut report = match probe_mode.as_str() {
         "global" => {
             build_symbolic_program_report(&view, tracks_per_list, "747 - Ludwig Göransson")?
         }
@@ -152,6 +152,16 @@ fn main() -> Result<(), String> {
             ));
         }
     };
+    if probe_mode == "playlist-scopes"
+        && let Some(input) = report
+            .get_mut("input")
+            .and_then(serde_json::Value::as_object_mut)
+    {
+        input.insert(
+            "stable_model".to_string(),
+            serde_json::json!(stable_path.to_string_lossy()),
+        );
+    }
     if let Some(parent) = output_path.parent() {
         fs::create_dir_all(parent).map_err(|error| {
             format!(
@@ -231,6 +241,10 @@ fn real_directory_scopes(file_paths: &[String]) -> Vec<(String, Vec<usize>)> {
             .unwrap_or_else(|| Path::new(""))
             .to_string_lossy()
             .into_owned();
+        #[cfg(windows)]
+        let scope = scope.replace('/', "\\");
+        #[cfg(not(windows))]
+        let scope = scope.replace('\\', "/");
         scopes.entry(scope).or_default().push(ordinal);
     }
     let mut scopes = scopes.into_iter().collect::<Vec<_>>();

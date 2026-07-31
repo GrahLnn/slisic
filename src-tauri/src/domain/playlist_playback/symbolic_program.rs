@@ -1108,6 +1108,23 @@ fn path_fair_closure_audit(
     let mut boundary_cosines = Vec::new();
     let mut resident_neighborhood_overlaps = Vec::new();
     let mut boundary_neighborhood_overlaps = Vec::new();
+    let candidate_ranks = candidate_neighbors
+        .chunks_exact(original.candidate_count)
+        .map(|row| {
+            row.iter()
+                .copied()
+                .enumerate()
+                .map(|(rank, destination)| (destination, rank))
+                .collect::<HashMap<_, _>>()
+        })
+        .collect::<Vec<_>>();
+    let candidate_separations = program_cycle_separations(original, candidate_neighbors)?;
+    let mut resident_symbolic_separations = Vec::new();
+    let mut boundary_symbolic_separations = Vec::new();
+    let mut resident_candidate_ranks = Vec::new();
+    let mut boundary_candidate_ranks = Vec::new();
+    let mut paired_symbolic_separation_differences = Vec::new();
+    let mut programs_with_lower_bridge_neighborhood_overlap = 0_usize;
 
     for source_program in &original.programs {
         let Some(program) = source_program
@@ -1136,12 +1153,25 @@ fn path_fair_closure_audit(
         let mut program_boundary_cosines = Vec::new();
         let mut program_resident_overlaps = Vec::new();
         let mut program_boundary_overlaps = Vec::new();
+        let mut program_resident_separations = Vec::new();
+        let mut program_boundary_separations = Vec::new();
         for (source, destination) in program.successors.iter().copied().enumerate() {
             let source_global = global_track_ordinals[source];
             let destination_global = global_track_ordinals[destination];
             let cosine = embedding_cosine(catalog, source_global, destination_global);
-            let neighborhood_overlap =
-                local_overlap(source, destination)? as f64 / original.candidate_count as f64;
+            let start = source * original.candidate_count;
+            let candidate_position = candidate_neighbors[start..start + original.candidate_count]
+                .iter()
+                .position(|candidate| *candidate == destination)
+                .ok_or_else(|| {
+                    format!(
+                        "program edge {source}->{destination} is outside the candidate relation"
+                    )
+                })?;
+            let neighborhood_overlap = local_overlap(source, destination)? as f64
+                / candidate_sets[source].len().max(1) as f64;
+            let symbolic_separation = candidate_separations[start + candidate_position] as f64;
+            let candidate_rank = candidate_ranks[source][&destination] as f64;
             if boundary_sources.contains(&source) {
                 semantic_boundary_edge_count += 1;
                 all_boundaries_are_candidate_edges &= candidate_sets[source].contains(&destination);
@@ -1151,14 +1181,20 @@ fn path_fair_closure_audit(
                 );
                 boundary_cosines.push(cosine);
                 boundary_neighborhood_overlaps.push(neighborhood_overlap);
+                boundary_symbolic_separations.push(symbolic_separation);
+                boundary_candidate_ranks.push(candidate_rank);
                 program_boundary_cosines.push(cosine);
                 program_boundary_overlaps.push(neighborhood_overlap);
+                program_boundary_separations.push(symbolic_separation);
             } else {
                 resident_edge_count += 1;
                 resident_cosines.push(cosine);
                 resident_neighborhood_overlaps.push(neighborhood_overlap);
+                resident_symbolic_separations.push(symbolic_separation);
+                resident_candidate_ranks.push(candidate_rank);
                 program_resident_cosines.push(cosine);
                 program_resident_overlaps.push(neighborhood_overlap);
+                program_resident_separations.push(symbolic_separation);
             }
         }
         if !program.boundary_sources.is_empty() {
@@ -1166,6 +1202,14 @@ fn path_fair_closure_audit(
                 .push(mean(&program_boundary_cosines) - mean(&program_resident_cosines));
             paired_neighborhood_overlap_differences
                 .push(mean(&program_boundary_overlaps) - mean(&program_resident_overlaps));
+            paired_symbolic_separation_differences
+                .push(mean(&program_boundary_separations) - mean(&program_resident_separations));
+            programs_with_lower_bridge_neighborhood_overlap += usize::from(
+                (program_boundary_overlaps.iter().sum::<f64>()
+                    / program_boundary_overlaps.len().max(1) as f64)
+                    < (program_resident_overlaps.iter().sum::<f64>()
+                        / program_resident_overlaps.len().max(1) as f64),
+            );
 
             let start = program.boundary_sources[0];
             let mut node = program.successors[start];
@@ -1188,6 +1232,10 @@ fn path_fair_closure_audit(
     let paired_cosine_difference = mean(&paired_cosine_differences);
     let paired_neighborhood_overlap_difference = mean(&paired_neighborhood_overlap_differences);
     let resident_span_minimum = resident_spans.iter().copied().min().unwrap_or(0);
+    let resident_span_values = resident_spans
+        .iter()
+        .map(|span| *span as f64)
+        .collect::<Vec<_>>();
     Ok(PathFairClosureAudit {
         value: json!({
             "admitted_original_program_count": admitted_program_count,
@@ -1199,15 +1247,26 @@ fn path_fair_closure_audit(
             "resident_edge_count": resident_edge_count,
             "fatigue_bridge_edge_count": semantic_boundary_edge_count,
             "resident_edge_cosine_mean": mean(&resident_cosines),
-            "fatigue_bridge_edge_cosine_mean": mean(&boundary_cosines),
+            "fatigue_bridge_edge_cosine_mean": optional_mean(&boundary_cosines),
             "program_paired_bridge_minus_resident_cosine_mean":
-                paired_cosine_difference,
+                optional_mean(&paired_cosine_differences),
+            "resident_edge_symbolic_separation_mean": mean(&resident_symbolic_separations),
+            "fatigue_bridge_symbolic_separation_mean":
+                optional_mean(&boundary_symbolic_separations),
+            "resident_edge_candidate_rank_mean": mean(&resident_candidate_ranks),
+            "fatigue_bridge_candidate_rank_mean": optional_mean(&boundary_candidate_ranks),
+            "program_paired_bridge_minus_resident_symbolic_separation_mean":
+                optional_mean(&paired_symbolic_separation_differences),
             "resident_edge_neighborhood_overlap_mean":
                 mean(&resident_neighborhood_overlaps),
             "fatigue_bridge_neighborhood_overlap_mean":
-                mean(&boundary_neighborhood_overlaps),
+                optional_mean(&boundary_neighborhood_overlaps),
             "program_paired_bridge_minus_resident_neighborhood_overlap_mean":
-                paired_neighborhood_overlap_difference,
+                optional_mean(&paired_neighborhood_overlap_differences),
+            "programs_with_lower_bridge_neighborhood_overlap":
+                programs_with_lower_bridge_neighborhood_overlap,
+            "resident_span_between_bridges_median":
+                quantile(&resident_span_values, 0.50),
             "resident_span_between_bridges_minimum": resident_span_minimum,
             "all_fatigue_bridges_are_candidate_edges":
                 all_boundaries_are_candidate_edges,
@@ -2048,6 +2107,10 @@ fn metric_summary(values: &[f64]) -> Value {
 
 fn mean(values: &[f64]) -> f64 {
     values.iter().sum::<f64>() / values.len().max(1) as f64
+}
+
+fn optional_mean(values: &[f64]) -> Option<f64> {
+    (!values.is_empty()).then(|| mean(values))
 }
 
 fn quantile(values: &[f64], probability: f64) -> f64 {

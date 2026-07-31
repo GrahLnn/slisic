@@ -84,6 +84,13 @@ mod domain {
     }
 
     pub mod playlist_playback {
+        pub mod symbolic_program {
+            include!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/domain/playlist_playback/symbolic_program.rs"
+            ));
+        }
+
         pub mod recommendation {
             include!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
