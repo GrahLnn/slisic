@@ -23,7 +23,8 @@ use super::service::{
     resolve_residual_temp_downloaded_file, resume_download_task, runnable_task_leaf_work_items,
     should_interrupt_unresumable_active_task_after_restart,
     should_recover_download_task_after_restart, should_resume_download_task_after_restart,
-    submit_youtube_cookies_and_resume_download_task, try_claim_enqueue_url,
+    submit_youtube_cookies_and_resume_download_task, temporary_download_stem,
+    try_claim_enqueue_url,
 };
 use super::yt_dlp::{
     DownloadProgress, DownloadedLeaf, LeafChapter, LeafProbe, LeafReference, PlaylistRoot,
@@ -510,11 +511,7 @@ fn list_download_marks_finalize_failures_on_leaf_without_aborting_task() {
         let target_dir = save_root.join(&collection_folder);
         std::fs::create_dir_all(&target_dir).expect("target dir should be created");
 
-        let blocked_final_path = target_dir.join("Track A.m4a");
-        std::fs::create_dir_all(&blocked_final_path)
-            .expect("directory should block final file rename");
         let downloaded_path = target_dir.join("Track A.__slisic_tmp__leaf-a.m4a");
-        std::fs::write(&downloaded_path, b"audio").expect("temp file should exist");
 
         let collection_owner = collection_group(
             "Finalize Failure",
@@ -2620,7 +2617,7 @@ fn existing_file_completions_derive_from_task_leafs_not_plan_leafs() {
     .expect("existing test folder should be created");
     std::fs::write(&existing_path, b"ok").expect("existing audio file should exist");
 
-    let collection = Collection {
+    let mut collection = Collection {
         name: "Existing File Batch".to_string(),
         url: "https://example.com/root".to_string(),
         folder: collection_folder.to_string(),
@@ -2628,6 +2625,11 @@ fn existing_file_completions_derive_from_task_leafs_not_plan_leafs() {
         last_updated: "2026-04-12T00:00:00+00:00".to_string(),
         enable_updates: Some(false),
     };
+    collection.musics.extend(materialize_music_entries(
+        &leaf_probe("Task Track", "https://example.com/watch?v=task", 180),
+        "Album/Task Track.m4a",
+        group.clone(),
+    ));
     let task_leaf_id = Id::from("leaf-task");
     let plan_only_id = Id::from("leaf-plan-only");
     let plan = CollectionSyncPlan {
@@ -3146,7 +3148,7 @@ fn materialize_music_entries_preserves_group_and_nested_relative_path() {
 }
 
 #[test]
-fn resolve_existing_leaf_file_matches_expected_final_m4a_path() {
+fn resolve_existing_leaf_file_matches_owned_final_m4a_path() {
     let root = temp_test_dir();
     let collection = Collection {
         name: "Recovered".to_string(),
@@ -3157,12 +3159,23 @@ fn resolve_existing_leaf_file_matches_expected_final_m4a_path() {
         enable_updates: Some(false),
     };
     let group = collection_group("Recovered", &collection.url, &collection.folder);
+    let mut collection = collection;
+    collection.musics.extend(materialize_music_entries(
+        &leaf_probe("Track One", "https://example.com/watch?v=track-one", 60),
+        "Track One.m4a",
+        group.clone(),
+    ));
     let collection_dir = root.join(&collection.folder);
     std::fs::create_dir_all(&collection_dir).expect("test collection dir should be created");
     std::fs::write(collection_dir.join("Track One.m4a"), b"existing")
         .expect("existing audio file should be created");
 
-    let relative_path = resolve_existing_leaf_file(&collection, &group, &root, "Track One");
+    let relative_path = resolve_existing_leaf_file(
+        &collection,
+        "https://example.com/watch?v=track-one",
+        &group,
+        &root,
+    );
 
     assert_eq!(relative_path.as_deref(), Some("Track One.m4a"));
 
@@ -3181,18 +3194,61 @@ fn resolve_existing_leaf_file_matches_nested_group_path() {
         enable_updates: Some(false),
     };
     let group = collection_group("Disc 1", "https://example.com/group", "Disc 1");
+    let mut collection = collection;
+    collection.musics.extend(materialize_music_entries(
+        &leaf_probe("Track One", "https://example.com/watch?v=track-one", 60),
+        "Disc 1/Track One.m4a",
+        group.clone(),
+    ));
     let group_dir = root.join(&collection.folder).join(&group.folder);
     std::fs::create_dir_all(&group_dir).expect("test group dir should be created");
     std::fs::write(group_dir.join("Track One.m4a"), b"existing")
         .expect("existing nested audio file should be created");
 
-    let relative_path = resolve_existing_leaf_file(&collection, &group, &root, "Track One");
-    let expected = Path::new(&group.folder)
-        .join("Track One.m4a")
-        .to_string_lossy()
-        .to_string();
+    let relative_path = resolve_existing_leaf_file(
+        &collection,
+        "https://example.com/watch?v=track-one",
+        &group,
+        &root,
+    );
+    assert_eq!(relative_path.as_deref(), Some("Disc 1/Track One.m4a"));
 
-    assert_eq!(relative_path.as_deref(), Some(expected.as_str()));
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn resolve_existing_leaf_file_rejects_same_title_file_owned_by_another_leaf() {
+    let root = temp_test_dir();
+    let group = collection_group(
+        "Recovered",
+        "https://example.com/collection",
+        "example/recovered",
+    );
+    let collection = Collection {
+        name: "Recovered".to_string(),
+        url: group.url.clone(),
+        folder: group.folder.clone(),
+        musics: materialize_music_entries(
+            &leaf_probe("Queen Bee", "https://example.com/watch?v=first", 60),
+            "Queen Bee.m4a",
+            group.clone(),
+        ),
+        last_updated: "2026-08-02T00:00:00+00:00".to_string(),
+        enable_updates: Some(false),
+    };
+    let collection_dir = root.join(&collection.folder);
+    std::fs::create_dir_all(&collection_dir).expect("test collection dir should be created");
+    std::fs::write(collection_dir.join("Queen Bee.m4a"), b"first leaf")
+        .expect("first leaf audio should be created");
+
+    let relative_path = resolve_existing_leaf_file(
+        &collection,
+        "https://example.com/watch?v=second",
+        &group,
+        &root,
+    );
+
+    assert_eq!(relative_path, None);
 
     let _ = std::fs::remove_dir_all(root);
 }
@@ -3214,6 +3270,28 @@ fn residual_temp_resolution_recovers_matching_temporary_audio() {
     ));
 
     let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn temporary_download_stem_uses_stable_leaf_identity_instead_of_title() {
+    let first = temporary_download_stem(
+        "Queen Bee",
+        "https://example.com/watch?v=first",
+        "https://example.com/playlist",
+    );
+    let first_retry = temporary_download_stem(
+        "Queen Bee",
+        "https://example.com/watch?v=first",
+        "https://example.com/playlist",
+    );
+    let second = temporary_download_stem(
+        "Queen Bee",
+        "https://example.com/watch?v=second",
+        "https://example.com/playlist",
+    );
+
+    assert_eq!(first, first_retry);
+    assert_ne!(first, second);
 }
 
 #[test]
@@ -3318,11 +3396,11 @@ fn residual_temp_file_completion_moves_file_and_persists_music_once() {
 }
 
 #[test]
-fn residual_temp_resolution_recovers_unique_same_title_artifact_after_task_identity_changes() {
+fn residual_temp_resolution_does_not_claim_same_title_artifact_from_another_leaf() {
     let root = temp_test_dir();
     std::fs::create_dir_all(&root).expect("temp dir should be created");
-    let expected = root.join("Track.__slisic_tmp__oldtask.m4a");
-    std::fs::write(&expected, b"downloaded").expect("residual temp audio should be created");
+    let other_leaf = root.join("Track.__slisic_tmp__oldtask.m4a");
+    std::fs::write(&other_leaf, b"downloaded").expect("residual temp audio should be created");
     std::fs::write(root.join("Other.__slisic_tmp__oldtask.m4a"), b"other")
         .expect("unrelated temp audio should be created");
 
@@ -3330,7 +3408,7 @@ fn residual_temp_resolution_recovers_unique_same_title_artifact_after_task_ident
 
     assert!(matches!(
         resolution,
-        super::service::ResidualTempFileResolution::Ready(ref path) if path == &expected
+        super::service::ResidualTempFileResolution::Missing
     ));
 
     let _ = std::fs::remove_dir_all(root);
@@ -3340,9 +3418,9 @@ fn residual_temp_resolution_recovers_unique_same_title_artifact_after_task_ident
 fn residual_temp_resolution_rejects_ambiguous_same_title_artifacts() {
     let root = temp_test_dir();
     std::fs::create_dir_all(&root).expect("temp dir should be created");
-    std::fs::write(root.join("Track.__slisic_tmp__first.m4a"), b"first")
+    std::fs::write(root.join("Track.__slisic_tmp__newtask.m4a"), b"first")
         .expect("first temp audio should be created");
-    std::fs::write(root.join("Track.__slisic_tmp__second.m4a"), b"second")
+    std::fs::write(root.join("Track.__slisic_tmp__newtask.opus"), b"second")
         .expect("second temp audio should be created");
 
     let resolution = resolve_residual_temp_downloaded_file(&root, "Track.__slisic_tmp__newtask");

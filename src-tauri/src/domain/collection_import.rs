@@ -957,10 +957,22 @@ pub(crate) fn finalize_downloaded_leaf(
     _file_stem: &str,
     downloaded_path: PathBuf,
 ) -> Result<String> {
+    if !downloaded_path.is_file() {
+        bail!(
+            "downloaded audio source does not exist: {}",
+            downloaded_path.display()
+        );
+    }
     let final_file_name = finalized_download_file_name(&downloaded_path)?;
     ensure_committable_download_file_name(&final_file_name)?;
-    let relative_path = relative_music_path(collection, &final_file_name, group);
-    let final_path = save_root.join(&collection.folder).join(&relative_path);
+    let (relative_path, final_path) = resolve_downloaded_leaf_target(
+        collection,
+        leaf_url,
+        group,
+        save_root,
+        &downloaded_path,
+        &final_file_name,
+    )?;
 
     if final_path.exists() && final_path != downloaded_path {
         std::fs::remove_file(&final_path)
@@ -971,6 +983,91 @@ pub(crate) fn finalize_downloaded_leaf(
     commit_downloaded_file(&downloaded_path, &final_path)?;
 
     Ok(relative_path)
+}
+
+fn resolve_downloaded_leaf_target(
+    collection: &Collection,
+    leaf_url: &str,
+    group: &Group,
+    save_root: &Path,
+    downloaded_path: &Path,
+    preferred_file_name: &str,
+) -> Result<(String, PathBuf)> {
+    let preferred_relative_path = relative_music_path(collection, preferred_file_name, group);
+    let preferred_path = save_root
+        .join(&collection.folder)
+        .join(&preferred_relative_path);
+    if download_target_belongs_to_leaf_or_is_available(
+        collection,
+        leaf_url,
+        group,
+        downloaded_path,
+        &preferred_relative_path,
+        &preferred_path,
+    ) {
+        return Ok((preferred_relative_path, preferred_path));
+    }
+
+    let identity_hash = stable_id(&format!("{}|{leaf_url}", group.url));
+    for hash_length in [8usize, 16, 32, 64] {
+        let file_name =
+            file_name_with_identity_suffix(preferred_file_name, &identity_hash[..hash_length])?;
+        let relative_path = relative_music_path(collection, &file_name, group);
+        let final_path = save_root.join(&collection.folder).join(&relative_path);
+        if download_target_belongs_to_leaf_or_is_available(
+            collection,
+            leaf_url,
+            group,
+            downloaded_path,
+            &relative_path,
+            &final_path,
+        ) {
+            return Ok((relative_path, final_path));
+        }
+    }
+
+    bail!("could not allocate a stable file name for downloaded leaf {leaf_url}")
+}
+
+fn download_target_belongs_to_leaf_or_is_available(
+    collection: &Collection,
+    leaf_url: &str,
+    group: &Group,
+    downloaded_path: &Path,
+    relative_path: &str,
+    final_path: &Path,
+) -> bool {
+    if downloaded_path == final_path {
+        return true;
+    }
+
+    let mut owned_by_current_leaf = false;
+    for music in collection
+        .musics
+        .iter()
+        .filter(|music| music.path.as_deref() == Some(relative_path))
+    {
+        if music.url != leaf_url || music.group.url != group.url {
+            return false;
+        }
+        owned_by_current_leaf = true;
+    }
+
+    owned_by_current_leaf || !final_path.exists()
+}
+
+fn file_name_with_identity_suffix(file_name: &str, identity_suffix: &str) -> Result<String> {
+    let path = Path::new(file_name);
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .context("downloaded audio file name does not contain a unicode stem")?;
+    Ok(match path.extension().and_then(|value| value.to_str()) {
+        Some(extension) if !extension.is_empty() => {
+            format!("{stem} [{identity_suffix}].{extension}")
+        }
+        _ => format!("{stem} [{identity_suffix}]"),
+    })
 }
 
 fn ensure_committable_download_file_name(file_name: &str) -> Result<()> {
@@ -1042,14 +1139,23 @@ fn finalized_download_file_name(downloaded_path: &Path) -> Result<String> {
 
 pub(crate) fn resolve_existing_leaf_file(
     collection: &Collection,
+    leaf_url: &str,
     group: &Group,
     save_root: &Path,
-    file_stem: &str,
 ) -> Option<String> {
-    let relative_path = relative_music_path(collection, &format!("{file_stem}.m4a"), group);
-    let absolute_path = save_root.join(&collection.folder).join(&relative_path);
-
-    absolute_path.is_file().then_some(relative_path)
+    collection
+        .musics
+        .iter()
+        .filter(|music| music.url == leaf_url && music.group.url == group.url)
+        .filter_map(|music| music.path.as_deref().map(str::trim))
+        .filter(|relative_path| !relative_path.is_empty())
+        .find(|relative_path| {
+            save_root
+                .join(&collection.folder)
+                .join(relative_path)
+                .is_file()
+        })
+        .map(str::to_string)
 }
 
 pub(crate) fn filter_new_planned_leaves(
@@ -1358,6 +1464,10 @@ fn normalize_music_title_batch_with_evidence(
     titles: &[String],
     evidence_titles: &[TitleNoiseEvidence],
 ) -> Vec<String> {
+    let source_titles = titles
+        .iter()
+        .map(|title| cleanup_title_after_noise_deletion(title))
+        .collect::<Vec<_>>();
     let mut normalized = titles
         .iter()
         .map(|title| normalize_mechanical_title_noise(title))
@@ -1394,7 +1504,41 @@ fn normalize_music_title_batch_with_evidence(
     }
 
     repair_normalized_titles_from_source_evidence(&mut normalized, &evidence);
+    preserve_source_title_distinctions(&source_titles, &mut normalized);
     normalized
+}
+
+fn preserve_source_title_distinctions(source_titles: &[String], normalized: &mut [String]) {
+    let mut sources_by_normalized_title = HashMap::<String, Vec<usize>>::new();
+    for (source_index, title) in normalized.iter().enumerate() {
+        sources_by_normalized_title
+            .entry(title_noise_canonical_key(title))
+            .or_default()
+            .push(source_index);
+    }
+
+    for source_indexes in sources_by_normalized_title.values() {
+        if source_indexes.len() < 2 {
+            continue;
+        }
+        let distinct_source_titles = source_indexes
+            .iter()
+            .filter_map(|source_index| source_titles.get(*source_index))
+            .map(|title| title_noise_canonical_key(title))
+            .collect::<HashSet<_>>();
+        if distinct_source_titles.len() < 2 {
+            continue;
+        }
+
+        for source_index in source_indexes {
+            if let (Some(source_title), Some(title)) = (
+                source_titles.get(*source_index),
+                normalized.get_mut(*source_index),
+            ) {
+                *title = source_title.clone();
+            }
+        }
+    }
 }
 
 fn normalize_mechanical_title_noise(title: &str) -> String {

@@ -2729,13 +2729,13 @@ async fn handle_prepared_leaf_download(
     let music_group = resolve_music_group(group.clone(), collection);
     leaf_snapshot.group = Some(DownloadLeafGroupContext::from(music_group.clone()));
     let target_dir = save_root.join(&collection.folder);
-    let temp_file_stem = temporary_download_stem(&file_stem, &task_snapshot.id, &leaf_snapshot.id);
+    let temp_file_stem = temporary_download_stem(&file_stem, &leaf_snapshot.url, &music_group.url);
 
     if let Some(relative_path) = collection_import::resolve_existing_leaf_file(
         collection,
+        &leaf_snapshot.url,
         &music_group,
         save_root,
-        &file_stem,
     ) {
         let absolute_path = target_dir.join(&relative_path);
         log::debug!(
@@ -2843,9 +2843,11 @@ pub(crate) fn existing_file_completions_from_task_leaves(
                 .or_else(|| group_catalog.resolve(&probe)),
             collection,
         );
-        let file_stem = sanitize_path_component(&probe.title);
         let Some(relative_path) = collection_import::resolve_existing_leaf_file(
-            collection, &group, save_root, &file_stem,
+            collection,
+            &work_item.leaf.url,
+            &group,
+            save_root,
         ) else {
             continue;
         };
@@ -3090,8 +3092,12 @@ async fn spawn_ready_leaf_downloads(
                 .as_deref()
                 .context("download task is missing collection folder")?,
         );
-        let temp_file_stem =
-            temporary_download_stem(&file_stem, &task_snapshot.id, &leaf_snapshot.id);
+        let group_url = leaf_snapshot
+            .group
+            .as_ref()
+            .map(|group| group.url.as_str())
+            .context("prepared download leaf is missing group identity")?;
+        let temp_file_stem = temporary_download_stem(&file_stem, &leaf_snapshot.url, group_url);
         log::debug!(
             target: "downloads",
             "leaf_download_queued leaf={} sequence={} source_kind={} active_downloads={} parallelism={} temp_stem=\"{}\" target_dir=\"{}\"",
@@ -3158,10 +3164,10 @@ fn residual_temp_downloaded_files(target_dir: &Path, temp_file_stem: &str) -> Ve
     let Some(entries) = std::fs::read_dir(target_dir).ok() else {
         return vec![];
     };
-    let stable_stem = stable_stem_from_temp_stem(temp_file_stem);
-    let expected_marker = temp_marker_from_stem(temp_file_stem);
+    let Some(expected_marker) = temp_marker_from_stem(temp_file_stem) else {
+        return vec![];
+    };
     let mut exact = Vec::new();
-    let mut stable = Vec::new();
 
     for entry in entries.flatten() {
         let path = entry.path();
@@ -3176,41 +3182,17 @@ fn residual_temp_downloaded_files(target_dir: &Path, temp_file_stem: &str) -> Ve
             Some(stem) => stem,
             None => continue,
         };
-        if stem == temp_file_stem {
+        if temp_marker_from_stem(stem) == Some(expected_marker) {
             exact.push(path);
-            continue;
-        }
-
-        if !stem.contains(".__slisic_tmp__") {
-            continue;
-        }
-        let Some(stem_stable) = stable_stem_from_temp_stem(stem) else {
-            continue;
-        };
-        if Some(stem_stable) != stable_stem {
-            continue;
-        }
-        if let Some(marker) = expected_marker
-            && stem.contains(marker)
-        {
-            exact.push(path);
-        } else {
-            stable.push(path);
         }
     }
 
     exact.sort();
-    stable.sort();
-    if !exact.is_empty() { exact } else { stable }
+    exact
 }
 
 fn is_residual_temp_download_candidate(path: &Path) -> bool {
     path.extension().and_then(|value| value.to_str()) != Some("part")
-}
-
-fn stable_stem_from_temp_stem(stem: &str) -> Option<&str> {
-    let (stable, suffix) = stem.rsplit_once(".__slisic_tmp__")?;
-    (!stable.is_empty() && !suffix.is_empty()).then_some(stable)
 }
 
 fn temp_marker_from_stem(stem: &str) -> Option<&str> {
@@ -3655,11 +3637,10 @@ fn write_collection_manifest_after_download(
     )
 }
 
-#[cfg(not(test))]
-fn temporary_download_stem(file_stem: &str, task_id: &Id, leaf_id: &Id) -> String {
+pub(crate) fn temporary_download_stem(file_stem: &str, leaf_url: &str, group_url: &str) -> String {
     format!(
         "{file_stem}.__slisic_tmp__{}",
-        short_hash(&format!("{task_id}|{leaf_id}"))
+        short_hash(&format!("{group_url}|{leaf_url}"))
     )
 }
 

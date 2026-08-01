@@ -936,6 +936,24 @@ fn normalize_music_titles_removes_year_soundtrack_suffix_after_unicode_dash() {
 }
 
 #[test]
+fn normalize_music_titles_preserves_source_distinctions_when_trimming_would_collide() {
+    let normalized = normalize_music_title_batch(&[
+        "Terraria OST - Queen Bee".to_string(),
+        "Queen Bee".to_string(),
+        "Terraria Music - Queen Bee".to_string(),
+    ]);
+
+    assert_eq!(
+        normalized,
+        vec![
+            "Terraria OST - Queen Bee",
+            "Queen Bee",
+            "Terraria Music - Queen Bee",
+        ]
+    );
+}
+
+#[test]
 fn finalize_downloaded_leaf_commits_the_actual_downloaded_file_name_without_temp_marker() {
     let save_root = unique_temp_path("download-finalize-root");
     let collection_folder = "youtube/TENET Official Soundtrack - WaterTower Music";
@@ -1073,6 +1091,99 @@ fn finalize_downloaded_leaf_is_idempotent_after_temp_file_was_already_committed(
 
     assert_eq!(relative_path, "Recovered Track.m4a");
     assert!(final_path.is_file());
+
+    let _ = std::fs::remove_dir_all(save_root);
+}
+
+#[test]
+fn finalize_downloaded_leaf_preserves_another_leaf_with_the_same_title() {
+    let save_root = unique_temp_path("download-finalize-title-collision-root");
+    let collection_folder = "youtube/Title Collision";
+    let target_dir = save_root.join(collection_folder);
+    std::fs::create_dir_all(&target_dir).expect("download target dir should be creatable");
+    let existing_path = target_dir.join("Queen Bee.m4a");
+    std::fs::write(&existing_path, b"first leaf").expect("first leaf audio should exist");
+    let downloaded_path = target_dir.join("Queen Bee.__slisic_tmp__second.m4a");
+    std::fs::write(&downloaded_path, b"second leaf").expect("second leaf audio should exist");
+    let group = collection_group(
+        "Title Collision",
+        "https://www.youtube.com/playlist?list=collision",
+        collection_folder,
+    );
+    let collection = Collection {
+        name: "Title Collision".to_string(),
+        url: group.url.clone(),
+        folder: collection_folder.to_string(),
+        musics: vec![music_with_group(
+            "Queen Bee",
+            "https://www.youtube.com/watch?v=first",
+            "Queen Bee.m4a",
+            group.clone(),
+        )],
+        last_updated: "2026-08-02T00:00:00+00:00".to_string(),
+        enable_updates: Some(false),
+    };
+
+    let relative_path = finalize_downloaded_leaf(
+        &collection,
+        "https://www.youtube.com/watch?v=second",
+        &group,
+        &save_root,
+        "Queen Bee",
+        downloaded_path,
+    )
+    .expect("same-title leaves should receive distinct stable files");
+
+    assert_ne!(relative_path, "Queen Bee.m4a");
+    assert_eq!(std::fs::read(&existing_path).unwrap(), b"first leaf");
+    assert_eq!(
+        std::fs::read(target_dir.join(relative_path)).unwrap(),
+        b"second leaf"
+    );
+
+    let _ = std::fs::remove_dir_all(save_root);
+}
+
+#[test]
+fn finalize_downloaded_leaf_does_not_delete_stable_file_when_source_is_missing() {
+    let save_root = unique_temp_path("download-finalize-missing-source-root");
+    let collection_folder = "youtube/Missing Source";
+    let target_dir = save_root.join(collection_folder);
+    std::fs::create_dir_all(&target_dir).expect("download target dir should be creatable");
+    let final_path = target_dir.join("Track.m4a");
+    std::fs::write(&final_path, b"stable audio").expect("stable audio should exist");
+    let group = collection_group(
+        "Missing Source",
+        "https://www.youtube.com/playlist?list=missing-source",
+        collection_folder,
+    );
+    let leaf_url = "https://www.youtube.com/watch?v=missing-source";
+    let collection = Collection {
+        name: "Missing Source".to_string(),
+        url: group.url.clone(),
+        folder: collection_folder.to_string(),
+        musics: vec![music_with_group(
+            "Track",
+            leaf_url,
+            "Track.m4a",
+            group.clone(),
+        )],
+        last_updated: "2026-08-02T00:00:00+00:00".to_string(),
+        enable_updates: Some(false),
+    };
+
+    let error = finalize_downloaded_leaf(
+        &collection,
+        leaf_url,
+        &group,
+        &save_root,
+        "Track",
+        target_dir.join("Track.__slisic_tmp__missing.m4a"),
+    )
+    .expect_err("a missing source must fail before mutating stable files");
+
+    assert!(error.to_string().contains("does not exist"));
+    assert_eq!(std::fs::read(final_path).unwrap(), b"stable audio");
 
     let _ = std::fs::remove_dir_all(save_root);
 }
