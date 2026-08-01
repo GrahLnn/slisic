@@ -35,6 +35,7 @@ use tokio::sync::broadcast;
 use walkdir::WalkDir;
 const COLLECTION_MANIFEST_FILE_NAME: &str = ".slisic.collection.toml";
 const TEMP_DOWNLOAD_MARKER: &str = ".__slisic_tmp__";
+const LEAF_IDENTITY_DIRECTORY: &str = ".slisic.leaves";
 const LOCAL_AUDIO_PRECISE_DURATION_BOUNDARY_TOLERANCE_MS: u32 = 100;
 
 static RAW_LEAF_MANIFEST_EVIDENCE_LOCK: LazyLock<std::sync::Mutex<()>> =
@@ -1008,25 +1009,25 @@ fn resolve_downloaded_leaf_target(
         return Ok((preferred_relative_path, preferred_path));
     }
 
-    let identity_hash = stable_id(&format!("{}|{leaf_url}", group.url));
-    for hash_length in [8usize, 16, 32, 64] {
-        let file_name =
-            file_name_with_identity_suffix(preferred_file_name, &identity_hash[..hash_length])?;
-        let relative_path = relative_music_path(collection, &file_name, group);
-        let final_path = save_root.join(&collection.folder).join(&relative_path);
-        if download_target_belongs_to_leaf_or_is_available(
-            collection,
-            leaf_url,
-            group,
-            downloaded_path,
-            &relative_path,
-            &final_path,
-        ) {
-            return Ok((relative_path, final_path));
-        }
+    let identity_relative_path = PathBuf::from(LEAF_IDENTITY_DIRECTORY)
+        .join(stable_id(&format!("{}|{leaf_url}", group.url)))
+        .join(preferred_file_name)
+        .to_string_lossy()
+        .to_string();
+    let relative_path = relative_music_path(collection, &identity_relative_path, group);
+    let final_path = save_root.join(&collection.folder).join(&relative_path);
+    if download_target_belongs_to_leaf_or_is_available(
+        collection,
+        leaf_url,
+        group,
+        downloaded_path,
+        &relative_path,
+        &final_path,
+    ) {
+        return Ok((relative_path, final_path));
     }
 
-    bail!("could not allocate a stable file name for downloaded leaf {leaf_url}")
+    bail!("could not allocate a stable storage path for downloaded leaf {leaf_url}")
 }
 
 fn download_target_belongs_to_leaf_or_is_available(
@@ -1054,20 +1055,6 @@ fn download_target_belongs_to_leaf_or_is_available(
     }
 
     owned_by_current_leaf || !final_path.exists()
-}
-
-fn file_name_with_identity_suffix(file_name: &str, identity_suffix: &str) -> Result<String> {
-    let path = Path::new(file_name);
-    let stem = path
-        .file_stem()
-        .and_then(|value| value.to_str())
-        .context("downloaded audio file name does not contain a unicode stem")?;
-    Ok(match path.extension().and_then(|value| value.to_str()) {
-        Some(extension) if !extension.is_empty() => {
-            format!("{stem} [{identity_suffix}].{extension}")
-        }
-        _ => format!("{stem} [{identity_suffix}]"),
-    })
 }
 
 fn ensure_committable_download_file_name(file_name: &str) -> Result<()> {

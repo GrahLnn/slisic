@@ -1135,6 +1135,12 @@ fn finalize_downloaded_leaf_preserves_another_leaf_with_the_same_title() {
     .expect("same-title leaves should receive distinct stable files");
 
     assert_ne!(relative_path, "Queen Bee.m4a");
+    assert_eq!(
+        PathBuf::from(&relative_path)
+            .file_name()
+            .and_then(|value| value.to_str()),
+        Some("Queen Bee.m4a")
+    );
     assert_eq!(std::fs::read(&existing_path).unwrap(), b"first leaf");
     assert_eq!(
         std::fs::read(target_dir.join(relative_path)).unwrap(),
