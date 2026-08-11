@@ -90,6 +90,14 @@ impl ProgramOwnedTraversalState {
     pub(crate) fn coverage_epoch(&self, path_ordinal: usize) -> Option<usize> {
         self.paths.get(path_ordinal).map(|path| path.coverage_epoch)
     }
+
+    pub(crate) fn realized_tracks(&self, path_ordinal: usize) -> Option<Vec<usize>> {
+        self.paths.get(path_ordinal).map(|path| {
+            (0..path.realized_history.len() * 64)
+                .filter(|track| contains_bit(&path.realized_history, *track))
+                .collect()
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

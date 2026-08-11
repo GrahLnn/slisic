@@ -417,6 +417,132 @@ fn extreme_topology_block_uses_sublinear_schedule_capacity() {
 }
 
 #[test]
+fn large_content_clusters_keep_their_epoch_mass_across_scope_and_session_continuation() {
+    #[derive(Default)]
+    struct EpochExposure {
+        total: usize,
+        main_title: usize,
+        chorus: usize,
+        carol: usize,
+        controls: usize,
+    }
+
+    impl EpochExposure {
+        fn observe(&mut self, track: &PlaybackTrack) {
+            self.total += 1;
+            if track.music_name.starts_with("main-title-") {
+                self.main_title += 1;
+            } else if track.music_name.starts_with("chorus-") {
+                self.chorus += 1;
+            } else if track.music_name.starts_with("carol-") {
+                self.carol += 1;
+            } else if track.music_name.starts_with("control-") {
+                self.controls += 1;
+            }
+        }
+
+        fn assert_expected(&self, schedule_count: usize, control_count: usize) {
+            assert_eq!(self.total, schedule_count);
+            assert_eq!(self.main_title, 1);
+            assert_eq!(self.chorus, 1);
+            assert_eq!(self.carol, 7);
+            assert_eq!(self.controls, control_count);
+        }
+    }
+
+    let mut values = Vec::new();
+    for index in 0..11 {
+        values.push((
+            track(&format!("main-title-{index}")),
+            dense_embedding(&[(0, 1.0)]),
+            "main-title-content".to_string(),
+        ));
+    }
+    for index in 0..5 {
+        values.push((
+            track(&format!("chorus-{index}")),
+            dense_embedding(&[(0, 0.999), (200, 0.03)]),
+            "chorus-content".to_string(),
+        ));
+    }
+    for index in 0..45 {
+        values.push((
+            track(&format!("carol-{index}")),
+            dense_embedding(&[(1, 1.0)]),
+            format!("carol-content-{index}"),
+        ));
+    }
+    for index in 0..80 {
+        values.push((
+            track(&format!("control-{index}")),
+            dense_embedding(&[(2 + index, 1.0)]),
+            format!("control-content-{index}"),
+        ));
+    }
+    let tracks = values
+        .iter()
+        .map(|(track, _, _)| track.clone())
+        .collect::<Vec<_>>();
+    let snapshot = AudioStyleModelSnapshot::from_test_content_embeddings(106, values);
+    let schedule_count = snapshot
+        .symbolic_track_count()
+        .expect("large content-collapsed schedule should compile");
+    assert_eq!(schedule_count, 89);
+
+    let mut current = tracks
+        .iter()
+        .find(|track| track.music_name == "control-0")
+        .cloned()
+        .expect("control anchor should exist");
+    let mut recent = vec![current.clone()];
+    let mut active_candidates = tracks
+        .iter()
+        .filter(|track| track.music_name != "control-79")
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut session = AudioStyleSymbolicPlaybackSession::default();
+    session.observe_scope_revision(1);
+    let mut exposure = EpochExposure::default();
+    exposure.observe(&current);
+    let mut completed_epochs = 0;
+    let mut scope_revision_injected = false;
+    let mut committed_session_reloaded = false;
+
+    while completed_epochs < 4 {
+        let next = session
+            .propose_next(&snapshot, &current, &active_candidates, &recent)
+            .expect("large symbolic traversal should remain executable");
+        if next.coverage_epoch_transition {
+            if completed_epochs == 0 {
+                exposure.assert_expected(schedule_count - 1, 79);
+            } else {
+                exposure.assert_expected(schedule_count, 80);
+            }
+            completed_epochs += 1;
+            exposure = EpochExposure::default();
+        }
+        exposure.observe(&next.track);
+        if completed_epochs == 1 && exposure.total == 20 && !scope_revision_injected {
+            active_candidates = tracks.clone();
+            session.observe_scope_revision(2);
+            scope_revision_injected = true;
+        }
+        session
+            .commit_proposal()
+            .expect("large symbolic proposal should commit");
+        current = next.track;
+        recent.push(current.clone());
+        if completed_epochs == 2 && !committed_session_reloaded {
+            session = session.committed_snapshot();
+            committed_session_reloaded = true;
+        }
+    }
+
+    assert!(scope_revision_injected);
+    assert!(committed_session_reloaded);
+}
+
+#[test]
 fn symbolic_playback_session_exposes_reusable_materialized_scope() {
     let tracks = (0..6)
         .map(|index| track(&format!("cached-symbolic-{index}")))

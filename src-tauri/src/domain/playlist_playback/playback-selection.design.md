@@ -165,10 +165,18 @@ selection, queue planning, recommendation fallback, refresh, and cancellation.
   capacity (`ceil(sqrt(class_count))`) when reciprocal similarity and both
   outgoing and incoming neighborhood-overlap checks agree. The block does not
   become content identity: its concrete content classes remain materializations
-  of those capacity slots.
+  of those capacity slots. Strong block membership is considered across the
+  complete compiled candidate row; the smaller neighborhood prefix is only the
+  topology-profile comparison surface and cannot split a large equal-similarity
+  block through stable tie ordering.
 - Scope coverage and recent history operate on symbolic positions. Concrete
   URLs and paths are selected deterministically only after traversal, rotating
   across later coverage epochs instead of multiplying a class inside one epoch.
+- A scope revision invalidates materialization reuse without deleting the
+  traversal frontier. When the scope signature changes, realized positions from
+  the current coverage epoch are transported through shared member identities;
+  newly admitted positions remain unrealized, and an unchanged signature keeps
+  the exact execution state.
 - The canonical content partition and topology-capacity partition are signed as
   part of the derived symbolic encoding. A stable model refreshes that derived
   encoding when its schema or partition signature no longer matches, without

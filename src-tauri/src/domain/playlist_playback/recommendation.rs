@@ -774,8 +774,16 @@ pub(crate) struct AudioStyleModelSnapshot {
 #[derive(Clone, Default)]
 pub(crate) struct AudioStyleSymbolicPlaybackSession {
     execution: Option<AudioStyleSymbolicPlaylistExecution>,
-    pending_checkpoint: Option<Box<Option<AudioStyleSymbolicPlaylistExecution>>>,
+    pending_checkpoint: Option<Box<AudioStyleSymbolicPendingCheckpoint>>,
     scope_revision: Option<u64>,
+    scope_dirty: bool,
+}
+
+#[derive(Clone)]
+struct AudioStyleSymbolicPendingCheckpoint {
+    execution: Option<AudioStyleSymbolicPlaylistExecution>,
+    scope_revision: Option<u64>,
+    scope_dirty: bool,
 }
 
 #[derive(Clone)]
@@ -5261,13 +5269,7 @@ fn audio_style_topology_blocks(rows: &[AudioStyleRankedCandidateRow]) -> Vec<Vec
     }
     let mut parents = (0..rows.len()).collect::<Vec<_>>();
     for source in 0..rows.len() {
-        for (rank, destination) in rows[source]
-            .destinations
-            .iter()
-            .copied()
-            .take(AUDIO_STYLE_TOPOLOGY_BLOCK_NEIGHBOR_COUNT)
-            .enumerate()
-        {
+        for (rank, destination) in rows[source].destinations.iter().copied().enumerate() {
             if source >= destination
                 || rows[source].similarities[rank]
                     < AUDIO_STYLE_TOPOLOGY_BLOCK_MIN_CENTERED_SIMILARITY
@@ -5277,7 +5279,6 @@ fn audio_style_topology_blocks(rows: &[AudioStyleRankedCandidateRow]) -> Vec<Vec
             let Some(reverse_rank) = rows[destination]
                 .destinations
                 .iter()
-                .take(AUDIO_STYLE_TOPOLOGY_BLOCK_NEIGHBOR_COUNT)
                 .position(|candidate| *candidate == source)
             else {
                 continue;
@@ -6321,20 +6322,21 @@ impl AudioStyleSymbolicPlaybackSession {
         let execution = self
             .pending_checkpoint
             .as_ref()
-            .map(|checkpoint| (**checkpoint).clone())
+            .map(|checkpoint| checkpoint.execution.clone())
             .unwrap_or_else(|| self.execution.clone());
         Self {
             execution,
             pending_checkpoint: None,
             scope_revision: self.scope_revision,
+            scope_dirty: self.scope_dirty,
         }
     }
 
     // @forma implements architecture Domain.PlaybackSessionProgramState as propose_next
     pub(crate) fn observe_scope_revision(&mut self, revision: u64) {
         if self.scope_revision != Some(revision) {
-            if self.scope_revision.is_some() && self.pending_checkpoint.is_none() {
-                self.execution = None;
+            if self.scope_revision.is_some() {
+                self.scope_dirty = true;
             }
             self.scope_revision = Some(revision);
         }
@@ -6346,18 +6348,19 @@ impl AudioStyleSymbolicPlaybackSession {
         current_track: &PlaybackTrack,
     ) -> bool {
         let current_key = PlaybackTrackKey::from_track(current_track);
-        self.execution.as_ref().is_some_and(|execution| {
-            let materialized_current = execution
-                .local_by_key
-                .get(&current_key)
-                .and_then(|local| execution.materializations.get(*local))
-                .is_some_and(|tracks| {
-                    tracks
-                        .iter()
-                        .any(|track| PlaybackTrackKey::from_track(track) == current_key)
-                });
-            execution.generation == snapshot.generation && materialized_current
-        })
+        !self.scope_dirty
+            && self.execution.as_ref().is_some_and(|execution| {
+                let materialized_current = execution
+                    .local_by_key
+                    .get(&current_key)
+                    .and_then(|local| execution.materializations.get(*local))
+                    .is_some_and(|tracks| {
+                        tracks
+                            .iter()
+                            .any(|track| PlaybackTrackKey::from_track(track) == current_key)
+                    });
+                execution.generation == snapshot.generation && materialized_current
+            })
     }
 
     pub(crate) fn cached_scope_tracks_for(
@@ -6504,14 +6507,36 @@ impl AudioStyleSymbolicPlaybackSession {
                 let current_local = *local_by_key.get(&current_key).ok_or_else(|| {
                     "current track disappeared from playlist symbolic scope".to_string()
                 })?;
-                let realized = recently_played_tracks
-                    .iter()
-                    .filter_map(|track| {
-                        local_by_key
-                            .get(&PlaybackTrackKey::from_track(track))
-                            .copied()
-                    })
-                    .collect::<Vec<_>>();
+                let realized = if let Some(previous) = previous {
+                    let previous_realized = previous
+                        .state
+                        .realized_tracks(0)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .collect::<HashSet<_>>();
+                    let mut realized = local_by_key
+                        .iter()
+                        .filter_map(|(key, local)| {
+                            previous
+                                .local_by_key
+                                .get(key)
+                                .filter(|previous_local| previous_realized.contains(previous_local))
+                                .map(|_| *local)
+                        })
+                        .collect::<Vec<_>>();
+                    realized.sort_unstable();
+                    realized.dedup();
+                    realized
+                } else {
+                    recently_played_tracks
+                        .iter()
+                        .filter_map(|track| {
+                            local_by_key
+                                .get(&PlaybackTrackKey::from_track(track))
+                                .copied()
+                        })
+                        .collect::<Vec<_>>()
+                };
                 let state = transport_traversal_state(
                     previous.map(|execution| (execution.atlas.as_ref(), &execution.state)),
                     atlas.as_ref(),
@@ -6541,15 +6566,7 @@ impl AudioStyleSymbolicPlaybackSession {
             .ok_or_else(|| "current track is outside the active symbolic scope".to_string())?;
         if execution.state.current_track(0) != Some(current_local) {
             let previous_state = execution.state.clone();
-            let realized = recently_played_tracks
-                .iter()
-                .filter_map(|track| {
-                    execution
-                        .local_by_key
-                        .get(&PlaybackTrackKey::from_track(track))
-                        .copied()
-                })
-                .collect::<Vec<_>>();
+            let realized = previous_state.realized_tracks(0).unwrap_or_default();
             execution.state = transport_traversal_state(
                 Some((execution.atlas.as_ref(), &previous_state)),
                 execution.atlas.as_ref(),
@@ -6577,7 +6594,11 @@ impl AudioStyleSymbolicPlaybackSession {
                 "symbolic execution selected an empty materialization class".to_string()
             })?;
         execution.state = list.next_state;
-        self.pending_checkpoint = Some(Box::new(self.execution.clone()));
+        self.pending_checkpoint = Some(Box::new(AudioStyleSymbolicPendingCheckpoint {
+            execution: self.execution.clone(),
+            scope_revision: self.scope_revision,
+            scope_dirty: self.scope_dirty,
+        }));
         self.execution = Some(execution);
         Ok(AudioStyleSymbolicNextTrack {
             track,
@@ -6587,9 +6608,11 @@ impl AudioStyleSymbolicPlaybackSession {
     }
 
     pub(crate) fn commit_proposal(&mut self) -> Result<(), String> {
-        if self.pending_checkpoint.take().is_none() {
-            return Err("symbolic session has no prepared proposal to commit".to_string());
-        }
+        let checkpoint = self
+            .pending_checkpoint
+            .take()
+            .ok_or_else(|| "symbolic session has no prepared proposal to commit".to_string())?;
+        self.scope_dirty = self.scope_revision != checkpoint.scope_revision;
         Ok(())
     }
 
@@ -6598,7 +6621,9 @@ impl AudioStyleSymbolicPlaybackSession {
             .pending_checkpoint
             .take()
             .ok_or_else(|| "symbolic session has no prepared proposal to roll back".to_string())?;
-        self.execution = *checkpoint;
+        self.execution = checkpoint.execution;
+        self.scope_dirty =
+            checkpoint.scope_dirty || self.scope_revision != checkpoint.scope_revision;
         Ok(())
     }
 }
