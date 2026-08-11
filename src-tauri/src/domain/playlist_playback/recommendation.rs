@@ -32,8 +32,9 @@ use rand::RngExt;
 use rustfft::{FftPlanner, num_complex::Complex};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fs;
+use std::io::{BufReader, Read};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 #[cfg(not(test))]
@@ -49,7 +50,6 @@ const AUDIO_STYLE_EMBEDDING_VERSION: &str = "audio-style-watermark-transition-v3
 #[cfg(test)]
 pub(crate) const AUDIO_STYLE_EMBEDDING_VERSION_FOR_TEST: &str = AUDIO_STYLE_EMBEDDING_VERSION;
 const AUDIO_STYLE_STABLE_MODEL_VERSION: &str = "audio-style-stable-model-v2";
-const AUDIO_STYLE_LEGACY_STABLE_MODEL_VERSION: &str = "audio-style-stable-model-v1";
 pub(crate) const AUDIO_STYLE_STABLE_MODEL_DIR_NAME: &str = "audio-style-stable-model";
 pub(crate) const AUDIO_STYLE_LEGACY_MODEL_EVIDENCE_DIR_NAME: &str = "audio-style-model-evidence";
 const AUDIO_STYLE_TRAINING_INVALIDATION_FILE_VERSION: &str = "audio-style-training-invalidation-v1";
@@ -118,7 +118,14 @@ const AUDIO_STYLE_LISTENER_SHOCK_DISTANCE: f32 = 1.15;
 const AUDIO_STYLE_LOCAL_DENSITY_TOP_K: usize = 10;
 const AUDIO_STYLE_SYMBOLIC_PROGRAM_CANDIDATE_COUNT: usize = 96;
 const AUDIO_STYLE_SYMBOLIC_PROGRAM_ENCODING_SCHEMA: &str =
-    "slisic.symbolic-audio-program-encoding.v1";
+    "slisic.symbolic-audio-program-encoding.v2";
+const AUDIO_STYLE_TOPOLOGY_BLOCK_NEIGHBOR_COUNT: usize = 24;
+const AUDIO_STYLE_TOPOLOGY_BLOCK_MIN_CLASS_COUNT: usize = 3;
+const AUDIO_STYLE_TOPOLOGY_BLOCK_MIN_LIBRARY_CLASSES: usize = 48;
+const AUDIO_STYLE_TOPOLOGY_BLOCK_MIN_CENTERED_SIMILARITY: f32 = 0.985;
+const AUDIO_STYLE_TOPOLOGY_BLOCK_MIN_OUT_JACCARD: f32 = 0.30;
+const AUDIO_STYLE_TOPOLOGY_BLOCK_MIN_IN_JACCARD: f32 = 0.20;
+const AUDIO_STYLE_TOPOLOGY_BLOCK_MAX_CLASSES: usize = 64;
 const AUDIO_STYLE_SELF_SUPERVISED_BASIN_GAP_WEIGHT: f32 = 0.35;
 const AUDIO_STYLE_SELF_SUPERVISED_BASIN_SEPARATION_MIN: f32 = 0.55;
 const AUDIO_STYLE_SELF_SUPERVISED_BASIN_SEPARATION_MAX: f32 = 0.92;
@@ -445,6 +452,8 @@ struct CachedAudioStyleStableModel {
 struct CachedAudioStyleModelState {
     embeddings: Vec<CachedAudioStyleEmbeddingEntry>,
     indexed_tracks: Vec<CachedAudioStyleIndexedTrack>,
+    #[serde(default)]
+    content_classes: Vec<CachedAudioStyleContentClass>,
     neighbor_index: CachedAudioStyleNeighborIndex,
     sampling_geometry: Option<CachedAudioStyleSamplingGeometry>,
     #[serde(default)]
@@ -457,11 +466,19 @@ struct CachedAudioStyleSymbolicProgramEncoding {
     stable_generation: u64,
     track_count: usize,
     track_key_signature: String,
+    #[serde(default)]
+    partition_signature: String,
     candidate_width: usize,
     candidate_relation_signature: String,
     candidate_rows: Vec<Vec<usize>>,
     program_lineages: Vec<String>,
     program_encoding_signature: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CachedAudioStyleContentClass {
+    key: String,
+    members: Vec<CachedPlaybackTrackKey>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -616,6 +633,7 @@ pub(crate) struct AudioStyleEmbeddingCache {
 struct AudioStyleModelState {
     embeddings: AudioStyleEmbeddingMap,
     indexed_tracks: HashMap<PlaybackTrackKey, AudioStyleIndexedTrack>,
+    content_partition: Arc<AudioStyleContentPartition>,
     neighbor_index: AudioStyleNeighborIndex,
     sampling_geometry: Option<AudioStyleSamplingGeometry>,
     symbolic_program_encoding: Option<Arc<AudioStyleSymbolicProgramEncoding>>,
@@ -625,13 +643,40 @@ struct AudioStyleModelState {
 struct AudioStyleSymbolicProgramEncoding {
     ordered_keys: Vec<PlaybackTrackKey>,
     ordinal_by_key: HashMap<PlaybackTrackKey, usize>,
+    member_keys: Vec<Vec<PlaybackTrackKey>>,
     track_keys: Vec<String>,
     candidate_count: usize,
     candidate_neighbors: Vec<usize>,
     atlas: NeuralProgramAtlas,
     track_key_signature: String,
+    partition_signature: String,
     candidate_relation_signature: String,
     program_encoding_signature: String,
+}
+
+#[derive(Clone)]
+struct AudioStyleContentPartition {
+    members_by_class: BTreeMap<String, Vec<PlaybackTrackKey>>,
+}
+
+struct AudioStyleSchedulePartition {
+    ordered_keys: Vec<PlaybackTrackKey>,
+    member_keys: Vec<Vec<PlaybackTrackKey>>,
+    track_keys: Vec<String>,
+    embeddings: AudioStyleEmbeddingMap,
+    signature: String,
+}
+
+struct AudioStyleRankedCandidateRow {
+    destinations: Vec<usize>,
+    similarities: Vec<f32>,
+}
+
+struct AudioStyleHardContentClass {
+    key: String,
+    members: Vec<PlaybackTrackKey>,
+    representative: PlaybackTrackKey,
+    embedding: Arc<AudioStyleEmbedding>,
 }
 
 struct AudioStyleModelUpdateFailure {
@@ -742,6 +787,7 @@ struct AudioStyleSymbolicPlaylistExecution {
     state: ProgramOwnedTraversalState,
     local_by_key: Arc<HashMap<PlaybackTrackKey, usize>>,
     tracks: Arc<Vec<PlaybackTrack>>,
+    materializations: Arc<Vec<Vec<PlaybackTrack>>>,
 }
 
 pub(crate) struct AudioStyleSymbolicNextTrack {
@@ -954,6 +1000,169 @@ impl From<CachedCollectionGroupOwner> for CollectionGroupOwner {
     }
 }
 
+impl AudioStyleContentPartition {
+    fn from_indexed_tracks(
+        embeddings: &AudioStyleEmbeddingMap,
+        indexed_tracks: &HashMap<PlaybackTrackKey, AudioStyleIndexedTrack>,
+    ) -> Self {
+        Self::from_evidence(embeddings, indexed_tracks, &HashMap::new())
+    }
+
+    fn from_evidence(
+        embeddings: &AudioStyleEmbeddingMap,
+        indexed_tracks: &HashMap<PlaybackTrackKey, AudioStyleIndexedTrack>,
+        class_overrides: &HashMap<PlaybackTrackKey, String>,
+    ) -> Self {
+        let ordered_keys = sorted_audio_style_embedding_keys(embeddings);
+        let mut class_key_by_track = HashMap::with_capacity(ordered_keys.len());
+        let mut duplicate_size_buckets = HashMap::<(u64, u32, u32), Vec<PlaybackTrackKey>>::new();
+
+        for key in &ordered_keys {
+            if let Some(class_key) = class_overrides.get(key) {
+                class_key_by_track.insert(key.clone(), format!("audio-content:{class_key}"));
+                continue;
+            }
+            let Some(indexed) = indexed_tracks.get(key) else {
+                class_key_by_track.insert(key.clone(), unique_audio_content_class_key(key));
+                continue;
+            };
+            let Ok(metadata) = fs::metadata(&indexed.track.file_path) else {
+                class_key_by_track.insert(key.clone(), unique_audio_content_class_key(key));
+                continue;
+            };
+            duplicate_size_buckets
+                .entry((metadata.len(), key.start_ms, key.end_ms))
+                .or_default()
+                .push(key.clone());
+        }
+
+        let mut digest_by_path = HashMap::<PathBuf, Result<String, String>>::new();
+        for ((_, start_ms, end_ms), keys) in duplicate_size_buckets {
+            if keys.len() < 2 {
+                let key = &keys[0];
+                class_key_by_track.insert(key.clone(), unique_audio_content_class_key(key));
+                continue;
+            }
+            for key in keys {
+                let digest = digest_by_path
+                    .entry(key.file_path.clone())
+                    .or_insert_with(|| sha256_file(&key.file_path))
+                    .clone();
+                let class_key = match digest {
+                    Ok(digest) => {
+                        format!("audio-content:sha256:{digest}:{start_ms}:{end_ms}")
+                    }
+                    Err(_) => unique_audio_content_class_key(&key),
+                };
+                class_key_by_track.insert(key, class_key);
+            }
+        }
+
+        let mut members_by_class = BTreeMap::<String, Vec<PlaybackTrackKey>>::new();
+        for key in ordered_keys {
+            let class_key = class_key_by_track
+                .entry(key.clone())
+                .or_insert_with(|| unique_audio_content_class_key(&key))
+                .clone();
+            members_by_class.entry(class_key).or_default().push(key);
+        }
+        for members in members_by_class.values_mut() {
+            members.sort_by_key(audio_style_track_key_sort_value);
+        }
+        Self { members_by_class }
+    }
+
+    fn from_cached(
+        cached: Vec<CachedAudioStyleContentClass>,
+        embeddings: &AudioStyleEmbeddingMap,
+    ) -> Result<Self, String> {
+        let mut class_key_by_track = HashMap::with_capacity(embeddings.len());
+        let mut members_by_class = BTreeMap::new();
+        for cached_class in cached {
+            if cached_class.key.is_empty() || cached_class.members.is_empty() {
+                return Err("stable content partition contains an empty class".to_string());
+            }
+            let mut members = cached_class
+                .members
+                .into_iter()
+                .map(PlaybackTrackKey::from)
+                .collect::<Vec<_>>();
+            members.sort_by_key(audio_style_track_key_sort_value);
+            members.dedup();
+            for member in &members {
+                if !embeddings.contains_key(member) {
+                    return Err(
+                        "stable content partition references a missing embedding".to_string()
+                    );
+                }
+                if class_key_by_track
+                    .insert(member.clone(), cached_class.key.clone())
+                    .is_some()
+                {
+                    return Err(
+                        "stable content partition assigns a track more than once".to_string()
+                    );
+                }
+            }
+            if members_by_class.insert(cached_class.key, members).is_some() {
+                return Err("stable content partition repeats a class key".to_string());
+            }
+        }
+        if class_key_by_track.len() != embeddings.len() {
+            return Err("stable content partition does not cover every embedding".to_string());
+        }
+        Ok(Self { members_by_class })
+    }
+
+    fn to_cached(&self) -> Vec<CachedAudioStyleContentClass> {
+        self.members_by_class
+            .iter()
+            .map(|(key, members)| CachedAudioStyleContentClass {
+                key: key.clone(),
+                members: members.iter().map(CachedPlaybackTrackKey::from).collect(),
+            })
+            .collect()
+    }
+}
+
+fn unique_audio_content_class_key(key: &PlaybackTrackKey) -> String {
+    format!(
+        "audio-content:identity:{}",
+        symbolic_audio_style_track_key(key).unwrap_or_else(|_| format!(
+            "{}:{}:{}:{}",
+            key.music_url,
+            key.file_path.display(),
+            key.start_ms,
+            key.end_ms
+        ))
+    )
+}
+
+fn sha256_file(path: &Path) -> Result<String, String> {
+    let file = fs::File::open(path).map_err(|error| {
+        format!(
+            "failed to open content evidence `{}`: {error}",
+            path.display()
+        )
+    })?;
+    let mut reader = BufReader::new(file);
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = reader.read(&mut buffer).map_err(|error| {
+            format!(
+                "failed to read content evidence `{}`: {error}",
+                path.display()
+            )
+        })?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hex::encode(hasher.finalize()))
+}
+
 impl CachedAudioStyleModelState {
     fn from_state(state: &AudioStyleModelState, generation: u64) -> Self {
         Self {
@@ -982,6 +1191,7 @@ impl CachedAudioStyleModelState {
                         })
                 })
                 .collect(),
+            content_classes: state.content_partition.to_cached(),
             neighbor_index: CachedAudioStyleNeighborIndex::from(&state.neighbor_index),
             sampling_geometry: state
                 .sampling_geometry
@@ -1033,20 +1243,47 @@ impl TryFrom<CachedAudioStyleModelState> for AudioStyleModelState {
             );
         }
 
+        let content_partition = if cached.content_classes.is_empty() {
+            AudioStyleContentPartition::from_indexed_tracks(&embeddings, &indexed_tracks)
+        } else {
+            AudioStyleContentPartition::from_cached(cached.content_classes, &embeddings)?
+        };
         let neighbor_index = AudioStyleNeighborIndex::try_from(cached.neighbor_index, &embeddings)?;
         let sampling_geometry = cached
             .sampling_geometry
             .map(|geometry| AudioStyleSamplingGeometry::try_from(geometry, &embeddings))
             .transpose()?;
-        let symbolic_program_encoding = cached
-            .symbolic_program_encoding
-            .map(|encoding| {
-                AudioStyleSymbolicProgramEncoding::from_cached(encoding, &embeddings).map(Arc::new)
-            })
-            .transpose()?;
+        let symbolic_program_encoding = match cached.symbolic_program_encoding {
+            Some(encoding) => match AudioStyleSymbolicProgramEncoding::from_cached(
+                encoding,
+                &embeddings,
+                &content_partition,
+            ) {
+                Ok(encoding) => Some(Arc::new(encoding)),
+                Err(error) => {
+                    log::info!(
+                        target: AUDIO_STYLE_LOG_TARGET,
+                        "audio_style_symbolic_program_refresh source=stable_embeddings reason=\"{}\"",
+                        escape_log_value(&error)
+                    );
+                    AudioStyleSymbolicProgramEncoding::from_embeddings(
+                        &embeddings,
+                        &content_partition,
+                    )
+                    .ok()
+                    .map(Arc::new)
+                }
+            },
+            None => {
+                AudioStyleSymbolicProgramEncoding::from_embeddings(&embeddings, &content_partition)
+                    .ok()
+                    .map(Arc::new)
+            }
+        };
         Ok(Self {
             embeddings,
             indexed_tracks,
+            content_partition: Arc::new(content_partition),
             neighbor_index,
             sampling_geometry,
             symbolic_program_encoding,
@@ -2272,7 +2509,7 @@ impl AudioStyleRecommendationRuntime {
             }
         };
         let restore_result = tauri::async_runtime::spawn_blocking(move || {
-            read_and_migrate_audio_style_stable_model(&stable_model_path)
+            read_and_refresh_audio_style_stable_model(&stable_model_path)
         })
         .await;
         let snapshot = match restore_result {
@@ -3612,6 +3849,7 @@ impl AudioStyleModelState {
         Self {
             embeddings: previous.embeddings.clone(),
             indexed_tracks: indexed_by_key,
+            content_partition: Arc::clone(&previous.content_partition),
             neighbor_index: previous.neighbor_index.clone(),
             sampling_geometry: previous.sampling_geometry.clone(),
             symbolic_program_encoding: previous.symbolic_program_encoding.clone(),
@@ -3829,26 +4067,50 @@ impl AudioStyleModelState {
         indexed_tracks: HashMap<PlaybackTrackKey, AudioStyleIndexedTrack>,
         previous_reused: &HashSet<PlaybackTrackKey>,
     ) -> Self {
+        Self::from_embeddings_with_content_overrides(
+            previous,
+            embeddings,
+            indexed_tracks,
+            previous_reused,
+            &HashMap::new(),
+        )
+    }
+
+    fn from_embeddings_with_content_overrides(
+        previous: Option<&Self>,
+        embeddings: AudioStyleEmbeddingMap,
+        indexed_tracks: HashMap<PlaybackTrackKey, AudioStyleIndexedTrack>,
+        previous_reused: &HashSet<PlaybackTrackKey>,
+        content_overrides: &HashMap<PlaybackTrackKey, String>,
+    ) -> Self {
         let stats = AudioStyleStats::from_embeddings(&embeddings);
         let neighbor_index =
             AudioStyleNeighborIndex::refresh_from(previous, &embeddings, &stats, previous_reused);
         let sampling_geometry =
             AudioStyleSamplingGeometry::from_model_parts(&embeddings, &stats, &neighbor_index);
-        let symbolic_program_encoding =
-            match AudioStyleSymbolicProgramEncoding::from_embeddings(&embeddings) {
-                Ok(encoding) => Some(Arc::new(encoding)),
-                Err(error) => {
-                    log::warn!(
-                        target: AUDIO_STYLE_LOG_TARGET,
-                        "audio_style_symbolic_program_unavailable reason=\"{}\"",
-                        escape_log_value(&error)
-                    );
-                    None
-                }
-            };
+        let content_partition = AudioStyleContentPartition::from_evidence(
+            &embeddings,
+            &indexed_tracks,
+            content_overrides,
+        );
+        let symbolic_program_encoding = match AudioStyleSymbolicProgramEncoding::from_embeddings(
+            &embeddings,
+            &content_partition,
+        ) {
+            Ok(encoding) => Some(Arc::new(encoding)),
+            Err(error) => {
+                log::warn!(
+                    target: AUDIO_STYLE_LOG_TARGET,
+                    "audio_style_symbolic_program_unavailable reason=\"{}\"",
+                    escape_log_value(&error)
+                );
+                None
+            }
+        };
         Self {
             embeddings,
             indexed_tracks,
+            content_partition: Arc::new(content_partition),
             neighbor_index,
             sampling_geometry,
             symbolic_program_encoding,
@@ -4729,30 +4991,212 @@ impl AudioStyleNeighborIndex {
     }
 }
 
-impl AudioStyleSymbolicProgramEncoding {
-    fn from_embeddings(embeddings: &AudioStyleEmbeddingMap) -> Result<Self, String> {
-        if embeddings.len() < 2 {
-            return Err(
-                "symbolic program encoding needs at least two stable embeddings".to_string(),
-            );
+impl AudioStyleSchedulePartition {
+    fn from_content_partition(
+        embeddings: &AudioStyleEmbeddingMap,
+        content_partition: &AudioStyleContentPartition,
+    ) -> Result<Self, String> {
+        let mut hard_classes = Vec::with_capacity(content_partition.members_by_class.len());
+        for (class_key, members) in &content_partition.members_by_class {
+            let representative = members
+                .first()
+                .cloned()
+                .ok_or_else(|| "audio content partition contains an empty class".to_string())?;
+            let embedding = average_audio_style_embeddings(
+                members
+                    .iter()
+                    .filter_map(|member| embeddings.get(member).map(Arc::as_ref)),
+            )
+            .ok_or_else(|| "audio content class has no valid embedding".to_string())?;
+            hard_classes.push(AudioStyleHardContentClass {
+                key: class_key.clone(),
+                members: members.clone(),
+                representative,
+                embedding: Arc::new(embedding),
+            });
         }
-        let ordered_keys = sorted_audio_style_embedding_keys(embeddings);
-        let track_keys = ordered_keys
+        if hard_classes.len() < 2 {
+            return Err("symbolic program encoding needs at least two content classes".to_string());
+        }
+
+        let hard_ordered_keys = hard_classes
             .iter()
-            .map(symbolic_audio_style_track_key)
-            .collect::<Result<Vec<_>, _>>()?;
-        let candidate_count =
-            AUDIO_STYLE_SYMBOLIC_PROGRAM_CANDIDATE_COUNT.min(ordered_keys.len() - 1);
-        let mean = AudioStyleStats::from_embeddings(embeddings).mean();
-        let mut candidate_lists = ordered_keys
+            .map(|class| class.representative.clone())
+            .collect::<Vec<_>>();
+        let hard_embeddings = hard_classes
             .iter()
-            .cloned()
-            .map(|key| (key, Vec::<(PlaybackTrackKey, f32)>::new()))
+            .map(|class| (class.representative.clone(), Arc::clone(&class.embedding)))
             .collect::<HashMap<_, _>>();
-        if !AudioStyleTensorRuntime::new().visit_centered_similarity_pairs(
+        let topology_blocks =
+            if hard_classes.len() >= AUDIO_STYLE_TOPOLOGY_BLOCK_MIN_LIBRARY_CLASSES {
+                ranked_audio_style_candidate_rows(&hard_ordered_keys, &hard_embeddings)
+                    .map(|rows| audio_style_topology_blocks(&rows))
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+
+        let mut consumed = vec![false; hard_classes.len()];
+        let mut entities = Vec::<(
+            String,
+            Vec<PlaybackTrackKey>,
+            PlaybackTrackKey,
+            Arc<AudioStyleEmbedding>,
+        )>::new();
+        for block in topology_blocks {
+            let mut block = block
+                .into_iter()
+                .filter(|ordinal| !consumed[*ordinal])
+                .collect::<Vec<_>>();
+            block.sort_by(|left, right| hard_classes[*left].key.cmp(&hard_classes[*right].key));
+            if block.len() < AUDIO_STYLE_TOPOLOGY_BLOCK_MIN_CLASS_COUNT {
+                continue;
+            }
+            for ordinal in &block {
+                consumed[*ordinal] = true;
+            }
+            let capacity = (block.len() as f64).sqrt().ceil() as usize;
+            let block_signature = audio_style_topology_block_signature(
+                block
+                    .iter()
+                    .map(|ordinal| hard_classes[*ordinal].key.as_str()),
+            );
+            for slot in 0..capacity {
+                let assigned = block
+                    .iter()
+                    .copied()
+                    .skip(slot)
+                    .step_by(capacity)
+                    .collect::<Vec<_>>();
+                if assigned.is_empty() {
+                    continue;
+                }
+                let mut members = assigned
+                    .iter()
+                    .flat_map(|ordinal| hard_classes[*ordinal].members.iter().cloned())
+                    .collect::<Vec<_>>();
+                members.sort_by_key(audio_style_track_key_sort_value);
+                let representative = members[0].clone();
+                let embedding = average_audio_style_embeddings(
+                    assigned
+                        .iter()
+                        .map(|ordinal| hard_classes[*ordinal].embedding.as_ref()),
+                )
+                .ok_or_else(|| "audio topology mass slot has no valid embedding".to_string())?;
+                entities.push((
+                    format!("audio-topology-mass:{block_signature}:slot-{slot}-of-{capacity}"),
+                    members,
+                    representative,
+                    Arc::new(embedding),
+                ));
+            }
+        }
+        for (ordinal, class) in hard_classes.into_iter().enumerate() {
+            if !consumed[ordinal] {
+                entities.push((
+                    class.key,
+                    class.members,
+                    class.representative,
+                    class.embedding,
+                ));
+            }
+        }
+        entities.sort_by(|left, right| left.0.cmp(&right.0));
+
+        let track_keys = entities
+            .iter()
+            .map(|(key, _, _, _)| key.clone())
+            .collect::<Vec<_>>();
+        let member_keys = entities
+            .iter()
+            .map(|(_, members, _, _)| members.clone())
+            .collect::<Vec<_>>();
+        let ordered_keys = entities
+            .iter()
+            .map(|(_, _, representative, _)| representative.clone())
+            .collect::<Vec<_>>();
+        let embeddings = entities
+            .into_iter()
+            .map(|(_, _, representative, embedding)| (representative, embedding))
+            .collect::<HashMap<_, _>>();
+        let signature = audio_style_schedule_partition_signature(&track_keys, &member_keys);
+        Ok(Self {
+            ordered_keys,
+            member_keys,
+            track_keys,
             embeddings,
-            &mean,
-            |left, right, similarity| {
+            signature,
+        })
+    }
+}
+
+fn average_audio_style_embeddings<'a>(
+    embeddings: impl IntoIterator<Item = &'a AudioStyleEmbedding>,
+) -> Option<AudioStyleEmbedding> {
+    let mut count = 0usize;
+    let mut sum = vec![0.0_f32; AUDIO_STYLE_EMBEDDING_WIDTH];
+    for embedding in embeddings {
+        for (target, value) in sum.iter_mut().zip(&embedding.values) {
+            *target += *value;
+        }
+        count += 1;
+    }
+    if count == 0 {
+        return None;
+    }
+    let scale = 1.0 / count as f32;
+    for value in &mut sum {
+        *value *= scale;
+    }
+    AudioStyleEmbedding::normalize(sum)
+}
+
+fn ranked_audio_style_candidate_rows(
+    ordered_keys: &[PlaybackTrackKey],
+    embeddings: &AudioStyleEmbeddingMap,
+) -> Result<Vec<AudioStyleRankedCandidateRow>, String> {
+    if ordered_keys.len() < 2 {
+        return Err("symbolic candidate relation needs at least two tracks".to_string());
+    }
+    let candidate_count = AUDIO_STYLE_SYMBOLIC_PROGRAM_CANDIDATE_COUNT.min(ordered_keys.len() - 1);
+    let mean = AudioStyleStats::from_embeddings(embeddings).mean();
+    let mut candidate_lists = ordered_keys
+        .iter()
+        .cloned()
+        .map(|key| (key, Vec::<(PlaybackTrackKey, f32)>::new()))
+        .collect::<HashMap<_, _>>();
+    if !AudioStyleTensorRuntime::new().visit_centered_similarity_pairs(
+        embeddings,
+        &mean,
+        |left, right, similarity| {
+            push_audio_style_symbolic_candidate(
+                candidate_lists.get_mut(left),
+                right.clone(),
+                similarity,
+                candidate_count,
+            );
+            push_audio_style_symbolic_candidate(
+                candidate_lists.get_mut(right),
+                left.clone(),
+                similarity,
+                candidate_count,
+            );
+        },
+    ) {
+        for left_index in 0..ordered_keys.len() {
+            for right_index in (left_index + 1)..ordered_keys.len() {
+                let left = &ordered_keys[left_index];
+                let right = &ordered_keys[right_index];
+                let Some(left_embedding) = embeddings.get(left) else {
+                    continue;
+                };
+                let Some(right_embedding) = embeddings.get(right) else {
+                    continue;
+                };
+                let Some(similarity) = centered_cosine(left_embedding, right_embedding, &mean)
+                else {
+                    continue;
+                };
                 push_audio_style_symbolic_candidate(
                     candidate_lists.get_mut(left),
                     right.clone(),
@@ -4765,71 +5209,213 @@ impl AudioStyleSymbolicProgramEncoding {
                     similarity,
                     candidate_count,
                 );
-            },
-        ) {
-            for left_index in 0..ordered_keys.len() {
-                for right_index in (left_index + 1)..ordered_keys.len() {
-                    let left = &ordered_keys[left_index];
-                    let right = &ordered_keys[right_index];
-                    let Some(left_embedding) = embeddings.get(left) else {
-                        continue;
-                    };
-                    let Some(right_embedding) = embeddings.get(right) else {
-                        continue;
-                    };
-                    let Some(similarity) = centered_cosine(left_embedding, right_embedding, &mean)
-                    else {
-                        continue;
-                    };
-                    push_audio_style_symbolic_candidate(
-                        candidate_lists.get_mut(left),
-                        right.clone(),
-                        similarity,
-                        candidate_count,
-                    );
-                    push_audio_style_symbolic_candidate(
-                        candidate_lists.get_mut(right),
-                        left.clone(),
-                        similarity,
-                        candidate_count,
-                    );
-                }
             }
         }
-        let ordinal_by_key = ordered_keys
-            .iter()
-            .cloned()
-            .enumerate()
-            .map(|(ordinal, key)| (key, ordinal))
-            .collect::<HashMap<_, _>>();
-        let mut candidate_neighbors = Vec::with_capacity(ordered_keys.len() * candidate_count);
-        for key in &ordered_keys {
+    }
+    let ordinal_by_key = ordered_keys
+        .iter()
+        .cloned()
+        .enumerate()
+        .map(|(ordinal, key)| (key, ordinal))
+        .collect::<HashMap<_, _>>();
+    ordered_keys
+        .iter()
+        .map(|key| {
             let candidates = candidate_lists
                 .remove(key)
                 .ok_or_else(|| "symbolic candidate row is missing".to_string())?;
             if candidates.len() != candidate_count {
                 return Err("symbolic candidate relation has an incomplete row".to_string());
             }
-            for (candidate, _) in candidates {
-                candidate_neighbors.push(
+            let mut destinations = Vec::with_capacity(candidate_count);
+            let mut similarities = Vec::with_capacity(candidate_count);
+            for (candidate, similarity) in candidates {
+                destinations.push(
                     *ordinal_by_key
                         .get(&candidate)
                         .ok_or_else(|| "symbolic candidate is outside stable order".to_string())?,
                 );
+                similarities.push(similarity);
             }
+            Ok(AudioStyleRankedCandidateRow {
+                destinations,
+                similarities,
+            })
+        })
+        .collect()
+}
+
+fn audio_style_topology_blocks(rows: &[AudioStyleRankedCandidateRow]) -> Vec<Vec<usize>> {
+    if rows.len() < AUDIO_STYLE_TOPOLOGY_BLOCK_MIN_LIBRARY_CLASSES
+        || rows
+            .iter()
+            .any(|row| row.destinations.len() < AUDIO_STYLE_TOPOLOGY_BLOCK_NEIGHBOR_COUNT)
+    {
+        return Vec::new();
+    }
+    let mut incoming = vec![HashSet::<usize>::new(); rows.len()];
+    for (source, row) in rows.iter().enumerate() {
+        for destination in &row.destinations {
+            incoming[*destination].insert(source);
         }
-        Self::from_parts(
-            ordered_keys,
-            track_keys,
-            candidate_count,
-            candidate_neighbors,
-            None,
-        )
+    }
+    let mut parents = (0..rows.len()).collect::<Vec<_>>();
+    for source in 0..rows.len() {
+        for (rank, destination) in rows[source]
+            .destinations
+            .iter()
+            .copied()
+            .take(AUDIO_STYLE_TOPOLOGY_BLOCK_NEIGHBOR_COUNT)
+            .enumerate()
+        {
+            if source >= destination
+                || rows[source].similarities[rank]
+                    < AUDIO_STYLE_TOPOLOGY_BLOCK_MIN_CENTERED_SIMILARITY
+            {
+                continue;
+            }
+            let Some(reverse_rank) = rows[destination]
+                .destinations
+                .iter()
+                .take(AUDIO_STYLE_TOPOLOGY_BLOCK_NEIGHBOR_COUNT)
+                .position(|candidate| *candidate == source)
+            else {
+                continue;
+            };
+            if rows[destination].similarities[reverse_rank]
+                < AUDIO_STYLE_TOPOLOGY_BLOCK_MIN_CENTERED_SIMILARITY
+                || ranked_prefix_jaccard(
+                    &rows[source].destinations,
+                    &rows[destination].destinations,
+                    AUDIO_STYLE_TOPOLOGY_BLOCK_NEIGHBOR_COUNT,
+                ) < AUDIO_STYLE_TOPOLOGY_BLOCK_MIN_OUT_JACCARD
+                || set_jaccard(&incoming[source], &incoming[destination])
+                    < AUDIO_STYLE_TOPOLOGY_BLOCK_MIN_IN_JACCARD
+            {
+                continue;
+            }
+            union_audio_style_topology_nodes(&mut parents, source, destination);
+        }
+    }
+    let mut components = BTreeMap::<usize, Vec<usize>>::new();
+    for node in 0..rows.len() {
+        let root = find_audio_style_topology_root(&mut parents, node);
+        components.entry(root).or_default().push(node);
+    }
+    components
+        .into_values()
+        .filter(|component| component.len() >= AUDIO_STYLE_TOPOLOGY_BLOCK_MIN_CLASS_COUNT)
+        .flat_map(|component| {
+            component
+                .chunks(AUDIO_STYLE_TOPOLOGY_BLOCK_MAX_CLASSES)
+                .filter(|chunk| chunk.len() >= AUDIO_STYLE_TOPOLOGY_BLOCK_MIN_CLASS_COUNT)
+                .map(<[usize]>::to_vec)
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+fn ranked_prefix_jaccard(left: &[usize], right: &[usize], width: usize) -> f32 {
+    let left = left.iter().copied().take(width).collect::<HashSet<_>>();
+    let right = right.iter().copied().take(width).collect::<HashSet<_>>();
+    set_jaccard(&left, &right)
+}
+
+fn set_jaccard(left: &HashSet<usize>, right: &HashSet<usize>) -> f32 {
+    let union = left.union(right).count();
+    if union == 0 {
+        0.0
+    } else {
+        left.intersection(right).count() as f32 / union as f32
+    }
+}
+
+fn find_audio_style_topology_root(parents: &mut [usize], node: usize) -> usize {
+    if parents[node] != node {
+        parents[node] = find_audio_style_topology_root(parents, parents[node]);
+    }
+    parents[node]
+}
+
+fn union_audio_style_topology_nodes(parents: &mut [usize], left: usize, right: usize) {
+    let left_root = find_audio_style_topology_root(parents, left);
+    let right_root = find_audio_style_topology_root(parents, right);
+    if left_root != right_root {
+        parents[right_root] = left_root.min(right_root);
+        parents[left_root] = left_root.min(right_root);
+    }
+}
+
+fn audio_style_topology_block_signature<'a>(keys: impl IntoIterator<Item = &'a str>) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"slisic.audio-topology-mass-block.v1");
+    for key in keys {
+        hasher.update((key.len() as u64).to_le_bytes());
+        hasher.update(key.as_bytes());
+    }
+    hex::encode(hasher.finalize())
+}
+
+fn audio_style_schedule_partition_signature(
+    track_keys: &[String],
+    member_keys: &[Vec<PlaybackTrackKey>],
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"slisic.audio-schedule-partition.v1");
+    for (track_key, members) in track_keys.iter().zip(member_keys) {
+        hasher.update((track_key.len() as u64).to_le_bytes());
+        hasher.update(track_key.as_bytes());
+        hasher.update((members.len() as u64).to_le_bytes());
+        for member in members {
+            let stable = symbolic_audio_style_track_key(member).unwrap_or_default();
+            hasher.update((stable.len() as u64).to_le_bytes());
+            hasher.update(stable.as_bytes());
+        }
+    }
+    hex::encode(hasher.finalize())
+}
+
+fn audio_style_symbolic_scope_signature(
+    encoding: &AudioStyleSymbolicProgramEncoding,
+    scope_globals: &[usize],
+    tracks_by_global: &HashMap<usize, Vec<PlaybackTrack>>,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"slisic.audio-symbolic-scope.v2");
+    for global in scope_globals {
+        let schedule_key = &encoding.track_keys[*global];
+        hasher.update((schedule_key.len() as u64).to_le_bytes());
+        hasher.update(schedule_key.as_bytes());
+        let tracks = &tracks_by_global[global];
+        hasher.update((tracks.len() as u64).to_le_bytes());
+        for track in tracks {
+            let stable = symbolic_audio_style_track_key(&PlaybackTrackKey::from_track(track))
+                .unwrap_or_default();
+            hasher.update((stable.len() as u64).to_le_bytes());
+            hasher.update(stable.as_bytes());
+        }
+    }
+    hex::encode(hasher.finalize())
+}
+
+impl AudioStyleSymbolicProgramEncoding {
+    fn from_embeddings(
+        embeddings: &AudioStyleEmbeddingMap,
+        content_partition: &AudioStyleContentPartition,
+    ) -> Result<Self, String> {
+        let partition =
+            AudioStyleSchedulePartition::from_content_partition(embeddings, content_partition)?;
+        let rows =
+            ranked_audio_style_candidate_rows(&partition.ordered_keys, &partition.embeddings)?;
+        let candidate_count = rows[0].destinations.len();
+        let candidate_neighbors = rows.into_iter().flat_map(|row| row.destinations).collect();
+        Self::from_parts(partition, candidate_count, candidate_neighbors, None)
     }
 
     fn from_cached(
         cached: CachedAudioStyleSymbolicProgramEncoding,
         embeddings: &AudioStyleEmbeddingMap,
+        content_partition: &AudioStyleContentPartition,
     ) -> Result<Self, String> {
         if cached.schema != AUDIO_STYLE_SYMBOLIC_PROGRAM_ENCODING_SCHEMA {
             return Err(format!(
@@ -4837,12 +5423,9 @@ impl AudioStyleSymbolicProgramEncoding {
                 cached.schema
             ));
         }
-        let ordered_keys = sorted_audio_style_embedding_keys(embeddings);
-        let track_keys = ordered_keys
-            .iter()
-            .map(symbolic_audio_style_track_key)
-            .collect::<Result<Vec<_>, _>>()?;
-        if cached.track_count != ordered_keys.len()
+        let partition =
+            AudioStyleSchedulePartition::from_content_partition(embeddings, content_partition)?;
+        if cached.track_count != partition.ordered_keys.len()
             || cached.candidate_width == 0
             || cached.candidate_rows.len() != cached.track_count
             || cached
@@ -4852,9 +5435,11 @@ impl AudioStyleSymbolicProgramEncoding {
         {
             return Err("cached symbolic program encoding has a ragged relation".to_string());
         }
-        if cached.track_key_signature != ordered_track_key_signature(&track_keys) {
+        if cached.track_key_signature != ordered_track_key_signature(&partition.track_keys)
+            || cached.partition_signature != partition.signature
+        {
             return Err(
-                "cached symbolic program encoding and stable track order differ".to_string(),
+                "cached symbolic program encoding and stable schedule partition differ".to_string(),
             );
         }
         let expected = (
@@ -4863,8 +5448,7 @@ impl AudioStyleSymbolicProgramEncoding {
             cached.program_encoding_signature,
         );
         Self::from_parts(
-            ordered_keys,
-            track_keys,
+            partition,
             cached.candidate_width,
             cached.candidate_rows.into_iter().flatten().collect(),
             Some(expected),
@@ -4872,14 +5456,16 @@ impl AudioStyleSymbolicProgramEncoding {
     }
 
     fn from_parts(
-        ordered_keys: Vec<PlaybackTrackKey>,
-        track_keys: Vec<String>,
+        partition: AudioStyleSchedulePartition,
         candidate_count: usize,
         candidate_neighbors: Vec<usize>,
         expected: Option<(String, Vec<String>, String)>,
     ) -> Result<Self, String> {
-        let compilation =
-            compile_neural_program_atlas(&track_keys, candidate_count, &candidate_neighbors)?;
+        let compilation = compile_neural_program_atlas(
+            &partition.track_keys,
+            candidate_count,
+            &candidate_neighbors,
+        )?;
         if !compilation.unclosed_presentations.is_empty() {
             return Err(format!(
                 "symbolic candidate presentations are unclosed: {:?}",
@@ -4889,9 +5475,12 @@ impl AudioStyleSymbolicProgramEncoding {
         let atlas = compilation
             .atlas
             .ok_or_else(|| "symbolic candidate relation has no executable program".to_string())?;
-        let track_key_signature = ordered_track_key_signature(&track_keys);
-        let candidate_relation_signature =
-            candidate_relation_signature(&track_keys, candidate_count, &candidate_neighbors)?;
+        let track_key_signature = ordered_track_key_signature(&partition.track_keys);
+        let candidate_relation_signature = candidate_relation_signature(
+            &partition.track_keys,
+            candidate_count,
+            &candidate_neighbors,
+        )?;
         let program_encoding_signature = program_encoding_signature(&atlas.programs);
         if let Some((expected_candidate_signature, expected_lineages, expected_program_signature)) =
             expected
@@ -4911,15 +5500,20 @@ impl AudioStyleSymbolicProgramEncoding {
                 );
             }
         }
+        let ordinal_by_key = partition
+            .member_keys
+            .iter()
+            .enumerate()
+            .flat_map(|(ordinal, members)| {
+                members.iter().cloned().map(move |member| (member, ordinal))
+            })
+            .collect();
         Ok(Self {
-            ordinal_by_key: ordered_keys
-                .iter()
-                .cloned()
-                .enumerate()
-                .map(|(ordinal, key)| (key, ordinal))
-                .collect(),
-            ordered_keys,
-            track_keys,
+            ordinal_by_key,
+            ordered_keys: partition.ordered_keys,
+            member_keys: partition.member_keys,
+            track_keys: partition.track_keys,
+            partition_signature: partition.signature,
             candidate_count,
             candidate_neighbors,
             atlas,
@@ -4935,6 +5529,7 @@ impl AudioStyleSymbolicProgramEncoding {
             stable_generation: generation,
             track_count: self.ordered_keys.len(),
             track_key_signature: self.track_key_signature.clone(),
+            partition_signature: self.partition_signature.clone(),
             candidate_width: self.candidate_count,
             candidate_relation_signature: self.candidate_relation_signature.clone(),
             candidate_rows: self
@@ -5607,6 +6202,41 @@ impl AudioStyleModelSnapshot {
     }
 
     #[cfg(test)]
+    pub(crate) fn from_test_content_embeddings(
+        generation: u64,
+        values: impl IntoIterator<Item = (PlaybackTrack, Vec<f32>, String)>,
+    ) -> Self {
+        let mut embeddings = HashMap::new();
+        let mut content_overrides = HashMap::new();
+        for (track, values, content_key) in values {
+            let Some(embedding) = AudioStyleEmbedding::normalize(values) else {
+                continue;
+            };
+            let key = PlaybackTrackKey::from_track(&track);
+            embeddings.insert(key.clone(), Arc::new(embedding));
+            content_overrides.insert(key, content_key);
+        }
+        let state = Arc::new(
+            AudioStyleModelState::from_embeddings_with_content_overrides(
+                None,
+                embeddings,
+                HashMap::new(),
+                &HashSet::new(),
+                &content_overrides,
+            ),
+        );
+        Self::from_state(generation, state)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn symbolic_partition_signature_for_test(&self) -> Option<&str> {
+        self.state
+            .symbolic_program_encoding
+            .as_deref()
+            .map(|encoding| encoding.partition_signature.as_str())
+    }
+
+    #[cfg(test)]
     pub(crate) fn from_test_indexed_embeddings(
         generation: u64,
         values: impl IntoIterator<Item = (PlaybackTrack, Vec<f32>, String)>,
@@ -5717,8 +6347,16 @@ impl AudioStyleSymbolicPlaybackSession {
     ) -> bool {
         let current_key = PlaybackTrackKey::from_track(current_track);
         self.execution.as_ref().is_some_and(|execution| {
-            execution.generation == snapshot.generation
-                && execution.local_by_key.contains_key(&current_key)
+            let materialized_current = execution
+                .local_by_key
+                .get(&current_key)
+                .and_then(|local| execution.materializations.get(*local))
+                .is_some_and(|tracks| {
+                    tracks
+                        .iter()
+                        .any(|track| PlaybackTrackKey::from_track(track) == current_key)
+                });
+            execution.generation == snapshot.generation && materialized_current
         })
     }
 
@@ -5764,27 +6402,33 @@ impl AudioStyleSymbolicPlaybackSession {
                 .expect("cached symbolic scope has an execution")
                 .clone()
         } else {
-            let mut track_by_global = HashMap::<usize, PlaybackTrack>::new();
+            let mut tracks_by_global = HashMap::<usize, Vec<PlaybackTrack>>::new();
             for track in candidates.iter().chain(std::iter::once(current_track)) {
                 let key = PlaybackTrackKey::from_track(track);
                 if let Some(global) = encoding.ordinal_by_key.get(&key).copied() {
-                    track_by_global
+                    tracks_by_global
                         .entry(global)
-                        .or_insert_with(|| track.clone());
+                        .or_default()
+                        .push(track.clone());
                 }
             }
-            if track_by_global.len() < 3 {
+            for tracks in tracks_by_global.values_mut() {
+                tracks.sort_by_key(|track| {
+                    audio_style_track_key_sort_value(&PlaybackTrackKey::from_track(track))
+                });
+                tracks.dedup_by(|left, right| {
+                    PlaybackTrackKey::from_track(left) == PlaybackTrackKey::from_track(right)
+                });
+            }
+            if tracks_by_global.len() < 3 {
                 return Err(
                     "playlist has fewer than three materialized stable symbolic tracks".to_string(),
                 );
             }
-            let mut scope_globals = track_by_global.keys().copied().collect::<Vec<_>>();
+            let mut scope_globals = tracks_by_global.keys().copied().collect::<Vec<_>>();
             scope_globals.sort_unstable();
-            let scope_track_keys = scope_globals
-                .iter()
-                .map(|global| encoding.track_keys[*global].clone())
-                .collect::<Vec<_>>();
-            let scope_signature = ordered_track_key_signature(&scope_track_keys);
+            let scope_signature =
+                audio_style_symbolic_scope_signature(encoding, &scope_globals, &tracks_by_global);
             let scope_changed = self.execution.as_ref().is_none_or(|execution| {
                 execution.generation != snapshot.generation
                     || execution.scope_signature != scope_signature
@@ -5819,20 +6463,43 @@ impl AudioStyleSymbolicPlaybackSession {
                         .global_track_ordinals
                         .iter()
                         .enumerate()
-                        .map(|(local, global)| (encoding.ordered_keys[*global].clone(), local))
+                        .flat_map(|(local, global)| {
+                            encoding.member_keys[*global]
+                                .iter()
+                                .cloned()
+                                .map(move |member| (member, local))
+                        })
                         .collect::<HashMap<_, _>>(),
                 );
-                let tracks = Arc::new(
+                let materializations = Arc::new(
                     scoped
                         .global_track_ordinals
                         .iter()
                         .map(|global| {
-                            track_by_global.get(global).cloned().ok_or_else(|| {
+                            tracks_by_global.get(global).cloned().ok_or_else(|| {
                                 "playlist symbolic scope lost materialized track metadata"
                                     .to_string()
                             })
                         })
                         .collect::<Result<Vec<_>, _>>()?,
+                );
+                let current_global = encoding.ordinal_by_key[&current_key];
+                let tracks = Arc::new(
+                    scoped
+                        .global_track_ordinals
+                        .iter()
+                        .enumerate()
+                        .map(|(local, global)| {
+                            if *global == current_global {
+                                Ok(current_track.clone())
+                            } else {
+                                materializations[local].first().cloned().ok_or_else(|| {
+                                    "playlist symbolic scope has no concrete materialization"
+                                        .to_string()
+                                })
+                            }
+                        })
+                        .collect::<Result<Vec<_>, String>>()?,
                 );
                 let current_local = *local_by_key.get(&current_key).ok_or_else(|| {
                     "current track disappeared from playlist symbolic scope".to_string()
@@ -5859,6 +6526,7 @@ impl AudioStyleSymbolicPlaybackSession {
                     state,
                     local_by_key,
                     tracks,
+                    materializations,
                 }
             } else {
                 self.execution
@@ -5897,11 +6565,17 @@ impl AudioStyleSymbolicPlaybackSession {
         )
         .map_err(|error| error.to_string())?;
         let next_local = list.order[0];
-        let track = execution
-            .tracks
+        let coverage_epoch = execution.state.coverage_epoch(0).unwrap_or_default();
+        let materializations = execution
+            .materializations
             .get(next_local)
-            .cloned()
             .ok_or_else(|| "symbolic execution selected an invalid local track".to_string())?;
+        let track = materializations
+            .get((coverage_epoch + next_local) % materializations.len())
+            .cloned()
+            .ok_or_else(|| {
+                "symbolic execution selected an empty materialization class".to_string()
+            })?;
         execution.state = list.next_state;
         self.pending_checkpoint = Some(Box::new(self.execution.clone()));
         self.execution = Some(execution);
@@ -7002,9 +7676,7 @@ fn snapshot_from_cached_audio_style_stable_model(
     cached: CachedAudioStyleStableModel,
     path: &Path,
 ) -> Result<AudioStyleModelSnapshot, String> {
-    if cached.version != AUDIO_STYLE_STABLE_MODEL_VERSION
-        && cached.version != AUDIO_STYLE_LEGACY_STABLE_MODEL_VERSION
-    {
+    if cached.version != AUDIO_STYLE_STABLE_MODEL_VERSION {
         return Err(format!(
             "audio style stable model `{}` has unsupported version `{}`",
             path.display(),
@@ -7036,7 +7708,10 @@ fn snapshot_from_cached_audio_style_stable_model(
         )
     })?;
     if state.symbolic_program_encoding.is_none() {
-        match AudioStyleSymbolicProgramEncoding::from_embeddings(&state.embeddings) {
+        match AudioStyleSymbolicProgramEncoding::from_embeddings(
+            &state.embeddings,
+            state.content_partition.as_ref(),
+        ) {
             Ok(encoding) => {
                 log::info!(
                     target: AUDIO_STYLE_LOG_TARGET,
@@ -7062,7 +7737,7 @@ fn snapshot_from_cached_audio_style_stable_model(
     ))
 }
 
-fn read_audio_style_stable_model_with_migration_status(
+fn read_audio_style_stable_model_with_refresh_status(
     path: &Path,
 ) -> Result<(AudioStyleModelSnapshot, bool), String> {
     let bytes = fs::read(path).map_err(|error| {
@@ -7078,22 +7753,29 @@ fn read_audio_style_stable_model_with_migration_status(
                 path.display()
             )
         })?;
-    let requires_migration = cached.version == AUDIO_STYLE_LEGACY_STABLE_MODEL_VERSION
-        || cached.state.symbolic_program_encoding.is_none();
+    let requires_refresh = cached.state.content_classes.is_empty()
+        || cached
+            .state
+            .symbolic_program_encoding
+            .as_ref()
+            .is_none_or(|encoding| {
+                encoding.schema != AUDIO_STYLE_SYMBOLIC_PROGRAM_ENCODING_SCHEMA
+                    || encoding.partition_signature.is_empty()
+            });
     snapshot_from_cached_audio_style_stable_model(cached, path)
-        .map(|snapshot| (snapshot, requires_migration))
+        .map(|snapshot| (snapshot, requires_refresh))
 }
 
 #[cfg(test)]
 fn read_audio_style_stable_model(path: &Path) -> Result<AudioStyleModelSnapshot, String> {
-    read_audio_style_stable_model_with_migration_status(path).map(|(snapshot, _)| snapshot)
+    read_audio_style_stable_model_with_refresh_status(path).map(|(snapshot, _)| snapshot)
 }
 
-fn read_and_migrate_audio_style_stable_model(
+fn read_and_refresh_audio_style_stable_model(
     path: &Path,
 ) -> Result<AudioStyleModelSnapshot, String> {
-    let (snapshot, requires_migration) = read_audio_style_stable_model_with_migration_status(path)?;
-    if requires_migration {
+    let (snapshot, requires_refresh) = read_audio_style_stable_model_with_refresh_status(path)?;
+    if requires_refresh {
         write_audio_style_stable_model(path, &snapshot)?;
     }
     Ok(snapshot)
@@ -7107,10 +7789,10 @@ pub(crate) fn read_audio_style_stable_model_for_test(
 }
 
 #[cfg(test)]
-pub(crate) fn read_and_migrate_audio_style_stable_model_for_test(
+pub(crate) fn read_and_refresh_audio_style_stable_model_for_test(
     path: &Path,
 ) -> Result<AudioStyleModelSnapshot, String> {
-    read_and_migrate_audio_style_stable_model(path)
+    read_and_refresh_audio_style_stable_model(path)
 }
 
 fn write_audio_style_stable_model(

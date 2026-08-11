@@ -86,6 +86,10 @@ impl ProgramOwnedTraversalState {
     pub(crate) fn current_track(&self, path_ordinal: usize) -> Option<usize> {
         self.paths.get(path_ordinal).map(|path| path.current_track)
     }
+
+    pub(crate) fn coverage_epoch(&self, path_ordinal: usize) -> Option<usize> {
+        self.paths.get(path_ordinal).map(|path| path.coverage_epoch)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

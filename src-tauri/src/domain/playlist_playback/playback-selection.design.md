@@ -156,6 +156,23 @@ selection, queue planning, recommendation fallback, refresh, and cancellation.
 
 - Symbolic program compilation and persistent traversal for an already
   materialized candidate window.
+- Content evidence is the hard scheduling identity. Stable tracks with the same
+  complete-file SHA-256 and playback range occupy one symbolic position even
+  when their source URL or local path differs; unavailable or unreadable
+  evidence remains identity-local and is never merged from title or embedding
+  similarity alone.
+- A generation-local extreme topology block may receive sublinear symbolic
+  capacity (`ceil(sqrt(class_count))`) when reciprocal similarity and both
+  outgoing and incoming neighborhood-overlap checks agree. The block does not
+  become content identity: its concrete content classes remain materializations
+  of those capacity slots.
+- Scope coverage and recent history operate on symbolic positions. Concrete
+  URLs and paths are selected deterministically only after traversal, rotating
+  across later coverage epochs instead of multiplying a class inside one epoch.
+- The canonical content partition and topology-capacity partition are signed as
+  part of the derived symbolic encoding. A stable model refreshes that derived
+  encoding when its schema or partition signature no longer matches, without
+  decoding audio embeddings again.
 - Explicit random degradation metadata when symbolic traversal cannot rank or
   reach a candidate.
 - The double-buffered model lifecycle: `stable` serves playback and first-slot

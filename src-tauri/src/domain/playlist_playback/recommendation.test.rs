@@ -5,7 +5,7 @@ use super::recommendation::{
     audio_style_training_inputs_covered_by_snapshot_for_test,
     audio_style_training_path_is_transient_for_test, audio_style_transition_fingerprint_for_test,
     choose_audio_style_model_snapshots_for_anchor,
-    read_and_migrate_audio_style_stable_model_for_test,
+    read_and_refresh_audio_style_stable_model_for_test,
     read_audio_style_pending_training_input_file_for_test, read_audio_style_stable_model_for_test,
     upsert_audio_style_pending_training_input_file_for_test,
     write_audio_style_stable_model_for_test,
@@ -142,6 +142,7 @@ fn audio_style_embedding_cache_cleanup_removes_stale_versions_when_explicitly_ru
     let _ = std::fs::remove_dir_all(root);
 }
 
+#[test]
 fn symbolic_playback_session_commits_and_rolls_back_program_state() {
     let tracks = (0..6)
         .map(|index| track(&format!("symbolic-{index}")))
@@ -183,6 +184,236 @@ fn symbolic_playback_session_commits_and_rolls_back_program_state() {
     session
         .commit_proposal()
         .expect("continued proposal should commit");
+}
+
+#[test]
+fn exact_content_class_owns_one_symbolic_position_and_one_history_slot() {
+    let tracks = (0..6)
+        .map(|index| track(&format!("content-class-{index}")))
+        .collect::<Vec<_>>();
+    let snapshot = AudioStyleModelSnapshot::from_test_content_embeddings(
+        100,
+        tracks.iter().cloned().enumerate().map(|(index, track)| {
+            let content_key = if index < 2 {
+                "shared-content".to_string()
+            } else {
+                format!("unique-content-{index}")
+            };
+            (track, dense_embedding(&[(index, 1.0)]), content_key)
+        }),
+    );
+
+    assert_eq!(snapshot.symbolic_track_count(), Some(5));
+
+    let mut session = AudioStyleSymbolicPlaybackSession::default();
+    let mut current = tracks[0].clone();
+    let mut recent = vec![current.clone()];
+    for _ in 0..4 {
+        let next = session
+            .propose_next(&snapshot, &current, &tracks, &recent)
+            .expect("content-collapsed symbolic scope should remain executable");
+        assert_ne!(next.track.music_url, tracks[1].music_url);
+        assert!(!next.coverage_epoch_transition);
+        session
+            .commit_proposal()
+            .expect("content-collapsed proposal should commit");
+        current = next.track;
+        recent.push(current.clone());
+    }
+
+    let mut reached_second_materialization = false;
+    for _ in 0..6 {
+        let next = session
+            .propose_next(&snapshot, &current, &tracks, &recent)
+            .expect("later coverage epochs should keep the content class materializable");
+        reached_second_materialization |= next.track.music_url == tracks[1].music_url;
+        session
+            .commit_proposal()
+            .expect("later content materialization should commit");
+        current = next.track;
+        recent.push(current.clone());
+    }
+    assert!(reached_second_materialization);
+
+    let cached = session
+        .cached_scope_tracks_for(&snapshot, &current)
+        .expect("all materializations should resolve to the shared class scope");
+    assert_eq!(cached.len(), 5);
+}
+
+#[test]
+fn file_content_evidence_collapses_distinct_track_identities() {
+    let root = temp_cache_root("content-evidence");
+    std::fs::create_dir_all(&root).expect("content evidence root should be created");
+    let mut tracks = (0..6)
+        .map(|index| track(&format!("content-evidence-{index}")))
+        .collect::<Vec<_>>();
+    for (index, track) in tracks.iter_mut().enumerate() {
+        let file_path = root.join(format!("audio-{index}.bin"));
+        let byte = if index < 2 { 9 } else { index as u8 };
+        std::fs::write(&file_path, vec![byte; 32])
+            .expect("content evidence file should be written");
+        track.file_path = file_path;
+    }
+
+    let snapshot = AudioStyleModelSnapshot::from_test_indexed_embeddings(
+        104,
+        tracks.iter().cloned().enumerate().map(|(index, track)| {
+            (
+                track,
+                dense_embedding(&[(index, 1.0)]),
+                "content-evidence".to_string(),
+            )
+        }),
+    );
+
+    assert_eq!(snapshot.symbolic_track_count(), Some(5));
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn newly_current_materialization_rebuilds_a_cached_content_scope() {
+    let tracks = (0..6)
+        .map(|index| track(&format!("materialization-scope-{index}")))
+        .collect::<Vec<_>>();
+    let snapshot = AudioStyleModelSnapshot::from_test_content_embeddings(
+        105,
+        tracks.iter().cloned().enumerate().map(|(index, track)| {
+            let content_key = if index < 2 {
+                "shared-materialization".to_string()
+            } else {
+                format!("materialization-{index}")
+            };
+            (track, dense_embedding(&[(index, 1.0)]), content_key)
+        }),
+    );
+    let initial_candidates = tracks
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| *index != 1)
+        .map(|(_, track)| track.clone())
+        .collect::<Vec<_>>();
+    let mut session = AudioStyleSymbolicPlaybackSession::default();
+    session
+        .propose_next(
+            &snapshot,
+            &tracks[0],
+            &initial_candidates,
+            &[tracks[0].clone()],
+        )
+        .expect("initial materialized scope should compile");
+    session
+        .commit_proposal()
+        .expect("initial materialized scope should commit");
+
+    assert!(
+        session
+            .cached_scope_tracks_for(&snapshot, &tracks[1])
+            .is_none()
+    );
+    session
+        .propose_next(&snapshot, &tracks[1], &tracks, &[tracks[1].clone()])
+        .expect("a newly current concrete member should rebuild its class materializations");
+    session
+        .commit_proposal()
+        .expect("rebuilt materialization scope should commit");
+    assert!(
+        session
+            .cached_scope_tracks_for(&snapshot, &tracks[1])
+            .is_some()
+    );
+}
+
+#[test]
+fn similar_embeddings_do_not_create_hard_content_identity() {
+    let mut tracks = (0..6)
+        .map(|index| track(&format!("distinct-content-{index}")))
+        .collect::<Vec<_>>();
+    tracks[1].music_name = tracks[0].music_name.clone();
+    let snapshot = AudioStyleModelSnapshot::from_test_content_embeddings(
+        101,
+        tracks.iter().cloned().enumerate().map(|(index, track)| {
+            let embedding = if index < 2 {
+                dense_embedding(&[(0, 1.0)])
+            } else {
+                dense_embedding(&[(index, 1.0)])
+            };
+            (track, embedding, format!("content-{index}"))
+        }),
+    );
+
+    assert_eq!(snapshot.symbolic_track_count(), Some(6));
+}
+
+#[test]
+fn symbolic_partition_signature_is_order_independent_and_membership_sensitive() {
+    let tracks = (0..6)
+        .map(|index| track(&format!("partition-signature-{index}")))
+        .collect::<Vec<_>>();
+    let values = tracks
+        .iter()
+        .cloned()
+        .enumerate()
+        .map(|(index, track)| {
+            let content_key = if index < 2 {
+                "shared".to_string()
+            } else {
+                format!("unique-{index}")
+            };
+            (track, dense_embedding(&[(index, 1.0)]), content_key)
+        })
+        .collect::<Vec<_>>();
+    let first = AudioStyleModelSnapshot::from_test_content_embeddings(102, values.clone());
+    let mut reversed = values.clone();
+    reversed.reverse();
+    let reordered = AudioStyleModelSnapshot::from_test_content_embeddings(102, reversed);
+    let changed = AudioStyleModelSnapshot::from_test_content_embeddings(
+        102,
+        values
+            .into_iter()
+            .enumerate()
+            .map(|(index, (track, embedding, content_key))| {
+                let content_key = if index == 1 {
+                    "split-member".to_string()
+                } else {
+                    content_key
+                };
+                (track, embedding, content_key)
+            }),
+    );
+
+    assert_eq!(
+        first.symbolic_partition_signature_for_test(),
+        reordered.symbolic_partition_signature_for_test()
+    );
+    assert_ne!(
+        first.symbolic_partition_signature_for_test(),
+        changed.symbolic_partition_signature_for_test()
+    );
+}
+
+#[test]
+fn extreme_topology_block_uses_sublinear_schedule_capacity() {
+    let tracks = (0..48)
+        .map(|index| track(&format!("topology-block-{index}")))
+        .collect::<Vec<_>>();
+    let snapshot = AudioStyleModelSnapshot::from_test_content_embeddings(
+        103,
+        tracks.into_iter().enumerate().map(|(index, track)| {
+            let embedding = if index < 9 {
+                dense_embedding(&[(0, 1.0)])
+            } else {
+                dense_embedding(&[(index, 1.0)])
+            };
+            (track, embedding, format!("topology-content-{index}"))
+        }),
+    );
+
+    let schedule_count = snapshot
+        .symbolic_track_count()
+        .expect("topology schedule should compile");
+    assert!(schedule_count < 48);
+    assert!(schedule_count >= 40);
 }
 
 #[test]
@@ -270,8 +501,8 @@ fn symbolic_snapshot_drops_pending_proposal_before_persistence() {
 }
 
 #[test]
-fn legacy_stable_model_migrates_symbolic_encoding_without_audio_reencoding() {
-    let root = temp_cache_root("stable-model-symbolic-migration");
+fn stable_model_refreshes_derived_symbolic_encoding_without_audio_reencoding() {
+    let root = temp_cache_root("stable-model-symbolic-refresh");
     std::fs::create_dir_all(&root).expect("stable model test root should be created");
     let path = root.join("stable.json");
     let tracks = (0..4)
@@ -292,33 +523,43 @@ fn legacy_stable_model_migrates_symbolic_encoding_without_audio_reencoding() {
     let mut payload: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&path).expect("stable model should be readable"))
             .expect("stable model should be valid JSON");
-    payload["version"] = serde_json::Value::String("audio-style-stable-model-v1".to_string());
-    payload["state"]
+    payload["state"]["symbolic_program_encoding"]["schema"] =
+        serde_json::Value::String("slisic.symbolic-audio-program-encoding.v1".to_string());
+    payload["state"]["symbolic_program_encoding"]
         .as_object_mut()
-        .expect("stable state should be an object")
-        .remove("symbolic_program_encoding");
+        .expect("symbolic encoding should be an object")
+        .remove("partition_signature");
     std::fs::write(
         &path,
-        serde_json::to_vec(&payload).expect("legacy stable model should encode"),
+        serde_json::to_vec(&payload).expect("stale stable model should encode"),
     )
-    .expect("legacy stable model should be written");
+    .expect("stale stable model should be written");
 
-    let restored = read_and_migrate_audio_style_stable_model_for_test(&path)
-        .expect("legacy stable model should migrate");
-    let migrated_payload: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&path).expect("migrated cache should be readable"))
-            .expect("migrated cache should be valid JSON");
+    let restored = read_and_refresh_audio_style_stable_model_for_test(&path)
+        .expect("stale derived encoding should refresh");
+    let refreshed_payload: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).expect("refreshed cache should be readable"))
+            .expect("refreshed cache should be valid JSON");
 
     assert_eq!(restored.generation(), 21);
     assert_eq!(restored.symbolic_track_count(), Some(4));
     assert!(tracks.iter().all(|track| restored.has_embedding_for(track)));
     assert_eq!(
-        migrated_payload["version"],
+        refreshed_payload["version"],
         serde_json::Value::String("audio-style-stable-model-v2".to_string())
     );
     assert!(
-        migrated_payload["state"]["symbolic_program_encoding"].is_object(),
-        "migrated cache should persist the generation-owned symbolic program"
+        refreshed_payload["state"]["symbolic_program_encoding"].is_object(),
+        "refreshed cache should persist the generation-owned symbolic program"
+    );
+    assert_eq!(
+        refreshed_payload["state"]["symbolic_program_encoding"]["schema"],
+        serde_json::Value::String("slisic.symbolic-audio-program-encoding.v2".to_string())
+    );
+    assert!(
+        refreshed_payload["state"]["symbolic_program_encoding"]["partition_signature"]
+            .as_str()
+            .is_some_and(|signature| !signature.is_empty())
     );
 
     let _ = std::fs::remove_dir_all(root);
