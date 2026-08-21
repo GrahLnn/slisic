@@ -22,6 +22,8 @@ use crate::domain::playlists::model::LoudnessProfile;
 #[cfg(not(test))]
 use crate::domain::playlists::repo as playlist_repo;
 use crate::domain::playlists::repo::{PlaylistPlaybackSelection, PlaylistPlaybackTrackSource};
+#[cfg(not(test))]
+use crate::domain::remote_share;
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -102,6 +104,15 @@ pub(crate) struct PlaylistPlayableIndexSnapshot {
     pub(crate) track: Option<PlaybackTrack>,
     pub(crate) source_kind: Option<PlaylistPlayableIndexSourceKind>,
     credential_id: Option<u64>,
+}
+
+impl PlaylistPlayableIndexSnapshot {
+    pub(crate) fn is_same_credential(&self, other: &Self) -> bool {
+        self.playlist_name == other.playlist_name
+            && self.generation == other.generation
+            && self.credential_id.is_some()
+            && self.credential_id == other.credential_id
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -515,6 +526,7 @@ pub(crate) fn notify_playlist_deleted(playlist_name: &str) {
     }
     if removed {
         write_first_slot_cache_for_registered_runtime();
+        notify_remote_first_slot_changed(playlist_name);
     }
     log::info!(
         target: PLAYABLE_INDEX_LOG_TARGET,
@@ -543,6 +555,7 @@ pub(crate) fn consume_playlist_source(snapshot: &PlaylistPlayableIndexSnapshot) 
     let consumed = remove_playlist_source_snapshot(snapshot, "consume")?;
     if consumed {
         notify_prepared_source_consumed_impl(&snapshot.playlist_name);
+        notify_remote_first_slot_changed(&snapshot.playlist_name);
     }
     Ok(consumed)
 }
@@ -551,6 +564,7 @@ pub(crate) fn discard_playlist_source(snapshot: &PlaylistPlayableIndexSnapshot) 
     let discarded = remove_playlist_source_snapshot(snapshot, "discard")?;
     if discarded {
         notify_prepared_source_consumed_impl(&snapshot.playlist_name);
+        notify_remote_first_slot_changed(&snapshot.playlist_name);
     }
     Ok(discarded)
 }
@@ -618,6 +632,9 @@ pub(crate) fn publish_first_slot_loudness_evidence(
     }
     notify_index_revision(runtime.as_ref());
     write_first_slot_cache_for_registered_runtime();
+    for playlist_name in &changed_playlist_names {
+        notify_remote_first_slot_changed(playlist_name);
+    }
     #[cfg(not(test))]
     {
         for playlist_name in changed_playlist_names {
@@ -823,6 +840,8 @@ fn notify_playlist_renamed_impl(previous_name: &str, next_name: &str) {
     }
     if moved {
         write_first_slot_cache_for_registered_runtime();
+        notify_remote_first_slot_changed(previous_name);
+        notify_remote_first_slot_changed(next_name);
     }
     log::info!(
         target: PLAYABLE_INDEX_LOG_TARGET,
@@ -847,6 +866,8 @@ fn notify_playlist_renamed_impl(previous_name: &str, next_name: &str) {
             }
         {
             notify_index_revision(runtime.as_ref());
+            notify_remote_first_slot_changed(previous_name);
+            notify_remote_first_slot_changed(next_name);
         }
     }
 }
@@ -882,6 +903,14 @@ fn notify_prepared_source_consumed_impl(playlist_name: &str) {
 
 #[cfg(test)]
 fn notify_prepared_source_consumed_impl(_playlist_name: &str) {}
+
+#[cfg(not(test))]
+fn notify_remote_first_slot_changed(playlist_name: &str) {
+    remote_share::notify_first_slot_changed(playlist_name);
+}
+
+#[cfg(test)]
+fn notify_remote_first_slot_changed(_playlist_name: &str) {}
 
 pub(crate) fn read_playlist_source(
     playlist_name: &str,
@@ -961,6 +990,30 @@ pub(crate) fn read_playlist_source(
         source_kind: Some(credential.source_kind),
         credential_id: Some(credential.credential_id),
     }))
+}
+
+pub(crate) fn read_first_slot_sources() -> Result<Vec<PlaylistPlayableIndexSnapshot>> {
+    let runtime = try_runtime()?;
+    let state = runtime
+        .state
+        .lock()
+        .map_err(|_| anyhow!("playlist playable index lock is poisoned"))?;
+    Ok(state
+        .playlists
+        .values()
+        .filter_map(|pool| {
+            pool.sources
+                .first()
+                .map(|credential| PlaylistPlayableIndexSnapshot {
+                    playlist_name: pool.playlist_name.clone(),
+                    generation: credential.generation,
+                    source: Some(credential.source.clone()),
+                    track: Some(credential.track.clone()),
+                    source_kind: Some(credential.source_kind),
+                    credential_id: Some(credential.credential_id),
+                })
+        })
+        .collect())
 }
 
 fn remove_playlist_source_snapshot(
@@ -1839,6 +1892,7 @@ fn restore_first_slot_cache_file(
 
     let runtime = try_runtime()?;
     let mut restored_credentials = Vec::new();
+    let mut restored_playlist_names = Vec::new();
     let summary = {
         let mut state = runtime
             .state
@@ -1884,6 +1938,7 @@ fn restore_first_slot_cache_file(
             }
             summary.source_count += pool.sources.len();
             summary.playlist_count += 1;
+            restored_playlist_names.push(cached_playlist.playlist_name.clone());
             state
                 .playlist_generations
                 .insert(cached_playlist.playlist_name.clone(), generation);
@@ -1895,6 +1950,9 @@ fn restore_first_slot_cache_file(
         summary
     };
     request_prepared_first_tracks_loudness_evidence(&restored_credentials);
+    for playlist_name in restored_playlist_names {
+        notify_remote_first_slot_changed(&playlist_name);
+    }
     Ok(summary)
 }
 
@@ -2263,6 +2321,7 @@ async fn refresh_all(
         if outcome.cache_changed {
             cache_changed = true;
             write_first_slot_cache_for_registered_runtime();
+            notify_remote_first_slot_changed(&selection.playlist_name);
         }
         if outcome.needs_refill {
             refill_playlists.push(selection.playlist_name);
@@ -2291,6 +2350,7 @@ async fn refresh_all(
                 if state.playlists.remove(&playlist_name).is_some() {
                     cache_changed = true;
                     notify_index_revision(runtime.as_ref());
+                    notify_remote_first_slot_changed(&playlist_name);
                 }
                 state.playlist_generations.insert(playlist_name, generation);
             }
@@ -2412,6 +2472,7 @@ async fn refresh_playlist(
     request_prepared_first_tracks_loudness_evidence(&added_credentials);
     if cache_changed {
         write_first_slot_cache_for_registered_runtime();
+        notify_remote_first_slot_changed(&playlist_name);
     }
     if let Some(pending_reason) = pending_reason {
         #[cfg(not(test))]

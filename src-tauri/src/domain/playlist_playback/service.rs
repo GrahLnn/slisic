@@ -1064,16 +1064,13 @@ async fn resolve_prepared_playlist_initial_track(
 }
 
 #[cfg(not(test))]
-pub(crate) async fn consume_prepared_playlist_initial_track(
+pub(crate) async fn peek_prepared_playlist_initial_track(
     app: &AppHandle,
     playlist_name: &str,
-) -> Result<Option<PlaybackTrack>> {
-    let Some(initial) = resolve_prepared_playlist_initial_track(app, playlist_name).await? else {
-        return Ok(None);
-    };
-    let track = initial.track.clone();
-    consume_playlist_initial_prepared_source(&Some(initial.prepared_source));
-    Ok(Some(track))
+) -> Result<Option<(PlaybackTrack, playable_index::PlaylistPlayableIndexSnapshot)>> {
+    Ok(resolve_prepared_playlist_initial_track(app, playlist_name)
+        .await?
+        .map(|initial| (initial.track, initial.prepared_source)))
 }
 
 #[cfg(not(test))]

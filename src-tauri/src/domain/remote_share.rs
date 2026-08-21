@@ -1,20 +1,23 @@
 use crate::domain::player::model::PlaybackTrack;
 use crate::domain::player::service::{PlaybackLoudnessPlan, playback_loudness_plan_for_profile};
+use crate::domain::playlist_playback::playable_index;
 use crate::domain::playlist_playback::recommendation::AudioStyleSymbolicPlaybackSession;
 #[cfg(not(test))]
 use crate::domain::playlist_playback::recommendation::published_audio_style_model_snapshots_for_anchor;
 #[cfg(not(test))]
 use crate::domain::playlist_playback::service::{
     PlaylistPlaybackRecommendationMode, PlaylistPlaybackRecommendationRequest,
-    consume_prepared_playlist_initial_track, load_random_playlist_playback_tracks,
-    observe_playlist_playback_temporal_memory,
+    load_random_playlist_playback_tracks, observe_playlist_playback_temporal_memory,
+    peek_prepared_playlist_initial_track,
     propose_playlist_playback_queue_without_audio_style_model,
     propose_playlist_symbolic_next_track,
 };
 use crate::domain::playlists::model::PlayListListView;
 use crate::domain::playlists::repo as playlist_repo;
 use crate::domain::remote_host_identity::RemoteHostIdentity;
-use crate::domain::remote_p2p_hls::{P2pHlsSessionSnapshot, P2pHlsSource, RemoteP2pHls};
+use crate::domain::remote_p2p_hls::{
+    P2pHlsPreparedAsset, P2pHlsSessionSnapshot, P2pHlsSource, RemoteP2pHls,
+};
 use crate::domain::remote_p2p_transport::{
     RemoteIceServer, RemoteP2pSignal, RemoteP2pTransport, RemoteP2pTransportEvent,
 };
@@ -43,6 +46,7 @@ use surrealdb::types::RecordId;
 use surrealdb_types::SurrealValue;
 use tauri::{AppHandle, Manager};
 use tokio::net::TcpListener;
+use tokio::sync::Semaphore;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use tokio::task;
 use tokio::time::{MissedTickBehavior, interval, sleep, timeout};
@@ -58,6 +62,7 @@ const REMOTE_SHARE_PORT: u16 = 48_231;
 const REMOTE_CANDIDATE_WINDOW_LIMIT: usize = 96;
 const REMOTE_PREFETCH_MIN_FUTURE_TRACKS: usize = 1;
 const REMOTE_PREFETCH_MAX_FUTURE_TRACKS: usize = 3;
+const REMOTE_FIRST_SLOT_PREPARATION_CONCURRENCY: usize = 1;
 const REMOTE_RELAY_HOST_URL_ENV: &str = "SLISIC_REMOTE_RELAY_HOST_URL";
 const DEFAULT_REMOTE_RELAY_HOST_URL: &str = "wss://slisic-remote.grahlnn.com/ws/host";
 const REMOTE_RELAY_RECONNECT_DELAY: Duration = Duration::from_secs(5);
@@ -80,7 +85,449 @@ struct RemoteShareRuntime {
     settings: Arc<Mutex<RemoteShareSettings>>,
     sessions: Arc<Mutex<RemoteShareSessions>>,
     p2p_hls: Arc<RemoteP2pHls>,
+    first_slot_mirror: Arc<RemoteFirstSlotMirror>,
     p2p_transport: Arc<RemoteP2pTransport>,
+}
+
+#[derive(Clone)]
+struct RemoteFirstSlotCargo {
+    snapshot: playable_index::PlaylistPlayableIndexSnapshot,
+    track: PlaybackTrack,
+    asset: P2pHlsPreparedAsset,
+}
+
+fn remote_first_slot_snapshot_matches(
+    expected: &playable_index::PlaylistPlayableIndexSnapshot,
+    current: &playable_index::PlaylistPlayableIndexSnapshot,
+) -> bool {
+    let track_matches = expected
+        .track
+        .as_ref()
+        .zip(current.track.as_ref())
+        .is_some_and(|(expected, current)| {
+            expected.playlist_name == current.playlist_name
+                && expected.music_name == current.music_name
+                && expected.canonical_music_id == current.canonical_music_id
+                && expected.music_url == current.music_url
+                && expected.file_path == current.file_path
+                && expected.start_ms == current.start_ms
+                && expected.end_ms == current.end_ms
+                && expected.liked == current.liked
+                && remote_audio_gain_db(expected).to_bits()
+                    == remote_audio_gain_db(current).to_bits()
+        });
+    expected.is_same_credential(current) && track_matches
+}
+
+#[derive(Default)]
+struct RemoteFirstSlotMirrorState {
+    entries: HashMap<String, RemoteFirstSlotCargo>,
+    refreshing: std::collections::HashSet<String>,
+    pending: std::collections::HashSet<String>,
+    epoch: u64,
+}
+
+#[derive(Clone)]
+struct RemoteFirstSlotMirror {
+    app: AppHandle,
+    p2p_hls: Arc<RemoteP2pHls>,
+    state: Arc<Mutex<RemoteFirstSlotMirrorState>>,
+    preparation_permit: Arc<Semaphore>,
+}
+
+impl RemoteFirstSlotMirror {
+    fn new(app: AppHandle, p2p_hls: Arc<RemoteP2pHls>) -> Self {
+        Self {
+            app,
+            p2p_hls,
+            state: Arc::new(Mutex::new(RemoteFirstSlotMirrorState::default())),
+            preparation_permit: Arc::new(Semaphore::new(REMOTE_FIRST_SLOT_PREPARATION_CONCURRENCY)),
+        }
+    }
+
+    fn clear(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.epoch = state.epoch.saturating_add(1);
+            state.entries.clear();
+            state.refreshing.clear();
+            state.pending.clear();
+        }
+    }
+
+    async fn prepared_for_start(
+        &self,
+        playlist_name: &str,
+        snapshot: &playable_index::PlaylistPlayableIndexSnapshot,
+    ) -> RemoteResult<RemoteFirstSlotCargo> {
+        let cargo = {
+            let state = self.state.lock().map_err(|_| {
+                RemoteShareError::internal("remote first-slot mirror lock is poisoned")
+            })?;
+            state.entries.get(playlist_name).cloned()
+        };
+        let Some(cargo) = cargo else {
+            self.refresh_playlist(playlist_name.to_string());
+            return Err(RemoteShareError::unavailable(
+                "remote first-slot HLS cargo is preparing",
+            ));
+        };
+        let track_matches = snapshot.track.as_ref().is_some_and(|track| {
+            cargo.track.playlist_name == track.playlist_name
+                && cargo.track.music_name == track.music_name
+                && cargo.track.canonical_music_id == track.canonical_music_id
+                && cargo.track.music_url == track.music_url
+                && cargo.track.file_path == track.file_path
+                && cargo.track.start_ms == track.start_ms
+                && cargo.track.end_ms == track.end_ms
+                && cargo.track.liked == track.liked
+                && remote_audio_gain_db(&cargo.track).to_bits()
+                    == remote_audio_gain_db(track).to_bits()
+        });
+        if !cargo.snapshot.is_same_credential(snapshot) || !track_matches {
+            self.invalidate_entry_if_matches(playlist_name, &cargo);
+            self.refresh_playlist(playlist_name.to_string());
+            return Err(RemoteShareError::unavailable(
+                "remote first-slot HLS cargo is stale or preparing",
+            ));
+        }
+        let source_matches = match self
+            .p2p_hls
+            .prepared_asset_matches_source(
+                &cargo.asset,
+                &cargo.track.file_path,
+                cargo.track.start_ms,
+                cargo.track.end_ms,
+                remote_audio_gain_db(&cargo.track),
+            )
+            .await
+        {
+            Ok(source_matches) => source_matches,
+            Err(error) => {
+                self.invalidate_entry_if_matches(playlist_name, &cargo);
+                self.refresh_playlist(playlist_name.to_string());
+                return Err(RemoteShareError::unavailable(error.to_string()));
+            }
+        };
+        if !source_matches {
+            self.invalidate_entry_if_matches(playlist_name, &cargo);
+            self.refresh_playlist(playlist_name.to_string());
+            return Err(RemoteShareError::unavailable(
+                "remote first-slot HLS cargo is stale or preparing",
+            ));
+        }
+        Ok(cargo)
+    }
+
+    fn forget_after_consumption(
+        &self,
+        playlist_name: &str,
+        snapshot: &playable_index::PlaylistPlayableIndexSnapshot,
+    ) {
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
+        if state
+            .entries
+            .get(playlist_name)
+            .is_some_and(|cargo| cargo.snapshot.is_same_credential(snapshot))
+        {
+            state.entries.remove(playlist_name);
+        }
+    }
+
+    fn invalidate_entry_if_matches(&self, playlist_name: &str, stale: &RemoteFirstSlotCargo) {
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
+        let should_remove = state.entries.get(playlist_name).is_some_and(|current| {
+            remote_first_slot_snapshot_matches(&current.snapshot, &stale.snapshot)
+        });
+        if should_remove {
+            state.entries.remove(playlist_name);
+        }
+    }
+
+    #[cfg(not(test))]
+    fn refresh_epoch_is_current(&self, epoch: u64) -> bool {
+        self.state.lock().is_ok_and(|state| state.epoch == epoch)
+    }
+
+    #[cfg(not(test))]
+    fn refresh_attempt_is_current(
+        &self,
+        playlist_name: &str,
+        epoch: u64,
+        snapshot: &playable_index::PlaylistPlayableIndexSnapshot,
+    ) -> Result<bool> {
+        if !self.refresh_epoch_is_current(epoch) {
+            return Ok(false);
+        }
+        let current = playable_index::read_playlist_source(playlist_name)?;
+        Ok(current
+            .as_ref()
+            .is_some_and(|current| remote_first_slot_snapshot_matches(snapshot, current)))
+    }
+
+    #[cfg(not(test))]
+    fn begin_refresh_attempt(&self, playlist_name: &str, epoch: u64) -> bool {
+        let Ok(mut state) = self.state.lock() else {
+            return false;
+        };
+        if state.epoch != epoch || !state.refreshing.contains(playlist_name) {
+            return false;
+        }
+        state.pending.remove(playlist_name);
+        true
+    }
+
+    #[cfg(not(test))]
+    fn refresh_all(&self) {
+        let snapshots = match playable_index::read_first_slot_sources() {
+            Ok(snapshots) => snapshots,
+            Err(error) => {
+                log::warn!(
+                    target: REMOTE_SHARE_LOG_TARGET,
+                    "remote_first_slot_mirror_catch_up_failed error=\"{}\"",
+                    escape_remote_log_value(&error.to_string())
+                );
+                return;
+            }
+        };
+        let names = snapshots
+            .iter()
+            .map(|snapshot| snapshot.playlist_name.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        if let Ok(mut state) = self.state.lock() {
+            state
+                .entries
+                .retain(|name, _| names.contains(name.as_str()));
+        }
+        for snapshot in snapshots {
+            self.refresh_playlist(snapshot.playlist_name);
+        }
+    }
+
+    #[cfg(not(test))]
+    fn refresh_playlist(&self, playlist_name: String) {
+        let epoch = {
+            let Ok(mut state) = self.state.lock() else {
+                return;
+            };
+            if !state.refreshing.insert(playlist_name.clone()) {
+                state.pending.insert(playlist_name);
+                return;
+            }
+            state.epoch
+        };
+        let mirror = self.clone();
+        tauri::async_runtime::spawn(async move {
+            loop {
+                let snapshot = match playable_index::read_playlist_source(&playlist_name) {
+                    Ok(snapshot) => snapshot,
+                    Err(error) => {
+                        log::warn!(
+                            target: REMOTE_SHARE_LOG_TARGET,
+                            "remote_first_slot_mirror_read_failed playlist=\"{}\" error=\"{}\"",
+                            escape_remote_log_value(&playlist_name),
+                            escape_remote_log_value(&error.to_string())
+                        );
+                        None
+                    }
+                };
+                let Some(snapshot) = snapshot else {
+                    mirror.remove_if_epoch(&playlist_name, epoch, None);
+                    if !mirror.finish_refresh(&playlist_name, epoch) {
+                        break;
+                    }
+                    continue;
+                };
+                let Some(track) = snapshot.track.clone() else {
+                    mirror.remove_if_epoch(&playlist_name, epoch, Some(&snapshot));
+                    if !mirror.finish_refresh(&playlist_name, epoch) {
+                        break;
+                    }
+                    continue;
+                };
+                if !mirror.refresh_epoch_is_current(epoch) {
+                    break;
+                }
+                match mirror.refresh_attempt_is_current(&playlist_name, epoch, &snapshot) {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        if !mirror.refresh_epoch_is_current(epoch) {
+                            break;
+                        }
+                        continue;
+                    }
+                    Err(error) => {
+                        log::warn!(
+                            target: REMOTE_SHARE_LOG_TARGET,
+                            "remote_first_slot_mirror_current_read_failed playlist=\"{}\" error=\"{}\"",
+                            escape_remote_log_value(&playlist_name),
+                            escape_remote_log_value(&error.to_string())
+                        );
+                        sleep(REMOTE_RELAY_RECONNECT_DELAY).await;
+                        continue;
+                    }
+                }
+                if !mirror.begin_refresh_attempt(&playlist_name, epoch) {
+                    break;
+                }
+                let permit = match Arc::clone(&mirror.preparation_permit).acquire_owned().await {
+                    Ok(permit) => permit,
+                    Err(_) => break,
+                };
+                match mirror.refresh_attempt_is_current(&playlist_name, epoch, &snapshot) {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        drop(permit);
+                        if !mirror.refresh_epoch_is_current(epoch) {
+                            break;
+                        }
+                        continue;
+                    }
+                    Err(error) => {
+                        drop(permit);
+                        log::warn!(
+                            target: REMOTE_SHARE_LOG_TARGET,
+                            "remote_first_slot_mirror_current_read_failed_after_permit playlist=\"{}\" error=\"{}\"",
+                            escape_remote_log_value(&playlist_name),
+                            escape_remote_log_value(&error.to_string())
+                        );
+                        sleep(REMOTE_RELAY_RECONNECT_DELAY).await;
+                        continue;
+                    }
+                }
+                let prepared = async {
+                    let _permit = permit;
+                    let source = remote_p2p_hls_source(&mirror.app, &track).await?;
+                    mirror
+                        .p2p_hls
+                        .prepare_source(source)
+                        .await
+                        .map_err(|error| RemoteShareError::unavailable(error.to_string()))
+                }
+                .await;
+                match prepared {
+                    Ok(asset) => {
+                        let current = playable_index::read_playlist_source(&playlist_name)
+                            .ok()
+                            .flatten();
+                        let current_matches = current.as_ref().is_some_and(|current| {
+                            remote_first_slot_snapshot_matches(&snapshot, current)
+                        });
+                        let Ok(mut state) = mirror.state.lock() else {
+                            break;
+                        };
+                        if state.epoch != epoch {
+                            break;
+                        }
+                        if current_matches {
+                            state.entries.insert(
+                                playlist_name.clone(),
+                                RemoteFirstSlotCargo {
+                                    snapshot: snapshot.clone(),
+                                    track: track.clone(),
+                                    asset,
+                                },
+                            );
+                            log::info!(
+                                target: REMOTE_SHARE_LOG_TARGET,
+                                "remote_first_slot_mirror_ready playlist=\"{}\" generation={} credential_id=present",
+                                escape_remote_log_value(&playlist_name),
+                                snapshot.generation
+                            );
+                        } else {
+                            state.entries.remove(&playlist_name);
+                            log::info!(
+                                target: REMOTE_SHARE_LOG_TARGET,
+                                "remote_first_slot_mirror_stale playlist=\"{}\" generation={}",
+                                escape_remote_log_value(&playlist_name),
+                                snapshot.generation
+                            );
+                            continue;
+                        }
+                    }
+                    Err(error) => {
+                        mirror.remove_if_epoch(&playlist_name, epoch, Some(&snapshot));
+                        log::warn!(
+                            target: REMOTE_SHARE_LOG_TARGET,
+                            "remote_first_slot_mirror_prepare_failed playlist=\"{}\" generation={} error=\"{}\"",
+                            escape_remote_log_value(&playlist_name),
+                            snapshot.generation,
+                            escape_remote_log_value(&error.message)
+                        );
+                        if !mirror.refresh_epoch_is_current(epoch) {
+                            break;
+                        }
+                        match playable_index::read_playlist_source(&playlist_name) {
+                            Ok(Some(current))
+                                if remote_first_slot_snapshot_matches(&snapshot, &current) =>
+                            {
+                                sleep(REMOTE_RELAY_RECONNECT_DELAY).await;
+                            }
+                            Ok(_) => {}
+                            Err(read_error) => {
+                                log::warn!(
+                                    target: REMOTE_SHARE_LOG_TARGET,
+                                    "remote_first_slot_mirror_retry_read_failed playlist=\"{}\" error=\"{}\"",
+                                    escape_remote_log_value(&playlist_name),
+                                    escape_remote_log_value(&read_error.to_string())
+                                );
+                                sleep(REMOTE_RELAY_RECONNECT_DELAY).await;
+                            }
+                        }
+                        continue;
+                    }
+                }
+                if !mirror.finish_refresh(&playlist_name, epoch) {
+                    break;
+                }
+            }
+        });
+    }
+
+    #[cfg(not(test))]
+    fn remove_if_epoch(
+        &self,
+        playlist_name: &str,
+        epoch: u64,
+        snapshot: Option<&playable_index::PlaylistPlayableIndexSnapshot>,
+    ) {
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
+        if state.epoch != epoch {
+            return;
+        }
+        let should_remove = state.entries.get(playlist_name).is_some_and(|cargo| {
+            snapshot.is_none_or(|snapshot| cargo.snapshot.is_same_credential(snapshot))
+        });
+        if should_remove {
+            state.entries.remove(playlist_name);
+        }
+    }
+
+    #[cfg(not(test))]
+    fn finish_refresh(&self, playlist_name: &str, epoch: u64) -> bool {
+        let Ok(mut state) = self.state.lock() else {
+            return false;
+        };
+        if state.epoch != epoch {
+            return false;
+        }
+        if state.pending.remove(playlist_name) {
+            return true;
+        }
+        state.refreshing.remove(playlist_name);
+        false
+    }
+
+    #[cfg(test)]
+    fn refresh_all(&self) {}
+
+    #[cfg(test)]
+    fn refresh_playlist(&self, _playlist_name: String) {}
 }
 
 #[derive(Clone)]
@@ -516,11 +963,17 @@ pub async fn initialize_runtime(app: AppHandle) -> Result<()> {
 
     let (p2p_transport, p2p_events) = RemoteP2pTransport::new();
     let p2p_hls = RemoteP2pHls::new(app.path().app_cache_dir()?.join("remote-p2p-hls"))?;
+    let first_slot_mirror = Arc::new(RemoteFirstSlotMirror::new(
+        app.clone(),
+        Arc::clone(&p2p_hls),
+    ));
+    let mirror_should_catch_up = settings.enabled;
     let runtime = Arc::new(RemoteShareRuntime {
         app,
         settings: Arc::new(Mutex::new(settings)),
         sessions: Arc::new(Mutex::new(RemoteShareSessions::default())),
         p2p_hls,
+        first_slot_mirror: Arc::clone(&first_slot_mirror),
         p2p_transport,
     });
     if REMOTE_SHARE_RUNTIME.set(Arc::clone(&runtime)).is_err() {
@@ -529,6 +982,10 @@ pub async fn initialize_runtime(app: AppHandle) -> Result<()> {
             "remote_share_runtime_init_skipped reason=already_initialized"
         );
         return Ok(());
+    }
+
+    if mirror_should_catch_up {
+        first_slot_mirror.refresh_all();
     }
 
     let p2p_runtime = Arc::clone(&runtime);
@@ -548,6 +1005,26 @@ pub async fn initialize_runtime(app: AppHandle) -> Result<()> {
     tauri::async_runtime::spawn(run_remote_relay_host(runtime));
     Ok(())
 }
+
+#[cfg(not(test))]
+pub(crate) fn notify_first_slot_changed(playlist_name: &str) {
+    let Some(runtime) = REMOTE_SHARE_RUNTIME.get() else {
+        return;
+    };
+    let enabled = runtime
+        .settings
+        .lock()
+        .map(|settings| settings.enabled)
+        .unwrap_or(false);
+    if enabled {
+        runtime
+            .first_slot_mirror
+            .refresh_playlist(playlist_name.to_string());
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn notify_first_slot_changed(_playlist_name: &str) {}
 
 async fn run_remote_p2p_events(
     runtime: Arc<RemoteShareRuntime>,
@@ -1361,19 +1838,33 @@ async fn stop_remote_session(
     ))
 }
 
+struct RemoteInitialTrack {
+    track: PlaybackTrack,
+    snapshot: playable_index::PlaylistPlayableIndexSnapshot,
+}
+
+#[cfg(not(test))]
 async fn resolve_remote_initial_track(
     app: &AppHandle,
     playlist_name: &str,
-) -> Result<PlaybackTrack> {
-    if let Some(track) = consume_prepared_playlist_initial_track(app, playlist_name).await? {
-        return Ok(track);
-    }
+) -> Result<RemoteInitialTrack> {
+    let Some((track, snapshot)) = peek_prepared_playlist_initial_track(app, playlist_name).await?
+    else {
+        return Err(anyhow!(
+            "remote first-slot HLS cargo is preparing for playlist `{playlist_name}`"
+        ));
+    };
+    Ok(RemoteInitialTrack { track, snapshot })
+}
 
-    load_random_playlist_playback_tracks(app, playlist_name, REMOTE_CANDIDATE_WINDOW_LIMIT)
-        .await?
-        .into_iter()
-        .next()
-        .ok_or_else(|| anyhow!("playlist `{playlist_name}` has no playable remote tracks"))
+#[cfg(test)]
+async fn resolve_remote_initial_track(
+    _app: &AppHandle,
+    playlist_name: &str,
+) -> Result<RemoteInitialTrack> {
+    Err(anyhow!(
+        "remote first-slot HLS cargo is preparing for playlist `{playlist_name}`"
+    ))
 }
 
 #[cfg(not(test))]
@@ -1502,14 +1993,6 @@ async fn propose_remote_queue_suffix(
 }
 
 #[cfg(test)]
-async fn consume_prepared_playlist_initial_track(
-    _app: &AppHandle,
-    _playlist_name: &str,
-) -> Result<Option<PlaybackTrack>> {
-    Ok(None)
-}
-
-#[cfg(test)]
 async fn load_random_playlist_playback_tracks(
     _app: &AppHandle,
     _playlist_name: &str,
@@ -1557,7 +2040,10 @@ impl RemoteShareRuntime {
             let mut settings = self.lock_settings()?;
             *settings = next_settings;
         }
-        if !enabled {
+        if enabled {
+            self.first_slot_mirror.refresh_all();
+        } else {
+            self.first_slot_mirror.clear();
             self.clear_sessions()?;
             self.p2p_transport.close_all().await;
         }
@@ -1864,34 +2350,65 @@ impl RemoteShareRuntime {
         }
 
         let initial = match resolve_remote_initial_track(&self.app, &request.playlist_name).await {
-            Ok(track) => track,
+            Ok(initial) => initial,
             Err(error) => {
                 self.reset_to_ready(client_id)?;
-                return Err(error.into());
+                return Err(RemoteShareError::unavailable(error.to_string()));
             }
         };
-        let hls = match remote_p2p_hls_source(&self.app, &initial).await {
-            Ok(source) => {
-                self.p2p_hls
-                    .publish_start(client_id, initial.clone(), source)
-                    .await
+        let prepared = match self
+            .first_slot_mirror
+            .prepared_for_start(&request.playlist_name, &initial.snapshot)
+            .await
+        {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                self.reset_to_ready(client_id)?;
+                return Err(error);
             }
-            Err(error) => Err(anyhow!(error.message)),
         };
-        let hls = match hls {
+        let hls = match self
+            .p2p_hls
+            .publish_start(client_id, initial.track.clone(), prepared.asset)
+            .await
+        {
             Ok(hls) => hls,
             Err(error) => {
                 self.reset_to_ready(client_id)?;
                 return Err(RemoteShareError::unavailable(error.to_string()));
             }
         };
-        let response = self.commit_playback(
+        let response = match self.commit_playback(
             client_id,
-            request.playlist_name,
-            initial.clone(),
+            request.playlist_name.clone(),
+            initial.track.clone(),
             Vec::new(),
             hls,
-        )?;
+        ) {
+            Ok(response) => response,
+            Err(error) => {
+                self.reset_to_ready(client_id)?;
+                let _ = self.p2p_hls.prepare(client_id);
+                return Err(error);
+            }
+        };
+        let consumed = match playable_index::consume_playlist_source(&initial.snapshot) {
+            Ok(consumed) => consumed,
+            Err(error) => {
+                self.reset_to_ready(client_id)?;
+                let _ = self.p2p_hls.prepare(client_id);
+                return Err(RemoteShareError::unavailable(error.to_string()));
+            }
+        };
+        if !consumed {
+            self.reset_to_ready(client_id)?;
+            let _ = self.p2p_hls.prepare(client_id);
+            return Err(RemoteShareError::unavailable(
+                "remote first-slot credential changed before consumption",
+            ));
+        }
+        self.first_slot_mirror
+            .forget_after_consumption(&request.playlist_name, &initial.snapshot);
         self.spawn_remote_next_queue_fill(client_id.to_string());
         Ok(response)
     }

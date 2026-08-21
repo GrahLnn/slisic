@@ -55,6 +55,17 @@ pub(super) struct P2pHlsSource {
     pub(super) gain_db: f32,
 }
 
+/// A materialized HLS track that is ready to publish into a client session.
+///
+/// The fields stay private so callers cannot construct a publication payload
+/// without going through `prepare_source`, which owns cache lookup and
+/// materialization.
+#[derive(Clone)]
+pub(super) struct P2pHlsPreparedAsset {
+    cache_key: String,
+    asset: HlsTrackAsset,
+}
+
 #[derive(Clone)]
 struct HlsSegmentAsset {
     duration_seconds: f64,
@@ -352,12 +363,11 @@ impl RemoteP2pHls {
     }
 
     pub(super) async fn publish_start(
-        self: &Arc<Self>,
+        &self,
         client_id: &str,
         track: PlaybackTrack,
-        source: P2pHlsSource,
+        prepared: P2pHlsPreparedAsset,
     ) -> Result<P2pHlsSessionSnapshot> {
-        let asset = self.materialize(source).await?;
         let mut sessions = self
             .sessions
             .lock()
@@ -370,8 +380,42 @@ impl RemoteP2pHls {
                 "remote P2P HLS session must be stopped before a new start"
             ));
         }
-        session.prepare_start(PublishedTrack { track, asset });
+        session.prepare_start(PublishedTrack {
+            track,
+            asset: prepared.asset,
+        });
         Ok(session.snapshot())
+    }
+
+    pub(super) async fn prepare_source(
+        self: &Arc<Self>,
+        source: P2pHlsSource,
+    ) -> Result<P2pHlsPreparedAsset> {
+        self.materialize(source).await
+    }
+
+    pub(super) async fn prepared_asset_matches_source(
+        &self,
+        prepared: &P2pHlsPreparedAsset,
+        file_path: &Path,
+        start_ms: u32,
+        end_ms: u32,
+        gain_db: f32,
+    ) -> Result<bool> {
+        if prepared.cache_key
+            != materialization_cache_key(file_path, start_ms, end_ms, gain_db).await?
+        {
+            return Ok(false);
+        }
+        for segment in &prepared.asset.segments {
+            let Ok(metadata) = tokio::fs::metadata(&segment.path).await else {
+                return Ok(false);
+            };
+            if metadata.len() == 0 {
+                return Ok(false);
+            }
+        }
+        Ok(!prepared.asset.segments.is_empty())
     }
 
     pub(super) fn offer_handoff(
@@ -424,7 +468,7 @@ impl RemoteP2pHls {
         for (track, source) in tracks {
             published.push(PublishedTrack {
                 track,
-                asset: self.materialize(source).await?,
+                asset: self.prepare_source(source).await?.asset,
             });
         }
         let mut sessions = self
@@ -532,31 +576,22 @@ impl RemoteP2pHls {
         }
     }
 
-    async fn materialize(self: &Arc<Self>, source: P2pHlsSource) -> Result<HlsTrackAsset> {
-        let metadata = tokio::fs::metadata(&source.file_path).await?;
-        if metadata.len() == 0 {
-            return Err(anyhow!("remote P2P HLS source is empty"));
-        }
-        let modified_ms = metadata
-            .modified()
-            .ok()
-            .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
-            .map(|duration| duration.as_millis())
-            .unwrap_or_default();
-        let mut hasher = Sha256::new();
-        hasher.update(HLS_MATERIALIZATION_VERSION.as_bytes());
-        hasher.update(source.file_path.to_string_lossy().as_bytes());
-        hasher.update(source.start_ms.to_le_bytes());
-        hasher.update(source.end_ms.to_le_bytes());
-        hasher.update(source.gain_db.to_bits().to_le_bytes());
-        hasher.update(metadata.len().to_le_bytes());
-        hasher.update(modified_ms.to_le_bytes());
-        let key = hex::encode(hasher.finalize());
+    async fn materialize(self: &Arc<Self>, source: P2pHlsSource) -> Result<P2pHlsPreparedAsset> {
+        let key = materialization_cache_key(
+            &source.file_path,
+            source.start_ms,
+            source.end_ms,
+            source.gain_db,
+        )
+        .await?;
         let hls_dir = self.cache_root.join(format!("{key}.hls"));
         let playlist_path = hls_dir.join("playlist.m3u8");
         if let Ok(asset) = parse_track_asset(&playlist_path, &hls_dir) {
             if !asset.segments.is_empty() {
-                return Ok(asset);
+                return Ok(P2pHlsPreparedAsset {
+                    cache_key: key,
+                    asset,
+                });
             }
         }
         let lock = {
@@ -564,13 +599,48 @@ impl RemoteP2pHls {
                 .materialization_locks
                 .lock()
                 .map_err(|_| anyhow!("remote P2P HLS materialization lock is poisoned"))?;
-            Arc::clone(locks.entry(key).or_insert_with(|| Arc::new(Mutex::new(()))))
+            Arc::clone(
+                locks
+                    .entry(key.clone())
+                    .or_insert_with(|| Arc::new(Mutex::new(()))),
+            )
         };
         tokio::task::spawn_blocking(move || {
             materialize_blocking(source, hls_dir, playlist_path, lock)
         })
         .await?
+        .map(|asset| P2pHlsPreparedAsset {
+            cache_key: key,
+            asset,
+        })
     }
+}
+
+async fn materialization_cache_key(
+    file_path: &Path,
+    start_ms: u32,
+    end_ms: u32,
+    gain_db: f32,
+) -> Result<String> {
+    let metadata = tokio::fs::metadata(file_path).await?;
+    if metadata.len() == 0 {
+        return Err(anyhow!("remote P2P HLS source is empty"));
+    }
+    let modified_ms = metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default();
+    let mut hasher = Sha256::new();
+    hasher.update(HLS_MATERIALIZATION_VERSION.as_bytes());
+    hasher.update(file_path.to_string_lossy().as_bytes());
+    hasher.update(start_ms.to_le_bytes());
+    hasher.update(end_ms.to_le_bytes());
+    hasher.update(gain_db.to_bits().to_le_bytes());
+    hasher.update(metadata.len().to_le_bytes());
+    hasher.update(modified_ms.to_le_bytes());
+    Ok(hex::encode(hasher.finalize()))
 }
 
 enum SessionAssetPath {
