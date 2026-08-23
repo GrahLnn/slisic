@@ -1,12 +1,13 @@
 use super::recommendation::{
     AUDIO_STYLE_EMBEDDING_VERSION_FOR_TEST, AudioStyleEmbeddingCache, AudioStyleModelSnapshot,
     AudioStyleSymbolicPlaybackSession,
-    acknowledge_audio_style_pending_training_input_file_for_test,
+    acknowledge_audio_style_pending_training_input_file_for_test, audio_style_intervals_for_test,
     audio_style_training_inputs_covered_by_snapshot_for_test,
     audio_style_training_path_is_transient_for_test, audio_style_transition_fingerprint_for_test,
     choose_audio_style_model_snapshots_for_anchor,
     read_and_refresh_audio_style_stable_model_for_test,
     read_audio_style_pending_training_input_file_for_test, read_audio_style_stable_model_for_test,
+    read_legacy_audio_style_training_inputs_for_test,
     upsert_audio_style_pending_training_input_file_for_test,
     write_audio_style_stable_model_for_test,
 };
@@ -44,6 +45,31 @@ fn dense_embedding(entries: &[(usize, f32)]) -> Vec<f32> {
         values[*index] = *value;
     }
     values
+}
+
+fn chromaprint_frames(seed: u32) -> Vec<u32> {
+    (0..16)
+        .map(|index| seed.wrapping_add(index as u32 * 0x0101_0101))
+        .collect()
+}
+
+fn acoustic_test_values(
+    tracks: Vec<PlaybackTrack>,
+    base_keys: &[&str],
+    fingerprints: Vec<Vec<u32>>,
+) -> Vec<(PlaybackTrack, Vec<f32>, String, Option<(u32, Vec<u32>)>)> {
+    tracks
+        .into_iter()
+        .enumerate()
+        .map(|(index, track)| {
+            (
+                track,
+                dense_embedding(&[(0, 1.0)]),
+                base_keys[index].to_string(),
+                Some((60_000, fingerprints[index].clone())),
+            )
+        })
+        .collect()
 }
 
 fn sine_wave(hz: f32, seconds: f32) -> Vec<f32> {
@@ -343,6 +369,149 @@ fn similar_embeddings_do_not_create_hard_content_identity() {
     );
 
     assert_eq!(snapshot.symbolic_track_count(), Some(6));
+}
+
+#[test]
+fn acoustic_pass_merges_preexisting_base_classes_and_singleton() {
+    let tracks = (0..5)
+        .map(|index| track(&format!("acoustic-base-{index}")))
+        .collect::<Vec<_>>();
+    let mut tracks = tracks;
+    let root = temp_cache_root("acoustic-base-classes");
+    std::fs::create_dir_all(&root).expect("acoustic base root should be created");
+    for (index, track) in tracks.iter_mut().enumerate() {
+        let file_path = root.join(format!("base-{index}.m4a"));
+        track.file_path = file_path.clone();
+        std::fs::write(
+            &file_path,
+            if index < 2 {
+                vec![9; 32]
+            } else {
+                vec![index as u8; 32]
+            },
+        )
+        .expect("acoustic base evidence should be written");
+    }
+    let shared = chromaprint_frames(0x1200_0000);
+    let mut fingerprints = vec![shared.clone(); 5];
+    fingerprints[1] = {
+        let mut shifted = vec![0xFFFF_FFFF];
+        shifted.extend(shared.iter().copied());
+        shifted
+    };
+    let snapshot = AudioStyleModelSnapshot::from_test_acoustic_indexed_embeddings(
+        110,
+        tracks
+            .clone()
+            .into_iter()
+            .enumerate()
+            .map(|(index, track)| {
+                (
+                    track,
+                    dense_embedding(&[(0, 1.0)]),
+                    match index {
+                        2 | 3 => Some("override-b".to_string()),
+                        _ => None,
+                    },
+                    Some((60_000, fingerprints[index].clone())),
+                )
+            }),
+    );
+
+    let classes = snapshot.content_partition_classes_for_test();
+    assert_eq!(classes.len(), 1);
+    assert_eq!(classes[0].len(), tracks.len());
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn style_observation_windows_ignore_source_identity() {
+    let mut first = track("observation-first");
+    let mut second = track("observation-second");
+    first.start_ms = 7_000;
+    first.end_ms = 67_000;
+    second.start_ms = first.start_ms;
+    second.end_ms = first.end_ms;
+    second.music_url = "https://different.example/identity".to_string();
+    second.file_path = PathBuf::from("different-source.m4a");
+
+    assert_eq!(audio_style_intervals_for_test(&first).len(), 4);
+    assert_eq!(
+        audio_style_intervals_for_test(&first),
+        audio_style_intervals_for_test(&second)
+    );
+}
+
+#[test]
+fn acoustic_pass_keeps_style_near_nonmatching_fingerprints_separate() {
+    let tracks = (0..2)
+        .map(|index| track(&format!("acoustic-negative-{index}")))
+        .collect::<Vec<_>>();
+    let snapshot = AudioStyleModelSnapshot::from_test_acoustic_embeddings(
+        111,
+        acoustic_test_values(
+            tracks,
+            &["style-a", "style-b"],
+            vec![vec![0; 16], vec![u32::MAX; 16]],
+        ),
+    );
+
+    assert_eq!(snapshot.content_partition_classes_for_test().len(), 2);
+}
+
+#[test]
+fn acoustic_pass_uses_complete_link_instead_of_transitive_chaining() {
+    let tracks = (0..3)
+        .map(|index| track(&format!("acoustic-chain-{index}")))
+        .collect::<Vec<_>>();
+    let snapshot = AudioStyleModelSnapshot::from_test_acoustic_embeddings(
+        112,
+        acoustic_test_values(
+            tracks,
+            &["chain-a", "chain-b", "chain-c"],
+            vec![vec![0; 16], vec![0x0000_00FF; 16], vec![0x0000_FFFF; 16]],
+        ),
+    );
+
+    let classes = snapshot.content_partition_classes_for_test();
+    assert!(classes.iter().all(|class| class.len() < 3));
+    assert_eq!(classes.iter().map(Vec::len).sum::<usize>(), 3);
+}
+
+#[test]
+fn missing_malformed_and_short_fingerprints_stay_in_base_classes() {
+    let tracks = (0..4)
+        .map(|index| track(&format!("acoustic-invalid-{index}")))
+        .collect::<Vec<_>>();
+    let values = vec![
+        (
+            tracks[0].clone(),
+            dense_embedding(&[(0, 1.0)]),
+            "missing".to_string(),
+            None,
+        ),
+        (
+            tracks[1].clone(),
+            dense_embedding(&[(0, 1.0)]),
+            "malformed".to_string(),
+            Some((0, vec![0; 16])),
+        ),
+        (
+            tracks[2].clone(),
+            dense_embedding(&[(0, 1.0)]),
+            "short".to_string(),
+            Some((60_000, vec![0; 3])),
+        ),
+        (
+            tracks[3].clone(),
+            dense_embedding(&[(0, 1.0)]),
+            "valid".to_string(),
+            Some((60_000, vec![0; 16])),
+        ),
+    ];
+    let snapshot = AudioStyleModelSnapshot::from_test_acoustic_embeddings(113, values);
+
+    assert_eq!(snapshot.content_partition_classes_for_test().len(), 4);
 }
 
 #[test]
@@ -672,7 +841,7 @@ fn stable_model_refreshes_derived_symbolic_encoding_without_audio_reencoding() {
     assert!(tracks.iter().all(|track| restored.has_embedding_for(track)));
     assert_eq!(
         refreshed_payload["version"],
-        serde_json::Value::String("audio-style-stable-model-v2".to_string())
+        serde_json::Value::String("audio-style-stable-model-v3".to_string())
     );
     assert!(
         refreshed_payload["state"]["symbolic_program_encoding"].is_object(),
@@ -751,6 +920,110 @@ fn legacy_audio_style_model_evidence_is_not_restored_as_stable_model() {
     assert!(
         error.contains("audio style stable model"),
         "legacy evidence should fail inside the stable model reader: {error}"
+    );
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn legacy_stable_metadata_requeues_all_indexed_inputs_and_seeds_next_generation() {
+    let root = temp_cache_root("legacy-stable-migration");
+    std::fs::create_dir_all(&root).expect("legacy migration root should be created");
+    let path = root.join("stable.json");
+    let indexed_tracks = (0..3)
+        .map(|index| {
+            let file_path = root.join(format!("legacy-{index}.m4a"));
+            let url = format!("https://example.com/legacy-{index}");
+            serde_json::json!({
+                "key": {
+                    "music_url": url,
+                    "file_path": file_path.to_string_lossy(),
+                    "start_ms": 1000,
+                    "end_ms": 61000
+                },
+                "track": {
+                    "playlist_name": "__audio_style_model__",
+                    "music_name": format!("Legacy {index}"),
+                    "canonical_music_id": format!("legacy-id-{index}"),
+                    "music_url": format!("https://example.com/legacy-{index}"),
+                    "file_path": file_path.to_string_lossy(),
+                    "start_ms": 1000,
+                    "end_ms": 61000,
+                    "liked": index == 1
+                },
+                "source": {
+                    "collection_folder": "legacy-collection",
+                    "music": {
+                        "occurrence_id": format!("occurrence-{index}"),
+                        "name": format!("Legacy name {index}"),
+                        "alias": format!("Legacy alias {index}"),
+                        "group": {
+                            "name": "legacy-group",
+                            "url": "https://example.com/group",
+                            "folder": "legacy-group",
+                            "collection": {
+                                "name": "legacy-collection",
+                                "url": "https://example.com/collection",
+                                "folder": "legacy-collection",
+                                "last_updated": "",
+                                "enable_updates": null
+                            }
+                        },
+                        "canonical_music_id": format!("legacy-id-{index}"),
+                        "url": format!("https://example.com/legacy-{index}"),
+                        "path": file_path.to_string_lossy(),
+                        "start_ms": 1000,
+                        "end_ms": 61000,
+                        "liked": index == 1,
+                        "loudness_profile": if index == 0 {
+                            serde_json::json!({"integrated_lufs": -15.0})
+                        } else {
+                            serde_json::Value::Null
+                        }
+                    }
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+    std::fs::write(
+        &path,
+        serde_json::json!({
+            "version": "audio-style-stable-model-v2",
+            "generation": 162,
+            "state": {"indexed_tracks": indexed_tracks}
+        })
+        .to_string(),
+    )
+    .expect("legacy stable metadata should be written");
+    let original_bytes = std::fs::read(&path).expect("legacy stable bytes should be readable");
+
+    let migrated = read_legacy_audio_style_training_inputs_for_test(&path)
+        .expect("legacy metadata should parse")
+        .expect("legacy version should be recognized");
+    assert_eq!(migrated.0, 162);
+    assert_eq!(migrated.1.len(), 3);
+    assert_eq!(migrated.1[0].occurrence_id, "occurrence-0");
+    assert_eq!(migrated.1[0].alias, "Legacy alias 0");
+    assert_eq!(migrated.1[0].canonical_music_id, "legacy-id-0");
+    assert_eq!(migrated.1[0].url, "https://example.com/legacy-0");
+    assert_eq!(
+        migrated.1[0].absolute_path,
+        root.join("legacy-0.m4a").to_string_lossy()
+    );
+    assert_eq!(migrated.1[0].start_ms, 1000);
+    assert_eq!(migrated.1[0].end_ms, 61000);
+    assert!(!migrated.1[0].liked);
+    assert_eq!(
+        migrated.1[0]
+            .loudness_profile
+            .expect("legacy loudness should be preserved")
+            .integrated_lufs,
+        -15.0
+    );
+    assert_eq!(migrated.0.saturating_add(1), 163);
+    assert_eq!(
+        std::fs::read(&path).expect("legacy stable bytes should remain readable"),
+        original_bytes
     );
 
     let _ = std::fs::remove_dir_all(root);

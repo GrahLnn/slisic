@@ -8,7 +8,7 @@ use crate::domain::playlist_playback::symbolic_program::{
     execute_program_list, ordered_track_key_signature, program_encoding_signature,
     restrict_neural_program_atlas_to_playlist, transport_traversal_state,
 };
-use crate::domain::playlists::model::AudioStyleTrainingTrackInput;
+use crate::domain::playlists::model::{AudioStyleTrainingTrackInput, LoudnessProfile};
 #[cfg(not(test))]
 use crate::domain::playlists::model::{CollectionGroupOwner, Group, Music};
 #[cfg(test)]
@@ -37,6 +37,7 @@ use std::fs;
 use std::io::{BufReader, Read};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 #[cfg(not(test))]
 use std::sync::RwLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -46,10 +47,15 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 #[cfg(not(test))]
 use tauri::{AppHandle, Manager};
 
-const AUDIO_STYLE_EMBEDDING_VERSION: &str = "audio-style-watermark-transition-v3-measured-flow";
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
+const AUDIO_STYLE_EMBEDDING_VERSION: &str =
+    "audio-style-watermark-transition-v4-source-invariant-acoustic";
 #[cfg(test)]
 pub(crate) const AUDIO_STYLE_EMBEDDING_VERSION_FOR_TEST: &str = AUDIO_STYLE_EMBEDDING_VERSION;
-const AUDIO_STYLE_STABLE_MODEL_VERSION: &str = "audio-style-stable-model-v2";
+const AUDIO_STYLE_STABLE_MODEL_VERSION: &str = "audio-style-stable-model-v3";
+const AUDIO_STYLE_LEGACY_STABLE_MODEL_VERSION: &str = "audio-style-stable-model-v2";
 pub(crate) const AUDIO_STYLE_STABLE_MODEL_DIR_NAME: &str = "audio-style-stable-model";
 pub(crate) const AUDIO_STYLE_LEGACY_MODEL_EVIDENCE_DIR_NAME: &str = "audio-style-model-evidence";
 const AUDIO_STYLE_TRAINING_INVALIDATION_FILE_VERSION: &str = "audio-style-training-invalidation-v1";
@@ -64,7 +70,14 @@ pub(crate) const AUDIO_STYLE_PENDING_TRAINING_INPUT_ARTIFACT_FILE_NAME: &str =
     AUDIO_STYLE_PENDING_TRAINING_INPUT_FILE_NAME;
 const AUDIO_STYLE_SAMPLE_RATE: u32 = 16_000;
 const AUDIO_STYLE_INTERVAL_SECONDS: f64 = 8.0;
-const AUDIO_STYLE_INTERVAL_COUNT: usize = 1;
+const AUDIO_STYLE_INTERVAL_COUNT: usize = 4;
+const AUDIO_STYLE_CONTENT_FINGERPRINT_SECONDS: f64 = 60.0;
+const AUDIO_STYLE_CONTENT_FINGERPRINT_MIN_FRAMES: usize = 8;
+const AUDIO_STYLE_CONTENT_FINGERPRINT_MAX_SHIFT: isize = 4;
+const AUDIO_STYLE_CONTENT_FINGERPRINT_MAX_DISTANCE: f32 = 0.25;
+const AUDIO_STYLE_CONTENT_FINGERPRINT_DURATION_TOLERANCE_MS: u32 = 5_000;
+#[cfg(windows)]
+const AUDIO_STYLE_CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const AUDIO_STYLE_TERMINAL_BINS: usize = 64;
 const AUDIO_STYLE_TERMINAL_LATENT_WIDTH: usize = AUDIO_STYLE_TERMINAL_BINS * 2;
 const AUDIO_STYLE_TRANSITION_WIDTH: usize = AUDIO_STYLE_TERMINAL_BINS * AUDIO_STYLE_TERMINAL_BINS;
@@ -438,6 +451,14 @@ pub(crate) struct AudioStyleTopologyHealthDiagnostics {
 struct CachedAudioStyleEmbedding {
     version: String,
     values: Vec<f32>,
+    #[serde(default)]
+    content_fingerprint: Option<AudioStyleContentFingerprint>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct AudioStyleContentFingerprint {
+    duration_ms: u32,
+    frames: Vec<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -485,6 +506,8 @@ struct CachedAudioStyleContentClass {
 struct CachedAudioStyleEmbeddingEntry {
     key: CachedPlaybackTrackKey,
     values: Vec<f32>,
+    #[serde(default)]
+    content_fingerprint: Option<AudioStyleContentFingerprint>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -504,6 +527,8 @@ struct CachedPlaybackTrack {
     start_ms: u32,
     end_ms: u32,
     liked: bool,
+    #[serde(default)]
+    loudness_profile: Option<LoudnessProfile>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -524,6 +549,8 @@ struct CachedMusic {
     start_ms: u32,
     end_ms: u32,
     liked: bool,
+    #[serde(default)]
+    loudness_profile: Option<LoudnessProfile>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -597,6 +624,7 @@ struct CachedAudioStyleBasinAssignment {
 #[derive(Debug, Clone)]
 pub(crate) struct AudioStyleEmbedding {
     values: Vec<f32>,
+    content_fingerprint: Option<AudioStyleContentFingerprint>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -657,6 +685,19 @@ struct AudioStyleSymbolicProgramEncoding {
 #[derive(Clone)]
 struct AudioStyleContentPartition {
     members_by_class: BTreeMap<String, Vec<PlaybackTrackKey>>,
+}
+
+struct AudioStyleAcousticBaseClass {
+    key: String,
+    members: Vec<PlaybackTrackKey>,
+    min_duration_ms: u32,
+    max_duration_ms: u32,
+}
+
+struct AudioStyleAcousticGroup {
+    class_indices: Vec<usize>,
+    min_duration_ms: u32,
+    max_duration_ms: u32,
 }
 
 struct AudioStyleSchedulePartition {
@@ -888,6 +929,7 @@ impl From<&PlaybackTrack> for CachedPlaybackTrack {
             start_ms: track.start_ms,
             end_ms: track.end_ms,
             liked: track.liked,
+            loudness_profile: track.loudness_profile,
         }
     }
 }
@@ -904,7 +946,7 @@ impl From<CachedPlaybackTrack> for PlaybackTrack {
             start_ms: track.start_ms,
             end_ms: track.end_ms,
             liked: track.liked,
-            loudness_profile: None,
+            loudness_profile: track.loudness_profile,
         }
     }
 }
@@ -940,6 +982,7 @@ impl From<&Music> for CachedMusic {
             start_ms: music.start_ms,
             end_ms: music.end_ms,
             liked: music.liked,
+            loudness_profile: music.loudness_profile,
         }
     }
 }
@@ -957,7 +1000,7 @@ impl From<CachedMusic> for Music {
             start_ms: music.start_ms,
             end_ms: music.end_ms,
             liked: music.liked,
-            loudness_profile: None,
+            loudness_profile: music.loudness_profile,
         }
     }
 }
@@ -1028,20 +1071,20 @@ impl AudioStyleContentPartition {
         for key in &ordered_keys {
             if let Some(class_key) = class_overrides.get(key) {
                 class_key_by_track.insert(key.clone(), format!("audio-content:{class_key}"));
-                continue;
+            } else {
+                let Some(indexed) = indexed_tracks.get(key) else {
+                    class_key_by_track.insert(key.clone(), unique_audio_content_class_key(key));
+                    continue;
+                };
+                let Ok(metadata) = fs::metadata(&indexed.track.file_path) else {
+                    class_key_by_track.insert(key.clone(), unique_audio_content_class_key(key));
+                    continue;
+                };
+                duplicate_size_buckets
+                    .entry((metadata.len(), key.start_ms, key.end_ms))
+                    .or_default()
+                    .push(key.clone());
             }
-            let Some(indexed) = indexed_tracks.get(key) else {
-                class_key_by_track.insert(key.clone(), unique_audio_content_class_key(key));
-                continue;
-            };
-            let Ok(metadata) = fs::metadata(&indexed.track.file_path) else {
-                class_key_by_track.insert(key.clone(), unique_audio_content_class_key(key));
-                continue;
-            };
-            duplicate_size_buckets
-                .entry((metadata.len(), key.start_ms, key.end_ms))
-                .or_default()
-                .push(key.clone());
         }
 
         let mut digest_by_path = HashMap::<PathBuf, Result<String, String>>::new();
@@ -1066,16 +1109,110 @@ impl AudioStyleContentPartition {
             }
         }
 
-        let mut members_by_class = BTreeMap::<String, Vec<PlaybackTrackKey>>::new();
+        let mut base_members_by_class = BTreeMap::<String, Vec<PlaybackTrackKey>>::new();
         for key in ordered_keys {
             let class_key = class_key_by_track
                 .entry(key.clone())
                 .or_insert_with(|| unique_audio_content_class_key(&key))
                 .clone();
-            members_by_class.entry(class_key).or_default().push(key);
+            base_members_by_class
+                .entry(class_key)
+                .or_default()
+                .push(key);
         }
-        for members in members_by_class.values_mut() {
+        for members in base_members_by_class.values_mut() {
             members.sort_by_key(audio_style_track_key_sort_value);
+        }
+
+        let mut classes = base_members_by_class
+            .into_iter()
+            .map(|(key, members)| {
+                let min_duration_ms = members
+                    .iter()
+                    .map(audio_style_track_duration_ms)
+                    .min()
+                    .unwrap_or_default();
+                let max_duration_ms = members
+                    .iter()
+                    .map(audio_style_track_duration_ms)
+                    .max()
+                    .unwrap_or_default();
+                AudioStyleAcousticBaseClass {
+                    key,
+                    members,
+                    min_duration_ms,
+                    max_duration_ms,
+                }
+            })
+            .collect::<Vec<_>>();
+        classes.sort_by(|left, right| {
+            left.min_duration_ms
+                .cmp(&right.min_duration_ms)
+                .then_with(|| left.max_duration_ms.cmp(&right.max_duration_ms))
+                .then_with(|| left.key.cmp(&right.key))
+        });
+
+        // Classes are duration-sorted and only active groups inside the 5-second
+        // sweep remain candidates. Complete-link admission keeps acoustic
+        // equivalence from collapsing transitive chains.
+        let mut groups = Vec::<AudioStyleAcousticGroup>::new();
+        let mut active_group_indices = Vec::<usize>::new();
+        for class_index in 0..classes.len() {
+            let class = &classes[class_index];
+            active_group_indices.retain(|group_index| {
+                groups[*group_index]
+                    .max_duration_ms
+                    .saturating_add(AUDIO_STYLE_CONTENT_FINGERPRINT_DURATION_TOLERANCE_MS)
+                    >= class.min_duration_ms
+            });
+            let compatible_group = active_group_indices.iter().copied().find(|group_index| {
+                let group = &groups[*group_index];
+                group.min_duration_ms
+                    <= class
+                        .max_duration_ms
+                        .saturating_add(AUDIO_STYLE_CONTENT_FINGERPRINT_DURATION_TOLERANCE_MS)
+                    && group.class_indices.iter().all(|other_index| {
+                        audio_style_acoustic_base_classes_compatible(
+                            &classes[*other_index],
+                            class,
+                            embeddings,
+                        )
+                    })
+            });
+            if let Some(group_index) = compatible_group {
+                let group = &mut groups[group_index];
+                group.class_indices.push(class_index);
+                group.min_duration_ms = group.min_duration_ms.min(class.min_duration_ms);
+                group.max_duration_ms = group.max_duration_ms.max(class.max_duration_ms);
+            } else {
+                groups.push(AudioStyleAcousticGroup {
+                    class_indices: vec![class_index],
+                    min_duration_ms: class.min_duration_ms,
+                    max_duration_ms: class.max_duration_ms,
+                });
+                active_group_indices.push(groups.len() - 1);
+            }
+        }
+
+        let mut members_by_class = BTreeMap::<String, Vec<PlaybackTrackKey>>::new();
+        for group in groups {
+            let class_key = if group.class_indices.len() == 1 {
+                classes[group.class_indices[0]].key.clone()
+            } else {
+                acoustic_group_class_key(
+                    group
+                        .class_indices
+                        .iter()
+                        .map(|index| classes[*index].key.as_str()),
+                )
+            };
+            let mut members = group
+                .class_indices
+                .into_iter()
+                .flat_map(|index| classes[index].members.iter().cloned())
+                .collect::<Vec<_>>();
+            members.sort_by_key(audio_style_track_key_sort_value);
+            members_by_class.insert(class_key, members);
         }
         Self { members_by_class }
     }
@@ -1133,6 +1270,95 @@ impl AudioStyleContentPartition {
     }
 }
 
+fn audio_style_track_duration_ms(key: &PlaybackTrackKey) -> u32 {
+    key.end_ms.saturating_sub(key.start_ms)
+}
+
+fn audio_style_acoustic_base_classes_compatible(
+    left: &AudioStyleAcousticBaseClass,
+    right: &AudioStyleAcousticBaseClass,
+    embeddings: &AudioStyleEmbeddingMap,
+) -> bool {
+    for left_key in &left.members {
+        for right_key in &right.members {
+            if audio_style_track_duration_ms(left_key)
+                .abs_diff(audio_style_track_duration_ms(right_key))
+                > AUDIO_STYLE_CONTENT_FINGERPRINT_DURATION_TOLERANCE_MS
+            {
+                return false;
+            }
+            let Some(left_embedding) = embeddings.get(left_key) else {
+                return false;
+            };
+            let Some(right_embedding) = embeddings.get(right_key) else {
+                return false;
+            };
+            let Some(distance) = audio_style_chromaprint_distance(
+                left_embedding.content_fingerprint.as_ref(),
+                right_embedding.content_fingerprint.as_ref(),
+            ) else {
+                return false;
+            };
+            if distance > AUDIO_STYLE_CONTENT_FINGERPRINT_MAX_DISTANCE {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+fn acoustic_group_class_key<'a>(class_keys: impl IntoIterator<Item = &'a str>) -> String {
+    let mut hasher = Sha256::new();
+    for class_key in class_keys {
+        hasher.update(class_key.as_bytes());
+        hasher.update([0]);
+    }
+    format!(
+        "audio-content:chromaprint:{}",
+        hex::encode(hasher.finalize())
+    )
+}
+
+fn audio_style_chromaprint_distance(
+    left: Option<&AudioStyleContentFingerprint>,
+    right: Option<&AudioStyleContentFingerprint>,
+) -> Option<f32> {
+    let left = left.filter(|fingerprint| audio_style_content_fingerprint_is_valid(fingerprint))?;
+    let right =
+        right.filter(|fingerprint| audio_style_content_fingerprint_is_valid(fingerprint))?;
+    let mut best = f32::INFINITY;
+    for shift in
+        -AUDIO_STYLE_CONTENT_FINGERPRINT_MAX_SHIFT..=AUDIO_STYLE_CONTENT_FINGERPRINT_MAX_SHIFT
+    {
+        let (left_start, right_start) = if shift >= 0 {
+            (shift as usize, 0)
+        } else {
+            (0, (-shift) as usize)
+        };
+        if left_start >= left.frames.len() || right_start >= right.frames.len() {
+            continue;
+        }
+        let overlap = (left.frames.len() - left_start).min(right.frames.len() - right_start);
+        let shorter = left.frames.len().min(right.frames.len());
+        if overlap < AUDIO_STYLE_CONTENT_FINGERPRINT_MIN_FRAMES || overlap * 2 < shorter {
+            continue;
+        }
+        let mismatches = left.frames[left_start..left_start + overlap]
+            .iter()
+            .zip(&right.frames[right_start..right_start + overlap])
+            .map(|(left, right)| (left ^ right).count_ones())
+            .sum::<u32>();
+        let distance = mismatches as f32 / (overlap as f32 * u32::BITS as f32);
+        best = best.min(distance);
+    }
+    best.is_finite().then_some(best)
+}
+
+fn audio_style_content_fingerprint_is_valid(fingerprint: &AudioStyleContentFingerprint) -> bool {
+    fingerprint.duration_ms > 0
+        && fingerprint.frames.len() >= AUDIO_STYLE_CONTENT_FINGERPRINT_MIN_FRAMES
+}
+
 fn unique_audio_content_class_key(key: &PlaybackTrackKey) -> String {
     format!(
         "audio-content:identity:{}",
@@ -1183,6 +1409,7 @@ impl CachedAudioStyleModelState {
                         .map(|embedding| CachedAudioStyleEmbeddingEntry {
                             key: CachedPlaybackTrackKey::from(&key),
                             values: embedding.values.clone(),
+                            content_fingerprint: embedding.content_fingerprint.clone(),
                         })
                 })
                 .collect(),
@@ -1220,10 +1447,11 @@ impl TryFrom<CachedAudioStyleModelState> for AudioStyleModelState {
         let mut embeddings = AudioStyleEmbeddingMap::new();
         for cached_embedding in cached.embeddings {
             let key = PlaybackTrackKey::from(cached_embedding.key);
-            let embedding =
-                AudioStyleEmbedding::normalize(cached_embedding.values).ok_or_else(|| {
-                    "stable model contains an embedding with invalid width".to_string()
-                })?;
+            let embedding = AudioStyleEmbedding::normalize_with_content_fingerprint(
+                cached_embedding.values,
+                cached_embedding.content_fingerprint,
+            )
+            .ok_or_else(|| "stable model contains an embedding with invalid width".to_string())?;
             embeddings.insert(key, Arc::new(embedding));
         }
         if embeddings.is_empty() {
@@ -2517,12 +2745,36 @@ impl AudioStyleRecommendationRuntime {
             }
         };
         let restore_result = tauri::async_runtime::spawn_blocking(move || {
-            read_and_refresh_audio_style_stable_model(&stable_model_path)
+            let restored = read_and_refresh_audio_style_stable_model(&stable_model_path);
+            let legacy = if restored.is_err() {
+                read_legacy_audio_style_training_inputs(&stable_model_path)
+                    .ok()
+                    .flatten()
+            } else {
+                None
+            };
+            (restored, legacy)
         })
         .await;
         let snapshot = match restore_result {
-            Ok(Ok(snapshot)) => snapshot,
-            Ok(Err(error)) => {
+            Ok((Ok(snapshot), _)) => snapshot,
+            Ok((Err(error), Some((legacy_generation, legacy_inputs)))) => {
+                self.enqueue_legacy_stable_model_inputs(legacy_generation, legacy_inputs);
+                log::info!(
+                    target: AUDIO_STYLE_LOG_TARGET,
+                    "audio_style_stable_model_migration_queued reason=legacy_version generation={} elapsed_ms={}",
+                    legacy_generation,
+                    started.elapsed().as_millis()
+                );
+                log::info!(
+                    target: AUDIO_STYLE_LOG_TARGET,
+                    "audio_style_stable_model_restore_miss reason=legacy_version elapsed_ms={} error=\"{}\"",
+                    started.elapsed().as_millis(),
+                    escape_log_value(&error)
+                );
+                return None;
+            }
+            Ok((Err(error), None)) => {
                 log::info!(
                     target: AUDIO_STYLE_LOG_TARGET,
                     "audio_style_stable_model_restore_miss reason=startup elapsed_ms={} error=\"{}\"",
@@ -2550,6 +2802,32 @@ impl AudioStyleRecommendationRuntime {
             started.elapsed().as_millis()
         );
         Some(snapshot)
+    }
+
+    fn enqueue_legacy_stable_model_inputs(
+        &self,
+        generation: u64,
+        inputs: Vec<AudioStyleTrainingTrackInput>,
+    ) {
+        self.next_generation.fetch_max(generation, Ordering::SeqCst);
+        if inputs.is_empty() {
+            return;
+        }
+        let pending = AUDIO_STYLE_PENDING_TRAINING_INPUTS.get_or_init(|| Mutex::new(Vec::new()));
+        match pending.lock() {
+            Ok(mut pending) => {
+                pending.extend(inputs.iter().cloned());
+                *pending = deduplicate_audio_style_training_inputs(std::mem::take(&mut *pending));
+            }
+            Err(_) => {
+                log::error!(
+                    target: AUDIO_STYLE_LOG_TARGET,
+                    "audio_style_stable_model_migration_queue_failed generation={generation} error=\"memory_lock_poisoned\""
+                );
+                return;
+            }
+        }
+        self.persist_pending_training_inputs("legacy_stable_model_migration", &inputs);
     }
 
     fn startup_pending_record_coverage(
@@ -2664,7 +2942,14 @@ impl AudioStyleRecommendationRuntime {
 }
 
 impl AudioStyleEmbedding {
-    fn normalize(mut values: Vec<f32>) -> Option<Self> {
+    fn normalize(values: Vec<f32>) -> Option<Self> {
+        Self::normalize_with_content_fingerprint(values, None)
+    }
+
+    fn normalize_with_content_fingerprint(
+        mut values: Vec<f32>,
+        content_fingerprint: Option<AudioStyleContentFingerprint>,
+    ) -> Option<Self> {
         if values.len() != AUDIO_STYLE_EMBEDDING_WIDTH {
             return None;
         }
@@ -2677,7 +2962,11 @@ impl AudioStyleEmbedding {
         for value in &mut values {
             *value = (*value / norm).clamp(-1.0, 1.0);
         }
-        Some(Self { values })
+        Some(Self {
+            values,
+            content_fingerprint: content_fingerprint
+                .filter(audio_style_content_fingerprint_is_valid),
+        })
     }
 }
 
@@ -4438,6 +4727,7 @@ fn audio_style_embeddings_from_matrix(
         .map(|values| {
             Some(AudioStyleEmbedding {
                 values: values.to_vec(),
+                content_fingerprint: None,
             })
         })
         .collect()
@@ -6230,6 +6520,104 @@ impl AudioStyleModelSnapshot {
     }
 
     #[cfg(test)]
+    pub(crate) fn from_test_acoustic_embeddings(
+        generation: u64,
+        values: impl IntoIterator<Item = (PlaybackTrack, Vec<f32>, String, Option<(u32, Vec<u32>)>)>,
+    ) -> Self {
+        let mut embeddings = HashMap::new();
+        let mut content_overrides = HashMap::new();
+        for (track, values, content_key, fingerprint) in values {
+            let fingerprint =
+                fingerprint.map(|(duration_ms, frames)| AudioStyleContentFingerprint {
+                    duration_ms,
+                    frames,
+                });
+            let Some(embedding) =
+                AudioStyleEmbedding::normalize_with_content_fingerprint(values, fingerprint)
+            else {
+                continue;
+            };
+            let key = PlaybackTrackKey::from_track(&track);
+            embeddings.insert(key.clone(), Arc::new(embedding));
+            content_overrides.insert(key, content_key);
+        }
+        let state = Arc::new(
+            AudioStyleModelState::from_embeddings_with_content_overrides(
+                None,
+                embeddings,
+                HashMap::new(),
+                &HashSet::new(),
+                &content_overrides,
+            ),
+        );
+        Self::from_state(generation, state)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_test_acoustic_indexed_embeddings(
+        generation: u64,
+        values: impl IntoIterator<
+            Item = (
+                PlaybackTrack,
+                Vec<f32>,
+                Option<String>,
+                Option<(u32, Vec<u32>)>,
+            ),
+        >,
+    ) -> Self {
+        let mut embeddings = HashMap::new();
+        let mut indexed_tracks = HashMap::new();
+        let mut content_overrides = HashMap::new();
+        for (track, values, content_key, fingerprint) in values {
+            let fingerprint =
+                fingerprint.map(|(duration_ms, frames)| AudioStyleContentFingerprint {
+                    duration_ms,
+                    frames,
+                });
+            let Some(embedding) =
+                AudioStyleEmbedding::normalize_with_content_fingerprint(values, fingerprint)
+            else {
+                continue;
+            };
+            let key = PlaybackTrackKey::from_track(&track);
+            indexed_tracks.insert(
+                key.clone(),
+                AudioStyleIndexedTrack {
+                    source: PlaylistPlaybackTrackSource {
+                        collection_folder: String::new(),
+                        music: playback_track_source_music_from_track(&track),
+                    },
+                    track,
+                },
+            );
+            embeddings.insert(key.clone(), Arc::new(embedding));
+            if let Some(content_key) = content_key {
+                content_overrides.insert(key, content_key);
+            }
+        }
+        let state = Arc::new(
+            AudioStyleModelState::from_embeddings_with_content_overrides(
+                None,
+                embeddings,
+                indexed_tracks,
+                &HashSet::new(),
+                &content_overrides,
+            ),
+        );
+        Self::from_state(generation, state)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn content_partition_classes_for_test(&self) -> Vec<Vec<String>> {
+        self.state
+            .content_partition
+            .members_by_class
+            .values()
+            .map(|members| members.iter().map(|key| key.music_url.clone()).collect())
+            .collect()
+    }
+
+    #[cfg(test)]
     pub(crate) fn symbolic_partition_signature_for_test(&self) -> Option<&str> {
         self.state
             .symbolic_program_encoding
@@ -7108,11 +7496,16 @@ fn decode_audio_style_embedding(
     ffmpeg_path: &Path,
     track: &PlaybackTrack,
 ) -> Result<AudioStyleEmbedding, String> {
-    let starts = audio_style_interval_starts(track);
+    let intervals = audio_style_intervals(track);
     let mut merged = vec![0.0_f32; AUDIO_STYLE_EMBEDDING_WIDTH];
     let mut decoded_count = 0usize;
-    for start_seconds in starts {
-        let samples = decode_audio_style_interval(ffmpeg_path, &track.file_path, start_seconds)?;
+    for (start_seconds, duration_seconds) in intervals {
+        let samples = decode_audio_style_interval(
+            ffmpeg_path,
+            &track.file_path,
+            start_seconds,
+            duration_seconds,
+        )?;
         let local = audio_style_embedding_fingerprint(&samples);
         for (merged_value, local_value) in merged.iter_mut().zip(local.into_iter()) {
             *merged_value += local_value;
@@ -7127,7 +7520,8 @@ fn decode_audio_style_embedding(
     for value in &mut merged {
         *value *= scale;
     }
-    AudioStyleEmbedding::normalize(merged)
+    let content_fingerprint = decode_audio_style_content_fingerprint(ffmpeg_path, track).ok();
+    AudioStyleEmbedding::normalize_with_content_fingerprint(merged, content_fingerprint)
         .ok_or_else(|| "audio style embedding has invalid width".to_string())
 }
 
@@ -7140,50 +7534,46 @@ fn acquire_audio_style_ffmpeg_usage() -> crate::utils::binaries::ManagedBinaryUs
 #[cfg(test)]
 fn acquire_audio_style_ffmpeg_usage() {}
 
-fn audio_style_interval_starts(track: &PlaybackTrack) -> Vec<f64> {
+fn audio_style_intervals(track: &PlaybackTrack) -> Vec<(f64, f64)> {
     let start_seconds = track.start_ms as f64 / 1000.0;
     let end_seconds = track.end_ms as f64 / 1000.0;
     let duration = (end_seconds - start_seconds).max(0.0);
-    if duration <= AUDIO_STYLE_INTERVAL_SECONDS {
-        return vec![start_seconds];
+    if duration <= f64::EPSILON {
+        return Vec::new();
     }
 
-    let max_start = start_seconds + duration - AUDIO_STYLE_INTERVAL_SECONDS;
-    if AUDIO_STYLE_INTERVAL_COUNT <= 1 {
-        return vec![audio_style_stable_crop_start(
-            track,
-            start_seconds,
-            max_start,
-        )];
-    }
-
-    (0..AUDIO_STYLE_INTERVAL_COUNT)
+    let window_duration = if duration >= AUDIO_STYLE_INTERVAL_SECONDS {
+        AUDIO_STYLE_INTERVAL_SECONDS
+    } else {
+        duration / AUDIO_STYLE_INTERVAL_COUNT.max(1) as f64
+    };
+    let max_start = (end_seconds - window_duration).max(start_seconds);
+    (0..AUDIO_STYLE_INTERVAL_COUNT.max(1))
         .map(|index| {
-            let ratio = index as f64 / (AUDIO_STYLE_INTERVAL_COUNT - 1) as f64;
-            start_seconds + ratio * (max_start - start_seconds)
+            let ratio = if AUDIO_STYLE_INTERVAL_COUNT <= 1 {
+                0.0
+            } else {
+                index as f64 / (AUDIO_STYLE_INTERVAL_COUNT - 1) as f64
+            };
+            (
+                start_seconds + ratio * (max_start - start_seconds),
+                window_duration,
+            )
         })
         .collect()
 }
 
-fn audio_style_stable_crop_start(track: &PlaybackTrack, start_seconds: f64, max_start: f64) -> f64 {
-    let offset_span = (max_start - start_seconds).max(0.0);
-    if offset_span <= f64::EPSILON {
-        return start_seconds;
-    }
-
-    let sample_span = (offset_span * AUDIO_STYLE_SAMPLE_RATE as f64)
-        .floor()
-        .max(1.0) as u64;
-    let mut hasher = Sha256::new();
-    hasher.update(track.music_url.as_bytes());
-    hasher.update(track.file_path.to_string_lossy().as_bytes());
-    hasher.update(track.start_ms.to_le_bytes());
-    hasher.update(track.end_ms.to_le_bytes());
-    let digest = hasher.finalize();
-    let hash = u64::from_le_bytes([
-        digest[0], digest[1], digest[2], digest[3], digest[4], digest[5], digest[6], digest[7],
-    ]);
-    start_seconds + (hash % sample_span) as f64 / AUDIO_STYLE_SAMPLE_RATE as f64
+#[cfg(test)]
+pub(crate) fn audio_style_intervals_for_test(track: &PlaybackTrack) -> Vec<(u32, u32)> {
+    audio_style_intervals(track)
+        .into_iter()
+        .map(|(start_seconds, duration_seconds)| {
+            (
+                seconds_to_millis_f64(start_seconds),
+                seconds_to_millis_f64(duration_seconds),
+            )
+        })
+        .collect()
 }
 
 fn escape_log_value(value: &str) -> String {
@@ -7194,13 +7584,14 @@ fn decode_audio_style_interval(
     ffmpeg_path: &Path,
     input: &Path,
     start_seconds: f64,
+    duration_seconds: f64,
 ) -> Result<Vec<f32>, String> {
     let mut samples = ffplayr::decode_audio_pcm_f32_with_binary(
         ffmpeg_path,
         ffplayr::AudioPcmDecodeRequest::new(input.to_path_buf(), AUDIO_STYLE_SAMPLE_RATE)
             .with_time_range(ffplayr::PlaybackTimeRange {
                 start_ms: seconds_to_millis_f64(start_seconds),
-                duration_ms: Some(seconds_to_millis_f64(AUDIO_STYLE_INTERVAL_SECONDS)),
+                duration_ms: Some(seconds_to_millis_f64(duration_seconds)),
             }),
     )?;
     normalize_samples(&mut samples);
@@ -7208,6 +7599,62 @@ fn decode_audio_style_interval(
         return Err("audio style decode produced no samples".to_string());
     }
     Ok(samples)
+}
+
+fn decode_audio_style_content_fingerprint(
+    ffmpeg_path: &Path,
+    track: &PlaybackTrack,
+) -> Result<AudioStyleContentFingerprint, String> {
+    let duration_ms = track.end_ms.saturating_sub(track.start_ms);
+    if duration_ms == 0 {
+        return Err("audio content fingerprint has an empty playable range".to_string());
+    }
+    let start_seconds = format!("{:.3}", track.start_ms as f64 / 1000.0);
+    let fingerprint_duration_seconds =
+        (duration_ms as f64 / 1000.0).min(AUDIO_STYLE_CONTENT_FINGERPRINT_SECONDS);
+    let fingerprint_duration =
+        if fingerprint_duration_seconds >= AUDIO_STYLE_CONTENT_FINGERPRINT_SECONDS {
+            "60".to_string()
+        } else {
+            format!("{fingerprint_duration_seconds:.3}")
+        };
+    let mut command = Command::new(ffmpeg_path);
+    command
+        .args(["-v", "error", "-ss", start_seconds.as_str(), "-i"])
+        .arg(&track.file_path)
+        .args(["-t", fingerprint_duration.as_str(), "-map", "0:a:0", "-f"])
+        .args(["chromaprint", "-fp_format", "raw", "-"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    command.creation_flags(AUDIO_STYLE_CREATE_NO_WINDOW);
+    let output = command
+        .output()
+        .map_err(|error| format!("failed to run chromaprint decode: {error}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "chromaprint decode failed with status {}: {}",
+            output.status,
+            stderr.trim()
+        ));
+    }
+    if output.stdout.len() % std::mem::size_of::<u32>() != 0 {
+        return Err("chromaprint output is not a uint32 sequence".to_string());
+    }
+    let frames = output
+        .stdout
+        .chunks_exact(std::mem::size_of::<u32>())
+        .map(|bytes| u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+        .collect::<Vec<_>>();
+    let fingerprint = AudioStyleContentFingerprint {
+        duration_ms,
+        frames,
+    };
+    if !audio_style_content_fingerprint_is_valid(&fingerprint) {
+        return Err("chromaprint output has too few frames".to_string());
+    }
+    Ok(fingerprint)
 }
 
 fn seconds_to_millis_f64(seconds: f64) -> u32 {
@@ -7540,6 +7987,12 @@ fn build_audio_style_embedding_cache_key(track: &PlaybackTrack) -> Result<String
     hasher.update(AUDIO_STYLE_SAMPLE_RATE.to_le_bytes());
     hasher.update(AUDIO_STYLE_INTERVAL_SECONDS.to_bits().to_le_bytes());
     hasher.update((AUDIO_STYLE_INTERVAL_COUNT as u64).to_le_bytes());
+    hasher.update(
+        AUDIO_STYLE_CONTENT_FINGERPRINT_SECONDS
+            .to_bits()
+            .to_le_bytes(),
+    );
+    hasher.update(AUDIO_STYLE_CONTENT_FINGERPRINT_MIN_FRAMES.to_le_bytes());
     Ok(hex::encode(hasher.finalize()))
 }
 
@@ -7640,7 +8093,11 @@ fn read_cached_audio_style_embedding_with_kind(
             ),
         });
     }
-    AudioStyleEmbedding::normalize(cached.values).ok_or_else(|| AudioStyleEmbeddingCacheReadError {
+    AudioStyleEmbedding::normalize_with_content_fingerprint(
+        cached.values,
+        cached.content_fingerprint,
+    )
+    .ok_or_else(|| AudioStyleEmbeddingCacheReadError {
         kind: AudioStyleEmbeddingCacheReadErrorKind::Invalid,
         message: format!(
             "audio style embedding cache `{}` has invalid width",
@@ -7656,6 +8113,7 @@ fn write_cached_audio_style_embedding(
     let cached = CachedAudioStyleEmbedding {
         version: AUDIO_STYLE_EMBEDDING_VERSION.to_string(),
         values: embedding.values.clone(),
+        content_fingerprint: embedding.content_fingerprint.clone(),
     };
     let bytes = serde_json::to_vec(&cached)
         .map_err(|error| format!("failed to encode audio style embedding cache: {error}"))?;
@@ -7760,6 +8218,78 @@ fn snapshot_from_cached_audio_style_stable_model(
         cached.generation,
         Arc::new(state),
     ))
+}
+
+#[derive(Debug, Deserialize)]
+struct LegacyAudioStyleStableModelMetadata {
+    version: String,
+    generation: u64,
+    state: LegacyAudioStyleStableModelState,
+}
+
+#[derive(Debug, Deserialize)]
+struct LegacyAudioStyleStableModelState {
+    #[serde(default)]
+    indexed_tracks: Vec<CachedAudioStyleIndexedTrack>,
+}
+
+fn read_legacy_audio_style_training_inputs(
+    path: &Path,
+) -> Result<Option<(u64, Vec<AudioStyleTrainingTrackInput>)>, String> {
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(format!(
+                "failed to read legacy audio style stable model `{}`: {error}",
+                path.display()
+            ));
+        }
+    };
+    let metadata =
+        serde_json::from_slice::<LegacyAudioStyleStableModelMetadata>(&bytes).map_err(|error| {
+            format!(
+                "failed to parse legacy audio style stable model `{}`: {error}",
+                path.display()
+            )
+        })?;
+    if metadata.version != AUDIO_STYLE_LEGACY_STABLE_MODEL_VERSION {
+        return Ok(None);
+    }
+    let inputs = metadata
+        .state
+        .indexed_tracks
+        .into_iter()
+        .map(audio_style_training_input_from_cached_indexed_track)
+        .collect::<Vec<_>>();
+    Ok(Some((metadata.generation, inputs)))
+}
+
+fn audio_style_training_input_from_cached_indexed_track(
+    indexed: CachedAudioStyleIndexedTrack,
+) -> AudioStyleTrainingTrackInput {
+    let fallback_file_path = indexed.track.file_path.clone();
+    let fallback_loudness_profile = indexed.track.loudness_profile;
+    let music = indexed.source.music;
+    let absolute_path = music.path.unwrap_or(fallback_file_path);
+    AudioStyleTrainingTrackInput {
+        occurrence_id: music.occurrence_id,
+        alias: music.alias,
+        canonical_music_id: music.canonical_music_id,
+        url: music.url,
+        absolute_path,
+        start_ms: music.start_ms,
+        end_ms: music.end_ms,
+        liked: music.liked,
+        loudness_profile: music.loudness_profile.or(fallback_loudness_profile),
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn read_legacy_audio_style_training_inputs_for_test(
+    path: &Path,
+) -> Result<Option<(u64, Vec<AudioStyleTrainingTrackInput>)>, String> {
+    read_legacy_audio_style_training_inputs(path)
 }
 
 fn read_audio_style_stable_model_with_refresh_status(
