@@ -9,7 +9,17 @@
 #[cfg(test)]
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+
+const FATIGUE_RECOVERY_REBALANCE_STEPS: usize = 64;
+const FATIGUE_RECOVERY_CANDIDATES_PER_STEP: usize = 128;
+const FATIGUE_RECOVERY_DECAY_NUMERATORS: [u128; 4] = [1, 3, 7, 15];
+const FATIGUE_RECOVERY_DECAY_DENOMINATORS: [u128; 4] = [2, 4, 8, 16];
+const FATIGUE_PRESSURE_SCALE: u128 = 1_u128 << 48;
+const FATIGUE_MARGIN_SCALE: i128 = 1_i128 << 40;
+const NORMAL_FATIGUE_AUXILIARY_DOMAIN: &[u8] = b"slisic.normal-fatigue-auxiliary.v1";
+const NORMAL_CDF_NEGATIVE_ONE_U64: u64 = 2_926_672_865_222_990_848;
+const NORMAL_CDF_POSITIVE_ONE_U64: u64 = 15_520_071_208_486_559_744;
 
 #[cfg(test)]
 #[derive(Debug, Clone)]
@@ -61,7 +71,6 @@ pub(crate) struct PlaylistScopedProgramAtlas {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ProgramOrbitIndex {
-    initial_program: usize,
     cycle_ids: Vec<Vec<usize>>,
     cycle_masks: Vec<Vec<Vec<u64>>>,
     coverage_successors: Vec<(usize, usize)>,
@@ -801,7 +810,6 @@ pub(crate) fn candidate_relation_from_program_atlas(
 // @forma implements material ResearchCandidateTransfer.split_and_merge_program_species as compile_program_orbit_index
 pub(crate) fn compile_program_orbit_index(
     atlas: &NeuralProgramAtlas,
-    basin_ordinals: Option<&[usize]>,
 ) -> Result<ProgramOrbitIndex, String> {
     let word_count = atlas.track_count.div_ceil(64);
     let mut all_cycle_ids = Vec::with_capacity(atlas.programs.len());
@@ -862,38 +870,11 @@ pub(crate) fn compile_program_orbit_index(
                 .unwrap_or((program_ordinal, 0))
         })
         .collect();
-    let initial_program = select_initial_program(atlas, basin_ordinals);
     Ok(ProgramOrbitIndex {
-        initial_program,
         cycle_ids: all_cycle_ids,
         cycle_masks: all_cycle_masks,
         coverage_successors,
     })
-}
-
-fn select_initial_program(atlas: &NeuralProgramAtlas, basin_ordinals: Option<&[usize]>) -> usize {
-    let Some(basin_ordinals) = basin_ordinals.filter(|basins| basins.len() == atlas.track_count)
-    else {
-        return 0;
-    };
-
-    let mut selected = None;
-    for (program_ordinal, program) in atlas.programs.iter().enumerate() {
-        let Some(cycle) = single_program_cycle(program) else {
-            continue;
-        };
-        let spacing_scores = cyclic_basin_spacing_scores(&cycle, basin_ordinals);
-        let candidate = (spacing_scores, program.lineage.as_str(), program_ordinal);
-        if selected
-            .as_ref()
-            .is_none_or(|current: &(Vec<usize>, &str, usize)| candidate < *current)
-        {
-            selected = Some(candidate);
-        }
-    }
-    selected
-        .map(|(_, _, program_ordinal)| program_ordinal)
-        .unwrap_or(0)
 }
 
 fn single_program_cycle(program: &ProgramMorphism) -> Option<Vec<usize>> {
@@ -917,36 +898,557 @@ fn single_program_cycle(program: &ProgramMorphism) -> Option<Vec<usize>> {
     (node == 0 && cycle.len() == track_count).then_some(cycle)
 }
 
-fn cyclic_basin_spacing_scores(cycle: &[usize], basin_ordinals: &[usize]) -> Vec<usize> {
-    let mut positions_by_basin = HashMap::<usize, Vec<usize>>::new();
-    for (position, track) in cycle.iter().copied().enumerate() {
-        positions_by_basin
-            .entry(basin_ordinals[track])
-            .or_default()
-            .push(position);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FatigueChunk {
+    start: usize,
+    end: usize,
+    carrier: usize,
+    start_position: usize,
+    end_position: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FatigueCarrierScore {
+    short_returns: usize,
+    event_count: usize,
+    minimum_recovery: usize,
+    gap_sum: usize,
+    recovery_pressures: [u128; FATIGUE_RECOVERY_DECAY_NUMERATORS.len()],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct FatigueChunkRelocation {
+    start: usize,
+    end: usize,
+    insertion_source: usize,
+    previous: usize,
+    following: usize,
+    insertion_destination: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NormalFatigueAuxiliary {
+    DirectStyleJump,
+    RequestLocalAuditoryChunk,
+}
+
+pub(crate) fn normal_fatigue_auxiliary(
+    track_keys: &[String],
+    candidate: (usize, usize, usize, usize, usize),
+) -> NormalFatigueAuxiliary {
+    let mut digest = Sha256::new();
+    digest.update(NORMAL_FATIGUE_AUXILIARY_DOMAIN);
+    for ordinal in [
+        candidate.0,
+        candidate.1,
+        candidate.2,
+        candidate.3,
+        candidate.4,
+    ] {
+        let encoded = track_keys[ordinal].as_bytes();
+        digest.update((encoded.len() as u64).to_le_bytes());
+        digest.update(encoded);
     }
-    let mut scores = positions_by_basin
-        .into_values()
-        .map(|positions| {
-            let basin_count = positions.len();
-            let squared_gap_sum = positions
-                .iter()
-                .enumerate()
-                .map(|(index, position)| {
-                    let next = positions[(index + 1) % basin_count];
-                    let gap = if index + 1 < basin_count {
-                        next - *position
-                    } else {
-                        cycle.len() + next - *position
-                    };
-                    gap * gap
-                })
-                .sum::<usize>();
-            basin_count * squared_gap_sum
-        })
+    let digest = digest.finalize();
+    let quantile = u64::from_be_bytes(
+        digest[..8]
+            .try_into()
+            .expect("SHA-256 prefix is eight bytes"),
+    );
+    if (NORMAL_CDF_NEGATIVE_ONE_U64..NORMAL_CDF_POSITIVE_ONE_U64).contains(&quantile) {
+        NormalFatigueAuxiliary::DirectStyleJump
+    } else {
+        NormalFatigueAuxiliary::RequestLocalAuditoryChunk
+    }
+}
+
+fn successor_predecessors(successors: &[usize]) -> Result<Vec<usize>, String> {
+    let mut predecessors = vec![usize::MAX; successors.len()];
+    for (source, destination) in successors.iter().copied().enumerate() {
+        if destination >= successors.len() || predecessors[destination] != usize::MAX {
+            return Err("successor law is not a permutation".to_string());
+        }
+        predecessors[destination] = source;
+    }
+    Ok(predecessors)
+}
+
+fn fatigue_chunks(cycle: &[usize], carrier_ordinals: &[usize]) -> Vec<FatigueChunk> {
+    if cycle.is_empty() {
+        return Vec::new();
+    }
+    let Some(rotation) = cycle.iter().enumerate().find_map(|(position, track)| {
+        (carrier_ordinals[*track]
+            != carrier_ordinals[cycle[(position + cycle.len() - 1) % cycle.len()]])
+        .then_some(position)
+    }) else {
+        return vec![FatigueChunk {
+            start: cycle[0],
+            end: *cycle.last().unwrap(),
+            carrier: carrier_ordinals[cycle[0]],
+            start_position: 0,
+            end_position: cycle.len() - 1,
+        }];
+    };
+    let ordered = cycle
+        .iter()
+        .cycle()
+        .skip(rotation)
+        .take(cycle.len())
+        .copied()
         .collect::<Vec<_>>();
-    scores.sort_unstable_by(|left, right| right.cmp(left));
-    scores
+    let mut chunks = Vec::new();
+    let mut start = ordered[0];
+    let mut previous = ordered[0];
+    let mut start_position = 0;
+    let mut carrier = carrier_ordinals[start];
+    for (position, track) in ordered.iter().copied().enumerate().skip(1) {
+        let track_carrier = carrier_ordinals[track];
+        if track_carrier != carrier {
+            chunks.push(FatigueChunk {
+                start,
+                end: previous,
+                carrier,
+                start_position,
+                end_position: position - 1,
+            });
+            start = track;
+            start_position = position;
+            carrier = track_carrier;
+        }
+        previous = track;
+    }
+    chunks.push(FatigueChunk {
+        start,
+        end: previous,
+        carrier,
+        start_position,
+        end_position: ordered.len() - 1,
+    });
+    chunks
+}
+
+fn fatigue_pressure_lookup(maximum_gap: usize) -> Vec<[u128; 4]> {
+    let mut lookup = Vec::with_capacity(maximum_gap + 1);
+    lookup.push([FATIGUE_PRESSURE_SCALE; 4]);
+    for gap in 1..=maximum_gap {
+        let mut pressures = [0; 4];
+        for scale in 0..pressures.len() {
+            pressures[scale] = lookup[gap - 1][scale] * FATIGUE_RECOVERY_DECAY_NUMERATORS[scale]
+                / FATIGUE_RECOVERY_DECAY_DENOMINATORS[scale];
+        }
+        lookup.push(pressures);
+    }
+    lookup
+}
+
+fn fatigue_carrier_score(
+    cycle: &[usize],
+    carrier_ordinals: &[usize],
+    pressure_lookup: &[[u128; 4]],
+) -> FatigueCarrierScore {
+    let mut chunks_by_carrier = HashMap::<usize, Vec<FatigueChunk>>::new();
+    for chunk in fatigue_chunks(cycle, carrier_ordinals) {
+        chunks_by_carrier
+            .entry(chunk.carrier)
+            .or_default()
+            .push(chunk);
+    }
+    let mut short_returns = 0;
+    let mut event_count = 0;
+    let mut recovery_witness = Vec::new();
+    let mut gap_sum = 0;
+    let mut recovery_pressures = [0_u128; FATIGUE_RECOVERY_DECAY_NUMERATORS.len()];
+    for chunks in chunks_by_carrier.into_values() {
+        let occurrence_count = chunks.len();
+        for (index, chunk) in chunks.iter().enumerate() {
+            let following = chunks[(index + 1) % occurrence_count];
+            let gap =
+                (cycle.len() + following.start_position - chunk.end_position - 1) % cycle.len();
+            short_returns += usize::from(gap <= 2);
+            event_count += 1;
+            gap_sum += gap;
+            recovery_witness.push(gap * occurrence_count);
+            for (target, pressure) in recovery_pressures.iter_mut().zip(pressure_lookup[gap]) {
+                *target += pressure;
+            }
+        }
+    }
+    recovery_witness.sort_unstable();
+    FatigueCarrierScore {
+        short_returns,
+        event_count,
+        minimum_recovery: recovery_witness.first().copied().unwrap_or(0),
+        gap_sum,
+        recovery_pressures,
+    }
+}
+
+fn fatigue_scores(
+    cycle: &[usize],
+    recovery_carriers: &[&[usize]],
+    pressure_lookup: &[[u128; 4]],
+) -> Vec<FatigueCarrierScore> {
+    recovery_carriers
+        .iter()
+        .map(|carrier| fatigue_carrier_score(cycle, carrier, pressure_lookup))
+        .collect()
+}
+
+fn normalized_fatigue_margin(numerator: i128, denominator: u128) -> i128 {
+    numerator.saturating_mul(FATIGUE_MARGIN_SCALE) / denominator.max(1) as i128
+}
+
+fn fatigue_target_key(
+    cycle: &[usize],
+    recovery_carriers: &[&[usize]],
+    targets: &[FatigueCarrierScore],
+    pressure_lookup: &[[u128; 4]],
+) -> Vec<i128> {
+    let scores = fatigue_scores(cycle, recovery_carriers, pressure_lookup);
+    let mut margins = Vec::new();
+    for (score, target) in scores.iter().zip(targets) {
+        margins.push(normalized_fatigue_margin(
+            score.minimum_recovery as i128 - target.minimum_recovery as i128,
+            target.minimum_recovery.max(1) as u128,
+        ));
+        margins.push(normalized_fatigue_margin(
+            (score.gap_sum as u128 * target.event_count as u128) as i128
+                - (target.gap_sum as u128 * score.event_count as u128) as i128,
+            target.gap_sum as u128 * score.event_count as u128,
+        ));
+        for (pressure, target_pressure) in score
+            .recovery_pressures
+            .iter()
+            .zip(target.recovery_pressures)
+        {
+            margins.push(normalized_fatigue_margin(
+                (target_pressure * score.event_count as u128) as i128
+                    - (*pressure * target.event_count as u128) as i128,
+                target_pressure * score.event_count as u128,
+            ));
+        }
+        margins.push(normalized_fatigue_margin(
+            (target.short_returns as u128 * score.event_count as u128) as i128
+                - (score.short_returns as u128 * target.event_count as u128) as i128,
+            target.short_returns as u128 * score.event_count as u128,
+        ));
+    }
+    margins.sort_unstable();
+    margins
+}
+
+fn fatigue_recovery_target_met(
+    proposed: &[FatigueCarrierScore],
+    target: &[FatigueCarrierScore],
+) -> bool {
+    proposed.iter().zip(target).all(|(score, baseline)| {
+        score.minimum_recovery >= baseline.minimum_recovery
+            && score.short_returns as u128 * baseline.event_count as u128
+                <= baseline.short_returns as u128 * score.event_count as u128
+            && score
+                .recovery_pressures
+                .iter()
+                .zip(baseline.recovery_pressures)
+                .all(|(pressure, baseline_pressure)| {
+                    *pressure * (baseline.event_count as u128)
+                        < baseline_pressure * (score.event_count as u128)
+                })
+    })
+}
+
+fn same_carrier_edge_count(successors: &[usize], carrier_ordinals: &[usize]) -> usize {
+    successors
+        .iter()
+        .enumerate()
+        .filter(|(source, destination)| {
+            carrier_ordinals[*source] == carrier_ordinals[**destination]
+        })
+        .count()
+}
+
+fn pair_isolated_fatigue_visits(
+    successors: &mut [usize],
+    candidate_sets: &[HashSet<usize>],
+    incoming: &[Vec<usize>],
+    acoustic_basins: &[usize],
+    track_keys: &[String],
+    apply_normal_auxiliary: bool,
+) -> Result<(), String> {
+    loop {
+        let predecessors = successor_predecessors(successors)?;
+        let mut selected = None::<(usize, usize, usize, usize, usize)>;
+        for track in 0..successors.len() {
+            let previous = predecessors[track];
+            let following = successors[track];
+            let basin = acoustic_basins[track];
+            if acoustic_basins[previous] == basin
+                || acoustic_basins[following] == basin
+                || !candidate_sets[previous].contains(&following)
+            {
+                continue;
+            }
+            for insertion_source in incoming[track].iter().copied() {
+                let insertion_destination = successors[insertion_source];
+                if insertion_source == track
+                    || insertion_source == previous
+                    || insertion_destination == track
+                    || acoustic_basins[insertion_source] != basin
+                    || acoustic_basins[predecessors[insertion_source]] == basin
+                    || acoustic_basins[insertion_destination] == basin
+                    || !candidate_sets[track].contains(&insertion_destination)
+                {
+                    continue;
+                }
+                let candidate = (
+                    track,
+                    insertion_source,
+                    previous,
+                    following,
+                    insertion_destination,
+                );
+                // The normal draw may only decline an otherwise eligible local pair. The
+                // separately reconstructed ungated predecessor retains the fatigue ceiling.
+                if apply_normal_auxiliary
+                    && normal_fatigue_auxiliary(track_keys, candidate)
+                        != NormalFatigueAuxiliary::RequestLocalAuditoryChunk
+                {
+                    continue;
+                }
+                if selected.is_none_or(|current| candidate < current) {
+                    selected = Some(candidate);
+                }
+            }
+        }
+        let Some((track, insertion_source, previous, following, insertion_destination)) = selected
+        else {
+            return Ok(());
+        };
+        successors[previous] = following;
+        successors[insertion_source] = track;
+        successors[track] = insertion_destination;
+    }
+}
+
+fn fatigue_chunk_relocations(
+    successors: &[usize],
+    cycle: &[usize],
+    candidate_sets: &[HashSet<usize>],
+    incoming: &[Vec<usize>],
+    acoustic_basins: &[usize],
+) -> Result<Vec<FatigueChunkRelocation>, String> {
+    let predecessors = successor_predecessors(successors)?;
+    let chunks = fatigue_chunks(cycle, acoustic_basins);
+    let chunk_ends = chunks.iter().map(|chunk| chunk.end).collect::<HashSet<_>>();
+    let mut relocations = Vec::new();
+    for chunk in chunks {
+        let previous = predecessors[chunk.start];
+        let following = successors[chunk.end];
+        if !candidate_sets[previous].contains(&following) {
+            continue;
+        }
+        let mut members = HashSet::new();
+        let mut node = chunk.start;
+        loop {
+            members.insert(node);
+            if node == chunk.end {
+                break;
+            }
+            node = successors[node];
+        }
+        for insertion_source in incoming[chunk.start].iter().copied() {
+            let insertion_destination = successors[insertion_source];
+            if !chunk_ends.contains(&insertion_source)
+                || members.contains(&insertion_source)
+                || members.contains(&insertion_destination)
+                || insertion_source == previous
+                || !candidate_sets[chunk.end].contains(&insertion_destination)
+            {
+                continue;
+            }
+            relocations.push(FatigueChunkRelocation {
+                start: chunk.start,
+                end: chunk.end,
+                insertion_source,
+                previous,
+                following,
+                insertion_destination,
+            });
+        }
+    }
+    relocations.sort_unstable();
+    Ok(relocations)
+}
+
+fn evenly_sampled_relocations(length: usize, step: usize) -> Vec<usize> {
+    if length <= FATIGUE_RECOVERY_CANDIDATES_PER_STEP {
+        return (0..length).collect();
+    }
+    let offset = step.wrapping_mul(97) % length;
+    (0..FATIGUE_RECOVERY_CANDIDATES_PER_STEP)
+        .map(|index| (offset + index * length / FATIGUE_RECOVERY_CANDIDATES_PER_STEP) % length)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+pub(crate) fn form_neural_adaptation_cycle(
+    atlas: &mut NeuralProgramAtlas,
+    candidate_neighbors: &[usize],
+    track_keys: &[String],
+    acoustic_basins: &[usize],
+    source_collections: &[usize],
+) -> Result<bool, String> {
+    if atlas.programs.is_empty()
+        || atlas.track_count < 2
+        || candidate_neighbors.len() != atlas.track_count * atlas.candidate_count
+        || track_keys.len() != atlas.track_count
+        || acoustic_basins.len() != atlas.track_count
+        || source_collections.len() != atlas.track_count
+    {
+        return Err("neural-adaptation formation inputs must align".to_string());
+    }
+    let original = atlas.programs[0].clone();
+    let original_cycle = single_program_cycle(&original)
+        .ok_or_else(|| "neural-adaptation formation requires one complete cycle".to_string())?;
+    let candidate_sets = candidate_neighbors
+        .chunks_exact(atlas.candidate_count)
+        .map(|row| row.iter().copied().collect::<HashSet<_>>())
+        .collect::<Vec<_>>();
+    let mut incoming = vec![Vec::new(); atlas.track_count];
+    for (source, row) in candidate_neighbors
+        .chunks_exact(atlas.candidate_count)
+        .enumerate()
+    {
+        for destination in row.iter().copied() {
+            if destination >= atlas.track_count {
+                return Err("candidate relation contains an invalid track".to_string());
+            }
+            incoming[destination].push(source);
+        }
+    }
+    let recovery_carriers = [acoustic_basins, source_collections];
+    let pressure_lookup = fatigue_pressure_lookup(atlas.track_count);
+    let original_scores = fatigue_scores(&original_cycle, &recovery_carriers, &pressure_lookup);
+    let original_local_edges = same_carrier_edge_count(&original.successors, acoustic_basins);
+
+    let mut fatigue_ceiling_successors = original.successors.clone();
+    pair_isolated_fatigue_visits(
+        &mut fatigue_ceiling_successors,
+        &candidate_sets,
+        &incoming,
+        acoustic_basins,
+        track_keys,
+        false,
+    )?;
+    let fatigue_ceiling_cycle = single_program_cycle(&ProgramMorphism {
+        successors: fatigue_ceiling_successors,
+        ..original.clone()
+    })
+    .ok_or_else(|| "neural fatigue ceiling formation split the complete cycle".to_string())?;
+    let fatigue_upper_bound = fatigue_chunks(&fatigue_ceiling_cycle, acoustic_basins)
+        .iter()
+        .map(|chunk| chunk.end_position - chunk.start_position + 1)
+        .max()
+        .unwrap_or(1);
+
+    let mut successors = original.successors.clone();
+    pair_isolated_fatigue_visits(
+        &mut successors,
+        &candidate_sets,
+        &incoming,
+        acoustic_basins,
+        track_keys,
+        true,
+    )?;
+    let mut cycle = single_program_cycle(&ProgramMorphism {
+        successors: successors.clone(),
+        ..original.clone()
+    })
+    .ok_or_else(|| "local fatigue formation split the complete cycle".to_string())?;
+    let mut score = fatigue_target_key(
+        &cycle,
+        &recovery_carriers,
+        &original_scores,
+        &pressure_lookup,
+    );
+    for step in 0..FATIGUE_RECOVERY_REBALANCE_STEPS {
+        let relocations = fatigue_chunk_relocations(
+            &successors,
+            &cycle,
+            &candidate_sets,
+            &incoming,
+            acoustic_basins,
+        )?;
+        let mut selected = None::<(Vec<i128>, Vec<usize>, Vec<usize>)>;
+        for relocation_index in evenly_sampled_relocations(relocations.len(), step) {
+            let relocation = relocations[relocation_index];
+            let mut proposed = successors.clone();
+            proposed[relocation.previous] = relocation.following;
+            proposed[relocation.insertion_source] = relocation.start;
+            proposed[relocation.end] = relocation.insertion_destination;
+            let proposal = ProgramMorphism {
+                successors: proposed.clone(),
+                ..original.clone()
+            };
+            let Some(proposed_cycle) = single_program_cycle(&proposal) else {
+                continue;
+            };
+            let proposed_score = fatigue_target_key(
+                &proposed_cycle,
+                &recovery_carriers,
+                &original_scores,
+                &pressure_lookup,
+            );
+            if proposed_score <= score {
+                continue;
+            }
+            if selected
+                .as_ref()
+                .is_none_or(|(selected_score, _, _)| proposed_score > *selected_score)
+            {
+                selected = Some((proposed_score, proposed, proposed_cycle));
+            }
+        }
+        let Some((next_score, next_successors, next_cycle)) = selected else {
+            break;
+        };
+        score = next_score;
+        successors = next_successors;
+        cycle = next_cycle;
+    }
+
+    let all_edges_admitted = successors
+        .iter()
+        .enumerate()
+        .all(|(source, destination)| candidate_sets[source].contains(destination));
+    let local_edges = same_carrier_edge_count(&successors, acoustic_basins);
+    let maximum_local_run = fatigue_chunks(&cycle, acoustic_basins)
+        .iter()
+        .map(|chunk| chunk.end_position - chunk.start_position + 1)
+        .max()
+        .unwrap_or(1);
+    let scores = fatigue_scores(&cycle, &recovery_carriers, &pressure_lookup);
+    if !all_edges_admitted
+        || local_edges <= original_local_edges
+        || maximum_local_run > fatigue_upper_bound
+        || !fatigue_recovery_target_met(&scores, &original_scores)
+    {
+        return Ok(false);
+    }
+    let boundary_sources = successors
+        .iter()
+        .enumerate()
+        .filter(|(source, destination)| acoustic_basins[*source] != acoustic_basins[**destination])
+        .map(|(source, _)| source)
+        .collect::<Vec<_>>();
+    atlas.programs[0] = ProgramMorphism {
+        lineage: successor_lineage(track_keys, &successors, &boundary_sources),
+        presentation_ordinals: original.presentation_ordinals,
+        successors,
+        boundary_sources,
+    };
+    Ok(true)
 }
 
 fn maximum_common_successor_run(left: &ProgramMorphism, right: &ProgramMorphism) -> usize {
@@ -977,7 +1479,6 @@ fn maximum_common_successor_run(left: &ProgramMorphism, right: &ProgramMorphism)
 
 pub(crate) fn initialize_traversal_state(
     atlas: &NeuralProgramAtlas,
-    orbit_index: &ProgramOrbitIndex,
     anchors: &[usize],
 ) -> Result<ProgramOwnedTraversalState, String> {
     if atlas.programs.is_empty() {
@@ -995,8 +1496,8 @@ pub(crate) fn initialize_traversal_state(
                 set_bit(&mut history, *anchor);
                 ProgramPathState {
                     current_track: *anchor,
-                    active_program: orbit_index.initial_program,
-                    tie_cursor: (orbit_index.initial_program + 1) % atlas.programs.len(),
+                    active_program: 0,
+                    tie_cursor: 1 % atlas.programs.len(),
                     realized_history: history,
                     residence_steps: 0,
                     coverage_epoch: 0,
@@ -1010,7 +1511,6 @@ pub(crate) fn initialize_traversal_state(
 pub(crate) fn transport_traversal_state(
     previous: Option<(&NeuralProgramAtlas, &ProgramOwnedTraversalState)>,
     atlas: &NeuralProgramAtlas,
-    orbit_index: &ProgramOrbitIndex,
     anchors: &[usize],
     realized_histories: &[Vec<usize>],
 ) -> Result<ProgramOwnedTraversalState, String> {
@@ -1022,7 +1522,7 @@ pub(crate) fn transport_traversal_state(
     {
         return Err("transported path count must remain stable".to_string());
     }
-    let mut transported = initialize_traversal_state(atlas, orbit_index, anchors)?;
+    let mut transported = initialize_traversal_state(atlas, anchors)?;
     for path_ordinal in 0..anchors.len() {
         let path = &mut transported.paths[path_ordinal];
         for realized in &realized_histories[path_ordinal] {
@@ -1525,9 +2025,9 @@ pub(crate) fn build_symbolic_playlist_scope_report(
         )?;
         all_scoped_boundaries_have_positive_contrast &=
             local_audit.semantic_boundary_local_contrast_violations == 0;
-        let orbit_index = compile_program_orbit_index(&atlas, None)?;
+        let orbit_index = compile_program_orbit_index(&atlas)?;
         let anchors = (0..atlas.track_count).collect::<Vec<_>>();
-        let initial = initialize_traversal_state(&atlas, &orbit_index, &anchors)?;
+        let initial = initialize_traversal_state(&atlas, &anchors)?;
         let tracks_per_list = 32.min(((atlas.track_count - 1) / 2).max(1));
         let first = match execute_program_list(&atlas, &orbit_index, tracks_per_list, &initial) {
             Ok(list) => list,
@@ -1783,9 +2283,9 @@ pub(crate) fn build_symbolic_program_report(
         == catalog.candidate_relation_signature
         && compiled_program_lineages == catalog.expected_program_lineages
         && compiled_program_encoding_signature == catalog.expected_program_encoding_signature;
-    let orbit_index = compile_program_orbit_index(&atlas, None)?;
+    let orbit_index = compile_program_orbit_index(&atlas)?;
     let anchors = (0..atlas.track_count).collect::<Vec<_>>();
-    let initial = initialize_traversal_state(&atlas, &orbit_index, &anchors)?;
+    let initial = initialize_traversal_state(&atlas, &anchors)?;
     let first = execute_program_list(&atlas, &orbit_index, tracks_per_list, &initial)
         .map_err(|error| error.to_string())?;
     let second = execute_program_list(&atlas, &orbit_index, tracks_per_list, &first.next_state)

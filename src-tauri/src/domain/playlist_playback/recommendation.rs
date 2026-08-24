@@ -2,11 +2,12 @@ use crate::domain::player::model::PlaybackTrack;
 #[cfg(not(test))]
 use crate::domain::playlist_playback::playable_index;
 use crate::domain::playlist_playback::symbolic_program::{
-    NeuralProgramAtlas, ProgramOrbitIndex, ProgramOwnedTraversalState,
+    CompilationResult, NeuralProgramAtlas, ProgramOrbitIndex, ProgramOwnedTraversalState,
     candidate_relation_from_program_atlas, candidate_relation_signature,
     close_neural_program_atlas_cycles, compile_neural_program_atlas, compile_program_orbit_index,
-    execute_program_list, ordered_track_key_signature, program_encoding_signature,
-    restrict_neural_program_atlas_to_playlist, transport_traversal_state,
+    execute_program_list, form_neural_adaptation_cycle, ordered_track_key_signature,
+    program_encoding_signature, restrict_neural_program_atlas_to_playlist,
+    transport_traversal_state,
 };
 use crate::domain::playlists::model::{AudioStyleTrainingTrackInput, LoudnessProfile};
 #[cfg(not(test))]
@@ -5453,10 +5454,22 @@ fn ranked_audio_style_candidate_rows(
     ordered_keys: &[PlaybackTrackKey],
     embeddings: &AudioStyleEmbeddingMap,
 ) -> Result<Vec<AudioStyleRankedCandidateRow>, String> {
+    ranked_audio_style_candidate_rows_with_count(
+        ordered_keys,
+        embeddings,
+        AUDIO_STYLE_SYMBOLIC_PROGRAM_CANDIDATE_COUNT,
+    )
+}
+
+fn ranked_audio_style_candidate_rows_with_count(
+    ordered_keys: &[PlaybackTrackKey],
+    embeddings: &AudioStyleEmbeddingMap,
+    requested_candidate_count: usize,
+) -> Result<Vec<AudioStyleRankedCandidateRow>, String> {
     if ordered_keys.len() < 2 {
         return Err("symbolic candidate relation needs at least two tracks".to_string());
     }
-    let candidate_count = AUDIO_STYLE_SYMBOLIC_PROGRAM_CANDIDATE_COUNT.min(ordered_keys.len() - 1);
+    let candidate_count = requested_candidate_count.min(ordered_keys.len() - 1);
     let mean = AudioStyleStats::from_embeddings(embeddings).mean();
     let mut candidate_lists = ordered_keys
         .iter()
@@ -5689,32 +5702,49 @@ fn audio_style_symbolic_scope_signature(
     hex::encode(hasher.finalize())
 }
 
-fn scoped_symbolic_basin_ordinals(
-    encoding: &AudioStyleSymbolicProgramEncoding,
-    global_ordinals: &[usize],
-    sampling_geometry: Option<&AudioStyleSamplingGeometry>,
-) -> Option<Vec<usize>> {
-    let geometry = sampling_geometry?;
-    let mut labels = Vec::with_capacity(global_ordinals.len());
-    for global in global_ordinals {
-        let members = encoding.member_keys.get(*global)?;
-        if members.is_empty() {
-            return None;
+struct ScopedSymbolicFatigueCarriers {
+    acoustic_basins: Vec<usize>,
+    source_collections: Vec<usize>,
+}
+
+fn symbolic_source_collection_owner(path: &Path) -> String {
+    let mut prefix = PathBuf::new();
+    let mut found_materialization_boundary = false;
+    for component in path.components() {
+        if component
+            .as_os_str()
+            .to_string_lossy()
+            .eq_ignore_ascii_case(".slisic.leaves")
+        {
+            found_materialization_boundary = true;
+            break;
         }
-        let mut counts = BTreeMap::<String, usize>::new();
-        for member in members {
-            let basin = geometry.self_supervised_basins.get(member)?;
-            *counts.entry(basin.value.clone()).or_default() += 1;
-        }
-        let mut ranked = counts.into_iter().collect::<Vec<_>>();
-        ranked.sort_by(|(left_label, left_count), (right_label, right_count)| {
+        prefix.push(component.as_os_str());
+    }
+    let owner = if found_materialization_boundary {
+        prefix
+    } else {
+        path.parent().unwrap_or(path).to_path_buf()
+    };
+    owner.to_string_lossy().replace('\\', "/").to_lowercase()
+}
+
+fn majority_label(labels: impl IntoIterator<Item = String>) -> Option<String> {
+    let mut counts = BTreeMap::<String, usize>::new();
+    for label in labels {
+        *counts.entry(label).or_default() += 1;
+    }
+    counts
+        .into_iter()
+        .min_by(|(left_label, left_count), (right_label, right_count)| {
             right_count
                 .cmp(left_count)
                 .then_with(|| left_label.cmp(right_label))
-        });
-        labels.push(ranked.into_iter().next()?.0);
-    }
+        })
+        .map(|(label, _)| label)
+}
 
+fn ordinalize_labels(labels: Vec<String>) -> Vec<usize> {
     let mut unique_labels = labels.clone();
     unique_labels.sort_unstable();
     unique_labels.dedup();
@@ -5723,12 +5753,45 @@ fn scoped_symbolic_basin_ordinals(
         .enumerate()
         .map(|(ordinal, label)| (label, ordinal))
         .collect::<BTreeMap<_, _>>();
-    Some(
-        labels
-            .into_iter()
-            .map(|label| ordinal_by_label[&label])
-            .collect(),
-    )
+    labels
+        .into_iter()
+        .map(|label| ordinal_by_label[&label])
+        .collect()
+}
+
+fn scoped_symbolic_fatigue_carriers(
+    encoding: &AudioStyleSymbolicProgramEncoding,
+    global_ordinals: &[usize],
+    sampling_geometry: Option<&AudioStyleSamplingGeometry>,
+) -> Option<ScopedSymbolicFatigueCarriers> {
+    let geometry = sampling_geometry?;
+    let mut acoustic_labels = Vec::with_capacity(global_ordinals.len());
+    let mut collection_labels = Vec::with_capacity(global_ordinals.len());
+    for global in global_ordinals {
+        let members = encoding.member_keys.get(*global)?;
+        if members.is_empty() {
+            return None;
+        }
+        let member_basins = members
+            .iter()
+            .map(|member| {
+                geometry
+                    .self_supervised_basins
+                    .get(member)
+                    .map(|basin| basin.value.clone())
+            })
+            .collect::<Option<Vec<_>>>()?;
+        acoustic_labels.push(majority_label(member_basins)?);
+        collection_labels.push(majority_label(
+            members
+                .iter()
+                .map(|member| symbolic_source_collection_owner(&member.file_path)),
+        )?);
+    }
+    Some(ScopedSymbolicFatigueCarriers {
+        acoustic_basins: ordinalize_labels(acoustic_labels),
+        source_collections: ordinalize_labels(collection_labels),
+    })
 }
 
 impl AudioStyleSymbolicProgramEncoding {
@@ -5738,11 +5801,47 @@ impl AudioStyleSymbolicProgramEncoding {
     ) -> Result<Self, String> {
         let partition =
             AudioStyleSchedulePartition::from_content_partition(embeddings, content_partition)?;
-        let rows =
-            ranked_audio_style_candidate_rows(&partition.ordered_keys, &partition.embeddings)?;
-        let candidate_count = rows[0].destinations.len();
-        let candidate_neighbors = rows.into_iter().flat_map(|row| row.destinations).collect();
-        Self::from_parts(partition, candidate_count, candidate_neighbors, None)
+        if partition.ordered_keys.len() < 2 {
+            return Err("symbolic candidate relation needs at least two tracks".to_string());
+        }
+        let maximum_candidate_count = partition.ordered_keys.len() - 1;
+        let mut requested_candidate_count =
+            AUDIO_STYLE_SYMBOLIC_PROGRAM_CANDIDATE_COUNT.min(maximum_candidate_count);
+        loop {
+            let rows = ranked_audio_style_candidate_rows_with_count(
+                &partition.ordered_keys,
+                &partition.embeddings,
+                requested_candidate_count,
+            )?;
+            let candidate_count = rows[0].destinations.len();
+            let candidate_neighbors = rows
+                .into_iter()
+                .flat_map(|row| row.destinations)
+                .collect::<Vec<_>>();
+            let compilation = compile_neural_program_atlas(
+                &partition.track_keys,
+                candidate_count,
+                &candidate_neighbors,
+            )?;
+            if compilation.unclosed_presentations.is_empty() {
+                return Self::from_compilation(
+                    partition,
+                    candidate_count,
+                    candidate_neighbors,
+                    None,
+                    compilation,
+                );
+            }
+            if candidate_count == maximum_candidate_count {
+                return Err(format!(
+                    "symbolic candidate presentations remain unclosed at complete width: {:?}",
+                    compilation.unclosed_presentations
+                ));
+            }
+            requested_candidate_count = candidate_count
+                .saturating_mul(2)
+                .min(maximum_candidate_count);
+        }
     }
 
     fn from_cached(
@@ -5799,6 +5898,22 @@ impl AudioStyleSymbolicProgramEncoding {
             candidate_count,
             &candidate_neighbors,
         )?;
+        Self::from_compilation(
+            partition,
+            candidate_count,
+            candidate_neighbors,
+            expected,
+            compilation,
+        )
+    }
+
+    fn from_compilation(
+        partition: AudioStyleSchedulePartition,
+        candidate_count: usize,
+        candidate_neighbors: Vec<usize>,
+        expected: Option<(String, Vec<String>, String)>,
+        compilation: CompilationResult,
+    ) -> Result<Self, String> {
         if !compilation.unclosed_presentations.is_empty() {
             return Err(format!(
                 "symbolic candidate presentations are unclosed: {:?}",
@@ -6884,21 +6999,27 @@ impl AudioStyleSymbolicPlaybackSession {
                     &scoped_candidates,
                     &local_track_keys,
                 )?;
-                let atlas = Arc::new(closure.atlas.ok_or_else(|| {
+                let mut atlas = closure.atlas.ok_or_else(|| {
                     format!(
                         "playlist symbolic presentations were retracted: {:?}",
                         closure.retracted_presentations
                     )
-                })?);
-                let basin_ordinals = scoped_symbolic_basin_ordinals(
+                })?;
+                if let Some(carriers) = scoped_symbolic_fatigue_carriers(
                     encoding,
                     &scoped.global_track_ordinals,
                     snapshot.state.sampling_geometry.as_ref(),
-                );
-                let orbit_index = Arc::new(compile_program_orbit_index(
-                    atlas.as_ref(),
-                    basin_ordinals.as_deref(),
-                )?);
+                ) {
+                    form_neural_adaptation_cycle(
+                        &mut atlas,
+                        &scoped_candidates,
+                        &local_track_keys,
+                        &carriers.acoustic_basins,
+                        &carriers.source_collections,
+                    )?;
+                }
+                let atlas = Arc::new(atlas);
+                let orbit_index = Arc::new(compile_program_orbit_index(atlas.as_ref())?);
                 let local_by_key = Arc::new(
                     scoped
                         .global_track_ordinals
@@ -6978,7 +7099,6 @@ impl AudioStyleSymbolicPlaybackSession {
                 let state = transport_traversal_state(
                     previous.map(|execution| (execution.atlas.as_ref(), &execution.state)),
                     atlas.as_ref(),
-                    orbit_index.as_ref(),
                     &[current_local],
                     &[realized],
                 )?;
@@ -7009,7 +7129,6 @@ impl AudioStyleSymbolicPlaybackSession {
             execution.state = transport_traversal_state(
                 Some((execution.atlas.as_ref(), &previous_state)),
                 execution.atlas.as_ref(),
-                execution.orbit_index.as_ref(),
                 &[current_local],
                 &[realized],
             )?;
