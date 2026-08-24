@@ -5689,6 +5689,48 @@ fn audio_style_symbolic_scope_signature(
     hex::encode(hasher.finalize())
 }
 
+fn scoped_symbolic_basin_ordinals(
+    encoding: &AudioStyleSymbolicProgramEncoding,
+    global_ordinals: &[usize],
+    sampling_geometry: Option<&AudioStyleSamplingGeometry>,
+) -> Option<Vec<usize>> {
+    let geometry = sampling_geometry?;
+    let mut labels = Vec::with_capacity(global_ordinals.len());
+    for global in global_ordinals {
+        let members = encoding.member_keys.get(*global)?;
+        if members.is_empty() {
+            return None;
+        }
+        let mut counts = BTreeMap::<String, usize>::new();
+        for member in members {
+            let basin = geometry.self_supervised_basins.get(member)?;
+            *counts.entry(basin.value.clone()).or_default() += 1;
+        }
+        let mut ranked = counts.into_iter().collect::<Vec<_>>();
+        ranked.sort_by(|(left_label, left_count), (right_label, right_count)| {
+            right_count
+                .cmp(left_count)
+                .then_with(|| left_label.cmp(right_label))
+        });
+        labels.push(ranked.into_iter().next()?.0);
+    }
+
+    let mut unique_labels = labels.clone();
+    unique_labels.sort_unstable();
+    unique_labels.dedup();
+    let ordinal_by_label = unique_labels
+        .into_iter()
+        .enumerate()
+        .map(|(ordinal, label)| (label, ordinal))
+        .collect::<BTreeMap<_, _>>();
+    Some(
+        labels
+            .into_iter()
+            .map(|label| ordinal_by_label[&label])
+            .collect(),
+    )
+}
+
 impl AudioStyleSymbolicProgramEncoding {
     fn from_embeddings(
         embeddings: &AudioStyleEmbeddingMap,
@@ -6848,7 +6890,15 @@ impl AudioStyleSymbolicPlaybackSession {
                         closure.retracted_presentations
                     )
                 })?);
-                let orbit_index = Arc::new(compile_program_orbit_index(atlas.as_ref())?);
+                let basin_ordinals = scoped_symbolic_basin_ordinals(
+                    encoding,
+                    &scoped.global_track_ordinals,
+                    snapshot.state.sampling_geometry.as_ref(),
+                );
+                let orbit_index = Arc::new(compile_program_orbit_index(
+                    atlas.as_ref(),
+                    basin_ordinals.as_deref(),
+                )?);
                 let local_by_key = Arc::new(
                     scoped
                         .global_track_ordinals
@@ -6928,6 +6978,7 @@ impl AudioStyleSymbolicPlaybackSession {
                 let state = transport_traversal_state(
                     previous.map(|execution| (execution.atlas.as_ref(), &execution.state)),
                     atlas.as_ref(),
+                    orbit_index.as_ref(),
                     &[current_local],
                     &[realized],
                 )?;
@@ -6958,6 +7009,7 @@ impl AudioStyleSymbolicPlaybackSession {
             execution.state = transport_traversal_state(
                 Some((execution.atlas.as_ref(), &previous_state)),
                 execution.atlas.as_ref(),
+                execution.orbit_index.as_ref(),
                 &[current_local],
                 &[realized],
             )?;

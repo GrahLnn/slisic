@@ -44,6 +44,57 @@ fn residence_departure_atlas() -> NeuralProgramAtlas {
     }
 }
 
+fn basin_selection_atlas() -> NeuralProgramAtlas {
+    NeuralProgramAtlas {
+        track_count: 8,
+        candidate_count: 2,
+        programs: vec![
+            ProgramMorphism {
+                lineage: "program:clustered".to_string(),
+                presentation_ordinals: vec![0],
+                successors: vec![7, 5, 0, 2, 6, 3, 1, 4],
+                boundary_sources: Vec::new(),
+            },
+            ProgramMorphism {
+                lineage: "program:spread".to_string(),
+                presentation_ordinals: vec![1],
+                successors: vec![1, 3, 5, 4, 7, 6, 0, 2],
+                boundary_sources: Vec::new(),
+            },
+        ],
+    }
+}
+
+fn first_program_ordinal(atlas: &NeuralProgramAtlas, basin_ordinals: &[usize]) -> usize {
+    let orbits = compile_program_orbit_index(atlas, Some(basin_ordinals)).unwrap();
+    let initial = initialize_traversal_state(atlas, &orbits, &[0]).unwrap();
+    execute_program_list(atlas, &orbits, 1, &initial)
+        .unwrap()
+        .program_ordinals[0]
+}
+
+fn remap_tracks(atlas: &NeuralProgramAtlas, old_track_by_new: &[usize]) -> NeuralProgramAtlas {
+    let mut new_track_by_old = vec![usize::MAX; old_track_by_new.len()];
+    for (new_track, old_track) in old_track_by_new.iter().copied().enumerate() {
+        new_track_by_old[old_track] = new_track;
+    }
+    let mut remapped = atlas.clone();
+    for program in &mut remapped.programs {
+        program.successors = old_track_by_new
+            .iter()
+            .map(|old_source| new_track_by_old[program.successors[*old_source]])
+            .collect();
+    }
+    remapped
+}
+
+fn remap_basin_ordinals(basin_ordinals: &[usize], old_track_by_new: &[usize]) -> Vec<usize> {
+    old_track_by_new
+        .iter()
+        .map(|old_track| basin_ordinals[*old_track])
+        .collect()
+}
+
 #[test]
 fn finite_program_signatures_are_content_owned() {
     // @forma observes observation Domain.CrossRuntimeProgramEncoding
@@ -103,8 +154,8 @@ fn residence_continues_until_repetition_then_future_obstruction_departs() {
     // @forma observes observation Domain.StyleProgramFatigueObservation
     // @forma observes observation Domain.PostFatigueNoveltyObservation
     let atlas = residence_departure_atlas();
-    let orbits = compile_program_orbit_index(&atlas).unwrap();
-    let state = initialize_traversal_state(&atlas, &[0]).unwrap();
+    let orbits = compile_program_orbit_index(&atlas, None).unwrap();
+    let state = initialize_traversal_state(&atlas, &orbits, &[0]).unwrap();
 
     let played = execute_program_list(&atlas, &orbits, 3, &state).unwrap();
 
@@ -119,8 +170,8 @@ fn residence_continues_until_repetition_then_future_obstruction_departs() {
 fn program_history_survives_list_boundary_while_reset_replays() {
     // @forma observes observation Domain.ProgramOwnedTraversalState
     let atlas = residence_departure_atlas();
-    let orbits = compile_program_orbit_index(&atlas).unwrap();
-    let initial = initialize_traversal_state(&atlas, &[0]).unwrap();
+    let orbits = compile_program_orbit_index(&atlas, None).unwrap();
+    let initial = initialize_traversal_state(&atlas, &orbits, &[0]).unwrap();
 
     let first = execute_program_list(&atlas, &orbits, 2, &initial).unwrap();
     let persistent = execute_program_list(&atlas, &orbits, 1, &first.next_state).unwrap();
@@ -136,8 +187,8 @@ fn program_history_survives_list_boundary_while_reset_replays() {
 fn exhausted_unread_successors_fail_closed() {
     // @forma observes observation Domain.ExplicitFailureBranch
     let atlas = residence_departure_atlas();
-    let orbits = compile_program_orbit_index(&atlas).unwrap();
-    let initial = initialize_traversal_state(&atlas, &[0]).unwrap();
+    let orbits = compile_program_orbit_index(&atlas, None).unwrap();
+    let initial = initialize_traversal_state(&atlas, &orbits, &[0]).unwrap();
 
     let error = execute_program_list(&atlas, &orbits, 4, &initial).unwrap_err();
 
@@ -148,6 +199,56 @@ fn exhausted_unread_successors_fail_closed() {
             current_track: 5,
         }
     );
+}
+
+#[test]
+fn minimax_spacing_beats_aggregate_lookback_and_preserves_coverage() {
+    let atlas = basin_selection_atlas();
+    let basin_ordinals = [0, 1, 2, 3, 0, 1, 2, 3];
+    let orbits = compile_program_orbit_index(&atlas, Some(&basin_ordinals)).unwrap();
+    let initial = initialize_traversal_state(&atlas, &orbits, &[0]).unwrap();
+
+    let list = execute_program_list(&atlas, &orbits, 7, &initial).unwrap();
+
+    // Program 0 has fewer boolean lookback-3 hits, but its worst spacing score
+    // is 100 versus 80 for program 1; minimax spacing must select program 1.
+    assert_eq!(successor_cycle_count(&atlas.programs[1].successors), 1);
+    assert_eq!(list.program_ordinals, vec![1; 7]);
+    assert_eq!(list.order, vec![1, 3, 4, 7, 2, 5, 6]);
+    assert_eq!(list.next_state.realized_tracks(0), Some((0..8).collect()));
+}
+
+#[test]
+fn minimax_spacing_is_invariant_to_cycle_rotation_and_basin_label_renaming() {
+    let atlas = basin_selection_atlas();
+    let basin_ordinals = [0, 1, 2, 3, 0, 1, 2, 3];
+    let baseline = first_program_ordinal(&atlas, &basin_ordinals);
+    let rotation = (1..8).chain(0..1).collect::<Vec<_>>();
+    let rotated_atlas = remap_tracks(&atlas, &rotation);
+    let rotated_basins = remap_basin_ordinals(&basin_ordinals, &rotation);
+    let renamed_basins = basin_ordinals
+        .iter()
+        .map(|basin| [2, 0, 3, 1][*basin])
+        .collect::<Vec<_>>();
+
+    assert_eq!(baseline, 1);
+    assert_eq!(
+        first_program_ordinal(&rotated_atlas, &rotated_basins),
+        baseline
+    );
+    assert_eq!(first_program_ordinal(&atlas, &renamed_basins), baseline);
+}
+
+#[test]
+fn missing_basin_assignments_retain_program_zero_initialization() {
+    let atlas = basin_selection_atlas();
+    let orbits = compile_program_orbit_index(&atlas, None).unwrap();
+    let initial = initialize_traversal_state(&atlas, &orbits, &[0]).unwrap();
+
+    let list = execute_program_list(&atlas, &orbits, 1, &initial).unwrap();
+
+    assert_eq!(list.program_ordinals, vec![0]);
+    assert_eq!(list.order, vec![1]);
 }
 
 #[test]
@@ -255,8 +356,8 @@ fn complete_coverage_transports_to_nonreset_program_epoch() {
     let scoped = restrict_neural_program_atlas_to_playlist(&closed, &track_keys(6), &[0, 2, 4])
         .unwrap()
         .atlas;
-    let orbits = compile_program_orbit_index(&scoped).unwrap();
-    let initial = initialize_traversal_state(&scoped, &[0, 1, 2]).unwrap();
+    let orbits = compile_program_orbit_index(&scoped, None).unwrap();
+    let initial = initialize_traversal_state(&scoped, &orbits, &[0, 1, 2]).unwrap();
 
     let first = execute_program_list(&scoped, &orbits, 2, &initial).unwrap();
     let second = execute_program_list(&scoped, &orbits, 2, &first.next_state).unwrap();
@@ -278,13 +379,14 @@ fn complete_coverage_transports_to_nonreset_program_epoch() {
 #[test]
 fn state_transport_preserves_program_incidence_and_realized_history() {
     let atlas = residence_departure_atlas();
-    let orbits = compile_program_orbit_index(&atlas).unwrap();
-    let initial = initialize_traversal_state(&atlas, &[0]).unwrap();
+    let orbits = compile_program_orbit_index(&atlas, None).unwrap();
+    let initial = initialize_traversal_state(&atlas, &orbits, &[0]).unwrap();
     let first = execute_program_list(&atlas, &orbits, 2, &initial).unwrap();
     let direct = execute_program_list(&atlas, &orbits, 1, &first.next_state).unwrap();
     let transported = transport_traversal_state(
         Some((&atlas, &first.next_state)),
         &atlas,
+        &orbits,
         &[*first.order.last().unwrap()],
         &[vec![0, first.order[0], first.order[1]]],
     )

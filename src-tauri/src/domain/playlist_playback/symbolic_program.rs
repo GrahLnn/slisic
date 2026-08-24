@@ -61,6 +61,7 @@ pub(crate) struct PlaylistScopedProgramAtlas {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ProgramOrbitIndex {
+    initial_program: usize,
     cycle_ids: Vec<Vec<usize>>,
     cycle_masks: Vec<Vec<Vec<u64>>>,
     coverage_successors: Vec<(usize, usize)>,
@@ -800,6 +801,7 @@ pub(crate) fn candidate_relation_from_program_atlas(
 // @forma implements material ResearchCandidateTransfer.split_and_merge_program_species as compile_program_orbit_index
 pub(crate) fn compile_program_orbit_index(
     atlas: &NeuralProgramAtlas,
+    basin_ordinals: Option<&[usize]>,
 ) -> Result<ProgramOrbitIndex, String> {
     let word_count = atlas.track_count.div_ceil(64);
     let mut all_cycle_ids = Vec::with_capacity(atlas.programs.len());
@@ -860,11 +862,91 @@ pub(crate) fn compile_program_orbit_index(
                 .unwrap_or((program_ordinal, 0))
         })
         .collect();
+    let initial_program = select_initial_program(atlas, basin_ordinals);
     Ok(ProgramOrbitIndex {
+        initial_program,
         cycle_ids: all_cycle_ids,
         cycle_masks: all_cycle_masks,
         coverage_successors,
     })
+}
+
+fn select_initial_program(atlas: &NeuralProgramAtlas, basin_ordinals: Option<&[usize]>) -> usize {
+    let Some(basin_ordinals) = basin_ordinals.filter(|basins| basins.len() == atlas.track_count)
+    else {
+        return 0;
+    };
+
+    let mut selected = None;
+    for (program_ordinal, program) in atlas.programs.iter().enumerate() {
+        let Some(cycle) = single_program_cycle(program) else {
+            continue;
+        };
+        let spacing_scores = cyclic_basin_spacing_scores(&cycle, basin_ordinals);
+        let candidate = (spacing_scores, program.lineage.as_str(), program_ordinal);
+        if selected
+            .as_ref()
+            .is_none_or(|current: &(Vec<usize>, &str, usize)| candidate < *current)
+        {
+            selected = Some(candidate);
+        }
+    }
+    selected
+        .map(|(_, _, program_ordinal)| program_ordinal)
+        .unwrap_or(0)
+}
+
+fn single_program_cycle(program: &ProgramMorphism) -> Option<Vec<usize>> {
+    let track_count = program.successors.len();
+    if track_count == 0
+        || program
+            .successors
+            .iter()
+            .any(|destination| *destination >= track_count)
+    {
+        return None;
+    }
+    let mut visited = vec![false; track_count];
+    let mut cycle = Vec::with_capacity(track_count);
+    let mut node = 0;
+    while !visited[node] {
+        visited[node] = true;
+        cycle.push(node);
+        node = program.successors[node];
+    }
+    (node == 0 && cycle.len() == track_count).then_some(cycle)
+}
+
+fn cyclic_basin_spacing_scores(cycle: &[usize], basin_ordinals: &[usize]) -> Vec<usize> {
+    let mut positions_by_basin = HashMap::<usize, Vec<usize>>::new();
+    for (position, track) in cycle.iter().copied().enumerate() {
+        positions_by_basin
+            .entry(basin_ordinals[track])
+            .or_default()
+            .push(position);
+    }
+    let mut scores = positions_by_basin
+        .into_values()
+        .map(|positions| {
+            let basin_count = positions.len();
+            let squared_gap_sum = positions
+                .iter()
+                .enumerate()
+                .map(|(index, position)| {
+                    let next = positions[(index + 1) % basin_count];
+                    let gap = if index + 1 < basin_count {
+                        next - *position
+                    } else {
+                        cycle.len() + next - *position
+                    };
+                    gap * gap
+                })
+                .sum::<usize>();
+            basin_count * squared_gap_sum
+        })
+        .collect::<Vec<_>>();
+    scores.sort_unstable_by(|left, right| right.cmp(left));
+    scores
 }
 
 fn maximum_common_successor_run(left: &ProgramMorphism, right: &ProgramMorphism) -> usize {
@@ -895,6 +977,7 @@ fn maximum_common_successor_run(left: &ProgramMorphism, right: &ProgramMorphism)
 
 pub(crate) fn initialize_traversal_state(
     atlas: &NeuralProgramAtlas,
+    orbit_index: &ProgramOrbitIndex,
     anchors: &[usize],
 ) -> Result<ProgramOwnedTraversalState, String> {
     if atlas.programs.is_empty() {
@@ -912,8 +995,8 @@ pub(crate) fn initialize_traversal_state(
                 set_bit(&mut history, *anchor);
                 ProgramPathState {
                     current_track: *anchor,
-                    active_program: 0,
-                    tie_cursor: 1 % atlas.programs.len(),
+                    active_program: orbit_index.initial_program,
+                    tie_cursor: (orbit_index.initial_program + 1) % atlas.programs.len(),
                     realized_history: history,
                     residence_steps: 0,
                     coverage_epoch: 0,
@@ -927,6 +1010,7 @@ pub(crate) fn initialize_traversal_state(
 pub(crate) fn transport_traversal_state(
     previous: Option<(&NeuralProgramAtlas, &ProgramOwnedTraversalState)>,
     atlas: &NeuralProgramAtlas,
+    orbit_index: &ProgramOrbitIndex,
     anchors: &[usize],
     realized_histories: &[Vec<usize>],
 ) -> Result<ProgramOwnedTraversalState, String> {
@@ -938,7 +1022,7 @@ pub(crate) fn transport_traversal_state(
     {
         return Err("transported path count must remain stable".to_string());
     }
-    let mut transported = initialize_traversal_state(atlas, anchors)?;
+    let mut transported = initialize_traversal_state(atlas, orbit_index, anchors)?;
     for path_ordinal in 0..anchors.len() {
         let path = &mut transported.paths[path_ordinal];
         for realized in &realized_histories[path_ordinal] {
@@ -1441,9 +1525,9 @@ pub(crate) fn build_symbolic_playlist_scope_report(
         )?;
         all_scoped_boundaries_have_positive_contrast &=
             local_audit.semantic_boundary_local_contrast_violations == 0;
-        let orbit_index = compile_program_orbit_index(&atlas)?;
+        let orbit_index = compile_program_orbit_index(&atlas, None)?;
         let anchors = (0..atlas.track_count).collect::<Vec<_>>();
-        let initial = initialize_traversal_state(&atlas, &anchors)?;
+        let initial = initialize_traversal_state(&atlas, &orbit_index, &anchors)?;
         let tracks_per_list = 32.min(((atlas.track_count - 1) / 2).max(1));
         let first = match execute_program_list(&atlas, &orbit_index, tracks_per_list, &initial) {
             Ok(list) => list,
@@ -1699,9 +1783,9 @@ pub(crate) fn build_symbolic_program_report(
         == catalog.candidate_relation_signature
         && compiled_program_lineages == catalog.expected_program_lineages
         && compiled_program_encoding_signature == catalog.expected_program_encoding_signature;
-    let orbit_index = compile_program_orbit_index(&atlas)?;
+    let orbit_index = compile_program_orbit_index(&atlas, None)?;
     let anchors = (0..atlas.track_count).collect::<Vec<_>>();
-    let initial = initialize_traversal_state(&atlas, &anchors)?;
+    let initial = initialize_traversal_state(&atlas, &orbit_index, &anchors)?;
     let first = execute_program_list(&atlas, &orbit_index, tracks_per_list, &initial)
         .map_err(|error| error.to_string())?;
     let second = execute_program_list(&atlas, &orbit_index, tracks_per_list, &first.next_state)
