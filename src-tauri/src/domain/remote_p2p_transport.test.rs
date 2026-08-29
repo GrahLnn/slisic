@@ -1081,6 +1081,98 @@ async fn duplicate_offer_replay_is_serialized_and_idempotent() -> Result<()> {
 }
 
 #[tokio::test]
+async fn fully_gathered_offer_and_answer_open_without_candidate_frames() -> Result<()> {
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    let (host, _events) = RemoteP2pTransport::new();
+    let (relay_tx, mut relay_rx) = unbounded_channel();
+    host.set_relay_events(relay_tx);
+
+    let browser = Arc::new(
+        APIBuilder::new()
+            .build()
+            .new_peer_connection(RTCConfiguration::default())
+            .await?,
+    );
+    let data = browser
+        .create_data_channel(HLS_CONTROL_CHANNEL_LABEL, None)
+        .await?;
+    let (opened_tx, mut opened_rx) = unbounded_channel();
+    data.on_open(Box::new(move || {
+        let opened_tx = opened_tx.clone();
+        Box::pin(async move {
+            let _ = opened_tx.send(());
+        })
+    }));
+
+    let offer = browser.create_offer(None).await?;
+    let mut gathering_complete = browser.gathering_complete_promise().await;
+    browser.set_local_description(offer).await?;
+    let _ = gathering_complete.recv().await;
+    let offer = browser
+        .local_description()
+        .await
+        .ok_or_else(|| anyhow!("browser local description is missing after ICE gathering"))?;
+    assert!(
+        offer.sdp.contains("a=candidate:"),
+        "fully gathered browser offer must carry ICE candidates"
+    );
+
+    let open_result = tokio::time::timeout(Duration::from_secs(5), async {
+        host.handle_signal(
+            "fully-gathered-client",
+            RemoteP2pSignal::Offer {
+                sdp: offer.sdp,
+                generation: 1,
+                revision: 1,
+            },
+        )
+        .await?;
+
+        let answer = loop {
+            let frame = relay_rx
+                .recv()
+                .await
+                .ok_or_else(|| anyhow!("host relay channel closed before answer"))?;
+            let value: serde_json::Value = serde_json::from_str(&frame)?;
+            let signal: RemoteP2pSignal = serde_json::from_value(value["signal"].clone())?;
+            match signal {
+                // Candidate frames are deliberately dropped in both directions.
+                RemoteP2pSignal::Candidate { .. } => continue,
+                RemoteP2pSignal::Answer {
+                    sdp,
+                    generation,
+                    revision,
+                } => {
+                    assert_eq!(generation, 1);
+                    assert_eq!(revision, 1);
+                    break sdp;
+                }
+                _ => continue,
+            }
+        };
+        assert!(
+            answer.contains("a=candidate:"),
+            "fully gathered host answer must carry ICE candidates"
+        );
+        browser
+            .set_remote_description(RTCSessionDescription::answer(answer)?)
+            .await?;
+        opened_rx
+            .recv()
+            .await
+            .ok_or_else(|| anyhow!("browser data channel closed before opening"))?;
+        Ok::<(), anyhow::Error>(())
+    })
+    .await
+    .map_err(|_| anyhow!("DataChannel did not open within 5 seconds"))?;
+    open_result?;
+
+    browser.close().await?;
+    host.close_all().await;
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_closed_peer_is_replaced_before_accepting_the_next_offer() -> Result<()> {
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
     let (host, _events) = RemoteP2pTransport::new();
@@ -1270,6 +1362,8 @@ async fn negotiated_data_channel_delivers_hls_asset_coordinates() -> Result<()> 
 
     tokio::time::timeout(Duration::from_secs(5), async {
         let mut opened_channels = 0;
+        let mut remote_description_set = false;
+        let mut pending_remote_candidates = Vec::new();
         loop {
             tokio::select! {
                 opened = opened_rx.recv() => {
@@ -1308,10 +1402,18 @@ async fn negotiated_data_channel_delivers_hls_asset_coordinates() -> Result<()> 
                             browser
                                 .set_remote_description(RTCSessionDescription::answer(sdp)?)
                                 .await?;
+                            remote_description_set = true;
+                            for candidate in pending_remote_candidates.drain(..) {
+                                browser.add_ice_candidate(candidate).await?;
+                            }
                         }
                         RemoteP2pSignal::Candidate { candidate, generation } => {
                             assert_eq!(generation, 1);
-                            browser.add_ice_candidate(candidate).await?;
+                            if remote_description_set {
+                                browser.add_ice_candidate(candidate).await?;
+                            } else {
+                                pending_remote_candidates.push(candidate);
+                            }
                         }
                         _ => {}
                     }

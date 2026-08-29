@@ -1020,9 +1020,12 @@ impl RemoteP2pTransport {
                     .set_remote_description(RTCSessionDescription::offer(sdp.clone())?)
                     .await?;
                 let answer = peer.connection.create_answer(None).await?;
-                peer.connection
-                    .set_local_description(answer.clone())
-                    .await?;
+                let mut gathering_complete = peer.connection.gathering_complete_promise().await;
+                peer.connection.set_local_description(answer).await?;
+                let _ = gathering_complete.recv().await;
+                let answer = peer.connection.local_description().await.ok_or_else(|| {
+                    anyhow!("remote P2P local description is missing after ICE gathering")
+                })?;
                 Ok(answer.sdp)
             },
             HLS_NEGOTIATION_LEASE,
@@ -1037,6 +1040,14 @@ impl RemoteP2pTransport {
                 return Err(error);
             }
         };
+        let peers = self.peers.lock().await;
+        if !matches!(
+            peers.get(client_id),
+            Some(current)
+                if current.generation == generation && Arc::ptr_eq(current, &peer)
+        ) {
+            return Ok(());
+        }
         negotiation.offer_sdp = Some(sdp);
         negotiation.answer_sdp = Some(answer_sdp.clone());
         drop(negotiation);
@@ -1048,6 +1059,7 @@ impl RemoteP2pTransport {
                 revision,
             },
         );
+        drop(peers);
         Ok(())
     }
 
