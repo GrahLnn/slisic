@@ -205,6 +205,63 @@ fn playback_source_resolution_includes_group_only_sources() {
 }
 
 #[test]
+fn playback_source_resolution_keeps_same_canonical_distinct_files() {
+    let root = temp_root();
+    let folder = "youtube/album";
+    let first_path = root.join(folder).join("track-a.m4a");
+    let second_path = root.join(folder).join("track-b.m4a");
+    std::fs::create_dir_all(
+        first_path
+            .parent()
+            .expect("same-canonical audio parent directory should exist"),
+    )
+    .expect("same-canonical audio parent should be created");
+    std::fs::write(&first_path, b"a").expect("first same-canonical file should be created");
+    std::fs::write(&second_path, b"b").expect("second same-canonical file should be created");
+
+    let selection = playback_selection("Focus", "https://example.com/album", None);
+    let first = music_with_alias(
+        "Track A",
+        "Track Alpha",
+        "https://example.com/shared-canonical",
+        "track-a.m4a",
+        group("Disc 1", "https://example.com/disc-1", "disc-1"),
+    );
+    let second = music_with_alias(
+        "Track B",
+        "Track Beta",
+        "https://example.com/shared-canonical",
+        "track-b.m4a",
+        group("Disc 1", "https://example.com/disc-1", "disc-1"),
+    );
+
+    let resolution = resolve_playlist_playback_source_resolution(
+        &selection,
+        vec![
+            playback_source(folder, folder, first),
+            playback_source(folder, folder, second),
+        ],
+        &root,
+    );
+
+    assert_eq!(resolution.tracks.len(), 2);
+    assert!(
+        resolution
+            .tracks
+            .iter()
+            .any(|track| track.file_path == first_path)
+    );
+    assert!(
+        resolution
+            .tracks
+            .iter()
+            .any(|track| track.file_path == second_path)
+    );
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn playlist_selection_active_downloads_match_collection_and_group_domains() {
     let selection = playback_selection(
         "Focus",

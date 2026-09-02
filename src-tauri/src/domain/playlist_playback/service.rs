@@ -2385,10 +2385,16 @@ async fn load_audio_style_playlist_candidates(
         .await?
         .ok_or_else(|| anyhow!("playlist `{playlist_name}` not found"))?;
     let save_root = meta_service::resolve_save_root(app).await?;
-    let model_sources = snapshots
+    let model_members = snapshots
         .iter()
-        .flat_map(|snapshot| snapshot.symbolic_playlist_track_sources_for_selection(&selection))
+        .flat_map(|snapshot| snapshot.symbolic_playlist_track_member_keys())
         .collect::<Vec<_>>();
+    let model_sources = playlist_repo::load_model_playlist_playback_track_sources(
+        &selection,
+        &model_members,
+        &save_root,
+    )
+    .await?;
     let resolution =
         resolve_playlist_playback_source_resolution(&selection, model_sources, &save_root);
     Ok((resolution.tracks, "model_selection"))
@@ -3466,7 +3472,7 @@ pub(crate) fn resolve_playlist_playback_source_resolution(
             continue;
         }
 
-        let key = playlist_playback_track_source_key(&source);
+        let key = playlist_playback_track_file_key(&source, &file_path);
         if !seen.insert(key) {
             continue;
         }
@@ -3529,6 +3535,18 @@ fn playlist_playback_track_source_key(source: &PlaylistPlaybackTrackSource) -> S
     format!(
         "{}:{}:{}",
         source.music.url, source.music.start_ms, source.music.end_ms
+    )
+}
+
+fn playlist_playback_track_file_key(
+    source: &PlaylistPlaybackTrackSource,
+    file_path: &Path,
+) -> (String, PathBuf, u32, u32) {
+    (
+        source.music.url.clone(),
+        file_path.to_path_buf(),
+        source.music.start_ms,
+        source.music.end_ms,
     )
 }
 

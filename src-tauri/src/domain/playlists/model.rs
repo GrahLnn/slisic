@@ -3,6 +3,7 @@ use appdb::query::RawSqlStmt;
 use appdb::{AutoFill, Crud, Store, View};
 use serde::{Deserialize, Serialize};
 use specta::Type;
+use std::path::PathBuf;
 use surrealdb::types::{RecordId, Table};
 use surrealdb_types::SurrealValue;
 
@@ -260,6 +261,19 @@ pub struct Music {
     pub liked: bool,
     #[serde(default)]
     pub loudness_profile: Option<LoudnessProfile>,
+}
+
+/// The exact member identity owned by a published audio-style model.
+///
+/// Playlist admission does not use the model's cached collection/group
+/// metadata.  The repository intersects this finite key with current DB
+/// occurrences and then supplies the current owner metadata.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PlaylistPlaybackModelMemberKey {
+    pub music_url: String,
+    pub absolute_path: PathBuf,
+    pub start_ms: u32,
+    pub end_ms: u32,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, SurrealValue, Type)]
@@ -549,6 +563,55 @@ pub struct PlaylistRecordPlayableTrackView {
     pub loudness_profile: Option<LoudnessProfile>,
 }
 
+#[derive(Debug, Clone)]
+pub struct PlaylistModelMemberMusicViewParams {
+    pub canonical_music_ids: Vec<String>,
+}
+
+impl ViewParams for PlaylistModelMemberMusicViewParams {
+    fn bind_view_params(self, stmt: RawSqlStmt) -> anyhow::Result<RawSqlStmt> {
+        Ok(stmt
+            .bind("music_table", Table::from(Music::table_name()))
+            .bind("canonical_music_ids", self.canonical_music_ids))
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, SurrealValue, View)]
+#[view(
+    sql = r#"
+        SELECT
+            id AS music_record,
+            occurrence_id,
+            name,
+            alias,
+            canonical_music_id,
+            url,
+            path,
+            start_ms,
+            end_ms,
+            liked,
+            loudness_profile
+        FROM $music_table
+        WHERE canonical_music_id IN $canonical_music_ids
+            AND path IS NOT NONE;
+    "#,
+    params = PlaylistModelMemberMusicViewParams
+)]
+pub struct PlaylistModelMemberMusicView {
+    pub music_record: RecordId,
+    pub occurrence_id: String,
+    pub name: String,
+    pub alias: String,
+    pub canonical_music_id: String,
+    pub url: String,
+    pub path: Option<String>,
+    pub start_ms: u32,
+    pub end_ms: u32,
+    pub liked: bool,
+    #[serde(default)]
+    pub loudness_profile: Option<LoudnessProfile>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AudioStyleTrainingTrackInput {
     pub occurrence_id: String,
@@ -643,6 +706,50 @@ pub struct PlaylistMusicGroupView {
     pub group_name: String,
     pub group_url: String,
     pub group_folder: String,
+    pub position: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct PlaylistGroupParentCollectionViewParams {
+    pub group_records: Vec<RecordId>,
+}
+
+impl ViewParams for PlaylistGroupParentCollectionViewParams {
+    fn bind_view_params(self, stmt: RawSqlStmt) -> anyhow::Result<RawSqlStmt> {
+        Ok(stmt
+            .bind("relation", Table::from("include"))
+            .bind("group_records", self.group_records)
+            .bind("collection_table", Collection::table_name().to_string()))
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, SurrealValue, View)]
+#[view(
+    sql = r#"
+        SELECT
+            out AS group_record,
+            in AS collection_record,
+            in.name AS collection_name,
+            in.url AS collection_url,
+            in.folder AS collection_folder,
+            in.last_updated AS collection_last_updated,
+            in.enable_updates AS collection_enable_updates,
+            position
+        FROM $relation
+        WHERE out IN $group_records
+            AND record::tb(in) = $collection_table
+        ORDER BY position ASC;
+    "#,
+    params = PlaylistGroupParentCollectionViewParams
+)]
+pub struct PlaylistGroupParentCollectionView {
+    pub group_record: RecordId,
+    pub collection_record: RecordId,
+    pub collection_name: String,
+    pub collection_url: String,
+    pub collection_folder: String,
+    pub collection_last_updated: String,
+    pub collection_enable_updates: Option<bool>,
     pub position: i64,
 }
 

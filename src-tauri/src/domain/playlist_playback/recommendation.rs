@@ -9,12 +9,14 @@ use crate::domain::playlist_playback::symbolic_program::{
     program_encoding_signature, restrict_neural_program_atlas_to_playlist,
     transport_traversal_state,
 };
-use crate::domain::playlists::model::{AudioStyleTrainingTrackInput, LoudnessProfile};
+use crate::domain::playlists::model::{
+    AudioStyleTrainingTrackInput, LoudnessProfile, PlaylistPlaybackModelMemberKey,
+};
 #[cfg(not(test))]
 use crate::domain::playlists::model::{CollectionGroupOwner, Group, Music};
 #[cfg(test)]
 use crate::domain::playlists::model::{CollectionGroupOwner, Group, Music};
-use crate::domain::playlists::repo::{PlaylistPlaybackSelection, PlaylistPlaybackTrackSource};
+use crate::domain::playlists::repo::PlaylistPlaybackTrackSource;
 #[cfg(not(test))]
 use crate::utils::binaries::{
     ManagedBinary, acquire_managed_binary_usage, wait_for_managed_binary_foreground_release,
@@ -6632,10 +6634,9 @@ impl AudioStyleModelSnapshot {
         self.state.symbolic_program_encoding.is_some()
     }
 
-    pub(crate) fn symbolic_playlist_track_sources_for_selection(
+    pub(crate) fn symbolic_playlist_track_member_keys(
         &self,
-        selection: &PlaylistPlaybackSelection,
-    ) -> Vec<PlaylistPlaybackTrackSource> {
+    ) -> Vec<PlaylistPlaybackModelMemberKey> {
         let Some(encoding) = self.state.symbolic_program_encoding.as_deref() else {
             return Vec::new();
         };
@@ -6645,14 +6646,12 @@ impl AudioStyleModelSnapshot {
             .member_keys
             .iter()
             .flat_map(|members| members.iter())
-            .filter_map(|key| {
-                if !seen.insert(key.clone()) {
-                    return None;
-                }
-                let indexed = self.state.indexed_tracks.get(key)?;
-                selection
-                    .contains_track_source(&indexed.source)
-                    .then(|| indexed.source.clone())
+            .filter(|key| seen.insert((*key).clone()))
+            .map(|key| PlaylistPlaybackModelMemberKey {
+                music_url: key.music_url.clone(),
+                absolute_path: key.file_path.clone(),
+                start_ms: key.start_ms,
+                end_ms: key.end_ms,
             })
             .collect()
     }

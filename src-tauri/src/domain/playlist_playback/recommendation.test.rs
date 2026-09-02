@@ -13,7 +13,6 @@ use super::recommendation::{
 };
 use crate::domain::player::model::PlaybackTrack;
 use crate::domain::playlists::model::{AudioStyleTrainingTrackInput, LoudnessProfile};
-use crate::domain::playlists::repo::{PlaylistPlaybackGroupRef, PlaylistPlaybackSelection};
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -465,7 +464,7 @@ fn symbolic_active_observation_commits_only_the_proposed_track() {
 }
 
 #[test]
-fn symbolic_snapshot_materializes_complete_selected_member_sources() {
+fn symbolic_snapshot_exposes_exact_member_keys_without_playlist_owner_metadata() {
     let tracks = (0..4)
         .map(|index| track(&format!("materialized-member-{index}")))
         .collect::<Vec<_>>();
@@ -485,45 +484,15 @@ fn symbolic_snapshot_materializes_complete_selected_member_sources() {
             )
         }),
     );
-    let selection = PlaylistPlaybackSelection {
-        playlist_name: "Focus".to_string(),
-        collections: vec![],
-        groups: vec![PlaylistPlaybackGroupRef::new_for_test(
-            "Model Sources",
-            "",
-            "model",
-        )],
-        extra: vec![],
-        download_scopes: vec![],
-    };
-
-    let sources = snapshot.symbolic_playlist_track_sources_for_selection(&selection);
-    let source_urls = sources
+    let members = snapshot.symbolic_playlist_track_member_keys();
+    let member_urls = members
         .iter()
-        .map(|source| source.music.url.as_str())
+        .map(|member| member.music_url.as_str())
         .collect::<Vec<_>>();
-    assert_eq!(sources.len(), tracks.len());
-    assert!(source_urls.contains(&tracks[0].music_url.as_str()));
-    assert!(source_urls.contains(&tracks[1].music_url.as_str()));
-    assert!(!source_urls.contains(&non_model_track.music_url.as_str()));
-
-    let outside_selection = PlaylistPlaybackSelection {
-        playlist_name: "Focus".to_string(),
-        collections: vec![],
-        groups: vec![PlaylistPlaybackGroupRef::new_for_test(
-            "Other Sources",
-            "https://example.com/other",
-            "other",
-        )],
-        extra: vec![],
-        download_scopes: vec![],
-    };
-    assert!(
-        snapshot
-            .symbolic_playlist_track_sources_for_selection(&outside_selection)
-            .is_empty(),
-        "symbolic materialization must remain inside the playlist selection"
-    );
+    assert_eq!(members.len(), tracks.len());
+    assert!(member_urls.contains(&tracks[0].music_url.as_str()));
+    assert!(member_urls.contains(&tracks[1].music_url.as_str()));
+    assert!(!member_urls.contains(&non_model_track.music_url.as_str()));
 }
 
 #[test]

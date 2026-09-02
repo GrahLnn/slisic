@@ -1,7 +1,7 @@
 use super::model::{
     Collection, CollectionGroupOwner, CollectionSurfaceView, Exclude, Group, GroupSurfaceView,
     LoudnessProfile, Music, PlayList, PlayListConfigView, PlayListListView, PlayListWriteRequest,
-    canonical_music_id_for_source,
+    PlaylistPlaybackModelMemberKey, canonical_music_id_for_source,
 };
 use super::repo::{
     MusicEndTrim, PlaylistPlaybackCollectionRef, PlaylistPlaybackGroupRef,
@@ -11,21 +11,31 @@ use super::repo::{
     get_playlist_by_name, get_playlist_config_by_name, get_playlist_playback_selection_by_name,
     has_collections, is_music_identity_excluded_for_playback, list_auto_update_collection_urls,
     list_collections, list_config_library, list_musics_by_file_path, list_playlists,
-    load_liked_playlist_playback_track_sources, load_playlist_playback_track_sources,
-    load_random_playlist_playback_track_sources, load_spectrum_music_context, music_occurrence_id,
-    playlist_playback_owner_attempt_order, project_music_loudness_identity, push_extra,
-    remove_exclude, remove_extra, set_collection_updates, set_music_liked_by_identity,
-    set_music_loudness_profile_by_identity, trim_collection_music_ends_by_identity, update_music,
-    upsert_collection, upsert_playlist, upsert_playlist_surface,
+    load_liked_playlist_playback_track_sources, load_model_playlist_playback_track_sources,
+    load_playlist_playback_track_sources, load_random_playlist_playback_track_sources,
+    load_spectrum_music_context, music_occurrence_id, playlist_playback_owner_attempt_order,
+    project_music_loudness_identity, push_extra, remove_exclude, remove_extra,
+    set_collection_updates, set_music_liked_by_identity, set_music_loudness_profile_by_identity,
+    trim_collection_music_ends_by_identity, update_music, upsert_collection, upsert_playlist,
+    upsert_playlist_surface,
 };
+use crate::domain::meta::repo::{get_meta_info, resolve_meta_info};
+use crate::domain::player::model::PlaybackTrack;
+use crate::domain::playlist_playback::recommendation::{
+    AudioStyleSymbolicPendingObservationOutcome, AudioStyleSymbolicPlaybackSession,
+    read_audio_style_stable_model_for_test,
+};
+use crate::domain::playlist_playback::service::resolve_playlist_playback_source_resolution;
 use crate::domain::playlists::PLAYLIST_DB_TEST_LOCK;
 use appdb::connection::{get_db, reinit_db, reset_db};
 use appdb::model::meta::{ModelMeta, ResolveRecordId};
 use appdb::{AutoFill, Crud};
+use serde::Deserialize;
 use serde_json::json;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::LazyLock;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use surrealdb::types::{RecordId, Table};
 use surrealdb_types::SurrealValue;
 use tokio::runtime::Runtime;
@@ -643,6 +653,383 @@ async fn count_excludes() -> usize {
 
     let ids: Vec<RecordId> = result.take(0).expect("exclude ids should decode");
     ids.len()
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd)]
+struct RealScopeModelKey {
+    music_url: String,
+    file_path: String,
+    start_ms: u32,
+    end_ms: u32,
+}
+
+#[derive(Debug, Deserialize)]
+struct RealScopeIndexedTrack {
+    key: RealScopeModelKey,
+}
+
+#[derive(Debug, Deserialize)]
+struct RealScopeModelState {
+    indexed_tracks: Vec<RealScopeIndexedTrack>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RealScopeModelDocument {
+    generation: u64,
+    state: RealScopeModelState,
+}
+
+#[derive(Debug, Deserialize, surrealdb_types::SurrealValue)]
+struct RealScopePlaylistRow {
+    collections: serde_json::Value,
+    groups: serde_json::Value,
+    extra: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize, surrealdb_types::SurrealValue)]
+struct RealScopeMusicRow {
+    id: RecordId,
+    canonical_music_id: String,
+    url: String,
+    #[serde(default)]
+    path: Option<String>,
+    start_ms: u32,
+    end_ms: u32,
+}
+
+#[derive(Debug, Deserialize, surrealdb_types::SurrealValue)]
+struct RealScopeCollectionRow {
+    id: RecordId,
+    folder: String,
+}
+
+#[derive(Debug, Deserialize, surrealdb_types::SurrealValue)]
+struct RealScopeEdgeRow {
+    source: RecordId,
+    target: RecordId,
+}
+
+#[derive(Debug)]
+struct RealScopeProjection {
+    expected_keys: BTreeSet<RealScopeModelKey>,
+    music_rows: usize,
+    source_collection_edges: usize,
+    grouped_edges: usize,
+    group_parent_edges: usize,
+    excluded_ids: usize,
+}
+
+fn read_real_scope_model_projection(
+    path: &std::path::Path,
+) -> (
+    u64,
+    Vec<RealScopeModelKey>,
+    BTreeSet<RealScopeModelKey>,
+    Vec<String>,
+) {
+    let bytes = std::fs::read(path).unwrap_or_else(|error| {
+        panic!(
+            "real generation-163 model `{}` should be readable: {error}",
+            path.display()
+        )
+    });
+    let document: RealScopeModelDocument = serde_json::from_slice(&bytes).unwrap_or_else(|error| {
+        panic!(
+            "real generation-163 model `{}` should expose indexed tracks: {error}",
+            path.display()
+        )
+    });
+
+    let mut ordered_keys = Vec::with_capacity(document.state.indexed_tracks.len());
+    let mut key_set = BTreeSet::new();
+    for indexed in document.state.indexed_tracks {
+        assert!(
+            key_set.insert(indexed.key.clone()),
+            "generation-163 indexed tracks must not contain duplicate concrete keys"
+        );
+        ordered_keys.push(indexed.key);
+    }
+    let mut canonical_music_ids = Vec::new();
+    let mut seen_canonical_music_ids = HashSet::new();
+    for key in &ordered_keys {
+        let canonical_music_id =
+            canonical_music_id_for_source(&key.music_url, key.start_ms, key.end_ms);
+        if seen_canonical_music_ids.insert(canonical_music_id.clone()) {
+            canonical_music_ids.push(canonical_music_id);
+        }
+    }
+
+    (
+        document.generation,
+        ordered_keys,
+        key_set,
+        canonical_music_ids,
+    )
+}
+
+fn real_scope_record_refs(value: serde_json::Value) -> Vec<RecordId> {
+    let serde_json::Value::Array(values) = value else {
+        return vec![];
+    };
+    values
+        .into_iter()
+        .map(|value| match value {
+            serde_json::Value::String(text) => {
+                appdb::serde_utils::id::parse_record_id_or_plain_string(&text, None)
+                    .unwrap_or_else(|error| panic!("playlist record ref should parse: {error}"))
+            }
+            value => serde_json::from_value(value)
+                .unwrap_or_else(|error| panic!("playlist record ref should decode: {error}")),
+        })
+        .collect()
+}
+
+async fn load_real_scope_playlist_refs(
+    playlist_name: &str,
+) -> (Vec<RecordId>, Vec<RecordId>, Vec<RecordId>) {
+    let db = get_db().expect("real scope database handle should exist");
+    let mut result = db
+        .query("SELECT collections, groups, extra FROM $table WHERE name = $name LIMIT 1;")
+        .bind(("table", Table::from(PlayList::table_name())))
+        .bind(("name", playlist_name.to_string()))
+        .await
+        .expect("real scope playlist row query should succeed")
+        .check()
+        .expect("real scope playlist row response should succeed");
+    let rows: Vec<RealScopePlaylistRow> = result
+        .take(0)
+        .expect("real scope playlist refs should decode");
+    let row = rows
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| panic!("real backup should contain playlist `{playlist_name}`"));
+    (
+        real_scope_record_refs(row.collections),
+        real_scope_record_refs(row.groups),
+        real_scope_record_refs(row.extra),
+    )
+}
+
+async fn load_real_scope_music_rows(canonical_music_ids: &[String]) -> Vec<RealScopeMusicRow> {
+    if canonical_music_ids.is_empty() {
+        return vec![];
+    }
+    let db = get_db().expect("real scope database handle should exist");
+    let mut result = db
+        .query(
+            "SELECT id, canonical_music_id, url, path, start_ms, end_ms
+             FROM $table WHERE canonical_music_id IN $canonical_music_ids;",
+        )
+        .bind(("table", Table::from(Music::table_name())))
+        .bind(("canonical_music_ids", canonical_music_ids.to_vec()))
+        .await
+        .expect("real scope music query should succeed")
+        .check()
+        .expect("real scope music response should succeed");
+    result.take(0).expect("real scope music rows should decode")
+}
+
+async fn load_real_scope_edges(
+    relation: &str,
+    target_records: &[RecordId],
+    owner_table: &str,
+) -> Vec<RealScopeEdgeRow> {
+    if target_records.is_empty() {
+        return vec![];
+    }
+    let db = get_db().expect("real scope database handle should exist");
+    let mut result = db
+        .query(
+            "SELECT in AS source, out AS target FROM $relation
+             WHERE out IN $target_records AND record::tb(in) = $owner_table;",
+        )
+        .bind(("relation", Table::from(relation)))
+        .bind(("target_records", target_records.to_vec()))
+        .bind(("owner_table", owner_table.to_string()))
+        .await
+        .expect("real scope relation query should succeed")
+        .check()
+        .expect("real scope relation response should succeed");
+    result
+        .take(0)
+        .expect("real scope relation rows should decode")
+}
+
+async fn load_real_scope_collection_folders(
+    collection_records: &[RecordId],
+) -> HashMap<RecordId, String> {
+    if collection_records.is_empty() {
+        return HashMap::new();
+    }
+    let db = get_db().expect("real scope database handle should exist");
+    let mut result = db
+        .query("SELECT id, folder FROM $table WHERE id IN $collection_records;")
+        .bind(("table", Table::from(Collection::table_name())))
+        .bind(("collection_records", collection_records.to_vec()))
+        .await
+        .expect("real scope collection query should succeed")
+        .check()
+        .expect("real scope collection response should succeed");
+    let rows: Vec<RealScopeCollectionRow> = result
+        .take(0)
+        .expect("real scope collection rows should decode");
+    rows.into_iter().map(|row| (row.id, row.folder)).collect()
+}
+
+async fn load_real_scope_excluded_ids(canonical_music_ids: &[String]) -> HashSet<String> {
+    if canonical_music_ids.is_empty() {
+        return HashSet::new();
+    }
+    let db = get_db().expect("real scope database handle should exist");
+    let mut result = db
+        .query(
+            "SELECT VALUE music.canonical_music_id FROM $table
+             WHERE music.canonical_music_id IN $canonical_music_ids;",
+        )
+        .bind(("table", Table::from(Exclude::table_name())))
+        .bind(("canonical_music_ids", canonical_music_ids.to_vec()))
+        .await
+        .expect("real scope exclusion query should succeed")
+        .check()
+        .expect("real scope exclusion response should succeed");
+    result
+        .take(0)
+        .expect("real scope exclusion rows should decode")
+}
+
+fn real_scope_resolve_path(save_root: &std::path::Path, folder: &str, path: &str) -> PathBuf {
+    let path = PathBuf::from(path);
+    if path.is_absolute() {
+        path
+    } else {
+        save_root.join(folder).join(path)
+    }
+}
+
+async fn project_real_scope_from_db(
+    model_keys: &BTreeSet<RealScopeModelKey>,
+    canonical_music_ids: &[String],
+    selected_collections: &[RecordId],
+    selected_groups: &[RecordId],
+    selected_extra: &[RecordId],
+    save_root: &std::path::Path,
+) -> RealScopeProjection {
+    let rows = load_real_scope_music_rows(canonical_music_ids).await;
+    let music_records = rows.iter().map(|row| row.id.clone()).collect::<Vec<_>>();
+    let source_collection_edges =
+        load_real_scope_edges("includes", &music_records, Collection::table_name()).await;
+    let grouped_edges = load_real_scope_edges("grouped", &music_records, Group::table_name()).await;
+    let group_records = selected_groups
+        .iter()
+        .cloned()
+        .chain(grouped_edges.iter().map(|edge| edge.source.clone()))
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let group_parent_edges =
+        load_real_scope_edges("include", &group_records, Collection::table_name()).await;
+
+    let mut collection_records = source_collection_edges
+        .iter()
+        .map(|edge| edge.source.clone())
+        .collect::<HashSet<_>>();
+    collection_records.extend(group_parent_edges.iter().map(|edge| edge.source.clone()));
+    let collection_records = collection_records.into_iter().collect::<Vec<_>>();
+    let collection_folders = load_real_scope_collection_folders(&collection_records).await;
+    let excluded_ids = load_real_scope_excluded_ids(canonical_music_ids).await;
+    let selected_collection_set = selected_collections.iter().cloned().collect::<HashSet<_>>();
+    let selected_group_set = selected_groups.iter().cloned().collect::<HashSet<_>>();
+    let selected_extra_set = selected_extra.iter().cloned().collect::<HashSet<_>>();
+    let mut source_collections_by_music = HashMap::<RecordId, Vec<RecordId>>::new();
+    for edge in source_collection_edges {
+        source_collections_by_music
+            .entry(edge.target)
+            .or_default()
+            .push(edge.source);
+    }
+    let mut groups_by_music = HashMap::<RecordId, Vec<RecordId>>::new();
+    for edge in grouped_edges {
+        groups_by_music
+            .entry(edge.target)
+            .or_default()
+            .push(edge.source);
+    }
+    let mut parents_by_group = HashMap::<RecordId, HashSet<RecordId>>::new();
+    for edge in group_parent_edges {
+        parents_by_group
+            .entry(edge.target)
+            .or_default()
+            .insert(edge.source);
+    }
+
+    let mut expected_keys = BTreeSet::new();
+    for row in &rows {
+        if excluded_ids.contains(&row.canonical_music_id) {
+            continue;
+        }
+        let Some(path) = row.path.as_deref() else {
+            continue;
+        };
+        let Some(source_collections) = source_collections_by_music.get(&row.id) else {
+            continue;
+        };
+        for collection_record in source_collections {
+            let collection_selected = selected_collection_set.contains(collection_record);
+            let group_selected = groups_by_music.get(&row.id).is_some_and(|groups| {
+                groups.iter().any(|group| {
+                    selected_group_set.contains(group)
+                        && parents_by_group
+                            .get(group)
+                            .is_some_and(|parents| parents.contains(collection_record))
+                })
+            });
+            let extra_selected = selected_extra_set.contains(&row.id)
+                && groups_by_music.get(&row.id).is_some_and(|groups| {
+                    groups.iter().any(|group| {
+                        parents_by_group
+                            .get(group)
+                            .is_some_and(|parents| parents.contains(collection_record))
+                    })
+                });
+            if !(collection_selected || group_selected || extra_selected) {
+                continue;
+            }
+            let Some(folder) = collection_folders.get(collection_record) else {
+                continue;
+            };
+            let resolved_path = real_scope_resolve_path(save_root, folder, path);
+            if !resolved_path.is_file() {
+                continue;
+            }
+            let key = RealScopeModelKey {
+                music_url: row.url.clone(),
+                file_path: resolved_path.to_string_lossy().into_owned(),
+                start_ms: row.start_ms,
+                end_ms: row.end_ms,
+            };
+            if model_keys.contains(&key) {
+                expected_keys.insert(key);
+            }
+        }
+    }
+
+    RealScopeProjection {
+        expected_keys,
+        music_rows: rows.len(),
+        source_collection_edges: source_collections_by_music.values().map(Vec::len).sum(),
+        grouped_edges: groups_by_music.values().map(Vec::len).sum(),
+        group_parent_edges: parents_by_group.values().map(HashSet::len).sum(),
+        excluded_ids: excluded_ids.len(),
+    }
+}
+
+fn real_scope_key_from_track(track: &PlaybackTrack) -> RealScopeModelKey {
+    RealScopeModelKey {
+        music_url: track.music_url.clone(),
+        file_path: track.file_path.to_string_lossy().into_owned(),
+        start_ms: track.start_ms,
+        end_ms: track.end_ms,
+    }
 }
 
 #[test]
@@ -5278,4 +5665,527 @@ fn playlist_playback_selection_contains_only_its_own_track_sources() {
     assert!(selection.contains_track_source(&inside_collection));
     assert!(selection.contains_track_source(&inside_group));
     assert!(!selection.contains_track_source(&outside));
+}
+
+#[test]
+fn model_scope_uses_current_db_owner_graph_and_exact_paths() {
+    let _guard = acquire_db_test_lock();
+    run_async(async {
+        ensure_db().await;
+        bootstrap_playlist_read_schema().await;
+
+        let save_root = test_db_path();
+        std::fs::create_dir_all(save_root.join("selected"))
+            .expect("selected scope directory should be created");
+        std::fs::create_dir_all(save_root.join("outside"))
+            .expect("outside scope directory should be created");
+        for path in [
+            "selected/inside.m4a",
+            "selected/inside-second.m4a",
+            "selected/group.m4a",
+            "selected/excluded.m4a",
+            "outside/outside.m4a",
+            "outside/extra.m4a",
+        ] {
+            std::fs::write(save_root.join(path), b"scope-test")
+                .expect("scope fixture file should be created");
+        }
+
+        let selected_collection = Collection {
+            name: "Selected Collection".to_string(),
+            url: "https://example.com/scope-selected".to_string(),
+            folder: "selected".to_string(),
+            musics: vec![],
+            last_updated: "2026-08-31T00:00:00+00:00".to_string(),
+            enable_updates: Some(false),
+        };
+        let outside_collection = Collection {
+            name: "Outside Collection".to_string(),
+            url: "https://example.com/scope-outside".to_string(),
+            folder: "outside".to_string(),
+            musics: vec![],
+            last_updated: "2026-08-31T00:00:00+00:00".to_string(),
+            enable_updates: Some(false),
+        };
+        let selected_collection_record =
+            insert_collection_row("scope-selected", &selected_collection).await;
+        let outside_collection_record =
+            insert_collection_row("scope-outside", &outside_collection).await;
+
+        let selected_group = Group {
+            name: "Selected Group".to_string(),
+            url: "https://example.com/scope-group-selected".to_string(),
+            collection: collection_owner(
+                &selected_collection.name,
+                &selected_collection.url,
+                &selected_collection.folder,
+            ),
+            folder: "selected-group".to_string(),
+        };
+        let outside_group = Group {
+            name: "Outside Group".to_string(),
+            url: "https://example.com/scope-group-outside".to_string(),
+            collection: collection_owner(
+                &outside_collection.name,
+                &outside_collection.url,
+                &outside_collection.folder,
+            ),
+            folder: "outside-group".to_string(),
+        };
+        let selected_group_record = insert_group_row("scope-group-selected", &selected_group).await;
+        let outside_group_record = insert_group_row("scope-group-outside", &outside_group).await;
+        insert_collection_group_edge(&selected_collection_record, &selected_group_record).await;
+        insert_collection_group_edge(&outside_collection_record, &outside_group_record).await;
+
+        let make_music = |name: &str, url: &str, path: &str, group: Group| -> Music {
+            Music {
+                occurrence_id: String::new(),
+                name: name.to_string(),
+                alias: name.to_string(),
+                group,
+                canonical_music_id: canonical_music_id_for_source(url, 0, 60_000),
+                url: url.to_string(),
+                path: Some(path.to_string()),
+                start_ms: 0,
+                end_ms: 60_000,
+                liked: false,
+                loudness_profile: None,
+            }
+        };
+
+        let shared_url = "https://example.com/scope-shared";
+        let inside_music = make_music("Inside", shared_url, "inside.m4a", selected_group.clone());
+        let mut inside_second_music = make_music(
+            "Inside Second",
+            shared_url,
+            "inside-second.m4a",
+            selected_group.clone(),
+        );
+        inside_second_music.occurrence_id = "scope-occurrence-inside-second".to_string();
+        let outside_music = make_music("Outside", shared_url, "outside.m4a", outside_group.clone());
+        let group_music = make_music(
+            "Group",
+            "https://example.com/scope-group-track",
+            "group.m4a",
+            selected_group.clone(),
+        );
+        let extra_music = make_music(
+            "Extra",
+            "https://example.com/scope-extra",
+            "extra.m4a",
+            outside_group.clone(),
+        );
+        let excluded_music = make_music(
+            "Excluded",
+            "https://example.com/scope-excluded",
+            "excluded.m4a",
+            selected_group.clone(),
+        );
+        let missing_music = make_music(
+            "Missing",
+            "https://example.com/scope-missing",
+            "missing.m4a",
+            selected_group.clone(),
+        );
+
+        let inside_record = insert_music_row("scope-inside", &inside_music).await;
+        let inside_second_record =
+            insert_music_row("scope-inside-second", &inside_second_music).await;
+        let outside_record = insert_music_row("scope-outside-track", &outside_music).await;
+        let group_record = insert_music_row("scope-group-track", &group_music).await;
+        let extra_record = insert_music_row("scope-extra", &extra_music).await;
+        let excluded_record = insert_music_row("scope-excluded", &excluded_music).await;
+        let missing_record = insert_music_row("scope-missing", &missing_music).await;
+        insert_music_edges(
+            &selected_collection_record,
+            &[
+                inside_record.clone(),
+                inside_second_record.clone(),
+                group_record.clone(),
+                excluded_record.clone(),
+                missing_record.clone(),
+            ],
+        )
+        .await;
+        insert_music_edges(
+            &outside_collection_record,
+            &[outside_record.clone(), extra_record.clone()],
+        )
+        .await;
+        insert_group_edges(
+            &selected_group_record,
+            &[
+                inside_record,
+                inside_second_record,
+                group_record,
+                excluded_record,
+                missing_record,
+            ],
+        )
+        .await;
+        insert_group_edges(
+            &outside_group_record,
+            &[outside_record, extra_record.clone()],
+        )
+        .await;
+        add_exclude(excluded_music.clone())
+            .await
+            .expect("excluded fixture should be persisted");
+
+        let playlist = PlayList {
+            name: "DB Owned Symbolic Scope".to_string(),
+            collections: vec![],
+            groups: vec![],
+            extra: vec![],
+            created_at: AutoFill::resolved("2026-08-31T00:00:00.000000000Z".to_string()),
+        };
+        insert_playlist_row(
+            "db-owned-symbolic-scope",
+            &playlist,
+            &[selected_collection_record.clone()],
+            &[selected_group_record.clone()],
+            &[extra_record.clone()],
+        )
+        .await;
+        let selection = get_playlist_playback_selection_by_name(&playlist.name)
+            .await
+            .expect("scope selection should load")
+            .expect("scope selection should exist");
+
+        let member = |url: &str, path: &str| PlaylistPlaybackModelMemberKey {
+            music_url: url.to_string(),
+            absolute_path: save_root.join(path),
+            start_ms: 0,
+            end_ms: 60_000,
+        };
+        let model_members = vec![
+            member(shared_url, "selected/inside.m4a"),
+            member(shared_url, "selected/inside-second.m4a"),
+            member(shared_url, "outside/outside.m4a"),
+            member(
+                "https://example.com/scope-group-track",
+                "selected/group.m4a",
+            ),
+            member("https://example.com/scope-extra", "outside/extra.m4a"),
+            member(
+                "https://example.com/scope-excluded",
+                "selected/excluded.m4a",
+            ),
+            member("https://example.com/scope-missing", "selected/missing.m4a"),
+        ];
+        let model_sources =
+            load_model_playlist_playback_track_sources(&selection, &model_members, &save_root)
+                .await
+                .expect("cold symbolic scope should load from current DB owners");
+        let resolution =
+            resolve_playlist_playback_source_resolution(&selection, model_sources, &save_root);
+        let resolved_paths = resolution
+            .tracks
+            .iter()
+            .map(|track| track.file_path.clone())
+            .collect::<HashSet<_>>();
+        assert_eq!(resolution.tracks.len(), 4);
+        assert!(resolved_paths.contains(&save_root.join("selected/inside.m4a")));
+        assert!(resolved_paths.contains(&save_root.join("selected/inside-second.m4a")));
+        assert!(resolved_paths.contains(&save_root.join("selected/group.m4a")));
+        assert!(resolved_paths.contains(&save_root.join("outside/extra.m4a")));
+        assert!(!resolved_paths.contains(&save_root.join("outside/outside.m4a")));
+        assert!(!resolved_paths.contains(&save_root.join("selected/excluded.m4a")));
+        assert!(!resolved_paths.contains(&save_root.join("selected/missing.m4a")));
+
+        let collection_only_playlist = PlayList {
+            name: "DB Owned Symbolic Scope Collection Only".to_string(),
+            collections: vec![],
+            groups: vec![],
+            extra: vec![],
+            created_at: AutoFill::resolved("2026-08-31T00:00:01.000000000Z".to_string()),
+        };
+        insert_playlist_row(
+            "db-owned-symbolic-scope-collection-only",
+            &collection_only_playlist,
+            &[selected_collection_record.clone()],
+            &[],
+            &[],
+        )
+        .await;
+        let collection_only_selection =
+            get_playlist_playback_selection_by_name(&collection_only_playlist.name)
+                .await
+                .expect("collection-only selection should load")
+                .expect("collection-only selection should exist");
+        let collection_only_sources = load_model_playlist_playback_track_sources(
+            &collection_only_selection,
+            &model_members,
+            &save_root,
+        )
+        .await
+        .expect("collection-only symbolic scope should load");
+        let collection_only_resolution = resolve_playlist_playback_source_resolution(
+            &collection_only_selection,
+            collection_only_sources,
+            &save_root,
+        );
+        let collection_only_paths = collection_only_resolution
+            .tracks
+            .iter()
+            .map(|track| track.file_path.clone())
+            .collect::<HashSet<_>>();
+        assert!(collection_only_paths.contains(&save_root.join("selected/inside.m4a")));
+        assert!(collection_only_paths.contains(&save_root.join("selected/group.m4a")));
+        assert!(!collection_only_paths.contains(&save_root.join("outside/extra.m4a")));
+
+        let group_only_playlist = PlayList {
+            name: "DB Owned Symbolic Scope Group Only".to_string(),
+            collections: vec![],
+            groups: vec![],
+            extra: vec![],
+            created_at: AutoFill::resolved("2026-08-31T00:00:02.000000000Z".to_string()),
+        };
+        insert_playlist_row(
+            "db-owned-symbolic-scope-group-only",
+            &group_only_playlist,
+            &[],
+            &[selected_group_record.clone()],
+            &[],
+        )
+        .await;
+        let group_only_selection =
+            get_playlist_playback_selection_by_name(&group_only_playlist.name)
+                .await
+                .expect("group-only selection should load")
+                .expect("group-only selection should exist");
+        let group_only_sources = load_model_playlist_playback_track_sources(
+            &group_only_selection,
+            &model_members,
+            &save_root,
+        )
+        .await
+        .expect("group-only symbolic scope should load");
+        let group_only_resolution = resolve_playlist_playback_source_resolution(
+            &group_only_selection,
+            group_only_sources,
+            &save_root,
+        );
+        let group_only_paths = group_only_resolution
+            .tracks
+            .iter()
+            .map(|track| track.file_path.clone())
+            .collect::<HashSet<_>>();
+        assert!(group_only_paths.contains(&save_root.join("selected/inside.m4a")));
+        assert!(group_only_paths.contains(&save_root.join("selected/group.m4a")));
+        assert!(!group_only_paths.contains(&save_root.join("outside/extra.m4a")));
+
+        let extra_only_playlist = PlayList {
+            name: "DB Owned Symbolic Scope Extra Only".to_string(),
+            collections: vec![],
+            groups: vec![],
+            extra: vec![],
+            created_at: AutoFill::resolved("2026-08-31T00:00:03.000000000Z".to_string()),
+        };
+        insert_playlist_row(
+            "db-owned-symbolic-scope-extra-only",
+            &extra_only_playlist,
+            &[],
+            &[],
+            &[extra_record],
+        )
+        .await;
+        let extra_only_selection =
+            get_playlist_playback_selection_by_name(&extra_only_playlist.name)
+                .await
+                .expect("extra-only selection should load")
+                .expect("extra-only selection should exist");
+        let extra_only_sources = load_model_playlist_playback_track_sources(
+            &extra_only_selection,
+            &model_members,
+            &save_root,
+        )
+        .await
+        .expect("extra-only symbolic scope should load");
+        let extra_only_resolution = resolve_playlist_playback_source_resolution(
+            &extra_only_selection,
+            extra_only_sources,
+            &save_root,
+        );
+        assert_eq!(extra_only_resolution.tracks.len(), 1);
+        assert_eq!(
+            extra_only_resolution.tracks[0].file_path,
+            save_root.join("outside/extra.m4a")
+        );
+
+        reset_db();
+        let _ = std::fs::remove_dir_all(&save_root);
+    });
+}
+
+#[test]
+#[ignore = "requires the read-only generation-163 model and copied backup DB"]
+fn real_generation163_all_msic_scope_matches_independent_db_projection() {
+    const DB_ENV: &str = "SLISIC_SYMBOLIC_SCOPE_DB_COPY";
+    const MODEL_ENV: &str = "SLISIC_AUDIO_STYLE_GENERATION163_STABLE_JSON";
+    const DEFAULT_DB_COPY: &str =
+        r"C:\Users\admin\slisic\.tmp\symbolic-scope-db-owner-v1\surreal.db";
+    const DEFAULT_MODEL: &str = r"C:\Users\admin\slisic\.tmp\installed-update-2.1.8\previous-data\audio-style-stable-model\stable.json";
+    const DEFAULT_SAVE_ROOT: &str = r"C:\Users\admin\Documents\slisic";
+    const PLAYLIST_NAME: &str = "All Msic";
+    const EXPECTED_GENERATION: u64 = 163;
+    const EXPECTED_INDEXED_TRACKS: usize = 3_585;
+
+    let db_path = std::env::var_os(DB_ENV)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_DB_COPY));
+    let model_path = std::env::var_os(MODEL_ENV)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_MODEL));
+    assert!(
+        db_path.exists(),
+        "{DB_ENV} must point to the owned read-only DB copy: {}",
+        db_path.display()
+    );
+    assert!(
+        model_path.is_file(),
+        "{MODEL_ENV} must point to the read-only stable model: {}",
+        model_path.display()
+    );
+
+    let projection_started = Instant::now();
+    let (generation, indexed_keys, indexed_key_set, canonical_music_ids) =
+        read_real_scope_model_projection(&model_path);
+    let model_projection_elapsed = projection_started.elapsed();
+    assert_eq!(generation, EXPECTED_GENERATION);
+    assert_eq!(indexed_key_set.len(), EXPECTED_INDEXED_TRACKS);
+
+    let snapshot = read_audio_style_stable_model_for_test(&model_path)
+        .expect("generation-163 stable model should load through the production carrier");
+    assert_eq!(snapshot.generation(), EXPECTED_GENERATION);
+    let model_members = snapshot.symbolic_playlist_track_member_keys();
+    let production_member_keys = model_members
+        .iter()
+        .map(|member| RealScopeModelKey {
+            music_url: member.music_url.clone(),
+            file_path: member.absolute_path.to_string_lossy().into_owned(),
+            start_ms: member.start_ms,
+            end_ms: member.end_ms,
+        })
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        production_member_keys, indexed_key_set,
+        "the executable symbolic member presentation must cover the independent indexed key set"
+    );
+    assert_eq!(model_members.len(), indexed_keys.len());
+
+    let _guard = acquire_db_test_lock();
+    run_async(async {
+        reinit_db(db_path.clone())
+            .await
+            .expect("owned real backup DB copy should initialize");
+
+        let db_meta = get_meta_info()
+            .await
+            .expect("copied DB metadata lookup should succeed");
+        let save_path_from_db = db_meta.as_ref().and_then(|meta| meta.save_path.clone());
+        let resolved_meta = resolve_meta_info(
+            db_meta,
+            std::env::var("SLISIC_SYMBOLIC_SCOPE_DEFAULT_SAVE_ROOT")
+                .unwrap_or_else(|_| DEFAULT_SAVE_ROOT.to_string()),
+        );
+        let save_root = PathBuf::from(
+            resolved_meta
+                .save_path
+                .expect("meta resolver should provide a save root"),
+        );
+        let save_root_source = if save_path_from_db.is_some() {
+            "copied_db_meta"
+        } else {
+            "meta_default_fallback"
+        };
+
+        let (selected_collections, selected_groups, selected_extra) =
+            load_real_scope_playlist_refs(PLAYLIST_NAME).await;
+        let selection = get_playlist_playback_selection_by_name(PLAYLIST_NAME)
+            .await
+            .expect("real All Msic selection should load")
+            .expect("real backup should contain All Msic");
+        assert_eq!(selection.collections.len(), selected_collections.len());
+        assert_eq!(selection.groups.len(), selected_groups.len());
+        assert_eq!(selection.extra.len(), selected_extra.len());
+
+        let aggregate_started = Instant::now();
+        let expected = project_real_scope_from_db(
+            &indexed_key_set,
+            &canonical_music_ids,
+            &selected_collections,
+            &selected_groups,
+            &selected_extra,
+            &save_root,
+        )
+        .await;
+        let sources =
+            load_model_playlist_playback_track_sources(&selection, &model_members, &save_root)
+                .await
+                .expect("real All Msic model scope should load from current DB owners");
+        let resolution =
+            resolve_playlist_playback_source_resolution(&selection, sources, &save_root);
+        let aggregate_elapsed = aggregate_started.elapsed();
+        let actual_keys = resolution
+            .tracks
+            .iter()
+            .map(real_scope_key_from_track)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            actual_keys.len(),
+            resolution.tracks.len(),
+            "full concrete model keys must keep distinct resolved files"
+        );
+        assert_eq!(
+            actual_keys, expected.expected_keys,
+            "cold symbolic admission must equal the independent current-DB graph projection"
+        );
+        assert!(
+            resolution.tracks.len() >= 3,
+            "real All Msic must reach symbolic admission with at least three materialized tracks"
+        );
+
+        let admission_started = Instant::now();
+        let current = resolution
+            .tracks
+            .first()
+            .cloned()
+            .expect("real All Msic should expose a current symbolic track");
+        let mut session = AudioStyleSymbolicPlaybackSession::default();
+        let proposal = session
+            .propose_next(&snapshot, &current, &resolution.tracks, &[])
+            .expect("real All Msic should reach the native symbolic consumer");
+        let admission_elapsed = admission_started.elapsed();
+        assert!(
+            actual_keys.contains(&real_scope_key_from_track(&proposal.track)),
+            "native symbolic proposal must remain inside the independently admitted scope"
+        );
+        assert_eq!(
+            session
+                .observe_active_track(&proposal.track)
+                .expect("native symbolic proposal should be observable"),
+            AudioStyleSymbolicPendingObservationOutcome::Committed
+        );
+
+        eprintln!(
+            "[symbolic-scope-real] playlist={} generation={} save_root_source={} save_root={} model_members={} canonical_ids={} db_music_rows={} source_collection_edges={} grouped_edges={} group_parent_edges={} excluded_ids={} admitted_tracks={} model_projection_ms={} aggregate_projection_loader_ms={} native_admission_ms={}",
+            PLAYLIST_NAME,
+            generation,
+            save_root_source,
+            save_root.display(),
+            model_members.len(),
+            canonical_music_ids.len(),
+            expected.music_rows,
+            expected.source_collection_edges,
+            expected.grouped_edges,
+            expected.group_parent_edges,
+            expected.excluded_ids,
+            resolution.tracks.len(),
+            model_projection_elapsed.as_millis(),
+            aggregate_elapsed.as_millis(),
+            admission_elapsed.as_millis(),
+        );
+    });
+    reset_db();
 }

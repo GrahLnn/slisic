@@ -2,13 +2,16 @@ use super::model::{
     AddExcludeResult, Collection, CollectionGroupMembershipView, CollectionGroupOwner,
     CollectionSurfaceView, ConfigLibraryView, Exclude, ExcludeAvailability, Group,
     GroupSurfaceView, LoudnessProfile, Music, MusicSpectrumView, PlayList, PlayListConfigView,
-    PlayListListView, PlayListWriteRequest, PlaylistCollectionRef, PlaylistGroupRef,
-    PlaylistMusicGroupView, PlaylistMusicGroupViewParams, PlaylistMusicSourceCollectionView,
-    PlaylistMusicSourceCollectionViewParams, PlaylistRecordPlayableTrackView,
-    PlaylistRecordPlayableTrackViewParams, PlaylistRelationPlayableTrackView,
-    PlaylistRelationPlayableTrackViewParams, RandomPlaylistRelationPlayableTrackView,
-    RandomPlaylistRelationPlayableTrackViewParams, RemoveExcludeResult, SpectrumMusicContext,
-    SpectrumMusicSourceContext, canonical_music_id_for_source,
+    PlayListListView, PlayListWriteRequest, PlaylistCollectionRef,
+    PlaylistGroupParentCollectionView, PlaylistGroupParentCollectionViewParams, PlaylistGroupRef,
+    PlaylistModelMemberMusicView, PlaylistModelMemberMusicViewParams, PlaylistMusicGroupView,
+    PlaylistMusicGroupViewParams, PlaylistMusicSourceCollectionView,
+    PlaylistMusicSourceCollectionViewParams, PlaylistPlaybackModelMemberKey,
+    PlaylistRecordPlayableTrackView, PlaylistRecordPlayableTrackViewParams,
+    PlaylistRelationPlayableTrackView, PlaylistRelationPlayableTrackViewParams,
+    RandomPlaylistRelationPlayableTrackView, RandomPlaylistRelationPlayableTrackViewParams,
+    RemoveExcludeResult, SpectrumMusicContext, SpectrumMusicSourceContext,
+    canonical_music_id_for_source,
 };
 use anyhow::{Result, bail};
 use appdb::connection::get_db;
@@ -478,6 +481,7 @@ impl PlaylistPlaybackCollectionRef {
         }
     }
 
+    #[cfg(test)]
     pub fn contains_collection_folder(&self, folder: &str) -> bool {
         self.folder == folder
     }
@@ -488,6 +492,26 @@ struct PlaylistPlaybackSourceCollectionRef {
     record: RecordId,
     owner: CollectionGroupOwner,
     folder: String,
+}
+
+#[derive(Debug, Clone)]
+struct PlaylistPlaybackCurrentGroupRef {
+    record: RecordId,
+    name: String,
+    url: String,
+    folder: String,
+    parent_collections: Vec<PlaylistPlaybackSourceCollectionRef>,
+}
+
+impl PlaylistPlaybackCurrentGroupRef {
+    fn group(&self, owner: CollectionGroupOwner) -> Group {
+        Group {
+            name: self.name.clone(),
+            url: self.url.clone(),
+            collection: owner,
+            folder: self.folder.clone(),
+        }
+    }
 }
 
 impl From<&PlaylistPlaybackCollectionRef> for PlaylistPlaybackSourceCollectionRef {
@@ -533,6 +557,7 @@ impl PlaylistPlaybackGroupRef {
         }
     }
 
+    #[cfg(test)]
     pub fn contains_music_source(&self, source: &PlaylistPlaybackTrackSource) -> bool {
         self.url == source.music.group.url
             && (self.parent_collection_records.is_empty()
@@ -551,12 +576,14 @@ impl PlaylistPlaybackExtraRef {
         Self { record }
     }
 
+    #[cfg(test)]
     pub fn matches_canonical_music_id(&self, canonical_music_id: &str) -> bool {
         self.record.key.to_sql() == stable_record_key(canonical_music_id)
     }
 }
 
 impl PlaylistPlaybackSelection {
+    #[cfg(test)]
     pub fn contains_track_source(&self, source: &PlaylistPlaybackTrackSource) -> bool {
         self.collections
             .iter()
@@ -647,6 +674,156 @@ pub async fn load_playlist_playback_track_sources(
     limit: usize,
 ) -> Result<Vec<PlaylistPlaybackTrackSource>> {
     load_playlist_playback_track_sources_by_filter(selection, limit, false).await
+}
+
+/// Resolve the cold symbolic playlist scope from current database ownership.
+///
+/// The model supplies only its finite exact member keys.  Current Music rows,
+/// owner relations, and exclusions are all read from the database here, so
+/// stale model-side collection/group metadata cannot authorize a candidate.
+/// The downstream resolution consumer applies the shared file-path existence
+/// check.
+pub async fn load_model_playlist_playback_track_sources(
+    selection: &PlaylistPlaybackSelection,
+    model_members: &[PlaylistPlaybackModelMemberKey],
+    save_root: &Path,
+) -> Result<Vec<PlaylistPlaybackTrackSource>> {
+    if model_members.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let mut canonical_music_ids = Vec::new();
+    let mut seen_canonical_music_ids = HashSet::new();
+    let mut ordered_model_members = Vec::new();
+    let mut seen_model_members = HashSet::new();
+    for member in model_members {
+        if seen_model_members.insert(member.clone()) {
+            ordered_model_members.push(member.clone());
+        }
+        let canonical_music_id =
+            canonical_music_id_for_source(&member.music_url, member.start_ms, member.end_ms);
+        if seen_canonical_music_ids.insert(canonical_music_id.clone()) {
+            canonical_music_ids.push(canonical_music_id);
+        }
+    }
+
+    let rows = load_model_member_music_rows(canonical_music_ids.clone()).await?;
+    if rows.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let music_records = rows.iter().map(|row| &row.music_record);
+    let source_collections = load_music_source_collections_for_playback(music_records).await?;
+    let current_groups =
+        load_music_groups_with_parents_for_playback(rows.iter().map(|row| &row.music_record))
+            .await?;
+    let excluded_canonical_music_ids =
+        load_excluded_canonical_music_ids(&canonical_music_ids).await?;
+
+    let model_member_set = model_members.iter().cloned().collect::<HashSet<_>>();
+    let selected_extra_records = selection
+        .extra
+        .iter()
+        .map(|extra| extra.record.clone())
+        .collect::<HashSet<_>>();
+
+    let mut sources_by_member = HashMap::new();
+    for row in rows {
+        if excluded_canonical_music_ids.contains(&row.canonical_music_id) {
+            continue;
+        }
+
+        let Some(groups) = current_groups.get(&row.music_record) else {
+            continue;
+        };
+        let collections = source_collections
+            .get(&row.music_record)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+
+        for collection in &selection.collections {
+            let Some(source_collection) = collections
+                .iter()
+                .find(|source_collection| source_collection.record == collection.record)
+            else {
+                continue;
+            };
+            let Some(group) = groups.first() else {
+                continue;
+            };
+            let music =
+                model_member_music_from_row(&row, group.group(source_collection.owner.clone()));
+            append_model_member_source(
+                save_root,
+                &model_member_set,
+                &source_collection.folder,
+                music,
+                &mut sources_by_member,
+            );
+        }
+
+        for selected_group in &selection.groups {
+            let Some(group) = groups
+                .iter()
+                .find(|group| group.record == selected_group.record)
+            else {
+                continue;
+            };
+            let selected_parent_records = selected_group
+                .parent_collection_records
+                .iter()
+                .collect::<HashSet<_>>();
+            for source_collection in &group.parent_collections {
+                if !selected_parent_records.contains(&source_collection.record) {
+                    continue;
+                }
+                let Some(actual_source_collection) = collections
+                    .iter()
+                    .find(|collection| collection.record == source_collection.record)
+                else {
+                    continue;
+                };
+                let music = model_member_music_from_row(
+                    &row,
+                    group.group(actual_source_collection.owner.clone()),
+                );
+                append_model_member_source(
+                    save_root,
+                    &model_member_set,
+                    &actual_source_collection.folder,
+                    music,
+                    &mut sources_by_member,
+                );
+            }
+        }
+
+        if selected_extra_records.contains(&row.music_record) {
+            for source_collection in collections {
+                let Some(group) = groups.iter().find(|group| {
+                    group
+                        .parent_collections
+                        .iter()
+                        .any(|parent| parent.record == source_collection.record)
+                }) else {
+                    continue;
+                };
+                let music =
+                    model_member_music_from_row(&row, group.group(source_collection.owner.clone()));
+                append_model_member_source(
+                    save_root,
+                    &model_member_set,
+                    &source_collection.folder,
+                    music,
+                    &mut sources_by_member,
+                );
+            }
+        }
+    }
+
+    Ok(ordered_model_members
+        .into_iter()
+        .filter_map(|member| sources_by_member.remove(&member))
+        .collect())
 }
 
 pub async fn load_liked_playlist_playback_track_sources(
@@ -2686,6 +2863,207 @@ async fn load_extra_playback_track_source(
         &collection.folder,
         music,
     )))
+}
+
+async fn load_model_member_music_rows(
+    canonical_music_ids: Vec<String>,
+) -> Result<Vec<PlaylistModelMemberMusicView>> {
+    if canonical_music_ids.is_empty() {
+        return Ok(vec![]);
+    }
+
+    match PlaylistModelMemberMusicView::query(PlaylistModelMemberMusicViewParams {
+        canonical_music_ids,
+    })
+    .await
+    {
+        Ok(rows) => Ok(rows),
+        Err(error) => match classify_db_error(&error) {
+            DBError::MissingTable(_) => Ok(vec![]),
+            other => Err(other.into()),
+        },
+    }
+}
+
+async fn load_music_groups_with_parents_for_playback<'a>(
+    music_records: impl IntoIterator<Item = &'a RecordId>,
+) -> Result<HashMap<RecordId, Vec<PlaylistPlaybackCurrentGroupRef>>> {
+    let records = unique_record_ids(music_records);
+    if records.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let rows = match PlaylistMusicGroupView::query(PlaylistMusicGroupViewParams {
+        music_records: records,
+    })
+    .await
+    {
+        Ok(rows) => rows,
+        Err(error) => match classify_db_error(&error) {
+            DBError::MissingTable(_) => return Ok(HashMap::new()),
+            other => return Err(other.into()),
+        },
+    };
+    if rows.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let group_records = unique_record_ids(rows.iter().map(|row| &row.group_record));
+    let parent_rows =
+        match PlaylistGroupParentCollectionView::query(PlaylistGroupParentCollectionViewParams {
+            group_records,
+        })
+        .await
+        {
+            Ok(rows) => rows,
+            Err(error) => match classify_db_error(&error) {
+                DBError::MissingTable(_) => return Ok(HashMap::new()),
+                other => return Err(other.into()),
+            },
+        };
+
+    let mut parents_by_group = HashMap::<RecordId, Vec<PlaylistPlaybackSourceCollectionRef>>::new();
+    for row in parent_rows {
+        parents_by_group.entry(row.group_record).or_default().push(
+            PlaylistPlaybackSourceCollectionRef {
+                record: row.collection_record,
+                owner: CollectionGroupOwner {
+                    name: row.collection_name,
+                    url: row.collection_url,
+                    folder: row.collection_folder.clone(),
+                    last_updated: row.collection_last_updated,
+                    enable_updates: row.collection_enable_updates,
+                },
+                folder: row.collection_folder,
+            },
+        );
+    }
+
+    let mut seen_music_groups = HashSet::<(RecordId, RecordId)>::new();
+    let mut groups_by_music = HashMap::new();
+    for row in rows {
+        if !seen_music_groups.insert((row.music_record.clone(), row.group_record.clone())) {
+            continue;
+        }
+        let Some(parent_collections) = parents_by_group.get(&row.group_record).cloned() else {
+            continue;
+        };
+        groups_by_music
+            .entry(row.music_record)
+            .or_insert_with(Vec::new)
+            .push(PlaylistPlaybackCurrentGroupRef {
+                record: row.group_record,
+                name: row.group_name,
+                url: row.group_url,
+                folder: row.group_folder,
+                parent_collections,
+            });
+    }
+
+    Ok(groups_by_music)
+}
+
+async fn load_excluded_canonical_music_ids(
+    canonical_music_ids: &[String],
+) -> Result<HashSet<String>> {
+    let mut exclude_records = Vec::new();
+    let mut record_by_canonical_id = HashMap::new();
+    for canonical_music_id in canonical_music_ids {
+        let record_key = stable_record_key(canonical_music_id);
+        if record_by_canonical_id
+            .insert(canonical_music_id.clone(), record_key.clone())
+            .is_none()
+        {
+            exclude_records.push(RecordId::new(StoredExclude::table_name(), record_key));
+        }
+    }
+    if exclude_records.is_empty() {
+        return Ok(HashSet::new());
+    }
+
+    let db = get_db()?;
+    let mut result = match db
+        .query("SELECT VALUE id FROM $table WHERE id IN $records;")
+        .bind(("table", Table::from(StoredExclude::table_name())))
+        .bind(("records", exclude_records))
+        .await
+    {
+        Ok(result) => match result.check() {
+            Ok(result) => result,
+            Err(error) => match DBError::from(error) {
+                DBError::MissingTable(_) => return Ok(HashSet::new()),
+                other => return Err(other.into()),
+            },
+        },
+        Err(error) => match classify_db_error(&error.into()) {
+            DBError::MissingTable(_) => return Ok(HashSet::new()),
+            other => return Err(other.into()),
+        },
+    };
+
+    let found_records: Vec<RecordId> = result.take(0)?;
+    let found_record_keys = found_records
+        .iter()
+        .map(|record| record.key.to_sql())
+        .collect::<HashSet<_>>();
+    Ok(record_by_canonical_id
+        .into_iter()
+        .filter_map(|(canonical_music_id, record_key)| {
+            found_record_keys
+                .contains(&record_key)
+                .then_some(canonical_music_id)
+        })
+        .collect())
+}
+
+fn model_member_music_from_row(row: &PlaylistModelMemberMusicView, group: Group) -> Option<Music> {
+    Some(Music {
+        occurrence_id: row.occurrence_id.clone(),
+        name: row.name.clone(),
+        alias: row.alias.clone(),
+        group,
+        canonical_music_id: row.canonical_music_id.clone(),
+        url: row.url.clone(),
+        path: Some(row.path.clone()?),
+        start_ms: row.start_ms,
+        end_ms: row.end_ms,
+        liked: row.liked,
+        loudness_profile: row.loudness_profile,
+    })
+}
+
+fn append_model_member_source(
+    save_root: &Path,
+    model_members: &HashSet<PlaylistPlaybackModelMemberKey>,
+    collection_folder: &str,
+    music: Option<Music>,
+    sources_by_member: &mut HashMap<PlaylistPlaybackModelMemberKey, PlaylistPlaybackTrackSource>,
+) {
+    let Some(music) = music else {
+        return;
+    };
+    let Some(file_path) =
+        resolve_music_file_path(save_root, collection_folder, music.path.as_deref())
+    else {
+        return;
+    };
+    let member = PlaylistPlaybackModelMemberKey {
+        music_url: music.url.clone(),
+        absolute_path: file_path,
+        start_ms: music.start_ms,
+        end_ms: music.end_ms,
+    };
+    if !model_members.contains(&member) || sources_by_member.contains_key(&member) {
+        return;
+    }
+
+    sources_by_member.insert(
+        member,
+        PlaylistPlaybackTrackSource {
+            collection_folder: collection_folder.to_string(),
+            music,
+        },
+    );
 }
 
 async fn append_random_extra_playback_track_sources(
