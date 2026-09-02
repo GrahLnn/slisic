@@ -1526,22 +1526,37 @@ async fn fill_playlist_track_queue(
             return Ok(());
         }
 
-        let active_track = resolve_playlist_playback_queue_anchor(&session, &initial_track).await?;
-        observe_playlist_symbolic_active_track(&playlist_name, &symbolic_session, &active_track)?;
-        let recent_history_snapshot =
-            observe_playlist_playback_recent_history(&recent_history, active_track.clone())?;
-        let queue_has_next = current_session_queue_contains_next(&session, &active_track)?;
+        let Some(resolved_anchor) =
+            resolve_playlist_playback_queue_anchor(&session, &initial_track).await?
+        else {
+            wait_for_playlist_queue_fill_demand(&playlist_name, &session).await?;
+            if !player_service::is_session_current(&session)? {
+                return Ok(());
+            }
+            continue;
+        };
+        observe_playlist_symbolic_active_track(
+            &playlist_name,
+            &symbolic_session,
+            &resolved_anchor.actual_active_track,
+        )?;
+        let recent_history_snapshot = observe_playlist_playback_recent_history(
+            &recent_history,
+            resolved_anchor.actual_active_track.clone(),
+        )?;
+        let queue_anchor = resolved_anchor.queue_anchor;
+        let queue_has_next = current_session_queue_contains_next(&session, &queue_anchor)?;
         let queue_count = player_service::current_session_tracks_snapshot()?.len();
         if should_refresh_playlist_queue_for_anchor_after_startup(
             current_anchor.as_ref(),
-            &active_track,
+            &queue_anchor,
             queue_has_next,
         ) {
             log::info!(
                 target: PLAYLIST_PLAYBACK_LOG_TARGET,
                 "next queue fill refresh started playlist=\"{}\" anchor_title=\"{}\" reason={} queue_count={}",
                 escape_log_value(&playlist_name),
-                escape_log_value(&active_track.music_name),
+                escape_log_value(&queue_anchor.music_name),
                 if queue_has_next {
                     "anchor_changed"
                 } else {
@@ -1553,7 +1568,7 @@ async fn fill_playlist_track_queue(
                 "playlist-playback-queue-fill-refresh-start",
                 PlaylistPlaybackTrace::new(&app)
                     .playlist_name(&playlist_name)
-                    .track(&active_track)
+                    .track(&queue_anchor)
                     .queue_count(queue_count)
                     .status(if queue_has_next {
                         "anchor_changed"
@@ -1562,14 +1577,14 @@ async fn fill_playlist_track_queue(
                     }),
             );
             let _guard = queue_refresh_gate.lock().await;
-            if current_session_queue_contains_next(&session, &active_track)? {
+            if current_session_queue_contains_next(&session, &queue_anchor)? {
                 log::info!(
                     target: PLAYLIST_PLAYBACK_LOG_TARGET,
                     "next queue fill refresh skipped playlist=\"{}\" anchor_title=\"{}\" reason=next_ready_after_gate",
                     escape_log_value(&playlist_name),
-                    escape_log_value(&active_track.music_name)
+                    escape_log_value(&queue_anchor.music_name)
                 );
-                current_anchor = Some(active_track);
+                current_anchor = Some(queue_anchor);
                 tokio::time::sleep(std::time::Duration::from_millis(
                     PLAYLIST_PLAYBACK_QUEUE_REFRESH_INTERVAL_MS,
                 ))
@@ -1580,7 +1595,7 @@ async fn fill_playlist_track_queue(
                 &app,
                 &playlist_name,
                 &session,
-                active_track.clone(),
+                queue_anchor.clone(),
                 &recent_history_snapshot,
                 true,
                 &symbolic_session,
@@ -1591,7 +1606,7 @@ async fn fill_playlist_track_queue(
                     target: PLAYLIST_PLAYBACK_LOG_TARGET,
                     "next queue fill worker stopped playlist=\"{}\" reason=no_distinct_next anchor_title=\"{}\"",
                     escape_log_value(&playlist_name),
-                    escape_log_value(&active_track.music_name)
+                    escape_log_value(&queue_anchor.music_name)
                 );
                 let _ = player_service::mark_session_queue_terminal(&session)?;
                 return Ok(());
@@ -1601,28 +1616,28 @@ async fn fill_playlist_track_queue(
                     target: PLAYLIST_PLAYBACK_LOG_TARGET,
                     "next queue fill refresh retried playlist=\"{}\" anchor_title=\"{}\" reason=stale_anchor",
                     escape_log_value(&playlist_name),
-                    escape_log_value(&active_track.music_name)
+                    escape_log_value(&queue_anchor.music_name)
                 );
                 emit_playlist_playback_trace(
                     "playlist-playback-queue-fill-refresh-retry",
                     PlaylistPlaybackTrace::new(&app)
                         .playlist_name(&playlist_name)
-                        .track(&active_track)
+                        .track(&queue_anchor)
                         .status("stale_anchor"),
                 );
                 continue;
             }
             if should_seed_playlist_next_from_prepared_pool(current_session_queue_contains_next(
                 &session,
-                &active_track,
+                &queue_anchor,
             )?) && seed_playlist_session_next_from_prepared_pool(
                 &app,
                 &playlist_name,
                 &session,
-                &active_track,
+                &queue_anchor,
                 &recent_history_snapshot,
             )? {
-                current_anchor = Some(active_track);
+                current_anchor = Some(queue_anchor);
                 tokio::time::sleep(std::time::Duration::from_millis(
                     PLAYLIST_PLAYBACK_QUEUE_REFRESH_INTERVAL_MS,
                 ))
@@ -1633,8 +1648,8 @@ async fn fill_playlist_track_queue(
                 target: PLAYLIST_PLAYBACK_LOG_TARGET,
                 "next queue fill refresh finished playlist=\"{}\" anchor_title=\"{}\" status={} queue_count={}",
                 escape_log_value(&playlist_name),
-                escape_log_value(&active_track.music_name),
-                if current_session_queue_contains_next(&session, &active_track)? {
+                escape_log_value(&queue_anchor.music_name),
+                if current_session_queue_contains_next(&session, &queue_anchor)? {
                     "next_ready"
                 } else {
                     "next_missing"
@@ -1645,20 +1660,20 @@ async fn fill_playlist_track_queue(
                 "playlist-playback-queue-fill-refresh-finished",
                 PlaylistPlaybackTrace::new(&app)
                     .playlist_name(&playlist_name)
-                    .track(&active_track)
+                    .track(&queue_anchor)
                     .queue_count(player_service::current_session_tracks_snapshot()?.len())
                     .status(
-                        if current_session_queue_contains_next(&session, &active_track)? {
+                        if current_session_queue_contains_next(&session, &queue_anchor)? {
                             "next_ready"
                         } else {
                             "next_missing"
                         },
                     ),
             );
-            current_anchor = Some(active_track.clone());
+            current_anchor = Some(queue_anchor.clone());
         }
 
-        if current_session_queue_contains_next(&session, &active_track)? {
+        if current_session_queue_contains_next(&session, &queue_anchor)? {
             wait_for_playlist_queue_fill_demand(&playlist_name, &session).await?;
         } else {
             tokio::time::sleep(std::time::Duration::from_millis(
@@ -1813,13 +1828,20 @@ async fn refresh_playlist_tracks_until_downloads_finish(
             playlist_selection_has_active_downloads(&source.selection).await?;
 
         if !source.resolution.tracks.is_empty() {
-            let current_track =
-                resolve_playlist_playback_queue_anchor(&session, &initial_track).await?;
+            let Some(resolved_anchor) =
+                resolve_playlist_playback_queue_anchor(&session, &initial_track).await?
+            else {
+                if !has_relevant_active_downloads {
+                    return Ok(());
+                }
+                continue;
+            };
             observe_playlist_symbolic_active_track(
                 &playlist_name,
                 &symbolic_session,
-                &current_track,
+                &resolved_anchor.actual_active_track,
             )?;
+            let current_track = resolved_anchor.queue_anchor;
             if !should_refresh_playlist_queue_for_same_anchor(current_session_queue_contains_next(
                 &session,
                 &current_track,
@@ -1829,8 +1851,10 @@ async fn refresh_playlist_tracks_until_downloads_finish(
                 }
                 continue;
             }
-            let recent_history_snapshot =
-                observe_playlist_playback_recent_history(&recent_history, current_track.clone())?;
+            let recent_history_snapshot = observe_playlist_playback_recent_history(
+                &recent_history,
+                resolved_anchor.actual_active_track,
+            )?;
             let _guard = queue_refresh_gate.lock().await;
             if !should_refresh_playlist_queue_for_same_anchor(current_session_queue_contains_next(
                 &session,
@@ -2348,27 +2372,52 @@ fn observe_playlist_symbolic_active_track(
     Ok(())
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct ResolvedPlaylistPlaybackQueueAnchor {
+    pub(crate) queue_anchor: PlaybackTrack,
+    pub(crate) actual_active_track: PlaybackTrack,
+}
+
+pub(crate) fn resolve_playlist_playback_queue_anchor_from_active_track(
+    initial_track: &PlaybackTrack,
+    actual_active_track: PlaybackTrack,
+    active_track_is_excluded: bool,
+) -> ResolvedPlaylistPlaybackQueueAnchor {
+    let queue_anchor = if active_track_is_excluded {
+        initial_track.clone()
+    } else {
+        actual_active_track.clone()
+    };
+    ResolvedPlaylistPlaybackQueueAnchor {
+        queue_anchor,
+        actual_active_track,
+    }
+}
+
 #[cfg(not(test))]
 async fn resolve_playlist_playback_queue_anchor(
     session: &player_service::PlaybackSessionHandle,
     initial_track: &PlaybackTrack,
-) -> Result<PlaybackTrack> {
+) -> Result<Option<ResolvedPlaylistPlaybackQueueAnchor>> {
     let Some(active_track) = player_service::active_request_track_snapshot_for_session(session)?
     else {
-        return Ok(initial_track.clone());
+        return Ok(None);
     };
 
-    if playlist_repo::is_music_identity_excluded_for_playback(
+    let active_track_is_excluded = playlist_repo::is_music_identity_excluded_for_playback(
         &active_track.music_url,
         active_track.start_ms,
         active_track.end_ms,
     )
-    .await?
-    {
-        return Ok(initial_track.clone());
-    }
+    .await?;
 
-    Ok(active_track)
+    Ok(Some(
+        resolve_playlist_playback_queue_anchor_from_active_track(
+            initial_track,
+            active_track,
+            active_track_is_excluded,
+        ),
+    ))
 }
 
 #[cfg(not(test))]

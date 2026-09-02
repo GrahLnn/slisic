@@ -15,8 +15,10 @@ use super::service::{
     playlist_selection_has_relevant_active_downloads, playlist_track_needs_loudness_evidence,
     prepared_first_track_can_replace_excluded_current,
     propose_playlist_playback_queue_without_audio_style_model, propose_random_queue_after_exclude,
-    resolve_playlist_playback_continuation_mode, resolve_playlist_playback_source_resolution,
-    should_commit_playlist_queue_refresh, should_refresh_playlist_queue_for_anchor_after_startup,
+    resolve_playlist_playback_continuation_mode,
+    resolve_playlist_playback_queue_anchor_from_active_track,
+    resolve_playlist_playback_source_resolution, should_commit_playlist_queue_refresh,
+    should_refresh_playlist_queue_for_anchor_after_startup,
     should_refresh_playlist_queue_for_same_anchor, should_retry_playlist_queue_fill_after_refresh,
     should_seed_playlist_next_from_prepared_pool, should_stop_playlist_queue_fill_after_refresh,
     shuffle_playback_tracks, wait_for_playlist_queue_fill_revision_or_poll,
@@ -1025,6 +1027,26 @@ fn playlist_queue_fill_refreshes_when_anchor_changes_even_if_queue_has_next() {
         &next,
         true,
     ));
+}
+
+#[test]
+fn playlist_queue_anchor_preserves_actual_observation_when_active_track_is_excluded() {
+    let initial = playback_track("initial");
+    let actual = playback_track("actual");
+
+    let normal =
+        resolve_playlist_playback_queue_anchor_from_active_track(&initial, actual.clone(), false);
+    assert_eq!(normal.queue_anchor.music_url, actual.music_url);
+    assert_eq!(normal.actual_active_track.music_url, actual.music_url);
+
+    let excluded =
+        resolve_playlist_playback_queue_anchor_from_active_track(&initial, actual.clone(), true);
+    assert_eq!(excluded.queue_anchor.music_url, initial.music_url);
+    assert_eq!(excluded.actual_active_track.music_url, actual.music_url);
+    assert_ne!(
+        excluded.queue_anchor.music_url,
+        excluded.actual_active_track.music_url
+    );
 }
 
 #[test]
