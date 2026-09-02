@@ -7180,7 +7180,7 @@ impl AudioStyleSymbolicPlaybackSession {
         )
         .map_err(|error| error.to_string())?;
         let next_local = list.order[0];
-        let coverage_epoch = execution.state.coverage_epoch(0).unwrap_or_default();
+        let coverage_epoch = list.next_state.coverage_epoch(0).unwrap_or_default();
         let materializations = execution
             .materializations
             .get(next_local)
