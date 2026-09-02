@@ -1,6 +1,6 @@
 [package]
 name = "Slisic"
-version = "2.1.7"
+version = "2.1.8"
 description = "A Tauri App"
 authors = ["GrahLnn"]
 license = ""
