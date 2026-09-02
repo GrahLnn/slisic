@@ -1374,9 +1374,10 @@ async fn wait_for_playlist_initial_track_and_start_queue(
             .status("updated"),
     );
 
-    let recent_history = Arc::new(Mutex::new(
-        PlaylistPlaybackRecentHistory::from_initial_track(initial.track.clone()),
-    ));
+    // This path only placed the first slot in the player queue. Leave history
+    // empty until the queue worker observes that track as the active request,
+    // so temporal memory records an audible start rather than queue admission.
+    let recent_history = Arc::new(Mutex::new(PlaylistPlaybackRecentHistory::default()));
     let queue_refresh_gate = Arc::new(tokio::sync::Mutex::new(()));
     let symbolic_session = new_playlist_symbolic_playback_session(&playlist_name)?;
     spawn_playlist_track_queue_fill(
