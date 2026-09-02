@@ -40,6 +40,9 @@ use surrealdb::types::{RecordId, Table};
 use surrealdb_types::SurrealValue;
 use tokio::runtime::Runtime;
 
+#[path = "first_slot_snapshot.test.rs"]
+mod first_slot_snapshot_test;
+
 static DB_TEST_RT: LazyLock<Runtime> =
     LazyLock::new(|| Runtime::new().expect("playlist repo test runtime should be created"));
 

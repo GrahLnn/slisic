@@ -8824,3 +8824,7 @@ fn playback_track_source_music_from_track(track: &PlaybackTrack) -> Music {
 pub(crate) fn audio_style_training_path_is_transient_for_test(path: &Path) -> bool {
     audio_style_training_path_is_transient(path)
 }
+
+#[cfg(test)]
+#[path = "native_scoped_position.test.rs"]
+mod native_scoped_position_test;
