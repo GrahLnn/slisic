@@ -154,25 +154,29 @@ fn exhausted_unread_successors_fail_closed() {
 #[test]
 fn neural_adaptation_forms_local_chunks_then_preserves_complete_coverage() {
     let mut atlas = NeuralProgramAtlas {
-        track_count: 8,
-        candidate_count: 8,
+        track_count: 4,
+        candidate_count: 4,
         programs: vec![ProgramMorphism {
             lineage: "program:alternating".to_string(),
             presentation_ordinals: vec![0],
-            successors: vec![1, 2, 3, 4, 5, 6, 7, 0],
+            successors: vec![1, 2, 3, 0],
             boundary_sources: Vec::new(),
         }],
     };
-    let neighbors = (0..8).flat_map(|_| 0..8).collect::<Vec<_>>();
-    let acoustic_basins = [0, 1, 0, 1, 0, 1, 0, 1];
-    let source_collections = [0, 1, 0, 1, 0, 1, 0, 1];
+    let neighbors = (0..4).flat_map(|_| 0..4).collect::<Vec<_>>();
+    let acoustic_basins = [0, 1, 0, 1];
+    let source_collections = [0, 1, 0, 1];
     let original = atlas.programs[0].successors.clone();
 
+    // This is the smallest finite restriction that exercises an accepted local
+    // chunk splice while retaining the independently reconstructed fatigue
+    // ceiling. The generation-163 ANN consumer is covered separately by its
+    // opt-in real-model receipt, not by this synthetic carrier restriction.
     assert!(
         form_neural_adaptation_cycle(
             &mut atlas,
             &neighbors,
-            &track_keys(8),
+            &track_keys(4),
             &acoustic_basins,
             &source_collections,
         )
@@ -182,7 +186,7 @@ fn neural_adaptation_forms_local_chunks_then_preserves_complete_coverage() {
     let formed = &atlas.programs[0].successors;
     assert_eq!(successor_cycle_count(formed), 1);
     assert!(formed.iter().enumerate().all(|(source, destination)| {
-        neighbors[source * 8..(source + 1) * 8].contains(destination)
+        neighbors[source * 4..(source + 1) * 4].contains(destination)
     }));
     let local_edges = |successors: &[usize]| {
         successors
@@ -197,8 +201,41 @@ fn neural_adaptation_forms_local_chunks_then_preserves_complete_coverage() {
 
     let orbits = compile_program_orbit_index(&atlas).unwrap();
     let initial = initialize_traversal_state(&atlas, &[0]).unwrap();
-    let list = execute_program_list(&atlas, &orbits, 7, &initial).unwrap();
-    assert_eq!(list.next_state.realized_tracks(0), Some((0..8).collect()));
+    let list = execute_program_list(&atlas, &orbits, 3, &initial).unwrap();
+    assert_eq!(list.next_state.realized_tracks(0), Some((0..4).collect()));
+}
+
+#[test]
+fn neural_adaptation_rejects_local_chunks_beyond_ungated_ceiling() {
+    let mut atlas = NeuralProgramAtlas {
+        track_count: 8,
+        candidate_count: 8,
+        programs: vec![ProgramMorphism {
+            lineage: "program:alternating".to_string(),
+            presentation_ordinals: vec![0],
+            successors: vec![1, 2, 3, 4, 5, 6, 7, 0],
+            boundary_sources: Vec::new(),
+        }],
+    };
+    let neighbors = (0..8).flat_map(|_| 0..8).collect::<Vec<_>>();
+    let acoustic_basins = [0, 1, 0, 1, 0, 1, 0, 1];
+    let source_collections = [0, 1, 0, 1, 0, 1, 0, 1];
+    let original = atlas.clone();
+
+    // The normal-assisted candidate gains local edges and meets recovery, but
+    // its maximum local run is four while the ungated ceiling is three. The
+    // public formation gate must reject it without mutating the atlas.
+    assert!(
+        !form_neural_adaptation_cycle(
+            &mut atlas,
+            &neighbors,
+            &track_keys(8),
+            &acoustic_basins,
+            &source_collections,
+        )
+        .unwrap()
+    );
+    assert_eq!(atlas, original);
 }
 
 #[test]

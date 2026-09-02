@@ -14,10 +14,112 @@ use super::recommendation::{
 use crate::domain::player::model::PlaybackTrack;
 use crate::domain::playlists::model::{AudioStyleTrainingTrackInput, LoudnessProfile};
 use crate::domain::playlists::repo::{PlaylistPlaybackGroupRef, PlaylistPlaybackSelection};
+use serde::Deserialize;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 const TEST_EMBEDDING_WIDTH: usize = 64 * 2 + 64 * 2 + 64 * 64;
+
+#[derive(Debug, Clone, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd)]
+struct NativeStableTrackKey {
+    music_url: String,
+    file_path: String,
+    start_ms: u32,
+    end_ms: u32,
+}
+
+#[derive(Debug, Deserialize)]
+struct NativeStableIndexedTracksDocument {
+    generation: u64,
+    state: NativeStableIndexedTracksState,
+}
+
+#[derive(Debug, Deserialize)]
+struct NativeStableIndexedTracksState {
+    indexed_tracks: Vec<NativeStableIndexedTrack>,
+    #[serde(default)]
+    content_classes: Vec<NativeStableContentClass>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NativeStableIndexedTrack {
+    key: NativeStableTrackKey,
+    track: NativeStableTrack,
+}
+
+#[derive(Debug, Deserialize)]
+struct NativeStableContentClass {
+    #[allow(dead_code)]
+    key: String,
+    members: Vec<NativeStableTrackKey>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NativeStableTrack {
+    playlist_name: String,
+    music_name: String,
+    canonical_music_id: String,
+    music_url: String,
+    file_path: String,
+    start_ms: u32,
+    end_ms: u32,
+    liked: bool,
+    #[serde(default)]
+    loudness_profile: Option<LoudnessProfile>,
+}
+
+impl NativeStableTrack {
+    fn key(&self) -> NativeStableTrackKey {
+        NativeStableTrackKey {
+            music_url: self.music_url.clone(),
+            file_path: self.file_path.clone(),
+            start_ms: self.start_ms,
+            end_ms: self.end_ms,
+        }
+    }
+
+    fn into_playback_track(self) -> PlaybackTrack {
+        PlaybackTrack {
+            playlist_name: self.playlist_name,
+            music_name: self.music_name,
+            canonical_music_id: self.canonical_music_id,
+            music_url: self.music_url,
+            file_path: PathBuf::from(self.file_path),
+            start_ms: self.start_ms,
+            end_ms: self.end_ms,
+            source_music: None,
+            liked: self.liked,
+            loudness_profile: self.loudness_profile,
+        }
+    }
+}
+
+fn native_playback_track_key(track: &PlaybackTrack) -> NativeStableTrackKey {
+    NativeStableTrackKey {
+        music_url: track.music_url.clone(),
+        file_path: track.file_path.to_string_lossy().into_owned(),
+        start_ms: track.start_ms,
+        end_ms: track.end_ms,
+    }
+}
+
+fn native_stable_indexed_tracks_projection(
+    path: &std::path::Path,
+) -> NativeStableIndexedTracksDocument {
+    let bytes = std::fs::read(path).unwrap_or_else(|error| {
+        panic!(
+            "generation-163 native coverage input `{}` should be readable: {error}",
+            path.display()
+        )
+    });
+    serde_json::from_slice(&bytes).unwrap_or_else(|error| {
+        panic!(
+            "generation-163 native coverage input `{}` should expose indexed tracks: {error}",
+            path.display()
+        )
+    })
+}
 
 fn track(name: &str) -> PlaybackTrack {
     PlaybackTrack {
@@ -1070,6 +1172,550 @@ fn stable_model_refreshes_derived_symbolic_encoding_without_audio_reencoding() {
     );
 
     let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+#[ignore = "requires SLISIC_AUDIO_STYLE_GENERATION163_STABLE_JSON and runs bounded native playback"]
+fn native_generation163_continuous_playback_covers_every_indexed_track() {
+    const INPUT_ENV: &str = "SLISIC_AUDIO_STYLE_GENERATION163_STABLE_JSON";
+    const EXPECTED_GENERATION: u64 = 163;
+    const EXPECTED_INDEXED_TRACKS: usize = 3_585;
+    const EXPECTED_CONTENT_CLASSES: usize = 3_306;
+    const BOUNDARY_CLASS_ORDINAL: usize = 27;
+    const ANCHOR_CLASS_ORDINAL: usize = 1_832;
+    const CONTROL_CLASS_ORDINAL: usize = 1;
+    const CALIBRATION_EVENTS: usize = 256;
+
+    let input_path = std::env::var_os(INPUT_ENV)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| panic!("{INPUT_ENV} must be set when this ignored test is invoked"));
+    assert!(
+        input_path.is_file(),
+        "{INPUT_ENV} must point to the read-only stable JSON: {}",
+        input_path.display()
+    );
+
+    // This is an independent thin projection of indexed_tracks[].track.  It is
+    // intentionally read separately from the production stable-model loader so
+    // the expected concrete universe does not come from emitted playback data.
+    let projection_started = Instant::now();
+    let independent = native_stable_indexed_tracks_projection(&input_path);
+    let projection_elapsed = projection_started.elapsed();
+    assert_eq!(independent.generation, EXPECTED_GENERATION);
+    assert_eq!(
+        independent.state.indexed_tracks.len(),
+        EXPECTED_INDEXED_TRACKS,
+        "generation-163 indexed_tracks cardinality is part of the independent input domain"
+    );
+    assert_eq!(
+        independent.state.content_classes.len(),
+        EXPECTED_CONTENT_CLASSES,
+        "generation-163 content-class presentation must be present for the independent bound"
+    );
+
+    let classes = independent.state.content_classes;
+    let mut expected_tracks = Vec::with_capacity(independent.state.indexed_tracks.len());
+    let mut expected_keys = BTreeSet::new();
+    for indexed in independent.state.indexed_tracks {
+        let derived_key = indexed.track.key();
+        assert_eq!(
+            indexed.key, derived_key,
+            "indexed track key must agree with all four coordinates of indexed_tracks[].track"
+        );
+        assert!(
+            expected_keys.insert(derived_key),
+            "indexed_tracks must not contain duplicate concrete TrackKeys"
+        );
+        expected_tracks.push(indexed.track.into_playback_track());
+    }
+    assert_eq!(expected_keys.len(), EXPECTED_INDEXED_TRACKS);
+
+    // The content-class presentation is a separate finite description of the
+    // same concrete carrier.  Its union is checked before any native execution.
+    let mut presented_keys = BTreeSet::new();
+    let mut presented_member_count = 0_usize;
+    for class in &classes {
+        assert!(
+            !class.members.is_empty(),
+            "content classes must have members"
+        );
+        presented_member_count += class.members.len();
+        for member in &class.members {
+            assert!(
+                expected_keys.contains(member),
+                "content-class member must belong to indexed_tracks concrete universe"
+            );
+            assert!(
+                presented_keys.insert(member.clone()),
+                "content-class presentation must assign each concrete TrackKey once"
+            );
+        }
+    }
+    assert_eq!(presented_member_count, EXPECTED_INDEXED_TRACKS);
+    assert_eq!(presented_keys, expected_keys);
+
+    let boundary_class = classes
+        .get(BOUNDARY_CLASS_ORDINAL)
+        .expect("known epoch-phase boundary class 27 should exist");
+    let boundary_keys = boundary_class
+        .members
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        boundary_keys.len(),
+        2,
+        "known epoch-phase boundary class 27 is the two-member counterexample"
+    );
+
+    // Class 1 is the independent size-36 control for the conservative
+    // member-rotor bound.  Starting from an arbitrary concrete member needs
+    // one extra complete epoch, hence max_members + 1 rather than max_members.
+    let control_member_count = classes
+        .get(CONTROL_CLASS_ORDINAL)
+        .map(|class| class.members.len())
+        .expect("known size-36 control class 1 should exist");
+    assert_eq!(control_member_count, 36);
+    let max_member_count = classes
+        .iter()
+        .map(|class| class.members.len())
+        .max()
+        .expect("content-class presentation must be nonempty");
+    assert_eq!(max_member_count, 36);
+    let required_complete_epochs = max_member_count + 1;
+
+    // Independent member-rotor law: for every class size m and every starting
+    // phase j, the residues (k + j) mod m over m complete epochs are a
+    // permutation of all m members.  This assertion does not inspect native
+    // output and therefore cannot turn producer self-coverage into a witness.
+    for class in &classes {
+        let member_count = class.members.len();
+        let expected_residues = (0..member_count).collect::<BTreeSet<_>>();
+        for start_phase in 0..member_count {
+            let residues = (0..member_count)
+                .map(|epoch| (epoch + start_phase) % member_count)
+                .collect::<BTreeSet<_>>();
+            assert_eq!(
+                residues, expected_residues,
+                "member-rotor residues must be bijective for every content-class phase"
+            );
+        }
+    }
+
+    let anchor_key = NativeStableTrackKey {
+        music_url: "https://www.youtube.com/watch?v=c0jZ7sPyouE".to_string(),
+        file_path: r"C:\Users\admin\Documents\slisic\youtube/【Liyue Chapter OST】Jade Moon Upon a Sea of Clouds\Jade Moon Upon a Sea of Clouds - Disc 2- Shimmering Sea of Clouds and Moonlight｜Genshin Impact.m4a".to_string(),
+        start_ms: 1_960_000,
+        end_ms: 2_029_000,
+    };
+    let anchor_class = classes
+        .iter()
+        .position(|class| class.members.contains(&anchor_key))
+        .expect("known anchor should belong to an independent content class");
+    assert_eq!(anchor_class, ANCHOR_CLASS_ORDINAL);
+    let anchor_index = expected_tracks
+        .iter()
+        .position(|track| native_playback_track_key(track) == anchor_key)
+        .expect("known anchor should be present in indexed_tracks[].track");
+    let anchor = expected_tracks[anchor_index].clone();
+
+    let loader_started = Instant::now();
+    let snapshot = read_audio_style_stable_model_for_test(&input_path)
+        .expect("production stable loader should read the fixed generation-163 input");
+    let loader_elapsed = loader_started.elapsed();
+    assert_eq!(snapshot.generation(), EXPECTED_GENERATION);
+    let symbolic_class_count = snapshot
+        .symbolic_track_count()
+        .expect("generation-163 stable model should contain an executable symbolic encoding");
+    assert_eq!(symbolic_class_count, EXPECTED_CONTENT_CLASSES);
+    assert_eq!(
+        symbolic_class_count,
+        classes.len(),
+        "production scope and independent content-class presentation must share the class domain"
+    );
+
+    // The bound counts the initial concrete anchor as the first event.  The
+    // native loop therefore emits one fewer proposal and still observes
+    // exactly 37 * 3306 concrete events including that anchor.
+    let total_event_bound = required_complete_epochs
+        .checked_mul(symbolic_class_count)
+        .expect("bounded native event count should fit usize");
+    let proposal_bound = total_event_bound
+        .checked_sub(1)
+        .expect("the initial anchor must leave at least one proposal in the bound");
+    let mut session = AudioStyleSymbolicPlaybackSession::default();
+    let mut current = anchor.clone();
+    let initial_recent = vec![anchor.clone()];
+    let mut observed_keys = BTreeSet::new();
+    observed_keys.insert(native_playback_track_key(&anchor));
+    let mut observed_boundary_keys = BTreeSet::new();
+    if boundary_keys.contains(&anchor_key) {
+        observed_boundary_keys.insert(anchor_key.clone());
+    }
+    let mut coverage_epoch_transitions = 0_usize;
+    let traversal_started = Instant::now();
+    let mut scope_elapsed = None;
+    let mut calibration_elapsed = None;
+
+    for event_index in 0..proposal_bound {
+        let proposal_started = Instant::now();
+        let recent = if event_index == 0 {
+            initial_recent.as_slice()
+        } else {
+            &[]
+        };
+        let proposal = session
+            .propose_next(&snapshot, &current, &expected_tracks, recent)
+            .unwrap_or_else(|error| {
+                panic!(
+                    "native generation-163 proposal failed at event {}: {error}",
+                    event_index + 1
+                )
+            });
+        if event_index == 0 {
+            scope_elapsed = Some(proposal_started.elapsed());
+        }
+        if proposal.coverage_epoch_transition {
+            coverage_epoch_transitions += 1;
+        }
+
+        let proposed_key = native_playback_track_key(&proposal.track);
+        assert!(
+            expected_keys.contains(&proposed_key),
+            "native proposal must remain inside independently derived concrete TrackKey universe"
+        );
+        observed_keys.insert(proposed_key.clone());
+        if boundary_keys.contains(&proposed_key) {
+            observed_boundary_keys.insert(proposed_key);
+        }
+
+        assert_eq!(
+            session
+                .observe_active_track(&proposal.track)
+                .expect("observing the actual active proposal should commit it"),
+            AudioStyleSymbolicPendingObservationOutcome::Committed,
+            "native active-track observation must commit each proposal"
+        );
+        current = proposal.track;
+
+        if event_index + 1 == CALIBRATION_EVENTS {
+            calibration_elapsed = Some(traversal_started.elapsed());
+            eprintln!(
+                "[generation163-native] calibration events={} scope_ms={} elapsed_ms={} events_per_sec={:.1}",
+                CALIBRATION_EVENTS,
+                scope_elapsed
+                    .expect("first proposal should record scope formation")
+                    .as_millis(),
+                calibration_elapsed
+                    .expect("calibration boundary should record elapsed time")
+                    .as_millis(),
+                CALIBRATION_EVENTS as f64
+                    / calibration_elapsed
+                        .expect("calibration boundary should record elapsed time")
+                        .as_secs_f64()
+            );
+        }
+    }
+
+    let traversal_elapsed = traversal_started.elapsed();
+    let missing = expected_keys
+        .difference(&observed_keys)
+        .take(8)
+        .cloned()
+        .collect::<Vec<_>>();
+    let extra = observed_keys
+        .difference(&expected_keys)
+        .take(8)
+        .cloned()
+        .collect::<Vec<_>>();
+    assert!(
+        missing.is_empty(),
+        "native continuous playback missed {} concrete TrackKeys (sample: {:?})",
+        expected_keys.len().saturating_sub(observed_keys.len()),
+        missing
+    );
+    assert!(
+        extra.is_empty(),
+        "native playback emitted out-of-domain keys: {extra:?}"
+    );
+    assert_eq!(
+        observed_keys.len(),
+        expected_keys.len(),
+        "the independently derived concrete universe must be fully observed"
+    );
+    assert_eq!(
+        observed_boundary_keys, boundary_keys,
+        "epoch-phase counterexample class 27 must expose both concrete members even when class coverage passes"
+    );
+    assert!(
+        coverage_epoch_transitions <= required_complete_epochs,
+        "coverage transition count must remain within the independently derived epoch bound"
+    );
+    assert_eq!(
+        proposal_bound + 1,
+        total_event_bound,
+        "initial anchor plus native proposals must equal the bounded event domain"
+    );
+
+    eprintln!(
+        "[generation163-native] generation={} indexed_tracks={} content_classes={} max_members={} total_events={} proposals={} coverage_transitions={} projection_ms={} loader_ms={} scope_ms={} calibration_ms={} traversal_ms={}",
+        snapshot.generation(),
+        expected_keys.len(),
+        symbolic_class_count,
+        max_member_count,
+        total_event_bound,
+        proposal_bound,
+        coverage_epoch_transitions,
+        projection_elapsed.as_millis(),
+        loader_elapsed.as_millis(),
+        scope_elapsed
+            .expect("first proposal should record scope formation")
+            .as_millis(),
+        calibration_elapsed
+            .expect("calibration boundary should record elapsed time")
+            .as_millis(),
+        traversal_elapsed.as_millis(),
+    );
+}
+
+#[test]
+#[ignore = "requires SLISIC_AUDIO_STYLE_GENERATION163_STABLE_JSON and runs bounded native playback"]
+fn native_generation163_first_three_multi_member_classes_follow_independent_epoch_materialization()
+{
+    const INPUT_ENV: &str = "SLISIC_AUDIO_STYLE_GENERATION163_STABLE_JSON";
+    const EXPECTED_GENERATION: u64 = 163;
+    const EXPECTED_INDEXED_TRACKS: usize = 3_585;
+    const EXPECTED_CONTENT_CLASSES: usize = 3_306;
+    const CLASS_COUNT: usize = 3;
+    const EXPECTED_CLASS_MEMBER_COUNTS: [usize; CLASS_COUNT] = [3, 36, 2];
+    const EXPECTED_SUBSET_TRACKS: usize = 41;
+
+    let input_path = std::env::var_os(INPUT_ENV)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| panic!("{INPUT_ENV} must be set when this ignored test is invoked"));
+    assert!(
+        input_path.is_file(),
+        "{INPUT_ENV} must point to the read-only stable JSON: {}",
+        input_path.display()
+    );
+
+    // Build the expected three-class domain from a thin projection of the
+    // same stable input.  Production output is never used to define this
+    // carrier or its member order.
+    let independent = native_stable_indexed_tracks_projection(&input_path);
+    assert_eq!(independent.generation, EXPECTED_GENERATION);
+    assert_eq!(
+        independent.state.indexed_tracks.len(),
+        EXPECTED_INDEXED_TRACKS,
+        "generation-163 indexed_tracks cardinality is part of the independent input domain"
+    );
+    assert_eq!(
+        independent.state.content_classes.len(),
+        EXPECTED_CONTENT_CLASSES,
+        "generation-163 content-class presentation must be present for the independent bound"
+    );
+
+    let NativeStableIndexedTracksState {
+        indexed_tracks,
+        content_classes,
+    } = independent.state;
+    let classes = content_classes
+        .into_iter()
+        .take(CLASS_COUNT)
+        .map(|class| {
+            let mut members = class.members;
+            members.sort();
+            members
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(classes.len(), CLASS_COUNT);
+    for (class_ordinal, (members, expected_count)) in
+        classes.iter().zip(EXPECTED_CLASS_MEMBER_COUNTS).enumerate()
+    {
+        assert_eq!(
+            members.len(),
+            expected_count,
+            "fixed native three-class restriction changed class {class_ordinal} cardinality"
+        );
+        assert!(
+            members.len() > 1,
+            "the focused native restriction must contain only multi-member classes"
+        );
+    }
+
+    let mut source_class_map = BTreeMap::<NativeStableTrackKey, (usize, usize)>::new();
+    let mut expected_keys = BTreeSet::new();
+    for (class_ordinal, members) in classes.iter().enumerate() {
+        for (member_ordinal, key) in members.iter().enumerate() {
+            assert!(
+                expected_keys.insert(key.clone()),
+                "independent class presentation must not duplicate a concrete TrackKey"
+            );
+            assert_eq!(
+                source_class_map.insert(key.clone(), (class_ordinal, member_ordinal)),
+                None,
+                "independent source-class map must assign each concrete TrackKey once"
+            );
+        }
+    }
+    assert_eq!(expected_keys.len(), EXPECTED_SUBSET_TRACKS);
+
+    let mut selected_tracks = BTreeMap::<NativeStableTrackKey, PlaybackTrack>::new();
+    for indexed in indexed_tracks {
+        let derived_key = indexed.track.key();
+        assert_eq!(
+            indexed.key, derived_key,
+            "indexed track key must agree with all four coordinates of indexed_tracks[].track"
+        );
+        if expected_keys.contains(&derived_key) {
+            assert!(
+                selected_tracks
+                    .insert(derived_key, indexed.track.into_playback_track())
+                    .is_none(),
+                "independent indexed-track projection must not duplicate a selected TrackKey"
+            );
+        }
+    }
+    assert_eq!(selected_tracks.len(), EXPECTED_SUBSET_TRACKS);
+    let candidates = selected_tracks.values().cloned().collect::<Vec<_>>();
+    let anchors = classes
+        .iter()
+        .map(|members| {
+            selected_tracks
+                .get(&members[0])
+                .cloned()
+                .expect("every selected class member must have indexed track metadata")
+        })
+        .collect::<Vec<_>>();
+
+    let snapshot = read_audio_style_stable_model_for_test(&input_path)
+        .expect("production stable loader should read the fixed generation-163 input");
+    assert_eq!(snapshot.generation(), EXPECTED_GENERATION);
+    assert_eq!(
+        snapshot
+            .symbolic_track_count()
+            .expect("generation-163 stable model should contain an executable symbolic encoding"),
+        EXPECTED_CONTENT_CLASSES
+    );
+
+    let max_member_count = EXPECTED_CLASS_MEMBER_COUNTS
+        .into_iter()
+        .max()
+        .expect("focused class domain must be nonempty");
+    // The initial anchor is event 0.  The bounded native loop therefore
+    // observes exactly (max_members + 1) * class_count concrete events.
+    let total_event_bound = (max_member_count + 1)
+        .checked_mul(CLASS_COUNT)
+        .expect("bounded native event count should fit usize");
+    let proposal_bound = total_event_bound
+        .checked_sub(1)
+        .expect("the initial anchor must leave at least one proposal in the bound");
+
+    for (anchor_class_ordinal, anchor) in anchors.iter().enumerate() {
+        let mut session = AudioStyleSymbolicPlaybackSession::default();
+        let mut current = anchor.clone();
+        let initial_recent = vec![anchor.clone()];
+        let mut observed_keys = BTreeSet::new();
+        observed_keys.insert(native_playback_track_key(anchor));
+        let mut first_wrong_boundary = None::<String>;
+        let mut violation_count = 0_usize;
+        let mut violation_samples = Vec::<String>::new();
+
+        for proposal_index in 0..proposal_bound {
+            let event_ordinal = proposal_index + 1;
+            let recent = if proposal_index == 0 {
+                initial_recent.as_slice()
+            } else {
+                &[]
+            };
+            let proposal = match session.propose_next(&snapshot, &current, &candidates, recent) {
+                Ok(proposal) => proposal,
+                Err(error) => {
+                    violation_count += 1;
+                    if violation_samples.len() < 8 {
+                        violation_samples.push(format!(
+                            "anchor_class={anchor_class_ordinal} event={event_ordinal} proposal failed: {error}"
+                        ));
+                    }
+                    break;
+                }
+            };
+
+            let proposed_key = native_playback_track_key(&proposal.track);
+            observed_keys.insert(proposed_key.clone());
+            let boundary = event_ordinal % CLASS_COUNT == 0;
+            if let Some((class_ordinal, member_ordinal)) =
+                source_class_map.get(&proposed_key).copied()
+            {
+                let member_count = classes[class_ordinal].len();
+                let postepoch = event_ordinal / CLASS_COUNT;
+                let expected_member_ordinal = (postepoch + class_ordinal) % member_count;
+                if member_ordinal != expected_member_ordinal {
+                    violation_count += 1;
+                    let message = format!(
+                        "anchor_class={anchor_class_ordinal} event={event_ordinal} postepoch={postepoch} class={class_ordinal} expected_member={} actual_member={} expected_key={:?} actual_key={proposed_key:?}",
+                        expected_member_ordinal,
+                        member_ordinal,
+                        classes[class_ordinal][expected_member_ordinal],
+                    );
+                    if boundary && first_wrong_boundary.is_none() {
+                        first_wrong_boundary = Some(message.clone());
+                    }
+                    if violation_samples.len() < 8 {
+                        violation_samples.push(message);
+                    }
+                }
+            } else {
+                violation_count += 1;
+                let message = format!(
+                    "anchor_class={anchor_class_ordinal} event={event_ordinal} emitted out-of-domain key={proposed_key:?}"
+                );
+                if boundary && first_wrong_boundary.is_none() {
+                    first_wrong_boundary = Some(message.clone());
+                }
+                if violation_samples.len() < 8 {
+                    violation_samples.push(message);
+                }
+            }
+
+            if session.observe_active_track(&proposal.track)
+                != Ok(AudioStyleSymbolicPendingObservationOutcome::Committed)
+            {
+                violation_count += 1;
+                if violation_samples.len() < 8 {
+                    violation_samples.push(format!(
+                        "anchor_class={anchor_class_ordinal} event={event_ordinal} active proposal did not commit"
+                    ));
+                }
+            }
+            current = proposal.track;
+
+            // Complete class-period boundaries are marked above for the
+            // independent member check; which class is chosen next remains
+            // production-owned and is intentionally not prescribed here.
+        }
+
+        let missing = expected_keys
+            .difference(&observed_keys)
+            .take(8)
+            .cloned()
+            .collect::<Vec<_>>();
+        let extra = observed_keys
+            .difference(&expected_keys)
+            .take(8)
+            .cloned()
+            .collect::<Vec<_>>();
+        assert!(
+            missing.is_empty() && extra.is_empty() && observed_keys.len() == expected_keys.len(),
+            "native three-class coverage failed for anchor class {anchor_class_ordinal}: missing={missing:?} extra={extra:?} observed={} expected={} first_wrong_boundary={first_wrong_boundary:?} violations={violation_count} samples={violation_samples:?}",
+            observed_keys.len(),
+            expected_keys.len(),
+        );
+        assert_eq!(
+            violation_count, 0,
+            "native three-class epoch materialization failed for anchor class {anchor_class_ordinal}: missing={missing:?} extra={extra:?} first_wrong_boundary={first_wrong_boundary:?} samples={violation_samples:?}"
+        );
+    }
 }
 
 #[test]
