@@ -1,6 +1,6 @@
 use super::recommendation::{
     AUDIO_STYLE_EMBEDDING_VERSION_FOR_TEST, AudioStyleEmbeddingCache, AudioStyleModelSnapshot,
-    AudioStyleSymbolicPlaybackSession,
+    AudioStyleSymbolicPendingObservationOutcome, AudioStyleSymbolicPlaybackSession,
     acknowledge_audio_style_pending_training_input_file_for_test, audio_style_intervals_for_test,
     audio_style_training_inputs_covered_by_snapshot_for_test,
     audio_style_training_path_is_transient_for_test, audio_style_transition_fingerprint_for_test,
@@ -13,6 +13,7 @@ use super::recommendation::{
 };
 use crate::domain::player::model::PlaybackTrack;
 use crate::domain::playlists::model::{AudioStyleTrainingTrackInput, LoudnessProfile};
+use crate::domain::playlists::repo::{PlaylistPlaybackGroupRef, PlaylistPlaybackSelection};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -210,6 +211,136 @@ fn symbolic_playback_session_commits_and_rolls_back_program_state() {
     session
         .commit_proposal()
         .expect("continued proposal should commit");
+}
+
+#[test]
+fn symbolic_active_observation_commits_only_the_proposed_track() {
+    let tracks = (0..6)
+        .map(|index| track(&format!("active-observation-{index}")))
+        .collect::<Vec<_>>();
+    let snapshot = AudioStyleModelSnapshot::from_test_embeddings(
+        90,
+        tracks
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(index, track)| (track, dense_embedding(&[(index, 1.0)]))),
+    );
+
+    let mut pending = AudioStyleSymbolicPlaybackSession::default();
+    let prepared = pending
+        .propose_next(&snapshot, &tracks[0], &tracks, &[])
+        .expect("symbolic proposal should prepare");
+    assert_eq!(
+        pending
+            .observe_active_track(&tracks[0])
+            .expect("anchor observation should be accepted"),
+        AudioStyleSymbolicPendingObservationOutcome::StillPending
+    );
+    assert!(
+        pending
+            .propose_next(&snapshot, &tracks[0], &tracks, &[])
+            .is_err(),
+        "the anchor must not consume a queued proposal"
+    );
+
+    let other = tracks
+        .iter()
+        .find(|candidate| {
+            candidate.music_url != tracks[0].music_url
+                && candidate.music_url != prepared.track.music_url
+        })
+        .expect("the symbolic fixture should have an unrelated track");
+    let mut rolled_back = AudioStyleSymbolicPlaybackSession::default();
+    let prepared_again = rolled_back
+        .propose_next(&snapshot, &tracks[0], &tracks, &[])
+        .expect("symbolic proposal should prepare for rollback");
+    assert_eq!(
+        rolled_back
+            .observe_active_track(other)
+            .expect("unrelated active track should be observed"),
+        AudioStyleSymbolicPendingObservationOutcome::RolledBack
+    );
+    let replayed = rolled_back
+        .propose_next(&snapshot, &tracks[0], &tracks, &[])
+        .expect("rollback should restore the committed execution");
+    assert_eq!(prepared_again.track.music_url, replayed.track.music_url);
+
+    let mut committed = AudioStyleSymbolicPlaybackSession::default();
+    let proposed = committed
+        .propose_next(&snapshot, &tracks[0], &tracks, &[])
+        .expect("symbolic proposal should prepare for commit");
+    assert_eq!(
+        committed
+            .observe_active_track(&proposed.track)
+            .expect("proposed active track should be observed"),
+        AudioStyleSymbolicPendingObservationOutcome::Committed
+    );
+    committed
+        .propose_next(&snapshot, &proposed.track, &tracks, &[])
+        .expect("a committed proposal should advance the execution");
+}
+
+#[test]
+fn symbolic_snapshot_materializes_complete_selected_member_sources() {
+    let tracks = (0..4)
+        .map(|index| track(&format!("materialized-member-{index}")))
+        .collect::<Vec<_>>();
+    let non_model_track = track("non-model-source");
+    let snapshot = AudioStyleModelSnapshot::from_test_acoustic_indexed_embeddings(
+        163,
+        tracks.iter().cloned().enumerate().map(|(index, track)| {
+            (
+                track,
+                dense_embedding(&[(index, 1.0)]),
+                Some(if index < 2 {
+                    "shared-content".to_string()
+                } else {
+                    format!("content-{index}")
+                }),
+                None,
+            )
+        }),
+    );
+    let selection = PlaylistPlaybackSelection {
+        playlist_name: "Focus".to_string(),
+        collections: vec![],
+        groups: vec![PlaylistPlaybackGroupRef::new_for_test(
+            "Model Sources",
+            "",
+            "model",
+        )],
+        extra: vec![],
+        download_scopes: vec![],
+    };
+
+    let sources = snapshot.symbolic_playlist_track_sources_for_selection(&selection);
+    let source_urls = sources
+        .iter()
+        .map(|source| source.music.url.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(sources.len(), tracks.len());
+    assert!(source_urls.contains(&tracks[0].music_url.as_str()));
+    assert!(source_urls.contains(&tracks[1].music_url.as_str()));
+    assert!(!source_urls.contains(&non_model_track.music_url.as_str()));
+
+    let outside_selection = PlaylistPlaybackSelection {
+        playlist_name: "Focus".to_string(),
+        collections: vec![],
+        groups: vec![PlaylistPlaybackGroupRef::new_for_test(
+            "Other Sources",
+            "https://example.com/other",
+            "other",
+        )],
+        extra: vec![],
+        download_scopes: vec![],
+    };
+    assert!(
+        snapshot
+            .symbolic_playlist_track_sources_for_selection(&outside_selection)
+            .is_empty(),
+        "symbolic materialization must remain inside the playlist selection"
+    );
 }
 
 #[test]

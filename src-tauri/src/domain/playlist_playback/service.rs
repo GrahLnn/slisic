@@ -28,10 +28,10 @@ use crate::domain::playlist_playback::recommendation::recommendation_candidate_a
 #[cfg(not(test))]
 use crate::domain::playlist_playback::recommendation::{
     AudioStyleCandidateSelection, AudioStyleModelSnapshot, AudioStyleSymbolicNextTrack,
-    AudioStyleSymbolicPlaybackSession, initialize_audio_style_recommendation_runtime,
-    notify_audio_style_library_inputs_changed, notify_audio_style_music_input_changed,
-    notify_audio_style_training_inputs_ready, published_audio_style_model_snapshot,
-    published_audio_style_model_snapshots_for_anchor,
+    AudioStyleSymbolicPendingObservationOutcome, AudioStyleSymbolicPlaybackSession,
+    initialize_audio_style_recommendation_runtime, notify_audio_style_library_inputs_changed,
+    notify_audio_style_music_input_changed, notify_audio_style_training_inputs_ready,
+    published_audio_style_model_snapshot, published_audio_style_model_snapshots_for_anchor,
 };
 #[cfg(not(test))]
 use crate::domain::playlist_playback::temporal_memory::PlaylistPlaybackTemporalMemory;
@@ -1363,7 +1363,6 @@ async fn wait_for_playlist_initial_track_and_start_queue(
     if !player_service::update_session_tracks(&session, tracks.clone())? {
         return Err(player_service::PlaybackStartRequestSuperseded.into());
     }
-    observe_playlist_playback_temporal_memory(&initial.track);
     consume_playlist_initial_prepared_source(&Some(initial.prepared_source));
     emit_playlist_playback_trace(
         "playlist-play-backend-first-slot-session-update",
@@ -1527,6 +1526,7 @@ async fn fill_playlist_track_queue(
         }
 
         let active_track = resolve_playlist_playback_queue_anchor(&session, &initial_track).await?;
+        observe_playlist_symbolic_active_track(&playlist_name, &symbolic_session, &active_track)?;
         let recent_history_snapshot =
             observe_playlist_playback_recent_history(&recent_history, active_track.clone())?;
         let queue_has_next = current_session_queue_contains_next(&session, &active_track)?;
@@ -1814,6 +1814,11 @@ async fn refresh_playlist_tracks_until_downloads_finish(
         if !source.resolution.tracks.is_empty() {
             let current_track =
                 resolve_playlist_playback_queue_anchor(&session, &initial_track).await?;
+            observe_playlist_symbolic_active_track(
+                &playlist_name,
+                &symbolic_session,
+                &current_track,
+            )?;
             if !should_refresh_playlist_queue_for_same_anchor(current_session_queue_contains_next(
                 &session,
                 &current_track,
@@ -1940,11 +1945,10 @@ async fn refresh_playlist_track_queue_for_anchor(
         .is_ready()
         .then(|| published_audio_style_model_snapshots_for_anchor(&current_track))
         .unwrap_or_default();
-    let symbolic_scope_limit = snapshots
+    let symbolic_next = if snapshots
         .iter()
-        .filter_map(|snapshot| snapshot.symbolic_track_count())
-        .max();
-    let symbolic_next = if let Some(scope_limit) = symbolic_scope_limit {
+        .any(|snapshot| snapshot.has_symbolic_program_encoding())
+    {
         let candidate_load_started = Instant::now();
         let cached_candidates = {
             let session = symbolic_session
@@ -1957,9 +1961,19 @@ async fn refresh_playlist_track_queue_for_anchor(
         let (candidates, scope_source) = if let Some(candidates) = cached_candidates {
             (candidates, "session_cache")
         } else {
-            let source =
-                load_playlist_track_resolution_window(app, playlist_name, scope_limit).await?;
-            (source.resolution.tracks, "playlist_resolution")
+            let selection = playlist_repo::get_playlist_playback_selection_by_name(playlist_name)
+                .await?
+                .ok_or_else(|| anyhow!("playlist `{playlist_name}` not found"))?;
+            let save_root = meta_service::resolve_save_root(app).await?;
+            let model_sources = snapshots
+                .iter()
+                .flat_map(|snapshot| {
+                    snapshot.symbolic_playlist_track_sources_for_selection(&selection)
+                })
+                .collect::<Vec<_>>();
+            let resolution =
+                resolve_playlist_playback_source_resolution(&selection, model_sources, &save_root);
+            (resolution.tracks, "model_selection")
         };
         let candidate_load_elapsed_ms = candidate_load_started.elapsed().as_millis();
         if scope_source == "session_cache" {
@@ -2165,21 +2179,28 @@ async fn refresh_playlist_track_queue_for_anchor(
     .unwrap_or_else(|| "none".to_string());
     let update_result =
         player_service::update_session_tracks_for_anchor(session, &current_track, tracks);
-    if queue_source == "symbolic_program" {
-        let mut symbolic = symbolic_session
-            .lock()
-            .map_err(|_| anyhow!("symbolic playback session lock poisoned"))?;
-        match &update_result {
-            Ok(true) => symbolic.commit_proposal().map_err(|error| anyhow!(error))?,
-            Ok(false) | Err(_) => symbolic
-                .rollback_proposal()
-                .map_err(|error| anyhow!(error))?,
+    let updated = match update_result {
+        Ok(updated) => {
+            if !updated && queue_source == "symbolic_program" {
+                symbolic_session
+                    .lock()
+                    .map_err(|_| anyhow!("symbolic playback session lock poisoned"))?
+                    .rollback_proposal()
+                    .map_err(|error| anyhow!(error))?;
+            }
+            updated
         }
-    }
-    let updated = update_result?;
-    if updated && queue_source == "symbolic_program" {
-        persist_playlist_symbolic_playback_session(playlist_name, symbolic_session)?;
-    }
+        Err(error) => {
+            if queue_source == "symbolic_program" {
+                symbolic_session
+                    .lock()
+                    .map_err(|_| anyhow!("symbolic playback session lock poisoned"))?
+                    .rollback_proposal()
+                    .map_err(|rollback_error| anyhow!(rollback_error))?;
+            }
+            return Err(error);
+        }
+    };
     if !updated {
         log::info!(
             target: PLAYLIST_PLAYBACK_LOG_TARGET,
@@ -2291,6 +2312,39 @@ fn observe_playlist_playback_recent_history(
         observe_playlist_playback_temporal_memory(&track);
     }
     Ok(snapshot)
+}
+
+#[cfg(not(test))]
+fn observe_playlist_symbolic_active_track(
+    playlist_name: &str,
+    symbolic_session: &SharedAudioStyleSymbolicPlaybackSession,
+    active_track: &PlaybackTrack,
+) -> Result<()> {
+    let outcome = {
+        let mut session = symbolic_session
+            .lock()
+            .map_err(|_| anyhow!("symbolic playback session lock poisoned"))?;
+        session
+            .observe_active_track(active_track)
+            .map_err(|error| anyhow!(error))?
+    };
+
+    match outcome {
+        AudioStyleSymbolicPendingObservationOutcome::Committed => {
+            persist_playlist_symbolic_playback_session(playlist_name, symbolic_session)?;
+        }
+        AudioStyleSymbolicPendingObservationOutcome::RolledBack => {
+            log::info!(
+                target: PLAYLIST_PLAYBACK_LOG_TARGET,
+                "symbolic playlist proposal rolled back after active track observation playlist=\"{}\" active_title=\"{}\"",
+                escape_log_value(playlist_name),
+                escape_log_value(&active_track.music_name),
+            );
+        }
+        AudioStyleSymbolicPendingObservationOutcome::StillPending
+        | AudioStyleSymbolicPendingObservationOutcome::NoPending => {}
+    }
+    Ok(())
 }
 
 #[cfg(not(test))]

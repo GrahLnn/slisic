@@ -14,7 +14,7 @@ use crate::domain::playlists::model::{AudioStyleTrainingTrackInput, LoudnessProf
 use crate::domain::playlists::model::{CollectionGroupOwner, Group, Music};
 #[cfg(test)]
 use crate::domain::playlists::model::{CollectionGroupOwner, Group, Music};
-use crate::domain::playlists::repo::PlaylistPlaybackTrackSource;
+use crate::domain::playlists::repo::{PlaylistPlaybackSelection, PlaylistPlaybackTrackSource};
 #[cfg(not(test))]
 use crate::utils::binaries::{
     ManagedBinary, acquire_managed_binary_usage, wait_for_managed_binary_foreground_release,
@@ -821,11 +821,21 @@ pub(crate) struct AudioStyleSymbolicPlaybackSession {
     scope_dirty: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AudioStyleSymbolicPendingObservationOutcome {
+    NoPending,
+    StillPending,
+    Committed,
+    RolledBack,
+}
+
 #[derive(Clone)]
 struct AudioStyleSymbolicPendingCheckpoint {
     execution: Option<AudioStyleSymbolicPlaylistExecution>,
     scope_revision: Option<u64>,
     scope_dirty: bool,
+    anchor_key: PlaybackTrackKey,
+    proposed_key: PlaybackTrackKey,
 }
 
 #[derive(Clone)]
@@ -6618,6 +6628,35 @@ impl AudioStyleModelSnapshot {
             .map(|encoding| encoding.ordered_keys.len())
     }
 
+    pub(crate) fn has_symbolic_program_encoding(&self) -> bool {
+        self.state.symbolic_program_encoding.is_some()
+    }
+
+    pub(crate) fn symbolic_playlist_track_sources_for_selection(
+        &self,
+        selection: &PlaylistPlaybackSelection,
+    ) -> Vec<PlaylistPlaybackTrackSource> {
+        let Some(encoding) = self.state.symbolic_program_encoding.as_deref() else {
+            return Vec::new();
+        };
+
+        let mut seen = HashSet::new();
+        encoding
+            .member_keys
+            .iter()
+            .flat_map(|members| members.iter())
+            .filter_map(|key| {
+                if !seen.insert(key.clone()) {
+                    return None;
+                }
+                let indexed = self.state.indexed_tracks.get(key)?;
+                selection
+                    .contains_track_source(&indexed.source)
+                    .then(|| indexed.source.clone())
+            })
+            .collect()
+    }
+
     #[cfg(test)]
     pub(crate) fn symbolic_program_signatures_for_test(&self) -> Option<(&str, &str, &str)> {
         let encoding = self.state.symbolic_program_encoding.as_deref()?;
@@ -7157,6 +7196,8 @@ impl AudioStyleSymbolicPlaybackSession {
             execution: self.execution.clone(),
             scope_revision: self.scope_revision,
             scope_dirty: self.scope_dirty,
+            anchor_key: current_key,
+            proposed_key: PlaybackTrackKey::from_track(&track),
         }));
         self.execution = Some(execution);
         Ok(AudioStyleSymbolicNextTrack {
@@ -7164,6 +7205,30 @@ impl AudioStyleSymbolicPlaybackSession {
             style_sector_departure: list.style_sector_departures[0],
             coverage_epoch_transition: list.coverage_epoch_transitions[0],
         })
+    }
+
+    pub(crate) fn observe_active_track(
+        &mut self,
+        active_track: &PlaybackTrack,
+    ) -> Result<AudioStyleSymbolicPendingObservationOutcome, String> {
+        let Some((anchor_key, proposed_key)) = self.pending_checkpoint.as_ref().map(|checkpoint| {
+            (
+                checkpoint.anchor_key.clone(),
+                checkpoint.proposed_key.clone(),
+            )
+        }) else {
+            return Ok(AudioStyleSymbolicPendingObservationOutcome::NoPending);
+        };
+        let active_key = PlaybackTrackKey::from_track(active_track);
+        if active_key == proposed_key {
+            self.commit_proposal()?;
+            Ok(AudioStyleSymbolicPendingObservationOutcome::Committed)
+        } else if active_key == anchor_key {
+            Ok(AudioStyleSymbolicPendingObservationOutcome::StillPending)
+        } else {
+            self.rollback_proposal()?;
+            Ok(AudioStyleSymbolicPendingObservationOutcome::RolledBack)
+        }
     }
 
     pub(crate) fn commit_proposal(&mut self) -> Result<(), String> {
