@@ -1,12 +1,260 @@
 use super::symbolic_program::{
-    NeuralProgramAtlas, NormalFatigueAuxiliary, ProgramMorphism, TraversalExhausted,
-    candidate_neighborhood_overlaps, candidate_relation_from_program_atlas,
-    candidate_relation_signature, close_neural_program_atlas_cycles, compile_neural_program_atlas,
-    compile_program_orbit_index, execute_program_list, form_neural_adaptation_cycle,
+    NeuralProgramAtlas, NormalFatigueAuxiliary, ProgramList, ProgramMorphism, TraversalExhausted,
+    apply_program_transposition, candidate_neighborhood_overlaps,
+    candidate_relation_from_program_atlas, candidate_relation_signature,
+    close_neural_program_atlas_cycles, compile_neural_program_atlas, compile_program_orbit_index,
+    execute_program_list, fatigue_carrier_score_for_test, form_neural_adaptation_cycle,
     initialize_traversal_state, normal_fatigue_auxiliary, ordered_track_key_signature,
     program_encoding_signature, restrict_neural_program_atlas_to_playlist,
-    transport_traversal_state,
+    source_fatigue_allows_transposition, transport_traversal_state,
 };
+
+use serde::Deserialize;
+use std::collections::HashMap;
+use std::time::Instant;
+
+#[derive(Debug, Deserialize)]
+struct NativeRegionCoreFixture {
+    schema: String,
+    package_identity: String,
+    input_identities: HashMap<String, InputIdentity>,
+    expected_domain: Vec<usize>,
+    cycle: Vec<usize>,
+    successors: Vec<usize>,
+    predecessors: Vec<usize>,
+    class_source: Vec<String>,
+    class_basin: Vec<String>,
+    epoch0_basin: Vec<String>,
+    baseline_source_score: FixtureSourceScore,
+    lookup: Vec<[u128; 4]>,
+}
+
+#[derive(Debug, Deserialize)]
+struct InputIdentity {
+    path: String,
+    bytes: u64,
+    sha256: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct FixtureSourceScore {
+    event_count: usize,
+    short_returns: usize,
+    gap_sum: usize,
+    minimum_recovery: usize,
+    recovery_pressures: [u128; 4],
+}
+
+type SourceScoreTuple = (usize, usize, usize, usize, [u128; 4]);
+
+fn score_non_regressed(proposed: SourceScoreTuple, baseline: SourceScoreTuple) -> bool {
+    proposed.0 >= baseline.0
+        && proposed.1 as u128 * baseline.2 as u128 <= baseline.1 as u128 * proposed.2 as u128
+        && proposed
+            .4
+            .iter()
+            .zip(baseline.4)
+            .all(|(pressure, baseline_pressure)| {
+                *pressure * baseline.2 as u128 <= baseline_pressure * proposed.2 as u128
+            })
+}
+
+fn load_native_region_fixture() -> NativeRegionCoreFixture {
+    let fixture: NativeRegionCoreFixture = serde_json::from_str(include_str!(
+        "fixtures/native-region-core-generation163.json"
+    ))
+    .unwrap_or_else(|error| panic!("native-region-core-v4 fixture should be valid JSON: {error}"));
+    assert_eq!(fixture.schema, "slisic.native-region-core-v4.fixture.v1");
+    assert_eq!(fixture.package_identity, "native-region-core-v4");
+    assert_eq!(fixture.cycle.len(), 3_148);
+    assert_eq!(fixture.successors.len(), fixture.cycle.len());
+    assert_eq!(fixture.predecessors.len(), fixture.cycle.len());
+    assert_eq!(fixture.class_source.len(), fixture.cycle.len());
+    assert_eq!(fixture.class_basin.len(), fixture.cycle.len());
+    assert_eq!(fixture.epoch0_basin.len(), fixture.cycle.len());
+    assert_eq!(
+        fixture.expected_domain,
+        (0..fixture.cycle.len()).collect::<Vec<_>>()
+    );
+    let mut sorted_cycle = fixture.cycle.clone();
+    sorted_cycle.sort_unstable();
+    assert_eq!(sorted_cycle, fixture.expected_domain);
+    for position in 0..fixture.cycle.len() {
+        assert_eq!(
+            fixture.successors[fixture.cycle[position]],
+            fixture.cycle[(position + 1) % fixture.cycle.len()]
+        );
+    }
+    for (source, destination) in fixture.successors.iter().copied().enumerate() {
+        assert_eq!(fixture.predecessors[destination], source);
+    }
+    assert_eq!(fixture.lookup.len(), fixture.cycle.len() + 1);
+    let stable = fixture
+        .input_identities
+        .get("stable")
+        .expect("fixture should retain the stable loader identity");
+    assert!(
+        stable
+            .path
+            .ends_with("audio-style-stable-model\\stable.json")
+    );
+    assert_eq!(stable.bytes, 133_038_870);
+    assert_eq!(
+        stable.sha256,
+        "C96FA71CD7C3BBCA81191C2E8BD72956EB2C4329A748D89C5DBA8AC88CC6FAC3"
+    );
+    assert_eq!(
+        fixture.input_identities.get("native").unwrap().bytes,
+        13_229_723
+    );
+    assert_eq!(
+        fixture
+            .input_identities
+            .get("liked_baseline")
+            .unwrap()
+            .bytes,
+        3_938_929
+    );
+    assert_eq!(fixture.input_identities.get("mc").unwrap().bytes, 2_646_309);
+    assert_eq!(fixture.baseline_source_score.event_count, 2_774);
+    assert_eq!(fixture.baseline_source_score.short_returns, 301);
+    assert_eq!(fixture.baseline_source_score.minimum_recovery, 3);
+    assert_eq!(
+        fixture.baseline_source_score.recovery_pressures,
+        [
+            39_045_993_915_806_747,
+            93_217_300_330_119_321,
+            167_125_276_831_151_932,
+            260_389_930_702_108_042
+        ]
+    );
+    fixture
+}
+
+fn fixture_source_ordinals(labels: &[String]) -> Vec<usize> {
+    let mut ids = HashMap::<&str, usize>::new();
+    labels
+        .iter()
+        .map(|label| {
+            let next = ids.len();
+            *ids.entry(label.as_str()).or_insert(next)
+        })
+        .collect()
+}
+
+fn fixture_source_score(fixture: &NativeRegionCoreFixture) -> SourceScoreTuple {
+    (
+        fixture.baseline_source_score.minimum_recovery,
+        fixture.baseline_source_score.short_returns,
+        fixture.baseline_source_score.event_count,
+        fixture.baseline_source_score.gap_sum,
+        fixture.baseline_source_score.recovery_pressures,
+    )
+}
+
+fn cycle_atlas(track_count: usize, boundary_sources: Vec<usize>) -> NeuralProgramAtlas {
+    NeuralProgramAtlas {
+        track_count,
+        candidate_count: track_count,
+        programs: vec![ProgramMorphism {
+            lineage: "program:test-cycle".to_string(),
+            presentation_ordinals: vec![0],
+            successors: (0..track_count)
+                .map(|source| (source + 1) % track_count)
+                .collect(),
+            boundary_sources,
+        }],
+    }
+}
+
+fn two_full_cycle_atlas() -> NeuralProgramAtlas {
+    NeuralProgramAtlas {
+        track_count: 4,
+        candidate_count: 4,
+        programs: vec![
+            ProgramMorphism {
+                lineage: "program:test-cycle-0".to_string(),
+                presentation_ordinals: vec![0],
+                successors: vec![1, 2, 3, 0],
+                boundary_sources: Vec::new(),
+            },
+            ProgramMorphism {
+                lineage: "program:test-cycle-1".to_string(),
+                presentation_ordinals: vec![1],
+                successors: vec![2, 3, 0, 1],
+                boundary_sources: Vec::new(),
+            },
+        ],
+    }
+}
+
+fn native_fixture_atlas(fixture: &NativeRegionCoreFixture) -> NeuralProgramAtlas {
+    NeuralProgramAtlas {
+        track_count: fixture.cycle.len(),
+        candidate_count: fixture.cycle.len(),
+        programs: vec![ProgramMorphism {
+            lineage: "program:native-region-core-v4".to_string(),
+            presentation_ordinals: vec![0],
+            successors: fixture.successors.clone(),
+            boundary_sources: Vec::new(),
+        }],
+    }
+}
+
+fn sigma_for_test(node: usize, left: usize, right: usize) -> usize {
+    if node == left {
+        right
+    } else if node == right {
+        left
+    } else {
+        node
+    }
+}
+
+fn choose_actual_candidate(
+    fixture: &NativeRegionCoreFixture,
+    atlas: &NeuralProgramAtlas,
+    list: &mut ProgramList,
+    source_ordinals: &[usize],
+    distinct_source: Option<bool>,
+    candidate_trials: &mut usize,
+) -> Option<usize> {
+    let planned = list.order[0];
+    let planned_pair = (
+        &fixture.class_basin[planned],
+        &fixture.epoch0_basin[planned],
+    );
+    for candidate in 0..atlas.track_count {
+        *candidate_trials += 1;
+        if candidate == planned
+            || list.next_state.is_track_realized(0, candidate) != Some(false)
+            || (
+                &fixture.class_basin[candidate],
+                &fixture.epoch0_basin[candidate],
+            ) != planned_pair
+            || distinct_source.is_some_and(|want| {
+                (source_ordinals[candidate] != source_ordinals[planned]) != want
+            })
+        {
+            continue;
+        }
+        let program = list.program_ordinals[0];
+        if source_fatigue_allows_transposition(
+            atlas,
+            &mut list.next_state,
+            0,
+            program,
+            planned,
+            candidate,
+            source_ordinals,
+        )
+        .expect("actual source-fatigue candidate should have aligned coordinates")
+        {
+            return Some(candidate);
+        }
+    }
+    None
+}
 
 fn synthetic_relation() -> (Vec<String>, Vec<usize>) {
     (
@@ -421,6 +669,343 @@ fn state_transport_preserves_program_incidence_and_realized_history() {
         resumed.next_state.playback_cycle,
         direct.next_state.playback_cycle
     );
+}
+
+#[test]
+fn native_region_core_v4_initial_cache_matches_old_native_score() {
+    let fixture = load_native_region_fixture();
+    let atlas = native_fixture_atlas(&fixture);
+    let source_ordinals = fixture_source_ordinals(&fixture.class_source);
+    let mut state = initialize_traversal_state(&atlas, &[fixture.cycle[0]]).unwrap();
+
+    let left = fixture.cycle[0];
+    let right = fixture.cycle[1];
+    let _ = source_fatigue_allows_transposition(
+        &atlas,
+        &mut state,
+        0,
+        0,
+        left,
+        right,
+        &source_ordinals,
+    )
+    .unwrap();
+
+    let (_, initial) = state
+        .source_fatigue_baselines_for_test(0)
+        .expect("the first source guard trial should initialize its cache");
+    let expected = fatigue_carrier_score_for_test(&fixture.cycle, &source_ordinals);
+    assert_eq!(expected, fixture_source_score(&fixture));
+    assert_eq!(initial, expected);
+}
+
+#[test]
+fn native_region_core_v4_admitted_actual_swaps_match_old_full_score() {
+    let fixture = load_native_region_fixture();
+    let atlas = native_fixture_atlas(&fixture);
+    let orbit_index = compile_program_orbit_index(&atlas).unwrap();
+    let source_ordinals = fixture_source_ordinals(&fixture.class_source);
+    let initial_score = fixture_source_score(&fixture);
+    let mut state = initialize_traversal_state(&atlas, &[fixture.cycle[0]]).unwrap();
+    let mut same_source_swaps = 0;
+    let mut distinct_source_swaps = 0;
+    let mut accepted_swaps = 0;
+    let mut candidate_trials = 0;
+    let mut core_elapsed_nanos = 0_u128;
+    let started = Instant::now();
+
+    for _ in 0..fixture.cycle.len() {
+        let event_started = Instant::now();
+        let mut list = execute_program_list(&atlas, &orbit_index, 1, &state).unwrap();
+        let prefer_distinct = (distinct_source_swaps == 0).then_some(true);
+        let prefer_same = (same_source_swaps == 0).then_some(false);
+        let candidate = choose_actual_candidate(
+            &fixture,
+            &atlas,
+            &mut list,
+            &source_ordinals,
+            prefer_distinct.or(prefer_same),
+            &mut candidate_trials,
+        )
+        .or_else(|| {
+            choose_actual_candidate(
+                &fixture,
+                &atlas,
+                &mut list,
+                &source_ordinals,
+                None,
+                &mut candidate_trials,
+            )
+        });
+        if let Some(candidate) = candidate {
+            let planned = list.order[0];
+            if source_ordinals[planned] == source_ordinals[candidate] {
+                same_source_swaps += 1;
+            } else {
+                distinct_source_swaps += 1;
+            }
+            apply_program_transposition(&atlas, &orbit_index, &mut list, 0, planned, candidate)
+                .unwrap();
+            state = list.next_state;
+            accepted_swaps += 1;
+            core_elapsed_nanos += event_started.elapsed().as_nanos();
+
+            let cycle = state
+                .source_fatigue_cycle_for_test(0)
+                .expect("an admitted transposition should retain its source cache");
+            assert_eq!(
+                fatigue_carrier_score_for_test(&cycle, &source_ordinals),
+                state
+                    .source_fatigue_baselines_for_test(0)
+                    .expect("source cache should remain available after commit")
+                    .0
+            );
+            assert!(score_non_regressed(
+                fatigue_carrier_score_for_test(&cycle, &source_ordinals),
+                initial_score
+            ));
+            assert_eq!(
+                state.source_fatigue_baselines_for_test(0).unwrap().1,
+                initial_score,
+                "the source baseline must stay fixed across accepted swaps"
+            );
+        } else {
+            state = list.next_state;
+            core_elapsed_nanos += event_started.elapsed().as_nanos();
+        }
+    }
+
+    println!(
+        "native-region-core-v4 full-domain batch: events={} accepted_swaps={} same_source={} distinct_source={} candidate_trials={} core_elapsed_ms={} elapsed_ms={}",
+        fixture.cycle.len(),
+        accepted_swaps,
+        same_source_swaps,
+        distinct_source_swaps,
+        candidate_trials,
+        core_elapsed_nanos / 1_000_000,
+        started.elapsed().as_millis()
+    );
+    assert!(
+        accepted_swaps > 0,
+        "the actual source/basin restriction should admit swaps"
+    );
+    assert!(
+        same_source_swaps > 0,
+        "the actual restriction should include same-source swaps"
+    );
+    assert!(
+        distinct_source_swaps > 0,
+        "the actual restriction should include distinct-source swaps"
+    );
+}
+
+#[test]
+fn adjacent_transposition_conjugates_successors_and_predecessors_from_old_edges() {
+    let atlas = cycle_atlas(7, Vec::new());
+    let orbit_index = compile_program_orbit_index(&atlas).unwrap();
+    let before_orbit_index = orbit_index.clone();
+    let initial = initialize_traversal_state(&atlas, &[0]).unwrap();
+    let mut list = execute_program_list(&atlas, &orbit_index, 1, &initial).unwrap();
+    let before = list.clone();
+    let old_successors = atlas.programs[0].successors.clone();
+    let mut old_predecessors = vec![usize::MAX; old_successors.len()];
+    for (source, destination) in old_successors.iter().copied().enumerate() {
+        old_predecessors[destination] = source;
+    }
+    let left = 1;
+    let right = 2;
+
+    apply_program_transposition(&atlas, &orbit_index, &mut list, 0, left, right).unwrap();
+
+    for source in 0..atlas.track_count {
+        let expected = sigma_for_test(
+            old_successors[sigma_for_test(source, left, right)],
+            left,
+            right,
+        );
+        assert_eq!(
+            list.next_state
+                .effective_successor_for_test(&atlas, 0, 0, source),
+            Some(expected),
+            "successor conjugation mismatch at source {source}"
+        );
+    }
+    for destination in 0..atlas.track_count {
+        let expected = sigma_for_test(
+            old_predecessors[sigma_for_test(destination, left, right)],
+            left,
+            right,
+        );
+        assert_eq!(
+            list.next_state
+                .effective_predecessor_for_test(&atlas, &orbit_index, 0, 0, destination),
+            Some(expected),
+            "predecessor conjugation mismatch at destination {destination}"
+        );
+    }
+    let mut transformed = (0..atlas.track_count)
+        .map(|source| {
+            list.next_state
+                .effective_successor_for_test(&atlas, 0, 0, source)
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    transformed.sort_unstable();
+    assert_eq!(transformed, (0..atlas.track_count).collect::<Vec<_>>());
+    assert_eq!(list.order[0], right);
+    assert_eq!(list.next_state.current_track(0), Some(right));
+    assert_eq!(list.next_state.is_track_realized(0, left), Some(false));
+    assert_eq!(list.next_state.is_track_realized(0, right), Some(true));
+    assert!(list.opportunity_swaps[0]);
+    assert_eq!(orbit_index, before_orbit_index);
+    assert_eq!(
+        before.order[0], left,
+        "the pre-list state remains the rollback state"
+    );
+    assert_eq!(before.next_state.current_track(0), Some(left));
+}
+
+#[test]
+fn native_boundary_transport_uses_sigma_instead_of_acoustic_labels() {
+    let atlas = cycle_atlas(7, vec![1, 4]);
+    let orbit_index = compile_program_orbit_index(&atlas).unwrap();
+    let initial = initialize_traversal_state(&atlas, &[0]).unwrap();
+    let mut list = execute_program_list(&atlas, &orbit_index, 1, &initial).unwrap();
+    apply_program_transposition(&atlas, &orbit_index, &mut list, 0, 1, 2).unwrap();
+
+    for source in 0..atlas.track_count {
+        let expected = [2, 4].contains(&source);
+        assert_eq!(
+            list.next_state
+                .effective_boundary_source_for_test(&atlas, 0, 0, source),
+            Some(expected),
+            "boundary membership must be transported through sigma at source {source}"
+        );
+    }
+}
+
+#[test]
+fn fresh_program_departure_stays_style_marked_after_a_swap() {
+    let atlas = residence_departure_atlas();
+    let orbit_index = compile_program_orbit_index(&atlas).unwrap();
+    let initial = initialize_traversal_state(&atlas, &[0]).unwrap();
+    let first = execute_program_list(&atlas, &orbit_index, 1, &initial).unwrap();
+    let departure = execute_program_list(&atlas, &orbit_index, 1, &first.next_state).unwrap();
+
+    assert_eq!(departure.order, vec![4]);
+    assert_eq!(departure.program_ordinals, vec![2]);
+    assert!(departure.departures[0]);
+    assert!(departure.style_sector_departures[0]);
+    assert_eq!(departure.next_state.active_program(0), Some(2));
+
+    let mut swapped = departure;
+    apply_program_transposition(&atlas, &orbit_index, &mut swapped, 0, 4, 3).unwrap();
+    assert!(swapped.style_sector_departures[0]);
+    assert!(swapped.opportunity_swaps[0]);
+}
+
+#[test]
+fn fresh_departure_reads_the_conjugated_successor_before_selecting_a_program() {
+    let atlas = residence_departure_atlas();
+    let orbit_index = compile_program_orbit_index(&atlas).unwrap();
+    let initial = initialize_traversal_state(&atlas, &[0]).unwrap();
+    let first = execute_program_list(&atlas, &orbit_index, 1, &initial).unwrap();
+    let mut swapped = first;
+
+    apply_program_transposition(&atlas, &orbit_index, &mut swapped, 0, 1, 4).unwrap();
+    assert_eq!(swapped.next_state.current_track(0), Some(4));
+    assert_eq!(
+        swapped
+            .next_state
+            .effective_successor_for_test(&atlas, 0, 0, 4),
+        Some(0),
+        "the overlay must make the active successor repeat before fresh departure"
+    );
+
+    let departure = execute_program_list(&atlas, &orbit_index, 1, &swapped.next_state).unwrap();
+    assert!(departure.departures[0]);
+    assert_ne!(departure.program_ordinals[0], 0);
+    assert!(departure.style_sector_departures[0]);
+}
+
+#[test]
+fn same_atlas_reanchor_retains_overlay_cache_and_coverage_entry_clears_both() {
+    let atlas = cycle_atlas(4, Vec::new());
+    let orbit_index = compile_program_orbit_index(&atlas).unwrap();
+    let initial = initialize_traversal_state(&atlas, &[0]).unwrap();
+    let first = execute_program_list(&atlas, &orbit_index, 1, &initial).unwrap();
+    let mut list = first;
+    let source_ordinals = [0; 4];
+    assert!(
+        source_fatigue_allows_transposition(
+            &atlas,
+            &mut list.next_state,
+            0,
+            0,
+            1,
+            2,
+            &source_ordinals,
+        )
+        .unwrap()
+    );
+    apply_program_transposition(&atlas, &orbit_index, &mut list, 0, 1, 2).unwrap();
+    let current = list.next_state.current_track(0).unwrap();
+    let realized = list.next_state.realized_tracks(0).unwrap();
+    let reanchored = transport_traversal_state(
+        Some((&atlas, &list.next_state)),
+        &atlas,
+        &[current],
+        &[realized],
+    )
+    .unwrap();
+    assert_eq!(reanchored.overlay_program_for_test(0), Some(0));
+    assert!(reanchored.has_source_fatigue_cache_for_test(0));
+    assert_eq!(reanchored.playback_cycle, list.next_state.playback_cycle);
+
+    let coverage = execute_program_list(&atlas, &orbit_index, 3, &reanchored).unwrap();
+    assert_eq!(
+        coverage.coverage_epoch_transitions,
+        vec![false, false, true]
+    );
+    assert_eq!(coverage.next_state.overlay_program_for_test(0), None);
+    assert!(!coverage.next_state.has_source_fatigue_cache_for_test(0));
+    assert_eq!(coverage.next_state.coverage_epoch(0), Some(1));
+    assert_eq!(
+        coverage.next_state.playback_cycle,
+        reanchored.playback_cycle + 1
+    );
+}
+
+#[test]
+fn coverage_program_switch_clears_overlay_and_source_cache() {
+    let atlas = two_full_cycle_atlas();
+    let orbit_index = compile_program_orbit_index(&atlas).unwrap();
+    let initial = initialize_traversal_state(&atlas, &[0]).unwrap();
+    let first = execute_program_list(&atlas, &orbit_index, 1, &initial).unwrap();
+    let source_ordinals = [0; 4];
+    let mut cached_state = first.next_state;
+    assert!(
+        source_fatigue_allows_transposition(
+            &atlas,
+            &mut cached_state,
+            0,
+            0,
+            1,
+            2,
+            &source_ordinals,
+        )
+        .unwrap()
+    );
+    assert!(cached_state.has_source_fatigue_cache_for_test(0));
+
+    let coverage = execute_program_list(&atlas, &orbit_index, 3, &cached_state).unwrap();
+    assert_eq!(
+        coverage.coverage_epoch_transitions,
+        vec![false, false, true]
+    );
+    assert_eq!(coverage.next_state.active_program(0), Some(1));
+    assert_eq!(coverage.next_state.overlay_program_for_test(0), None);
+    assert!(!coverage.next_state.has_source_fatigue_cache_for_test(0));
 }
 
 fn track_keys(count: usize) -> Vec<String> {

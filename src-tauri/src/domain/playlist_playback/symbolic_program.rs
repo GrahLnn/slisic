@@ -9,7 +9,9 @@
 #[cfg(test)]
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::ops::Bound::{Excluded, Unbounded};
+use std::sync::Arc;
 
 const FATIGUE_RECOVERY_REBALANCE_STEPS: usize = 64;
 const FATIGUE_RECOVERY_CANDIDATES_PER_STEP: usize = 128;
@@ -74,6 +76,45 @@ pub(crate) struct ProgramOrbitIndex {
     cycle_ids: Vec<Vec<usize>>,
     cycle_masks: Vec<Vec<Vec<u64>>>,
     coverage_successors: Vec<(usize, usize)>,
+    predecessors: Vec<Vec<usize>>,
+}
+
+/// A prepared region opportunity belongs to one path, not to the immutable
+/// model atlas. Keeping only changed edges lets the atlas and its orbit index
+/// stay shared across session clones while a path temporarily conjugates its
+/// active cyclic program.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProgramPathOverlay {
+    program_ordinal: usize,
+    successor_overrides: HashMap<usize, usize>,
+    predecessor_overrides: HashMap<usize, usize>,
+    boundary_sources: Vec<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SourceFatigueAggregate {
+    minimum_recovery: usize,
+    short_returns: usize,
+    event_count: usize,
+    gap_sum: usize,
+    recovery_pressures: [u128; FATIGUE_RECOVERY_DECAY_NUMERATORS.len()],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SourceFatigueCache {
+    program_ordinal: usize,
+    cycle: Vec<usize>,
+    positions_by_track: Vec<usize>,
+    carriers_by_track: Vec<usize>,
+    positions_by_carrier: HashMap<usize, Vec<usize>>,
+    scores_by_carrier: HashMap<usize, FatigueCarrierScore>,
+    minimum_recovery_counts: BTreeMap<usize, usize>,
+    aggregate: SourceFatigueAggregate,
+    /// The score captured before the first accepted transposition on this
+    /// active program. This value is deliberately never replaced by the
+    /// current trial or commit score.
+    initial_aggregate: SourceFatigueAggregate,
+    pressure_lookup: Arc<Vec<[u128; 4]>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,6 +125,8 @@ pub(crate) struct ProgramPathState {
     realized_history: Vec<u64>,
     residence_steps: usize,
     coverage_epoch: usize,
+    overlay: Option<ProgramPathOverlay>,
+    source_fatigue_cache: Option<SourceFatigueCache>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -101,12 +144,129 @@ impl ProgramOwnedTraversalState {
         self.paths.get(path_ordinal).map(|path| path.coverage_epoch)
     }
 
+    pub(crate) fn active_program(&self, path_ordinal: usize) -> Option<usize> {
+        self.paths.get(path_ordinal).map(|path| path.active_program)
+    }
+
+    pub(crate) fn is_track_realized(&self, path_ordinal: usize, track: usize) -> Option<bool> {
+        self.paths
+            .get(path_ordinal)
+            .map(|path| contains_bit(&path.realized_history, track))
+    }
+
     pub(crate) fn realized_tracks(&self, path_ordinal: usize) -> Option<Vec<usize>> {
         self.paths.get(path_ordinal).map(|path| {
             (0..path.realized_history.len() * 64)
                 .filter(|track| contains_bit(&path.realized_history, *track))
                 .collect()
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn source_fatigue_cycle_for_test(&self, path_ordinal: usize) -> Option<Vec<usize>> {
+        self.paths
+            .get(path_ordinal)
+            .and_then(|path| path.source_fatigue_cache.as_ref())
+            .map(|cache| cache.cycle.clone())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn source_fatigue_baselines_for_test(
+        &self,
+        path_ordinal: usize,
+    ) -> Option<(
+        (
+            usize,
+            usize,
+            usize,
+            usize,
+            [u128; FATIGUE_RECOVERY_DECAY_NUMERATORS.len()],
+        ),
+        (
+            usize,
+            usize,
+            usize,
+            usize,
+            [u128; FATIGUE_RECOVERY_DECAY_NUMERATORS.len()],
+        ),
+    )> {
+        self.paths
+            .get(path_ordinal)
+            .and_then(|path| path.source_fatigue_cache.as_ref())
+            .map(|cache| {
+                (
+                    (
+                        cache.aggregate.minimum_recovery,
+                        cache.aggregate.short_returns,
+                        cache.aggregate.event_count,
+                        cache.aggregate.gap_sum,
+                        cache.aggregate.recovery_pressures,
+                    ),
+                    (
+                        cache.initial_aggregate.minimum_recovery,
+                        cache.initial_aggregate.short_returns,
+                        cache.initial_aggregate.event_count,
+                        cache.initial_aggregate.gap_sum,
+                        cache.initial_aggregate.recovery_pressures,
+                    ),
+                )
+            })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_source_fatigue_cache_for_test(&self, path_ordinal: usize) -> bool {
+        self.paths
+            .get(path_ordinal)
+            .is_some_and(|path| path.source_fatigue_cache.is_some())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn overlay_program_for_test(&self, path_ordinal: usize) -> Option<usize> {
+        self.paths
+            .get(path_ordinal)
+            .and_then(|path| path.overlay.as_ref())
+            .map(|overlay| overlay.program_ordinal)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn effective_successor_for_test(
+        &self,
+        atlas: &NeuralProgramAtlas,
+        path_ordinal: usize,
+        program_ordinal: usize,
+        source: usize,
+    ) -> Option<usize> {
+        let path = self.paths.get(path_ordinal)?;
+        (program_ordinal < atlas.programs.len() && source < atlas.track_count)
+            .then(|| effective_successor(atlas, path, program_ordinal, source))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn effective_predecessor_for_test(
+        &self,
+        atlas: &NeuralProgramAtlas,
+        orbit_index: &ProgramOrbitIndex,
+        path_ordinal: usize,
+        program_ordinal: usize,
+        destination: usize,
+    ) -> Option<usize> {
+        let path = self.paths.get(path_ordinal)?;
+        let predecessors = orbit_index.predecessors.get(program_ordinal)?;
+        (program_ordinal < atlas.programs.len() && destination < atlas.track_count)
+            .then(|| effective_predecessor(predecessors, path, program_ordinal, destination))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn effective_boundary_source_for_test(
+        &self,
+        atlas: &NeuralProgramAtlas,
+        path_ordinal: usize,
+        program_ordinal: usize,
+        source: usize,
+    ) -> Option<bool> {
+        let path = self.paths.get(path_ordinal)?;
+        (program_ordinal < atlas.programs.len() && source < atlas.track_count)
+            .then(|| effective_boundary_source(atlas, path, program_ordinal, source))
     }
 }
 
@@ -115,10 +275,12 @@ pub(crate) struct ProgramList {
     pub(crate) path_count: usize,
     pub(crate) tracks_per_list: usize,
     pub(crate) order: Vec<usize>,
+    source_ordinals: Vec<usize>,
     pub(crate) program_ordinals: Vec<usize>,
     pub(crate) departures: Vec<bool>,
     pub(crate) style_sector_departures: Vec<bool>,
     pub(crate) coverage_epoch_transitions: Vec<bool>,
+    pub(crate) opportunity_swaps: Vec<bool>,
     pub(crate) departure_future_overlap: Vec<Option<usize>>,
     pub(crate) next_state: ProgramOwnedTraversalState,
 }
@@ -814,7 +976,9 @@ pub(crate) fn compile_program_orbit_index(
     let word_count = atlas.track_count.div_ceil(64);
     let mut all_cycle_ids = Vec::with_capacity(atlas.programs.len());
     let mut all_cycle_masks = Vec::with_capacity(atlas.programs.len());
+    let mut all_predecessors = Vec::with_capacity(atlas.programs.len());
     for program in &atlas.programs {
+        let predecessors = successor_predecessors(&program.successors)?;
         let mut cycle_ids = vec![usize::MAX; atlas.track_count];
         let mut cycle_masks = Vec::new();
         for root in 0..atlas.track_count {
@@ -841,6 +1005,7 @@ pub(crate) fn compile_program_orbit_index(
         }
         all_cycle_ids.push(cycle_ids);
         all_cycle_masks.push(cycle_masks);
+        all_predecessors.push(predecessors);
     }
     let coverage_successors = atlas
         .programs
@@ -874,6 +1039,7 @@ pub(crate) fn compile_program_orbit_index(
         cycle_ids: all_cycle_ids,
         cycle_masks: all_cycle_masks,
         coverage_successors,
+        predecessors: all_predecessors,
     })
 }
 
@@ -1082,6 +1248,28 @@ fn fatigue_carrier_score(
         gap_sum,
         recovery_pressures,
     }
+}
+
+#[cfg(test)]
+pub(crate) fn fatigue_carrier_score_for_test(
+    cycle: &[usize],
+    carrier_ordinals: &[usize],
+) -> (
+    usize,
+    usize,
+    usize,
+    usize,
+    [u128; FATIGUE_RECOVERY_DECAY_NUMERATORS.len()],
+) {
+    let pressure_lookup = fatigue_pressure_lookup(cycle.len());
+    let score = fatigue_carrier_score(cycle, carrier_ordinals, &pressure_lookup);
+    (
+        score.minimum_recovery,
+        score.short_returns,
+        score.event_count,
+        score.gap_sum,
+        score.recovery_pressures,
+    )
 }
 
 fn fatigue_scores(
@@ -1477,6 +1665,673 @@ fn maximum_common_successor_run(left: &ProgramMorphism, right: &ProgramMorphism)
     maximum
 }
 
+fn sigma_swap(node: usize, left: usize, right: usize) -> usize {
+    if node == left {
+        right
+    } else if node == right {
+        left
+    } else {
+        node
+    }
+}
+
+fn effective_successor(
+    atlas: &NeuralProgramAtlas,
+    path: &ProgramPathState,
+    program_ordinal: usize,
+    source: usize,
+) -> usize {
+    if path
+        .overlay
+        .as_ref()
+        .is_some_and(|overlay| overlay.program_ordinal == program_ordinal)
+    {
+        if let Some(destination) = path
+            .overlay
+            .as_ref()
+            .expect("overlay presence checked")
+            .successor_overrides
+            .get(&source)
+        {
+            return *destination;
+        }
+    }
+    atlas.programs[program_ordinal].successors[source]
+}
+
+fn effective_predecessor(
+    native_predecessors: &[usize],
+    path: &ProgramPathState,
+    program_ordinal: usize,
+    destination: usize,
+) -> usize {
+    if path
+        .overlay
+        .as_ref()
+        .is_some_and(|overlay| overlay.program_ordinal == program_ordinal)
+    {
+        if let Some(source) = path
+            .overlay
+            .as_ref()
+            .expect("overlay presence checked")
+            .predecessor_overrides
+            .get(&destination)
+        {
+            return *source;
+        }
+    }
+    native_predecessors[destination]
+}
+
+fn effective_boundary_source(
+    atlas: &NeuralProgramAtlas,
+    path: &ProgramPathState,
+    program_ordinal: usize,
+    source: usize,
+) -> bool {
+    path.overlay
+        .as_ref()
+        .filter(|overlay| overlay.program_ordinal == program_ordinal)
+        .map(|overlay| overlay.boundary_sources.contains(&source))
+        .unwrap_or_else(|| {
+            atlas.programs[program_ordinal]
+                .boundary_sources
+                .contains(&source)
+        })
+}
+
+fn effective_program_cycle(
+    atlas: &NeuralProgramAtlas,
+    path: &ProgramPathState,
+    program_ordinal: usize,
+) -> Option<Vec<usize>> {
+    let track_count = atlas.track_count;
+    if track_count == 0 || program_ordinal >= atlas.programs.len() {
+        return None;
+    }
+    let mut visited = vec![false; track_count];
+    let mut cycle = Vec::with_capacity(track_count);
+    let mut node = 0;
+    while !visited[node] {
+        visited[node] = true;
+        cycle.push(node);
+        node = effective_successor(atlas, path, program_ordinal, node);
+        if node >= track_count {
+            return None;
+        }
+    }
+    (node == 0 && cycle.len() == track_count).then_some(cycle)
+}
+
+/// Source recovery score with a sparse occupied-position presentation. A
+/// zero gap joins adjacent occurrences into one carrier chunk; the all-carrier
+/// case retains the single zero-gap event used by the native formation law.
+fn fatigue_score_from_positions(
+    cycle_length: usize,
+    positions: &[usize],
+    pressure_lookup: &[[u128; 4]],
+) -> FatigueCarrierScore {
+    if positions.is_empty() || cycle_length == 0 {
+        return FatigueCarrierScore {
+            short_returns: 0,
+            event_count: 0,
+            minimum_recovery: 0,
+            gap_sum: 0,
+            recovery_pressures: [0; FATIGUE_RECOVERY_DECAY_NUMERATORS.len()],
+        };
+    }
+    if positions.len() == cycle_length {
+        return FatigueCarrierScore {
+            short_returns: 1,
+            event_count: 1,
+            minimum_recovery: 0,
+            gap_sum: 0,
+            recovery_pressures: pressure_lookup[0],
+        };
+    }
+
+    let occurrence_count = positions
+        .iter()
+        .zip(positions.iter().cycle().skip(1))
+        .filter_map(|(position, next)| {
+            let gap = (cycle_length + *next - *position - 1) % cycle_length;
+            (gap > 0).then_some(gap)
+        })
+        .collect::<Vec<_>>();
+    let event_count = occurrence_count.len();
+    if event_count == 0 {
+        return FatigueCarrierScore {
+            short_returns: 0,
+            event_count: 0,
+            minimum_recovery: 0,
+            gap_sum: 0,
+            recovery_pressures: [0; FATIGUE_RECOVERY_DECAY_NUMERATORS.len()],
+        };
+    }
+    let mut recovery_pressures = [0_u128; FATIGUE_RECOVERY_DECAY_NUMERATORS.len()];
+    for gap in occurrence_count.iter().copied() {
+        for (target, pressure) in recovery_pressures
+            .iter_mut()
+            .zip(pressure_lookup[gap.min(pressure_lookup.len() - 1)])
+        {
+            *target += pressure;
+        }
+    }
+    let minimum_recovery = occurrence_count
+        .iter()
+        .copied()
+        .min()
+        .unwrap_or_default()
+        .saturating_mul(event_count);
+    FatigueCarrierScore {
+        short_returns: occurrence_count.iter().filter(|gap| **gap <= 2).count(),
+        event_count,
+        minimum_recovery,
+        gap_sum: occurrence_count.iter().sum(),
+        recovery_pressures,
+    }
+}
+
+fn source_fatigue_aggregate(
+    scores: impl IntoIterator<Item = FatigueCarrierScore>,
+) -> SourceFatigueAggregate {
+    let mut minimum_recovery = usize::MAX;
+    let mut short_returns = 0;
+    let mut event_count = 0;
+    let mut gap_sum = 0;
+    let mut recovery_pressures = [0_u128; FATIGUE_RECOVERY_DECAY_NUMERATORS.len()];
+    for score in scores {
+        minimum_recovery = minimum_recovery.min(score.minimum_recovery);
+        short_returns += score.short_returns;
+        event_count += score.event_count;
+        gap_sum += score.gap_sum;
+        for (target, pressure) in recovery_pressures.iter_mut().zip(score.recovery_pressures) {
+            *target += pressure;
+        }
+    }
+    SourceFatigueAggregate {
+        minimum_recovery: if minimum_recovery == usize::MAX {
+            0
+        } else {
+            minimum_recovery
+        },
+        short_returns,
+        event_count,
+        gap_sum,
+        recovery_pressures,
+    }
+}
+
+fn add_minimum_recovery_count(counts: &mut BTreeMap<usize, usize>, minimum_recovery: usize) {
+    *counts.entry(minimum_recovery).or_default() += 1;
+}
+
+fn remove_minimum_recovery_count(counts: &mut BTreeMap<usize, usize>, minimum_recovery: usize) {
+    let Some(count) = counts.get_mut(&minimum_recovery) else {
+        return;
+    };
+    if *count == 1 {
+        counts.remove(&minimum_recovery);
+    } else {
+        *count -= 1;
+    }
+}
+
+fn replace_aggregate_contribution(
+    aggregate: &mut SourceFatigueAggregate,
+    old: &FatigueCarrierScore,
+    proposed: &FatigueCarrierScore,
+) {
+    aggregate.short_returns = aggregate.short_returns - old.short_returns + proposed.short_returns;
+    aggregate.event_count = aggregate.event_count - old.event_count + proposed.event_count;
+    aggregate.gap_sum = aggregate.gap_sum - old.gap_sum + proposed.gap_sum;
+    for (current, (old_pressure, proposed_pressure)) in aggregate.recovery_pressures.iter_mut().zip(
+        old.recovery_pressures
+            .into_iter()
+            .zip(proposed.recovery_pressures),
+    ) {
+        *current = *current - old_pressure + proposed_pressure;
+    }
+}
+
+fn trial_minimum_recovery(
+    cache: &SourceFatigueCache,
+    proposed_scores: &HashMap<usize, FatigueCarrierScore>,
+) -> usize {
+    let current_minimum = cache.aggregate.minimum_recovery;
+    let total_at_current_minimum = cache
+        .minimum_recovery_counts
+        .get(&current_minimum)
+        .copied()
+        .unwrap_or_default();
+    let removed_at_current_minimum = proposed_scores
+        .keys()
+        .filter(|carrier| {
+            cache
+                .scores_by_carrier
+                .get(carrier)
+                .is_some_and(|score| score.minimum_recovery == current_minimum)
+        })
+        .count();
+    let untouched_minimum = if removed_at_current_minimum < total_at_current_minimum {
+        current_minimum
+    } else {
+        cache
+            .minimum_recovery_counts
+            .range((Excluded(current_minimum), Unbounded))
+            .next()
+            .map(|(minimum, _)| *minimum)
+            .unwrap_or(usize::MAX)
+    };
+    let proposed_minimum = proposed_scores
+        .values()
+        .map(|score| score.minimum_recovery)
+        .min()
+        .unwrap_or(usize::MAX);
+    match untouched_minimum.min(proposed_minimum) {
+        usize::MAX => 0,
+        minimum => minimum,
+    }
+}
+
+fn source_fatigue_aggregate_non_regressed(
+    proposed: &SourceFatigueAggregate,
+    baseline: &SourceFatigueAggregate,
+) -> bool {
+    proposed.minimum_recovery >= baseline.minimum_recovery
+        && proposed.short_returns as u128 * baseline.event_count as u128
+            <= baseline.short_returns as u128 * proposed.event_count as u128
+        && proposed
+            .recovery_pressures
+            .iter()
+            .zip(baseline.recovery_pressures)
+            .all(|(pressure, baseline_pressure)| {
+                *pressure * baseline.event_count as u128
+                    <= baseline_pressure * proposed.event_count as u128
+            })
+}
+
+/// Commit the conjugated cycle to the path-owned fatigue cache. The cycle
+/// representation only changes at the two swapped positions; recomputing the
+/// aggregate scans carriers (not the full track cycle) and therefore keeps
+/// the initial baseline independent from accepted proposals.
+fn commit_source_fatigue_cache(
+    atlas: &NeuralProgramAtlas,
+    path: &mut ProgramPathState,
+    program_ordinal: usize,
+    left: usize,
+    right: usize,
+) {
+    let Some(cache) = path.source_fatigue_cache.as_mut() else {
+        return;
+    };
+    if cache.program_ordinal != program_ordinal {
+        return;
+    }
+    let Some(left_position) = cache.positions_by_track.get(left).copied() else {
+        return;
+    };
+    let Some(right_position) = cache.positions_by_track.get(right).copied() else {
+        return;
+    };
+    if left_position == usize::MAX
+        || right_position == usize::MAX
+        || left_position >= cache.cycle.len()
+        || right_position >= cache.cycle.len()
+    {
+        return;
+    }
+
+    let left_carrier = cache.carriers_by_track[left];
+    let right_carrier = cache.carriers_by_track[right];
+    let Some(old_left_score) = cache.scores_by_carrier.get(&left_carrier).cloned() else {
+        return;
+    };
+    let Some(old_right_score) = cache.scores_by_carrier.get(&right_carrier).cloned() else {
+        return;
+    };
+    cache.cycle[left_position] = right;
+    cache.cycle[right_position] = left;
+    cache.positions_by_track[left] = right_position;
+    cache.positions_by_track[right] = left_position;
+
+    if left_carrier == right_carrier {
+        return;
+    }
+    if let Some(positions) = cache.positions_by_carrier.get_mut(&left_carrier) {
+        positions.retain(|position| *position != left_position);
+        positions.push(right_position);
+        positions.sort_unstable();
+    }
+    if let Some(positions) = cache.positions_by_carrier.get_mut(&right_carrier) {
+        positions.retain(|position| *position != right_position);
+        positions.push(left_position);
+        positions.sort_unstable();
+    }
+    let mut new_scores = HashMap::new();
+    for carrier in [left_carrier, right_carrier] {
+        let score = cache
+            .positions_by_carrier
+            .get(&carrier)
+            .map(|positions| {
+                fatigue_score_from_positions(atlas.track_count, positions, &cache.pressure_lookup)
+            })
+            .unwrap_or_else(|| fatigue_score_from_positions(0, &[], &cache.pressure_lookup));
+        new_scores.insert(carrier, score);
+    }
+    remove_minimum_recovery_count(
+        &mut cache.minimum_recovery_counts,
+        old_left_score.minimum_recovery,
+    );
+    remove_minimum_recovery_count(
+        &mut cache.minimum_recovery_counts,
+        old_right_score.minimum_recovery,
+    );
+    let new_left_score = new_scores
+        .get(&left_carrier)
+        .cloned()
+        .expect("left source score should be rebuilt");
+    let new_right_score = new_scores
+        .get(&right_carrier)
+        .cloned()
+        .expect("right source score should be rebuilt");
+    add_minimum_recovery_count(
+        &mut cache.minimum_recovery_counts,
+        new_left_score.minimum_recovery,
+    );
+    add_minimum_recovery_count(
+        &mut cache.minimum_recovery_counts,
+        new_right_score.minimum_recovery,
+    );
+    cache
+        .scores_by_carrier
+        .insert(left_carrier, new_left_score.clone());
+    cache
+        .scores_by_carrier
+        .insert(right_carrier, new_right_score.clone());
+    replace_aggregate_contribution(&mut cache.aggregate, &old_left_score, &new_left_score);
+    replace_aggregate_contribution(&mut cache.aggregate, &old_right_score, &new_right_score);
+    cache.aggregate.minimum_recovery = cache
+        .minimum_recovery_counts
+        .keys()
+        .next()
+        .copied()
+        .unwrap_or(0);
+}
+
+fn build_source_fatigue_cache(
+    atlas: &NeuralProgramAtlas,
+    path: &ProgramPathState,
+    program_ordinal: usize,
+    source_collections: &[usize],
+) -> Result<SourceFatigueCache, String> {
+    if source_collections.len() != atlas.track_count {
+        return Err("source-fatigue carrier coordinates must align with the cycle".to_string());
+    }
+    let cycle = effective_program_cycle(atlas, path, program_ordinal)
+        .ok_or_else(|| "source-fatigue guard requires one complete active cycle".to_string())?;
+    let pressure_lookup = fatigue_pressure_lookup(atlas.track_count);
+    let mut positions_by_carrier = HashMap::<usize, Vec<usize>>::new();
+    for (position, track) in cycle.iter().copied().enumerate() {
+        positions_by_carrier
+            .entry(source_collections[track])
+            .or_default()
+            .push(position);
+    }
+    let scores_by_carrier = positions_by_carrier
+        .iter()
+        .map(|(carrier, positions)| {
+            (
+                *carrier,
+                fatigue_score_from_positions(atlas.track_count, positions, &pressure_lookup),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    let mut minimum_recovery_counts = BTreeMap::new();
+    for score in scores_by_carrier.values() {
+        add_minimum_recovery_count(&mut minimum_recovery_counts, score.minimum_recovery);
+    }
+    let aggregate = source_fatigue_aggregate(scores_by_carrier.values().cloned());
+    let mut positions_by_track = vec![usize::MAX; atlas.track_count];
+    for (position, track) in cycle.iter().copied().enumerate() {
+        positions_by_track[track] = position;
+    }
+    Ok(SourceFatigueCache {
+        program_ordinal,
+        cycle,
+        positions_by_track,
+        carriers_by_track: source_collections.to_vec(),
+        positions_by_carrier,
+        scores_by_carrier,
+        minimum_recovery_counts,
+        initial_aggregate: aggregate.clone(),
+        aggregate,
+        pressure_lookup: Arc::new(pressure_lookup),
+    })
+}
+
+/// Check one active-program transposition against the initial current cycle's
+/// source recovery score. The aggregate baseline is cached on the path before
+/// any candidate is tried; only the two carriers touched by the transposition
+/// are rebuilt for each trial.
+pub(crate) fn source_fatigue_allows_transposition(
+    atlas: &NeuralProgramAtlas,
+    state: &mut ProgramOwnedTraversalState,
+    path_ordinal: usize,
+    program_ordinal: usize,
+    left: usize,
+    right: usize,
+    source_collections: &[usize],
+) -> Result<bool, String> {
+    if left == right {
+        return Ok(true);
+    }
+    if source_collections.len() != atlas.track_count
+        || path_ordinal >= state.paths.len()
+        || program_ordinal >= atlas.programs.len()
+        || left >= atlas.track_count
+        || right >= atlas.track_count
+    {
+        return Err("source-fatigue transposition inputs must align".to_string());
+    }
+    let path = &mut state.paths[path_ordinal];
+    if path.active_program != program_ordinal {
+        return Err("source-fatigue transposition program is not active on the path".to_string());
+    }
+    if path.source_fatigue_cache.as_ref().is_none_or(|cache| {
+        cache.program_ordinal != program_ordinal
+            || cache.carriers_by_track.as_slice() != source_collections
+    }) {
+        path.source_fatigue_cache = Some(build_source_fatigue_cache(
+            atlas,
+            path,
+            program_ordinal,
+            source_collections,
+        )?);
+    }
+    let cache = path
+        .source_fatigue_cache
+        .as_ref()
+        .expect("source-fatigue cache initialized");
+    let left_position = cache
+        .positions_by_track
+        .get(left)
+        .copied()
+        .filter(|position| *position != usize::MAX)
+        .ok_or_else(|| "source-fatigue transposition left class is not in the cycle".to_string())?;
+    let right_position = cache
+        .positions_by_track
+        .get(right)
+        .copied()
+        .filter(|position| *position != usize::MAX)
+        .ok_or_else(|| {
+            "source-fatigue transposition right class is not in the cycle".to_string()
+        })?;
+    let left_carrier = source_collections[left];
+    let right_carrier = source_collections[right];
+    if left_carrier == right_carrier {
+        return Ok(true);
+    }
+
+    let mut proposed_scores = HashMap::<usize, FatigueCarrierScore>::new();
+    for carrier in [left_carrier, right_carrier] {
+        if proposed_scores.contains_key(&carrier) {
+            continue;
+        }
+        let mut positions = cache
+            .positions_by_carrier
+            .get(&carrier)
+            .cloned()
+            .unwrap_or_default();
+        if carrier == left_carrier {
+            positions.retain(|position| *position != left_position);
+            positions.push(right_position);
+        }
+        if carrier == right_carrier {
+            positions.retain(|position| *position != right_position);
+            positions.push(left_position);
+        }
+        positions.sort_unstable();
+        proposed_scores.insert(
+            carrier,
+            fatigue_score_from_positions(atlas.track_count, &positions, &cache.pressure_lookup),
+        );
+    }
+    let mut trial_aggregate = cache.aggregate.clone();
+    for (carrier, proposed) in &proposed_scores {
+        let baseline = cache
+            .scores_by_carrier
+            .get(carrier)
+            .expect("source-fatigue trial carrier should have a cached score");
+        replace_aggregate_contribution(&mut trial_aggregate, baseline, proposed);
+    }
+    trial_aggregate.minimum_recovery = trial_minimum_recovery(cache, &proposed_scores);
+    Ok(source_fatigue_aggregate_non_regressed(
+        &trial_aggregate,
+        &cache.initial_aggregate,
+    ))
+}
+
+/// Apply a prepared swap to one path's active cyclic program and to the
+/// first output slot. This is the sole owner of the mutable program overlay;
+/// callers never replace only the returned concrete track.
+pub(crate) fn apply_program_transposition(
+    atlas: &NeuralProgramAtlas,
+    orbit_index: &ProgramOrbitIndex,
+    list: &mut ProgramList,
+    path_ordinal: usize,
+    left: usize,
+    right: usize,
+) -> Result<(), String> {
+    if left == right {
+        return Ok(());
+    }
+    if path_ordinal >= list.next_state.paths.len()
+        || path_ordinal >= list.path_count
+        || left >= atlas.track_count
+        || right >= atlas.track_count
+    {
+        return Err("program transposition inputs are outside the active path".to_string());
+    }
+    let index = path_ordinal * list.tracks_per_list;
+    if list.order.get(index).copied() != Some(left)
+        || list.next_state.paths[path_ordinal].current_track != left
+    {
+        return Err("program transposition must replace the executed destination".to_string());
+    }
+    let program_ordinal = list.program_ordinals[index];
+    let source_ordinal = list.source_ordinals[index];
+    let native_predecessors = orbit_index
+        .predecessors
+        .get(program_ordinal)
+        .ok_or_else(|| "program transposition has no native predecessor index".to_string())?;
+    let path = &mut list.next_state.paths[path_ordinal];
+    if path.active_program != program_ordinal {
+        return Err("program transposition active program is not the executed program".to_string());
+    }
+    let previous_overlay = path.overlay.clone();
+    let mut overrides = previous_overlay
+        .as_ref()
+        .filter(|overlay| overlay.program_ordinal == program_ordinal)
+        .map(|overlay| overlay.successor_overrides.clone())
+        .unwrap_or_default()
+        .into_iter()
+        .collect::<HashMap<_, _>>();
+    let mut predecessor_overrides = previous_overlay
+        .as_ref()
+        .filter(|overlay| overlay.program_ordinal == program_ordinal)
+        .map(|overlay| overlay.predecessor_overrides.clone())
+        .unwrap_or_default()
+        .into_iter()
+        .collect::<HashMap<_, _>>();
+    let mut affected_sources = vec![left, right];
+    for destination in [left, right] {
+        affected_sources.push(effective_predecessor(
+            native_predecessors,
+            path,
+            program_ordinal,
+            destination,
+        ));
+    }
+    affected_sources.sort_unstable();
+    affected_sources.dedup();
+    for source in affected_sources {
+        let transformed_source = sigma_swap(source, left, right);
+        let old_destination = effective_successor(atlas, path, program_ordinal, transformed_source);
+        let destination = sigma_swap(old_destination, left, right);
+        let native_destination = atlas.programs[program_ordinal].successors[source];
+        if destination == native_destination {
+            overrides.remove(&source);
+        } else {
+            overrides.insert(source, destination);
+        }
+    }
+    let mut affected_destinations = vec![left, right];
+    affected_destinations.extend([
+        effective_successor(atlas, path, program_ordinal, left),
+        effective_successor(atlas, path, program_ordinal, right),
+    ]);
+    affected_destinations.sort_unstable();
+    affected_destinations.dedup();
+    for destination in affected_destinations {
+        let old_destination = sigma_swap(destination, left, right);
+        let old_source =
+            effective_predecessor(native_predecessors, path, program_ordinal, old_destination);
+        let source = sigma_swap(old_source, left, right);
+        let native_source = native_predecessors[destination];
+        if source == native_source {
+            predecessor_overrides.remove(&destination);
+        } else {
+            predecessor_overrides.insert(destination, source);
+        }
+    }
+    let mut boundary_sources = previous_overlay
+        .as_ref()
+        .filter(|overlay| overlay.program_ordinal == program_ordinal)
+        .map(|overlay| overlay.boundary_sources.clone())
+        .unwrap_or_else(|| atlas.programs[program_ordinal].boundary_sources.clone())
+        .into_iter()
+        .map(|source| sigma_swap(source, left, right))
+        .collect::<Vec<_>>();
+    boundary_sources.sort_unstable();
+    boundary_sources.dedup();
+    path.overlay = Some(ProgramPathOverlay {
+        program_ordinal,
+        successor_overrides: overrides,
+        predecessor_overrides,
+        boundary_sources,
+    });
+    commit_source_fatigue_cache(atlas, path, program_ordinal, left, right);
+    clear_bit(&mut path.realized_history, left);
+    set_bit(&mut path.realized_history, right);
+    path.current_track = right;
+    list.order[index] = right;
+    list.style_sector_departures[index] = list.departures[index]
+        || effective_boundary_source(atlas, path, program_ordinal, source_ordinal);
+    list.opportunity_swaps[index] = true;
+    Ok(())
+}
+
 pub(crate) fn initialize_traversal_state(
     atlas: &NeuralProgramAtlas,
     anchors: &[usize],
@@ -1501,6 +2356,8 @@ pub(crate) fn initialize_traversal_state(
                     realized_history: history,
                     residence_steps: 0,
                     coverage_epoch: 0,
+                    overlay: None,
+                    source_fatigue_cache: None,
                 }
             })
             .collect(),
@@ -1549,6 +2406,16 @@ pub(crate) fn transport_traversal_state(
             path.active_program = program;
             path.tie_cursor = (program + 1) % atlas.programs.len();
             path.residence_steps = previous_path.residence_steps;
+            if previous_atlas == atlas {
+                path.overlay = previous_path
+                    .overlay
+                    .clone()
+                    .filter(|overlay| overlay.program_ordinal == program);
+                path.source_fatigue_cache = previous_path
+                    .source_fatigue_cache
+                    .clone()
+                    .filter(|cache| cache.program_ordinal == program);
+            }
         }
         path.coverage_epoch = previous_path.coverage_epoch;
     }
@@ -1564,8 +2431,8 @@ fn select_fresh_departure(
 ) -> Option<(usize, usize, usize)> {
     let mut minimum_overlap = usize::MAX;
     let mut candidates = HashMap::<usize, usize>::new();
-    for (program_ordinal, program) in atlas.programs.iter().enumerate() {
-        let destination = program.successors[state.current_track];
+    for program_ordinal in 0..atlas.programs.len() {
+        let destination = effective_successor(atlas, state, program_ordinal, state.current_track);
         if contains_bit(&state.realized_history, destination) {
             continue;
         }
@@ -1607,26 +2474,40 @@ pub(crate) fn execute_program_list(
     let path_count = state.paths.len();
     let mut next_state = state.clone();
     let mut order = vec![0_usize; path_count * tracks_per_list];
+    let mut source_ordinals = vec![0_usize; order.len()];
     let mut program_ordinals = vec![0_usize; order.len()];
     let mut departures = vec![false; order.len()];
     let mut style_sector_departures = vec![false; order.len()];
     let mut coverage_epoch_transitions = vec![false; order.len()];
+    let opportunity_swaps = vec![false; order.len()];
     let mut departure_future_overlap = vec![None; order.len()];
     for step in 0..tracks_per_list {
         for path_ordinal in 0..path_count {
             let path = &mut next_state.paths[path_ordinal];
+            if path
+                .overlay
+                .as_ref()
+                .is_some_and(|overlay| overlay.program_ordinal != path.active_program)
+            {
+                path.overlay = None;
+                path.source_fatigue_cache = None;
+            }
             let mut program = path.active_program;
-            let mut crosses_style_sector = atlas.programs[program]
-                .boundary_sources
-                .contains(&path.current_track);
-            let mut destination = atlas.programs[program].successors[path.current_track];
+            let source = path.current_track;
+            let mut crosses_style_sector = effective_boundary_source(atlas, path, program, source);
+            let mut destination = effective_successor(atlas, path, program, source);
             let index = path_ordinal * tracks_per_list + step;
+            source_ordinals[index] = source;
             if contains_bit(&path.realized_history, destination) {
                 if let Some((fresh_program, fresh_destination, overlap)) =
                     select_fresh_departure(atlas, orbit_index, path)
                 {
                     program = fresh_program;
                     destination = fresh_destination;
+                    if program != path.active_program {
+                        path.overlay = None;
+                        path.source_fatigue_cache = None;
+                    }
                     crosses_style_sector = true;
                     departures[index] = true;
                     departure_future_overlap[index] = Some(overlap);
@@ -1641,6 +2522,8 @@ pub(crate) fn execute_program_list(
                     }
                     let (coverage_program, encoded_power) =
                         orbit_index.coverage_successors[program];
+                    path.overlay = None;
+                    path.source_fatigue_cache = None;
                     program = coverage_program;
                     let entry_power = if encoded_power == 0 {
                         1 + path.coverage_epoch % (atlas.track_count - 1)
@@ -1673,10 +2556,12 @@ pub(crate) fn execute_program_list(
         path_count,
         tracks_per_list,
         order,
+        source_ordinals,
         program_ordinals,
         departures,
         style_sector_departures,
         coverage_epoch_transitions,
+        opportunity_swaps,
         departure_future_overlap,
         next_state,
     })
@@ -2794,6 +3679,10 @@ fn quantile(values: &[f64], probability: f64) -> f64 {
 
 fn set_bit(bits: &mut [u64], index: usize) {
     bits[index / 64] |= 1_u64 << (index % 64);
+}
+
+fn clear_bit(bits: &mut [u64], index: usize) {
+    bits[index / 64] &= !(1_u64 << (index % 64));
 }
 
 fn contains_bit(bits: &[u64], index: usize) -> bool {
