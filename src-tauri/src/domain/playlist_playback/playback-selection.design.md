@@ -69,11 +69,10 @@ selection, queue planning, recommendation fallback, refresh, and cancellation.
   prepared startup option; they do not replace an unconsumed option.
 - Queue refresh may reduce latency, fill later continuations, or improve
   recommendation quality, but it must not change playlist membership.
-- The symbolic program is the primary route. Production anti-FSRS is a soft
-  guard over the same candidate window: it marks tracks at the FSRS target
-  retention as already familiar, without rebuilding or reweighting the
-  symbolic program. Research probes may disable this guard to expose the
-  structural model's effect.
+- The symbolic program is the primary route. Its candidate universe is the
+  current model's concrete members resolved inside the selected playlist, not
+  the startup sampler's bounded window. Random degradation retains its own
+  bounded candidate window and does not establish symbolic coverage.
 - Queue refresh is driven by anchor consumption or a missing next track. Model
   generation changes, download changes, and repeated ready transitions may
   improve future inputs, but must not replace an already prepared unconsumed
@@ -136,7 +135,7 @@ selection, queue planning, recommendation fallback, refresh, and cancellation.
   serving the queue.
 - If `stable` exists but cannot rank the current anchor in `KeepCurrent` mode,
   the queue planner uses the persistent symbolic traversal session over embedded
-  candidates from the already materialized playlist-scoped candidate window to
+  candidates from the already materialized playlist-scoped model-member scope to
   compose `[current, symbolic_program_next]`.
 - If no stable model exists, or symbolic traversal cannot produce a distinct
   embedded next track, the queue planner uses the already materialized
@@ -147,15 +146,15 @@ selection, queue planning, recommendation fallback, refresh, and cancellation.
   queue-planning degradation path, not symbolic-program evidence.
 - Random recovery is also allowed for `ExcludeCurrent`, where the current track
   has been explicitly removed and the system needs a replacement candidate.
-- Recent history filters non-liked tracks without deleting liked tracks.
 - Temporal memory is keyed by stable music identity and survives playlist
-  session boundaries. Its inverse FSRS retrievability is only a familiarity
-  veto; model-generation-local basin identifiers are never persisted in it.
+  session boundaries. Actual playback, not planning or queue preparation, owns
+  exposure updates. Model-generation-local basin identifiers are never
+  persisted in this listener-owned memory.
 
 `playlist_playback::recommendation` owns:
 
-- Symbolic program compilation and persistent traversal for an already
-  materialized candidate window.
+- Symbolic program compilation and persistent traversal for the resolved
+  model-member scope.
 - Content evidence is the hard scheduling identity. Stable tracks with the same
   complete-file SHA-256 and playback range occupy one symbolic position even
   when their source URL or local path differs; unavailable or unreadable
@@ -172,11 +171,70 @@ selection, queue planning, recommendation fallback, refresh, and cancellation.
 - Scope coverage and recent history operate on symbolic positions. Concrete
   URLs and paths are selected deterministically only after traversal, rotating
   across later coverage epochs instead of multiplying a class inside one epoch.
+- Within-region opportunity selection may exchange the next symbolic position
+  with an unheard position in the same class-majority acoustic basin and the
+  same concrete-member basin for the current epoch. Within the active program
+  it does not change the basin itinerary or regenerate native style-departure
+  marks from basin labels.
+  The proposed exchange is a conjugation of the active cyclic permutation;
+  traversal state and the prepared output change together. The immutable atlas
+  and its orbit index remain shared. The path-local exchange is cleared on
+  program departure or coverage entry, not by resetting listener history.
+- Opportunity priority and acoustic arrangement have separate owners within
+  selection. A class receives a persistent random ticket for a coverage epoch;
+  current inverse FSRS retrievability and Like transform that ticket's priority.
+  Geometry may arrange candidates only within a bounded band of the earliest
+  remaining priorities, rather than buying a fresh chance to prefer the same
+  acoustically central classes at every step.
+- The current priority is `1 - exp(-E / a)`, where `E = -ln(U)` is the
+  epoch-owned ticket and `a = (1 - R) * (16 if liked else 1)`. A zero rate has
+  priority one. The eligible band ends at the minimum remaining priority plus
+  0.20; centered incoming cosine supplies `exp(32 * (cosine - max_cosine))`
+  weights only inside that band. Exhausting the admissible band, or having no
+  positive opportunity rate, falls back to the native next class.
+  A class receives one opportunity regardless of alias count; its memory value is
+  the strongest existing alias trace and its preference is the current liked
+  state of any admitted member. Like is an earlier opportunity, not a fatigue
+  exemption or a training label. Familiarity changes priority rather than
+  falsely recording an unplayed position as heard in this coverage epoch.
+- Source-recovery admissibility compares each proposed exchange against the
+  initial active native cycle, using its minimum recovery, short-return ratio,
+  and four normalized recovery pressures. This baseline does not ratchet after
+  an accepted exchange. Inadmissible proposals are removed from the current
+  weighted draw; the original next position remains a valid coverage fallback.
+- Session-owned proposal randomness is checkpointed with the path. An
+  unconsumed proposal, rollback, or committed-session snapshot cannot silently
+  redraw the next opportunity. Preparing an option does not update temporal
+  memory. The existing neural-fatigue formation and normal auxiliary retain
+  their original authority; neither Like nor the opportunity draw replaces
+  the neural fatigue bound with a normal-tail threshold.
+- On a fixed admitted scope, exchanging only two unheard positions in a single
+  cyclic permutation leaves the heard prefix intact and the remaining suffix
+  a permutation of the same classes. Identity fallback still consumes the next
+  unheard class, including when all familiarity weights are zero. Concrete
+  member rotation is unchanged across coverage epochs. This is a traversal
+  property, not a claim that every track has a uniform first-hit distribution,
+  that arbitrary restarts retain progress, or that tracks outside the model
+  have become part of the symbolic scope.
+- The within-program trace argument is not a new global neural-fatigue proof
+  across program or coverage-epoch joins. Those joins retain the existing native
+  transition mechanism and are observed separately from within-cycle runs.
 - A scope revision invalidates materialization reuse without deleting the
   traversal frontier. When the scope signature changes, realized positions from
   the current coverage epoch are transported through shared member identities;
-  newly admitted positions remain unrealized, and an unchanged signature keeps
-  the exact execution state.
+  newly admitted positions remain unrealized. An unchanged signature keeps the
+  exact execution state and atlas, but accepts refreshed mutable metadata for
+  both class representatives and concrete materializations. Refreshed candidate
+  metadata takes precedence over a stale copy of the currently playing track.
+- Transported history need not be a contiguous prefix of a newly scoped
+  program. If every immediate departure is already heard but the active
+  program is one complete cycle, traversal uses its first return to an unheard
+  position, skipping heard vertices without replaying or clearing them. This
+  exceptional departure follows the effective successor law, including its
+  path overlay. Each output still consumes exactly one new position; ordinary
+  uninterrupted prefixes and complete-epoch transitions use the existing path.
+  A genuinely disconnected multi-cycle program retains its explicit failure
+  behavior rather than acquiring an arbitrary escape edge.
 - The canonical content partition and topology-capacity partition are signed as
   part of the derived symbolic encoding. A stable model refreshes that derived
   encoding when its schema or partition signature no longer matches, without
@@ -312,7 +370,7 @@ transition owner is the `playlist_playback::service` queue planning path:
   acceptance when the startup queue lacks a next track, and later when the
   active anchor changed or the queue lacks a next track;
 - next-track planning reads `stable` first and traverses the symbolic program
-  over the same playlist-scoped candidate window when `stable` exists but lacks
+  over the resolved playlist-scoped model-member scope when `stable` exists but lacks
   the anchor embedding; SQL random is used only when `stable` is absent or
   symbolic traversal cannot produce a distinct next track;
 - queue refresh from periodic fill and download-change events is gated per
@@ -333,7 +391,7 @@ Symbolic-program degradation is explicit:
   consumption.
 - In `KeepCurrent` mode, a stable model with a missing anchor embedding uses
   the persistent symbolic traversal session over embedded candidates from the
-  candidate window already materialized by the playback queue planner.
+  model-member scope already materialized by the playback queue planner.
 - In `KeepCurrent` mode, symbolic obstruction or complete model unavailability
   degrades to a
   playlist-scoped SQL random next track after the current anchor, using only the
@@ -389,12 +447,11 @@ recommendation gap cannot return the UI to `ready`.
 
 ## Exceptions
 
-There is no exhaustive full-playlist model ranking on every refresh. The
-candidate universe is a bounded random window across the selected playlist. This
-keeps startup and refresh work bounded while preserving playlist-wide scope. The
-exception owner is `playlist_playback::service`; it can be deleted when the
-repository offers a cheap full-playlist playable-track iterator with stable
-pagination and file-existence filtering.
+There is no full-library model rebuild on every refresh. Native symbolic
+selection resolves the model's concrete member identities against the current
+playlist and reuses that materialized scope until a relevant revision changes.
+Playable tracks outside the current model remain outside the symbolic coverage
+claim; the repository-random degradation path is separate evidence.
 
 There is no cold-click bounded sampler exception in the playback-start path.
 During a cold startup or immediately after invalidation, a missing prepared

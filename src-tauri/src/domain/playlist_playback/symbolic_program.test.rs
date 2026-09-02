@@ -400,6 +400,77 @@ fn exhausted_unread_successors_fail_closed() {
 }
 
 #[test]
+fn one_cycle_first_return_matches_reference_for_all_partial_histories_and_anchors() {
+    let track_count = 6;
+    let atlas = cycle_atlas(track_count, Vec::new());
+    let orbit_index = compile_program_orbit_index(&atlas).unwrap();
+
+    for anchor in 0..track_count {
+        for subset in 1_usize..(1_usize << track_count) - 1 {
+            if subset & (1_usize << anchor) == 0 {
+                continue;
+            }
+            let realized = (0..track_count)
+                .filter(|track| subset & (1_usize << track) != 0)
+                .collect::<Vec<_>>();
+            let state =
+                transport_traversal_state(None, &atlas, &[anchor], std::slice::from_ref(&realized))
+                    .unwrap();
+            let mut expected = anchor;
+            let mut skipped = false;
+            for _ in 0..track_count {
+                expected = (expected + 1) % track_count;
+                if !realized.contains(&expected) {
+                    break;
+                }
+                skipped = true;
+            }
+
+            let list = execute_program_list(&atlas, &orbit_index, 1, &state).unwrap();
+
+            assert_eq!(list.order, vec![expected]);
+            assert_eq!(list.departures[0], skipped);
+            assert_eq!(
+                list.next_state.realized_tracks(0).unwrap().len(),
+                realized.len() + 1
+            );
+            assert!(list.next_state.is_track_realized(0, expected).unwrap());
+            assert_eq!(list.next_state.coverage_epoch(0), Some(0));
+        }
+    }
+}
+
+#[test]
+fn first_return_follows_same_atlas_conjugated_overlay_and_preserves_history() {
+    let atlas = cycle_atlas(5, Vec::new());
+    let orbit_index = compile_program_orbit_index(&atlas).unwrap();
+    let initial = initialize_traversal_state(&atlas, &[0]).unwrap();
+    let first = execute_program_list(&atlas, &orbit_index, 1, &initial).unwrap();
+    let mut swapped = first;
+    apply_program_transposition(&atlas, &orbit_index, &mut swapped, 0, 1, 2).unwrap();
+    let current = transport_traversal_state(
+        Some((&atlas, &swapped.next_state)),
+        &atlas,
+        &[1],
+        &[vec![1, 3]],
+    )
+    .unwrap();
+
+    assert_eq!(current.overlay_program_for_test(0), Some(0));
+    assert_eq!(
+        current.effective_successor_for_test(&atlas, 0, 0, 1),
+        Some(3)
+    );
+    let list = execute_program_list(&atlas, &orbit_index, 1, &current).unwrap();
+
+    assert_eq!(list.order, vec![4]);
+    assert_eq!(list.departures, vec![true]);
+    assert_eq!(list.style_sector_departures, vec![true]);
+    assert_eq!(list.coverage_epoch_transitions, vec![false]);
+    assert_eq!(list.next_state.realized_tracks(0).unwrap(), vec![1, 3, 4]);
+}
+
+#[test]
 fn neural_adaptation_forms_local_chunks_then_preserves_complete_coverage() {
     let mut atlas = NeuralProgramAtlas {
         track_count: 4,

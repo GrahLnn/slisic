@@ -33,7 +33,6 @@ use crate::domain::playlist_playback::recommendation::{
     notify_audio_style_music_input_changed, notify_audio_style_training_inputs_ready,
     published_audio_style_model_snapshot, published_audio_style_model_snapshots_for_anchor,
 };
-#[cfg(not(test))]
 use crate::domain::playlist_playback::temporal_memory::PlaylistPlaybackTemporalMemory;
 #[cfg(not(test))]
 use crate::domain::playlists::model::AudioStyleTrainingTrackInput;
@@ -210,15 +209,22 @@ fn recently_played_tracks_with_anti_fsrs(
     candidates: &[PlaybackTrack],
 ) -> Vec<PlaybackTrack> {
     let now_ms = current_playback_time_ms();
-    let familiar_ids = {
-        let Ok(memory) = playlist_playback_temporal_memory().lock() else {
-            return recently_played_tracks.to_vec();
-        };
-        memory
-            .familiar_music_ids(now_ms)
-            .map(str::to_string)
-            .collect::<HashSet<_>>()
+    let Ok(memory) = playlist_playback_temporal_memory().lock() else {
+        return recently_played_tracks.to_vec();
     };
+    recently_played_tracks_with_anti_fsrs_at(recently_played_tracks, candidates, &memory, now_ms)
+}
+
+fn recently_played_tracks_with_anti_fsrs_at(
+    recently_played_tracks: &[PlaybackTrack],
+    candidates: &[PlaybackTrack],
+    memory: &PlaylistPlaybackTemporalMemory,
+    now_ms: u64,
+) -> Vec<PlaybackTrack> {
+    let familiar_ids = memory
+        .familiar_music_ids(now_ms)
+        .map(str::to_string)
+        .collect::<HashSet<_>>();
     if familiar_ids.is_empty() {
         return recently_played_tracks.to_vec();
     }
@@ -239,6 +245,26 @@ fn recently_played_tracks_with_anti_fsrs(
         }
     }
     history
+}
+
+#[cfg(test)]
+pub(crate) fn recently_played_tracks_with_anti_fsrs_for_test(
+    recently_played_tracks: &[PlaybackTrack],
+    candidates: &[PlaybackTrack],
+    memory: &PlaylistPlaybackTemporalMemory,
+    now_ms: u64,
+) -> Vec<PlaybackTrack> {
+    recently_played_tracks_with_anti_fsrs_at(recently_played_tracks, candidates, memory, now_ms)
+}
+
+#[cfg(not(test))]
+fn snapshot_playlist_playback_temporal_memory() -> Result<(PlaylistPlaybackTemporalMemory, u64)> {
+    let now_ms = current_playback_time_ms();
+    let memory = playlist_playback_temporal_memory()
+        .lock()
+        .map_err(|_| anyhow!("playlist playback temporal memory lock poisoned"))?
+        .clone();
+    Ok((memory, now_ms))
 }
 
 #[cfg(not(test))]
@@ -2331,8 +2357,7 @@ pub(crate) async fn propose_playlist_symbolic_next_track(
     candidates: Vec<PlaybackTrack>,
     recently_played_tracks: Vec<PlaybackTrack>,
 ) -> Result<AudioStyleSymbolicNextTrack> {
-    let recently_played_tracks =
-        recently_played_tracks_with_anti_fsrs(&recently_played_tracks, &candidates);
+    let (temporal_memory, temporal_memory_now_ms) = snapshot_playlist_playback_temporal_memory()?;
     let symbolic_session = Arc::clone(symbolic_session);
     tauri::async_runtime::spawn_blocking(move || {
         let mut session = symbolic_session
@@ -2340,11 +2365,13 @@ pub(crate) async fn propose_playlist_symbolic_next_track(
             .map_err(|_| anyhow!("symbolic playback session lock poisoned"))?;
         let mut failures = Vec::new();
         for snapshot in snapshots {
-            match session.propose_next(
+            match session.propose_next_with_temporal_memory(
                 snapshot.as_ref(),
                 &current_track,
                 &candidates,
                 &recently_played_tracks,
+                Some(&temporal_memory),
+                temporal_memory_now_ms,
             ) {
                 Ok(next) => return Ok(next),
                 Err(error) => {

@@ -15,7 +15,7 @@ use super::service::{
     playlist_selection_has_relevant_active_downloads, playlist_track_needs_loudness_evidence,
     prepared_first_track_can_replace_excluded_current,
     propose_playlist_playback_queue_without_audio_style_model, propose_random_queue_after_exclude,
-    resolve_playlist_playback_continuation_mode,
+    recently_played_tracks_with_anti_fsrs_for_test, resolve_playlist_playback_continuation_mode,
     resolve_playlist_playback_queue_anchor_from_active_track,
     resolve_playlist_playback_source_resolution, should_commit_playlist_queue_refresh,
     should_refresh_playlist_queue_for_anchor_after_startup,
@@ -23,6 +23,7 @@ use super::service::{
     should_seed_playlist_next_from_prepared_pool, should_stop_playlist_queue_fill_after_refresh,
     shuffle_playback_tracks, wait_for_playlist_queue_fill_revision_or_poll,
 };
+use super::temporal_memory::PlaylistPlaybackTemporalMemory;
 use crate::domain::downloads::model::{
     DownloadLeaf, DownloadLeafStatus, DownloadTask, DownloadTaskStatus, DownloadTrigger,
 };
@@ -39,6 +40,7 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const TEST_EMBEDDING_WIDTH: usize = 64 * 2 + 64 * 2 + 64 * 64;
+const TEMPORAL_MEMORY_TEST_HOUR_MS: u64 = 60 * 60 * 1_000;
 
 fn temp_root() -> PathBuf {
     let nanos = SystemTime::now()
@@ -615,6 +617,55 @@ fn exclude_current_queue_without_audio_style_model_keeps_explicit_random_recover
 }
 
 #[test]
+fn random_fallback_anti_fsrs_excludes_familiar_unliked_candidates_until_memory_decays() {
+    let current = playback_track("current");
+    let familiar = playback_track("familiar");
+    let fresh = playback_track("fresh");
+    let mut memory = PlaylistPlaybackTemporalMemory::default();
+    memory.observe(&familiar.canonical_music_id, 0);
+
+    let familiar_now_ms = 20 * TEMPORAL_MEMORY_TEST_HOUR_MS;
+    let recently_played_tracks = recently_played_tracks_with_anti_fsrs_for_test(
+        &[],
+        &[familiar.clone(), fresh.clone()],
+        &memory,
+        familiar_now_ms,
+    );
+    let queue = propose_playlist_playback_queue_without_audio_style_model(
+        PlaylistPlaybackRecommendationRequest {
+            playlist_name: "Focus".to_string(),
+            current_track: current.clone(),
+            candidates: vec![familiar.clone(), fresh.clone()],
+            recently_played_tracks,
+        },
+        PlaylistPlaybackRecommendationMode::KeepCurrent,
+    );
+
+    assert_eq!(queue.len(), 2);
+    assert_eq!(queue[0].music_url, current.music_url);
+    assert_eq!(queue[1].music_url, fresh.music_url);
+
+    let decayed_now_ms = 100 * TEMPORAL_MEMORY_TEST_HOUR_MS;
+    let recently_played_tracks = recently_played_tracks_with_anti_fsrs_for_test(
+        &[],
+        &[familiar.clone(), fresh.clone()],
+        &memory,
+        decayed_now_ms,
+    );
+    assert!(recently_played_tracks.is_empty());
+    let available_candidates = filter_recently_played_recommendation_candidates(
+        vec![familiar.clone(), fresh],
+        &recently_played_tracks,
+    );
+    assert_eq!(available_candidates.len(), 2);
+    assert!(
+        available_candidates
+            .iter()
+            .any(|track| track.music_url == familiar.music_url)
+    );
+}
+
+#[test]
 fn random_recommender_after_exclude_does_not_reinsert_current_track() {
     let current = PlaybackTrack {
         playlist_name: "Focus".to_string(),
@@ -768,7 +819,7 @@ fn recommendation_history_excludes_same_played_music_across_track_ranges() {
 }
 
 #[test]
-fn recommendation_history_keeps_liked_played_music() {
+fn recommendation_history_excludes_recent_liked_music_with_fresh_control() {
     let mut liked = playback_track("liked");
     liked.liked = true;
     let fresh = playback_track("fresh");
@@ -778,17 +829,8 @@ fn recommendation_history_keeps_liked_played_music() {
         std::slice::from_ref(&liked),
     );
 
-    assert_eq!(filtered.len(), 2);
-    assert!(
-        filtered
-            .iter()
-            .any(|track| track.music_url == liked.music_url)
-    );
-    assert!(
-        filtered
-            .iter()
-            .any(|track| track.music_url == fresh.music_url)
-    );
+    assert_eq!(filtered.len(), 1);
+    assert_eq!(filtered[0].music_url, fresh.music_url);
 }
 
 #[test]
@@ -839,12 +881,17 @@ fn prepared_next_candidate_does_not_use_list_history_fallback_for_single_recent_
 }
 
 #[test]
-fn prepared_next_candidate_keeps_recent_liked_track_sampleable() {
+fn prepared_next_candidate_excludes_recent_liked_track_with_fresh_control() {
     let mut liked = playback_track("liked");
     liked.liked = true;
+    let fresh = playback_track("fresh");
 
-    assert!(recommendation_candidate_allowed_by_recent_history(
+    assert!(!recommendation_candidate_allowed_by_recent_history(
         &liked,
+        std::slice::from_ref(&liked),
+    ));
+    assert!(recommendation_candidate_allowed_by_recent_history(
+        &fresh,
         std::slice::from_ref(&liked),
     ));
 }

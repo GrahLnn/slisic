@@ -280,6 +280,7 @@ pub(crate) struct ProgramList {
     pub(crate) departures: Vec<bool>,
     pub(crate) style_sector_departures: Vec<bool>,
     pub(crate) coverage_epoch_transitions: Vec<bool>,
+    #[cfg(test)]
     pub(crate) opportunity_swaps: Vec<bool>,
     pub(crate) departure_future_overlap: Vec<Option<usize>>,
     pub(crate) next_state: ProgramOwnedTraversalState,
@@ -2328,7 +2329,10 @@ pub(crate) fn apply_program_transposition(
     list.order[index] = right;
     list.style_sector_departures[index] = list.departures[index]
         || effective_boundary_source(atlas, path, program_ordinal, source_ordinal);
-    list.opportunity_swaps[index] = true;
+    #[cfg(test)]
+    {
+        list.opportunity_swaps[index] = true;
+    }
     Ok(())
 }
 
@@ -2461,6 +2465,22 @@ fn select_fresh_departure(
     None
 }
 
+fn first_unrealized_successor(
+    atlas: &NeuralProgramAtlas,
+    path: &ProgramPathState,
+    program_ordinal: usize,
+    source: usize,
+) -> Option<usize> {
+    let mut destination = effective_successor(atlas, path, program_ordinal, source);
+    for _ in 0..atlas.track_count {
+        if !contains_bit(&path.realized_history, destination) {
+            return Some(destination);
+        }
+        destination = effective_successor(atlas, path, program_ordinal, destination);
+    }
+    None
+}
+
 // @forma implements material ResearchCandidateTransfer.close_style_residence_from_unread_consequence as execute_program_list
 // @forma implements material ResearchCandidateTransfer.separate_familiar_execution_from_departure_pressure as execute_program_list
 // @forma implements material ResearchCandidateTransfer.execute_persistent_program_ecology as execute_program_list
@@ -2479,6 +2499,7 @@ pub(crate) fn execute_program_list(
     let mut departures = vec![false; order.len()];
     let mut style_sector_departures = vec![false; order.len()];
     let mut coverage_epoch_transitions = vec![false; order.len()];
+    #[cfg(test)]
     let opportunity_swaps = vec![false; order.len()];
     let mut departure_future_overlap = vec![None; order.len()];
     for step in 0..tracks_per_list {
@@ -2512,31 +2533,45 @@ pub(crate) fn execute_program_list(
                     departures[index] = true;
                     departure_future_overlap[index] = Some(overlap);
                 } else {
-                    if bit_count(&path.realized_history) != atlas.track_count
-                        || atlas.track_count < 2
-                    {
-                        return Err(TraversalExhausted {
-                            path_ordinal,
-                            current_track: path.current_track,
-                        });
-                    }
-                    let (coverage_program, encoded_power) =
-                        orbit_index.coverage_successors[program];
-                    path.overlay = None;
-                    path.source_fatigue_cache = None;
-                    program = coverage_program;
-                    let entry_power = if encoded_power == 0 {
-                        1 + path.coverage_epoch % (atlas.track_count - 1)
+                    let realized_count = bit_count(&path.realized_history);
+                    let first_return = if realized_count < atlas.track_count {
+                        orbit_index
+                            .cycle_masks
+                            .get(program)
+                            .filter(|cycle_masks| cycle_masks.len() == 1)
+                            .and_then(|_| first_unrealized_successor(atlas, path, program, source))
                     } else {
-                        encoded_power
+                        None
                     };
-                    destination = path.current_track;
-                    for _ in 0..entry_power {
-                        destination = atlas.programs[program].successors[destination];
+                    if let Some(first_return) = first_return {
+                        destination = first_return;
+                        crosses_style_sector = true;
+                        departures[index] = true;
+                    } else {
+                        if realized_count != atlas.track_count || atlas.track_count < 2 {
+                            return Err(TraversalExhausted {
+                                path_ordinal,
+                                current_track: path.current_track,
+                            });
+                        }
+                        let (coverage_program, encoded_power) =
+                            orbit_index.coverage_successors[program];
+                        path.overlay = None;
+                        path.source_fatigue_cache = None;
+                        program = coverage_program;
+                        let entry_power = if encoded_power == 0 {
+                            1 + path.coverage_epoch % (atlas.track_count - 1)
+                        } else {
+                            encoded_power
+                        };
+                        destination = path.current_track;
+                        for _ in 0..entry_power {
+                            destination = atlas.programs[program].successors[destination];
+                        }
+                        path.realized_history.fill(0);
+                        path.coverage_epoch += 1;
+                        coverage_epoch_transitions[index] = true;
                     }
-                    path.realized_history.fill(0);
-                    path.coverage_epoch += 1;
-                    coverage_epoch_transitions[index] = true;
                 }
                 path.active_program = program;
                 path.tie_cursor = (program + 1) % atlas.programs.len();
@@ -2561,6 +2596,7 @@ pub(crate) fn execute_program_list(
         departures,
         style_sector_departures,
         coverage_epoch_transitions,
+        #[cfg(test)]
         opportunity_swaps,
         departure_future_overlap,
         next_state,

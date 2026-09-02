@@ -9,6 +9,7 @@ use crate::domain::playlist_playback::symbolic_program::{
     program_encoding_signature, restrict_neural_program_atlas_to_playlist,
     transport_traversal_state,
 };
+use crate::domain::playlist_playback::temporal_memory::PlaylistPlaybackTemporalMemory;
 use crate::domain::playlists::model::{
     AudioStyleTrainingTrackInput, LoudnessProfile, PlaylistPlaybackModelMemberKey,
 };
@@ -30,8 +31,9 @@ use burn_wgpu::{
     graphics::{AutoGraphicsApi, GraphicsApi},
 };
 use cubecl::{Runtime as CubeRuntime, device::Device as CubeDevice};
-#[cfg(not(test))]
-use rand::RngExt;
+#[cfg(test)]
+use rand::SeedableRng;
+use rand::{RngExt, rngs::SmallRng};
 use rustfft::{FftPlanner, num_complex::Complex};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -135,6 +137,9 @@ const AUDIO_STYLE_LOCAL_DENSITY_TOP_K: usize = 10;
 const AUDIO_STYLE_SYMBOLIC_PROGRAM_CANDIDATE_COUNT: usize = 96;
 const AUDIO_STYLE_SYMBOLIC_PROGRAM_ENCODING_SCHEMA: &str =
     "slisic.symbolic-audio-program-encoding.v2";
+const AUDIO_STYLE_NATIVE_REGION_OPPORTUNITY_BETA: f32 = 32.0;
+const AUDIO_STYLE_NATIVE_REGION_OPPORTUNITY_LIKE_FACTOR: f32 = 16.0;
+const AUDIO_STYLE_NATIVE_REGION_OPPORTUNITY_TAU: f32 = 0.20;
 const AUDIO_STYLE_TOPOLOGY_BLOCK_NEIGHBOR_COUNT: usize = 24;
 const AUDIO_STYLE_TOPOLOGY_BLOCK_MIN_CLASS_COUNT: usize = 3;
 const AUDIO_STYLE_TOPOLOGY_BLOCK_MIN_LIBRARY_CLASSES: usize = 48;
@@ -815,12 +820,13 @@ pub(crate) struct AudioStyleModelSnapshot {
     state: Arc<AudioStyleModelState>,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub(crate) struct AudioStyleSymbolicPlaybackSession {
     execution: Option<AudioStyleSymbolicPlaylistExecution>,
     pending_checkpoint: Option<Box<AudioStyleSymbolicPendingCheckpoint>>,
     scope_revision: Option<u64>,
     scope_dirty: bool,
+    rng: SmallRng,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -834,10 +840,25 @@ pub(crate) enum AudioStyleSymbolicPendingObservationOutcome {
 #[derive(Clone)]
 struct AudioStyleSymbolicPendingCheckpoint {
     execution: Option<AudioStyleSymbolicPlaylistExecution>,
+    rng: SmallRng,
     scope_revision: Option<u64>,
     scope_dirty: bool,
     anchor_key: PlaybackTrackKey,
     proposed_key: PlaybackTrackKey,
+}
+
+#[derive(Clone)]
+struct AudioStyleNativeOpportunityProjection {
+    centered_vectors: Arc<HashMap<PlaybackTrackKey, Arc<Vec<f32>>>>,
+    member_basins: Arc<HashMap<PlaybackTrackKey, String>>,
+    member_keys: Arc<Vec<Vec<PlaybackTrackKey>>>,
+    candidates_by_acoustic_basin: Arc<Vec<Vec<usize>>>,
+}
+
+#[derive(Clone)]
+struct AudioStyleNativeOpportunityTickets {
+    epoch: usize,
+    energies: Arc<Vec<f32>>,
 }
 
 #[derive(Clone)]
@@ -850,12 +871,28 @@ struct AudioStyleSymbolicPlaylistExecution {
     local_by_key: Arc<HashMap<PlaybackTrackKey, usize>>,
     tracks: Arc<Vec<PlaybackTrack>>,
     materializations: Arc<Vec<Vec<PlaybackTrack>>>,
+    acoustic_basins: Option<Arc<Vec<usize>>>,
+    source_collections: Option<Arc<Vec<usize>>>,
+    opportunity_projection: Option<Arc<AudioStyleNativeOpportunityProjection>>,
+    opportunity_tickets: Option<Arc<AudioStyleNativeOpportunityTickets>>,
 }
 
 pub(crate) struct AudioStyleSymbolicNextTrack {
     pub(crate) track: PlaybackTrack,
     pub(crate) style_sector_departure: bool,
     pub(crate) coverage_epoch_transition: bool,
+}
+
+impl Default for AudioStyleSymbolicPlaybackSession {
+    fn default() -> Self {
+        Self {
+            execution: None,
+            pending_checkpoint: None,
+            scope_revision: None,
+            scope_dirty: false,
+            rng: rand::make_rng(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -6900,18 +6937,377 @@ impl AudioStyleModelSnapshot {
     }
 }
 
+fn centered_normalized_opportunity_vector(
+    embedding: &AudioStyleEmbedding,
+    mean: &[f32],
+) -> Option<Vec<f32>> {
+    if embedding.values.len() != AUDIO_STYLE_EMBEDDING_WIDTH
+        || mean.len() != AUDIO_STYLE_EMBEDDING_WIDTH
+    {
+        return None;
+    }
+    let mut values = embedding
+        .values
+        .iter()
+        .zip(mean)
+        .map(|(value, mean)| value - mean)
+        .collect::<Vec<_>>();
+    let norm = values.iter().map(|value| value * value).sum::<f32>().sqrt();
+    if !norm.is_finite() || norm <= 1.0e-6 {
+        return None;
+    }
+    for value in &mut values {
+        *value /= norm;
+    }
+    Some(values)
+}
+
+fn opportunity_projection_similarity(left: &[f32], right: &[f32]) -> f32 {
+    left.iter()
+        .zip(right)
+        .map(|(left, right)| left * right)
+        .sum::<f32>()
+        .clamp(-1.0, 1.0)
+}
+
+fn build_native_opportunity_projection(
+    snapshot: &AudioStyleModelSnapshot,
+    materializations: &[Vec<PlaybackTrack>],
+    acoustic_basins: Option<&[usize]>,
+) -> Option<Arc<AudioStyleNativeOpportunityProjection>> {
+    let geometry = snapshot.state.sampling_geometry.as_ref()?;
+    let acoustic_basins = acoustic_basins?;
+    if acoustic_basins.len() != materializations.len() {
+        return None;
+    }
+    let member_keys = materializations
+        .iter()
+        .map(|members| {
+            members
+                .iter()
+                .map(PlaybackTrackKey::from_track)
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let mut centered_vectors = HashMap::new();
+    let mut member_basins = HashMap::new();
+    for key in member_keys.iter().flatten() {
+        if let Some(embedding) = snapshot.state.embeddings.get(key)
+            && let Some(centered) =
+                centered_normalized_opportunity_vector(embedding.as_ref(), &geometry.mean)
+        {
+            centered_vectors
+                .entry(key.clone())
+                .or_insert_with(|| Arc::new(centered));
+        }
+        if let Some(basin) = geometry.self_supervised_basins.get(key) {
+            member_basins.insert(key.clone(), basin.value.clone());
+        }
+    }
+    let max_acoustic_basin = acoustic_basins.iter().copied().max()?;
+    let mut candidates_by_acoustic_basin = vec![Vec::new(); max_acoustic_basin + 1];
+    for (local, acoustic_basin) in acoustic_basins.iter().copied().enumerate() {
+        candidates_by_acoustic_basin[acoustic_basin].push(local);
+    }
+    Some(Arc::new(AudioStyleNativeOpportunityProjection {
+        centered_vectors: Arc::new(centered_vectors),
+        member_basins: Arc::new(member_basins),
+        member_keys: Arc::new(member_keys),
+        candidates_by_acoustic_basin: Arc::new(candidates_by_acoustic_basin),
+    }))
+}
+
+fn ensure_native_opportunity_tickets(
+    execution: &mut AudioStyleSymbolicPlaylistExecution,
+    coverage_epoch: usize,
+    rng: &mut SmallRng,
+) {
+    if execution
+        .opportunity_tickets
+        .as_ref()
+        .is_some_and(|tickets| {
+            tickets.epoch == coverage_epoch
+                && tickets.energies.len() == execution.materializations.len()
+        })
+    {
+        return;
+    }
+    let energies = (0..execution.materializations.len())
+        .map(|_| {
+            let uniform = rng
+                .random::<f32>()
+                .clamp(f32::MIN_POSITIVE, 1.0 - f32::EPSILON);
+            -uniform.ln()
+        })
+        .collect::<Vec<_>>();
+    execution.opportunity_tickets = Some(Arc::new(AudioStyleNativeOpportunityTickets {
+        epoch: coverage_epoch,
+        energies: Arc::new(energies),
+    }));
+}
+
+fn native_opportunity_retrievability(
+    execution: &AudioStyleSymbolicPlaylistExecution,
+    local: usize,
+    temporal_memory: Option<&PlaylistPlaybackTemporalMemory>,
+    now_ms: u64,
+) -> f32 {
+    temporal_memory
+        .map(|memory| {
+            execution
+                .materializations
+                .get(local)
+                .into_iter()
+                .flatten()
+                .map(|track| memory.retrievability_for_track(track, now_ms))
+                .fold(0.0_f32, f32::max)
+        })
+        .unwrap_or(0.0)
+        .clamp(0.0, 1.0)
+}
+
+fn native_opportunity_rate_and_probability(
+    execution: &AudioStyleSymbolicPlaylistExecution,
+    local: usize,
+    temporal_memory: Option<&PlaylistPlaybackTemporalMemory>,
+    now_ms: u64,
+) -> (f32, f32) {
+    let Some(tickets) = execution.opportunity_tickets.as_ref() else {
+        return (0.0, 0.0);
+    };
+    let energy = tickets.energies.get(local).copied().unwrap_or(0.0);
+    let retrievability =
+        native_opportunity_retrievability(execution, local, temporal_memory, now_ms);
+    let like_factor = if execution
+        .materializations
+        .get(local)
+        .into_iter()
+        .flatten()
+        .any(|track| track.liked)
+    {
+        AUDIO_STYLE_NATIVE_REGION_OPPORTUNITY_LIKE_FACTOR
+    } else {
+        1.0
+    };
+    native_opportunity_rate_and_probability_from_values(energy, retrievability, like_factor)
+}
+
+fn native_opportunity_rate_and_probability_from_values(
+    energy: f32,
+    retrievability: f32,
+    like_factor: f32,
+) -> (f32, f32) {
+    let available_rate = (1.0 - retrievability.clamp(0.0, 1.0)) * like_factor.max(0.0);
+    let probability = if available_rate <= 0.0 {
+        1.0
+    } else {
+        (-(-energy / available_rate).exp_m1()).clamp(0.0, 1.0)
+    };
+    (available_rate.max(0.0), probability)
+}
+
+#[cfg(test)]
+pub(crate) fn native_opportunity_probability_for_test(
+    energy: f32,
+    retrievability: f32,
+    liked: bool,
+) -> f32 {
+    native_opportunity_rate_and_probability_from_values(
+        energy,
+        retrievability,
+        if liked {
+            AUDIO_STYLE_NATIVE_REGION_OPPORTUNITY_LIKE_FACTOR
+        } else {
+            1.0
+        },
+    )
+    .1
+}
+
+fn choose_native_region_opportunity(
+    execution: &mut AudioStyleSymbolicPlaylistExecution,
+    current_key: &PlaybackTrackKey,
+    list: &mut crate::domain::playlist_playback::symbolic_program::ProgramList,
+    temporal_memory: Option<&PlaylistPlaybackTemporalMemory>,
+    now_ms: u64,
+    rng: &mut SmallRng,
+) -> Result<usize, String> {
+    let planned = list.order[0];
+    let coverage_epoch = list.next_state.coverage_epoch(0).unwrap_or_default();
+    if execution.opportunity_projection.is_some() {
+        ensure_native_opportunity_tickets(execution, coverage_epoch, rng);
+    }
+    if list.coverage_epoch_transitions[0]
+        || execution.state.current_track(0) == Some(planned)
+        || execution.state.is_track_realized(0, planned) != Some(false)
+    {
+        return Ok(planned);
+    }
+    let Some(projection) = execution.opportunity_projection.as_ref() else {
+        return Ok(planned);
+    };
+    let Some(acoustic_basins) = execution.acoustic_basins.as_deref() else {
+        return Ok(planned);
+    };
+    let Some(planned_acoustic_basin) = acoustic_basins.get(planned).copied() else {
+        return Ok(planned);
+    };
+    let Some(planned_member_keys) = projection.member_keys.get(planned) else {
+        return Ok(planned);
+    };
+    let Some(planned_member_key) =
+        planned_member_keys.get((coverage_epoch + planned) % planned_member_keys.len())
+    else {
+        return Ok(planned);
+    };
+    let Some(planned_basin) = projection.member_basins.get(planned_member_key) else {
+        return Ok(planned);
+    };
+    let committed_current = execution
+        .state
+        .current_track(0)
+        .ok_or_else(|| "native region opportunity has no committed current class".to_string())?;
+    let mut candidates = Vec::new();
+    if let Some(indexed_candidates) = projection
+        .candidates_by_acoustic_basin
+        .get(planned_acoustic_basin)
+    {
+        for &local in indexed_candidates {
+            if local == committed_current
+                || execution.state.is_track_realized(0, local) != Some(false)
+            {
+                continue;
+            }
+            let Some(member_keys) = projection.member_keys.get(local) else {
+                continue;
+            };
+            let Some(member_key) = member_keys.get((coverage_epoch + local) % member_keys.len())
+            else {
+                continue;
+            };
+            if projection.member_basins.get(member_key) == Some(planned_basin) {
+                candidates.push(local);
+            }
+        }
+    }
+    if !candidates.contains(&planned) {
+        candidates.push(planned);
+    }
+
+    let mut candidate_rates = candidates
+        .into_iter()
+        .map(|local| {
+            let (rate, probability) =
+                native_opportunity_rate_and_probability(execution, local, temporal_memory, now_ms);
+            (local, rate, probability)
+        })
+        .collect::<Vec<_>>();
+    if candidate_rates.is_empty()
+        || candidate_rates
+            .iter()
+            .all(|(_, rate, _)| !rate.is_finite() || *rate <= 0.0)
+    {
+        return Ok(planned);
+    }
+    let pmin = candidate_rates
+        .iter()
+        .filter_map(|(_, _, probability)| probability.is_finite().then_some(*probability))
+        .min_by(|left, right| left.total_cmp(right))
+        .unwrap_or(1.0);
+    let band_limit = pmin + AUDIO_STYLE_NATIVE_REGION_OPPORTUNITY_TAU;
+    candidate_rates
+        .retain(|(_, _, probability)| probability.is_finite() && *probability <= band_limit);
+    if candidate_rates.is_empty() {
+        return Ok(planned);
+    }
+
+    let current_vector = projection.centered_vectors.get(current_key);
+    let candidate_geometry = candidate_rates
+        .into_iter()
+        .filter_map(|(local, _, _)| {
+            let member_keys = projection.member_keys.get(local)?;
+            let member_key = member_keys.get((coverage_epoch + local) % member_keys.len())?;
+            let similarity = current_vector
+                .zip(projection.centered_vectors.get(member_key))
+                .map(|(current_vector, candidate_vector)| {
+                    opportunity_projection_similarity(
+                        current_vector.as_ref(),
+                        candidate_vector.as_ref(),
+                    )
+                })
+                .unwrap_or(0.0);
+            Some((local, similarity))
+        })
+        .collect::<Vec<_>>();
+    if candidate_geometry.is_empty() {
+        return Ok(planned);
+    }
+    let max_similarity = candidate_geometry
+        .iter()
+        .map(|(_, similarity)| *similarity)
+        .max_by(|left, right| left.total_cmp(right))
+        .unwrap_or(0.0);
+    let mut remaining = candidate_geometry
+        .into_iter()
+        .map(|(local, similarity)| {
+            let weight =
+                (AUDIO_STYLE_NATIVE_REGION_OPPORTUNITY_BETA * (similarity - max_similarity)).exp();
+            (local, weight)
+        })
+        .collect::<Vec<_>>();
+    while !remaining.is_empty() {
+        let total_weight = remaining
+            .iter()
+            .map(|(_, weight)| if weight.is_finite() { *weight } else { 0.0 })
+            .sum::<f32>();
+        if total_weight <= 0.0 || !total_weight.is_finite() {
+            return Ok(planned);
+        }
+        let mut draw = rng.random::<f32>() * total_weight;
+        let mut chosen_index = remaining.len() - 1;
+        for (index, (_, weight)) in remaining.iter().enumerate() {
+            if *weight > 0.0 && draw <= *weight {
+                chosen_index = index;
+                break;
+            }
+            draw -= weight.max(0.0);
+        }
+        let (candidate, _) = remaining.swap_remove(chosen_index);
+        if candidate == planned {
+            return Ok(candidate);
+        }
+        let Some(source_collections) = execution.source_collections.as_deref() else {
+            continue;
+        };
+        let program_ordinal = list.program_ordinals[0];
+        if crate::domain::playlist_playback::symbolic_program::source_fatigue_allows_transposition(
+            execution.atlas.as_ref(),
+            &mut list.next_state,
+            0,
+            program_ordinal,
+            planned,
+            candidate,
+            source_collections,
+        )? {
+            return Ok(candidate);
+        }
+    }
+    Ok(planned)
+}
+
 impl AudioStyleSymbolicPlaybackSession {
     pub(crate) fn committed_snapshot(&self) -> Self {
-        let execution = self
+        let (execution, rng) = self
             .pending_checkpoint
             .as_ref()
-            .map(|checkpoint| checkpoint.execution.clone())
-            .unwrap_or_else(|| self.execution.clone());
+            .map(|checkpoint| (checkpoint.execution.clone(), checkpoint.rng.clone()))
+            .unwrap_or_else(|| (self.execution.clone(), self.rng.clone()));
         Self {
             execution,
             pending_checkpoint: None,
             scope_revision: self.scope_revision,
             scope_dirty: self.scope_dirty,
+            rng,
         }
     }
 
@@ -6973,6 +7369,18 @@ impl AudioStyleSymbolicPlaybackSession {
     }
 
     #[cfg(test)]
+    pub(crate) fn set_rng_seed_for_test(&mut self, seed: u64) {
+        self.rng = SmallRng::seed_from_u64(seed);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn clear_opportunity_tickets_for_test(&mut self) {
+        if let Some(execution) = self.execution.as_mut() {
+            execution.opportunity_tickets = None;
+        }
+    }
+
+    #[cfg(test)]
     pub(crate) fn execution_snapshot_for_test(
         &self,
     ) -> Option<(
@@ -6994,6 +7402,75 @@ impl AudioStyleSymbolicPlaybackSession {
         ))
     }
 
+    #[cfg(test)]
+    pub(crate) fn opportunity_projection_snapshot_for_test(
+        &self,
+    ) -> Option<(usize, usize, usize, usize, usize)> {
+        let execution = self.execution.as_ref()?;
+        let projection = execution.opportunity_projection.as_ref()?;
+        let dimensions = projection
+            .centered_vectors
+            .values()
+            .next()
+            .map(|vector| vector.len())
+            .unwrap_or(0);
+        let vector_bytes = projection
+            .centered_vectors
+            .values()
+            .map(|vector| vector.len().saturating_mul(std::mem::size_of::<f32>()))
+            .sum();
+        let indexed_candidates = projection
+            .candidates_by_acoustic_basin
+            .iter()
+            .map(Vec::len)
+            .sum();
+        Some((
+            Arc::as_ptr(projection) as usize,
+            projection.centered_vectors.len(),
+            dimensions,
+            vector_bytes,
+            indexed_candidates,
+        ))
+    }
+
+    #[cfg(test)]
+    fn opportunity_similarity_for_test(
+        &self,
+        left_key: &PlaybackTrackKey,
+        right_key: &PlaybackTrackKey,
+    ) -> Option<f32> {
+        let execution = self.execution.as_ref()?;
+        let projection = execution.opportunity_projection.as_ref()?;
+        let left = projection.centered_vectors.get(left_key)?;
+        let right = projection.centered_vectors.get(right_key)?;
+        Some(opportunity_projection_similarity(
+            left.as_ref(),
+            right.as_ref(),
+        ))
+    }
+
+    #[cfg(test)]
+    fn acoustic_basin_for_test(&self, local: usize) -> Option<usize> {
+        self.execution
+            .as_ref()?
+            .acoustic_basins
+            .as_ref()?
+            .get(local)
+            .copied()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn opportunity_ticket_snapshot_for_test(&self) -> Option<(usize, usize, Vec<f32>)> {
+        let execution = self.execution.as_ref()?;
+        let tickets = execution.opportunity_tickets.as_ref()?;
+        Some((
+            tickets.epoch,
+            Arc::as_ptr(&tickets.energies) as usize,
+            tickets.energies.as_ref().clone(),
+        ))
+    }
+
+    #[cfg(test)]
     pub(crate) fn propose_next(
         &mut self,
         snapshot: &AudioStyleModelSnapshot,
@@ -7001,9 +7478,29 @@ impl AudioStyleSymbolicPlaybackSession {
         candidates: &[PlaybackTrack],
         recently_played_tracks: &[PlaybackTrack],
     ) -> Result<AudioStyleSymbolicNextTrack, String> {
+        self.propose_next_with_temporal_memory(
+            snapshot,
+            current_track,
+            candidates,
+            recently_played_tracks,
+            None,
+            0,
+        )
+    }
+
+    pub(crate) fn propose_next_with_temporal_memory(
+        &mut self,
+        snapshot: &AudioStyleModelSnapshot,
+        current_track: &PlaybackTrack,
+        candidates: &[PlaybackTrack],
+        recently_played_tracks: &[PlaybackTrack],
+        temporal_memory: Option<&PlaylistPlaybackTemporalMemory>,
+        now_ms: u64,
+    ) -> Result<AudioStyleSymbolicNextTrack, String> {
         if self.pending_checkpoint.is_some() {
             return Err("previous symbolic proposal is not committed".to_string());
         }
+        let rng_before = self.rng.clone();
         let encoding = snapshot
             .state
             .symbolic_program_encoding
@@ -7076,11 +7573,12 @@ impl AudioStyleSymbolicPlaybackSession {
                         closure.retracted_presentations
                     )
                 })?;
-                if let Some(carriers) = scoped_symbolic_fatigue_carriers(
-                    encoding,
-                    &scoped.global_track_ordinals,
-                    snapshot.state.sampling_geometry.as_ref(),
-                ) {
+                let (acoustic_basins, source_collections) = if let Some(carriers) =
+                    scoped_symbolic_fatigue_carriers(
+                        encoding,
+                        &scoped.global_track_ordinals,
+                        snapshot.state.sampling_geometry.as_ref(),
+                    ) {
                     form_neural_adaptation_cycle(
                         &mut atlas,
                         &scoped_candidates,
@@ -7088,7 +7586,13 @@ impl AudioStyleSymbolicPlaybackSession {
                         &carriers.acoustic_basins,
                         &carriers.source_collections,
                     )?;
-                }
+                    (
+                        Some(Arc::new(carriers.acoustic_basins)),
+                        Some(Arc::new(carriers.source_collections)),
+                    )
+                } else {
+                    (None, None)
+                };
                 let atlas = Arc::new(atlas);
                 let orbit_index = Arc::new(compile_program_orbit_index(atlas.as_ref())?);
                 let local_by_key = Arc::new(
@@ -7115,6 +7619,11 @@ impl AudioStyleSymbolicPlaybackSession {
                             })
                         })
                         .collect::<Result<Vec<_>, _>>()?,
+                );
+                let opportunity_projection = build_native_opportunity_projection(
+                    snapshot,
+                    materializations.as_ref(),
+                    acoustic_basins.as_ref().map(|labels| labels.as_slice()),
                 );
                 let current_global = encoding.ordinal_by_key[&current_key];
                 let tracks = Arc::new(
@@ -7182,6 +7691,10 @@ impl AudioStyleSymbolicPlaybackSession {
                     local_by_key,
                     tracks,
                     materializations,
+                    acoustic_basins,
+                    source_collections,
+                    opportunity_projection,
+                    opportunity_tickets: None,
                 }
             } else {
                 let previous = self
@@ -7237,15 +7750,35 @@ impl AudioStyleSymbolicPlaybackSession {
                 &[realized],
             )?;
         }
-        let list = execute_program_list(
+        let mut list = execute_program_list(
             execution.atlas.as_ref(),
             execution.orbit_index.as_ref(),
             1,
             &execution.state,
         )
         .map_err(|error| error.to_string())?;
-        let next_local = list.order[0];
         let coverage_epoch = list.next_state.coverage_epoch(0).unwrap_or_default();
+        let planned_local = list.order[0];
+        let mut planning_rng = rng_before.clone();
+        let selected_local = choose_native_region_opportunity(
+            &mut execution,
+            &current_key,
+            &mut list,
+            temporal_memory,
+            now_ms,
+            &mut planning_rng,
+        )?;
+        if selected_local != planned_local {
+            crate::domain::playlist_playback::symbolic_program::apply_program_transposition(
+                execution.atlas.as_ref(),
+                execution.orbit_index.as_ref(),
+                &mut list,
+                0,
+                planned_local,
+                selected_local,
+            )?;
+        }
+        let next_local = list.order[0];
         let materializations = execution
             .materializations
             .get(next_local)
@@ -7259,12 +7792,14 @@ impl AudioStyleSymbolicPlaybackSession {
         execution.state = list.next_state;
         self.pending_checkpoint = Some(Box::new(AudioStyleSymbolicPendingCheckpoint {
             execution: self.execution.clone(),
+            rng: rng_before,
             scope_revision: self.scope_revision,
             scope_dirty: self.scope_dirty,
             anchor_key: current_key,
             proposed_key: PlaybackTrackKey::from_track(&track),
         }));
         self.execution = Some(execution);
+        self.rng = planning_rng;
         Ok(AudioStyleSymbolicNextTrack {
             track,
             style_sector_departure: list.style_sector_departures[0],
@@ -7311,6 +7846,7 @@ impl AudioStyleSymbolicPlaybackSession {
             .take()
             .ok_or_else(|| "symbolic session has no prepared proposal to roll back".to_string())?;
         self.execution = checkpoint.execution;
+        self.rng = checkpoint.rng;
         self.scope_dirty =
             checkpoint.scope_dirty || self.scope_revision != checkpoint.scope_revision;
         Ok(())
@@ -7770,9 +8306,7 @@ pub(crate) fn filter_recently_played_recommendation_candidates(
         .collect::<HashSet<_>>();
     let history_filtered = candidates
         .iter()
-        .filter(|candidate| {
-            candidate.liked || !played_music_ids.contains(candidate.canonical_music_id.as_str())
-        })
+        .filter(|candidate| !played_music_ids.contains(candidate.canonical_music_id.as_str()))
         .cloned()
         .collect::<Vec<_>>();
 
@@ -7787,10 +8321,9 @@ pub(crate) fn recommendation_candidate_allowed_by_recent_history(
     candidate: &PlaybackTrack,
     recently_played_tracks: &[PlaybackTrack],
 ) -> bool {
-    candidate.liked
-        || !recently_played_tracks
-            .iter()
-            .any(|track| track.canonical_music_id == candidate.canonical_music_id)
+    !recently_played_tracks
+        .iter()
+        .any(|track| track.canonical_music_id == candidate.canonical_music_id)
 }
 
 fn decode_audio_style_embedding(

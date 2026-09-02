@@ -4,7 +4,7 @@ use super::recommendation::{
     acknowledge_audio_style_pending_training_input_file_for_test, audio_style_intervals_for_test,
     audio_style_training_inputs_covered_by_snapshot_for_test,
     audio_style_training_path_is_transient_for_test, audio_style_transition_fingerprint_for_test,
-    choose_audio_style_model_snapshots_for_anchor,
+    choose_audio_style_model_snapshots_for_anchor, native_opportunity_probability_for_test,
     read_and_refresh_audio_style_stable_model_for_test,
     read_audio_style_pending_training_input_file_for_test, read_audio_style_stable_model_for_test,
     read_legacy_audio_style_training_inputs_for_test,
@@ -12,6 +12,7 @@ use super::recommendation::{
     write_audio_style_stable_model_for_test,
 };
 use crate::domain::player::model::PlaybackTrack;
+use crate::domain::playlist_playback::temporal_memory::PlaylistPlaybackTemporalMemory;
 use crate::domain::playlists::model::{AudioStyleTrainingTrackInput, LoudnessProfile};
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -876,40 +877,72 @@ fn extreme_topology_block_uses_sublinear_schedule_capacity() {
     assert!(schedule_count >= 40);
 }
 
-#[test]
-fn large_content_clusters_keep_their_epoch_mass_across_scope_and_session_continuation() {
-    #[derive(Default)]
-    struct EpochExposure {
-        total: usize,
-        main_title: usize,
-        chorus: usize,
-        carol: usize,
-        controls: usize,
+#[derive(Debug)]
+struct LargeContentFailureSnapshot {
+    error: String,
+    proposals: usize,
+    completed_epochs: usize,
+    exposure_total: usize,
+    current: String,
+    scope_revision_injected: bool,
+    active_candidates: usize,
+    scope_classes: usize,
+    scope_contains_control_79: bool,
+    current_local: Option<usize>,
+    coverage_epoch: Option<usize>,
+    playback_cycle: usize,
+    active_program: Option<usize>,
+    overlay_program: Option<usize>,
+    realized_count: usize,
+    first_unread_local: Option<usize>,
+}
+
+fn large_content_failure_snapshot(
+    session: &AudioStyleSymbolicPlaybackSession,
+    current: &PlaybackTrack,
+    active_candidates: &[PlaybackTrack],
+    proposals: usize,
+    completed_epochs: usize,
+    exposure_total: usize,
+    scope_revision_injected: bool,
+    error: impl Into<String>,
+) -> LargeContentFailureSnapshot {
+    let execution = session
+        .execution_snapshot_for_test()
+        .expect("failed traversal should retain its execution snapshot");
+    let state = &execution.3;
+    let scope_classes = execution.4.len();
+    let realized = state
+        .realized_tracks(0)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|local| *local < scope_classes)
+        .collect::<BTreeSet<_>>();
+    let first_unread_local = (0..scope_classes).find(|local| !realized.contains(local));
+    LargeContentFailureSnapshot {
+        error: error.into(),
+        proposals,
+        completed_epochs,
+        exposure_total,
+        current: current.music_name.clone(),
+        scope_revision_injected,
+        active_candidates: active_candidates.len(),
+        scope_classes,
+        scope_contains_control_79: execution
+            .4
+            .iter()
+            .any(|track| track.music_name == "control-79"),
+        current_local: state.current_track(0),
+        coverage_epoch: state.coverage_epoch(0),
+        playback_cycle: state.playback_cycle,
+        active_program: state.active_program(0),
+        overlay_program: state.overlay_program_for_test(0),
+        realized_count: realized.len(),
+        first_unread_local,
     }
+}
 
-    impl EpochExposure {
-        fn observe(&mut self, track: &PlaybackTrack) {
-            self.total += 1;
-            if track.music_name.starts_with("main-title-") {
-                self.main_title += 1;
-            } else if track.music_name.starts_with("chorus-") {
-                self.chorus += 1;
-            } else if track.music_name.starts_with("carol-") {
-                self.carol += 1;
-            } else if track.music_name.starts_with("control-") {
-                self.controls += 1;
-            }
-        }
-
-        fn assert_expected(&self, schedule_count: usize, control_count: usize) {
-            assert_eq!(self.total, schedule_count);
-            assert_eq!(self.main_title, 1);
-            assert_eq!(self.chorus, 1);
-            assert_eq!(self.carol, 7);
-            assert_eq!(self.controls, control_count);
-        }
-    }
-
+fn large_content_fixture() -> (Vec<PlaybackTrack>, AudioStyleModelSnapshot) {
     let mut values = Vec::new();
     for index in 0..11 {
         values.push((
@@ -944,10 +977,53 @@ fn large_content_clusters_keep_their_epoch_mass_across_scope_and_session_continu
         .map(|(track, _, _)| track.clone())
         .collect::<Vec<_>>();
     let snapshot = AudioStyleModelSnapshot::from_test_content_embeddings(106, values);
+    assert_eq!(
+        snapshot
+            .symbolic_track_count()
+            .expect("large content-collapsed schedule should compile"),
+        89
+    );
+    (tracks, snapshot)
+}
+
+#[test]
+fn large_content_clusters_keep_their_epoch_mass_across_scope_and_session_continuation() {
+    #[derive(Default)]
+    struct EpochExposure {
+        total: usize,
+        main_title: usize,
+        chorus: usize,
+        carol: usize,
+        controls: usize,
+    }
+
+    impl EpochExposure {
+        fn observe(&mut self, track: &PlaybackTrack) {
+            self.total += 1;
+            if track.music_name.starts_with("main-title-") {
+                self.main_title += 1;
+            } else if track.music_name.starts_with("chorus-") {
+                self.chorus += 1;
+            } else if track.music_name.starts_with("carol-") {
+                self.carol += 1;
+            } else if track.music_name.starts_with("control-") {
+                self.controls += 1;
+            }
+        }
+
+        fn assert_expected(&self, schedule_count: usize, control_count: usize) {
+            assert_eq!(self.total, schedule_count);
+            assert_eq!(self.main_title, 1);
+            assert_eq!(self.chorus, 1);
+            assert_eq!(self.carol, 7);
+            assert_eq!(self.controls, control_count);
+        }
+    }
+
+    let (tracks, snapshot) = large_content_fixture();
     let schedule_count = snapshot
         .symbolic_track_count()
         .expect("large content-collapsed schedule should compile");
-    assert_eq!(schedule_count, 89);
 
     let mut current = tracks
         .iter()
@@ -961,6 +1037,7 @@ fn large_content_clusters_keep_their_epoch_mass_across_scope_and_session_continu
         .cloned()
         .collect::<Vec<_>>();
     let mut session = AudioStyleSymbolicPlaybackSession::default();
+    session.set_rng_seed_for_test(0xC0DE_1060);
     session.observe_scope_revision(1);
     let mut exposure = EpochExposure::default();
     exposure.observe(&current);
@@ -969,9 +1046,24 @@ fn large_content_clusters_keep_their_epoch_mass_across_scope_and_session_continu
     let mut committed_session_reloaded = false;
 
     while completed_epochs < 4 {
-        let next = session
-            .propose_next(&snapshot, &current, &active_candidates, &recent)
-            .expect("large symbolic traversal should remain executable");
+        let next = match session.propose_next(&snapshot, &current, &active_candidates, &recent) {
+            Ok(next) => next,
+            Err(error) => {
+                let failure = large_content_failure_snapshot(
+                    &session,
+                    &current,
+                    &active_candidates,
+                    recent.len(),
+                    completed_epochs,
+                    exposure.total,
+                    scope_revision_injected,
+                    error,
+                );
+                panic!(
+                    "large symbolic traversal should remain executable: seed=0xC0DE_1060 {failure:?}"
+                );
+            }
+        };
         if next.coverage_epoch_transition {
             if completed_epochs == 0 {
                 exposure.assert_expected(schedule_count - 1, 79);
@@ -1000,6 +1092,152 @@ fn large_content_clusters_keep_their_epoch_mass_across_scope_and_session_continu
 
     assert!(scope_revision_injected);
     assert!(committed_session_reloaded);
+}
+
+#[derive(Debug)]
+struct LargeContentRouteResult {
+    variant: &'static str,
+    completed_epochs: usize,
+    proposals: usize,
+    scope_revision_injected: bool,
+    epoch_exposures: Vec<usize>,
+    failure: Option<LargeContentFailureSnapshot>,
+}
+
+fn run_large_content_route(
+    expand_scope: bool,
+    zero_opportunity_rate: bool,
+) -> LargeContentRouteResult {
+    let variant = match (expand_scope, zero_opportunity_rate) {
+        (false, false) => "fixed-scope",
+        (true, false) => "scope-expansion",
+        (true, true) => "scope-expansion-zero-rate",
+        (false, true) => "fixed-scope-zero-rate",
+    };
+    let (tracks, snapshot) = large_content_fixture();
+
+    let mut current = tracks
+        .iter()
+        .find(|track| track.music_name == "control-0")
+        .cloned()
+        .expect("control anchor should exist");
+    let mut recent = vec![current.clone()];
+    let mut active_candidates = tracks
+        .iter()
+        .filter(|track| track.music_name != "control-79")
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut session = AudioStyleSymbolicPlaybackSession::default();
+    session.set_rng_seed_for_test(0xC0DE_1060);
+    session.observe_scope_revision(1);
+    let mut temporal_memory = PlaylistPlaybackTemporalMemory::default();
+    if zero_opportunity_rate {
+        for track in &tracks {
+            temporal_memory.observe(&track.canonical_music_id, 0);
+        }
+    }
+    let temporal_memory = zero_opportunity_rate.then_some(temporal_memory);
+    let mut exposure_total = 1;
+    let mut completed_epochs = 0;
+    let mut proposals = 0;
+    let mut scope_revision_injected = false;
+    let mut committed_session_reloaded = false;
+    let mut epoch_exposures = Vec::new();
+
+    while completed_epochs < 4 {
+        proposals += 1;
+        let next = match session.propose_next_with_temporal_memory(
+            &snapshot,
+            &current,
+            &active_candidates,
+            &recent,
+            temporal_memory.as_ref(),
+            0,
+        ) {
+            Ok(next) => next,
+            Err(error) => {
+                let failure = large_content_failure_snapshot(
+                    &session,
+                    &current,
+                    &active_candidates,
+                    proposals,
+                    completed_epochs,
+                    exposure_total,
+                    scope_revision_injected,
+                    error,
+                );
+                return LargeContentRouteResult {
+                    variant,
+                    completed_epochs,
+                    proposals,
+                    scope_revision_injected,
+                    epoch_exposures,
+                    failure: Some(failure),
+                };
+            }
+        };
+        if next.coverage_epoch_transition {
+            epoch_exposures.push(exposure_total);
+            completed_epochs += 1;
+            exposure_total = 0;
+        }
+        exposure_total += 1;
+        if expand_scope && completed_epochs == 1 && exposure_total == 20 && !scope_revision_injected
+        {
+            active_candidates = tracks.clone();
+            session.observe_scope_revision(2);
+            scope_revision_injected = true;
+        }
+        session
+            .commit_proposal()
+            .expect("large symbolic proposal should commit");
+        current = next.track;
+        recent.push(current.clone());
+        if completed_epochs == 2 && !committed_session_reloaded {
+            session = session.committed_snapshot();
+            committed_session_reloaded = true;
+        }
+    }
+
+    LargeContentRouteResult {
+        variant,
+        completed_epochs,
+        proposals,
+        scope_revision_injected,
+        epoch_exposures,
+        failure: None,
+    }
+}
+
+#[test]
+fn large_content_scope_expansion_preserves_epoch_mass_like_controls() {
+    let expanded = run_large_content_route(true, false);
+    let fixed = run_large_content_route(false, false);
+    let zero_rate = run_large_content_route(true, true);
+
+    assert!(
+        expanded.failure.is_none(),
+        "scope-expansion route should remain executable: {expanded:?}"
+    );
+    assert_eq!(expanded.completed_epochs, 4);
+    assert_eq!(expanded.proposals, 355);
+    assert_eq!(expanded.epoch_exposures, vec![88, 89, 89, 89]);
+    assert!(expanded.scope_revision_injected);
+    assert!(
+        fixed.failure.is_none(),
+        "fixed-scope control must remain executable: {fixed:?}"
+    );
+    assert_eq!(fixed.completed_epochs, 4);
+    assert_eq!(fixed.proposals, 352);
+    assert_eq!(fixed.epoch_exposures, vec![88, 88, 88, 88]);
+    assert!(
+        zero_rate.failure.is_none(),
+        "zero-opportunity scope-expansion control must remain executable: {zero_rate:?}"
+    );
+    assert_eq!(zero_rate.completed_epochs, 4);
+    assert_eq!(zero_rate.proposals, 355);
+    assert_eq!(zero_rate.epoch_exposures, vec![88, 89, 89, 89]);
+    assert!(zero_rate.scope_revision_injected);
 }
 
 #[test]
@@ -1300,11 +1538,13 @@ fn symbolic_snapshot_drops_pending_proposal_before_persistence() {
             .map(|(index, track)| (track, dense_embedding(&[(index, 1.0)]))),
     );
     let mut session = AudioStyleSymbolicPlaybackSession::default();
+    session.set_rng_seed_for_test(0x51A7_0001);
     session
         .propose_next(&snapshot, &tracks[0], &tracks, &[])
         .expect("symbolic proposal should prepare");
     let mut pending_snapshot = session.committed_snapshot();
     let mut fresh = AudioStyleSymbolicPlaybackSession::default();
+    fresh.set_rng_seed_for_test(0x51A7_0001);
     let pending_next = pending_snapshot
         .propose_next(&snapshot, &tracks[0], &tracks, &[])
         .expect("persisted committed state should remain usable");
@@ -1320,6 +1560,193 @@ fn symbolic_snapshot_drops_pending_proposal_before_persistence() {
     committed
         .propose_next(&snapshot, &pending_next.track, &tracks, &[])
         .expect("committed snapshot should remain usable");
+}
+
+#[test]
+fn native_opportunity_probability_preserves_ticket_rate_ordering() {
+    let energy = std::f32::consts::LN_2;
+    let cold = native_opportunity_probability_for_test(energy, 0.0, false);
+    let liked = native_opportunity_probability_for_test(energy, 0.0, true);
+    let warm = native_opportunity_probability_for_test(energy, 0.5, false);
+    let fully_retrievable = native_opportunity_probability_for_test(energy, 1.0, false);
+
+    assert!(
+        (cold - 0.5).abs() < 1.0e-6,
+        "E=ln(2), R=0, cold p must be 0.5, got {cold}"
+    );
+    assert!(
+        (liked - (1.0 - 2.0_f32.powf(-1.0 / 16.0))).abs() < 1.0e-6,
+        "E=ln(2), R=0, Like p must be 1-2^(-1/16), got {liked}"
+    );
+    assert!(
+        (warm - 0.75).abs() < 1.0e-6,
+        "E=ln(2), R=.5, cold p must be 0.75, got {warm}"
+    );
+
+    assert!(
+        liked < cold,
+        "Like should lower p and advance the same ticket"
+    );
+    assert!(
+        cold < warm,
+        "higher retrievability should lower the opportunity rate"
+    );
+    assert_eq!(fully_retrievable, 1.0);
+}
+
+#[test]
+fn native_opportunity_tickets_are_epoch_stable_and_rng_transactional() {
+    let tracks = (0..8)
+        .map(|index| track(&format!("ticket-stability-{index}")))
+        .collect::<Vec<_>>();
+    let snapshot = AudioStyleModelSnapshot::from_test_indexed_embeddings(
+        123,
+        tracks.iter().cloned().enumerate().map(|(index, track)| {
+            (
+                track,
+                dense_embedding(&[(index, 1.0)]),
+                "ticket-stability".to_string(),
+            )
+        }),
+    );
+
+    let mut liked_tracks = tracks.clone();
+    liked_tracks[3].liked = true;
+    let mut cold = AudioStyleSymbolicPlaybackSession::default();
+    let mut liked = AudioStyleSymbolicPlaybackSession::default();
+    cold.set_rng_seed_for_test(0x7EC0_0001);
+    liked.set_rng_seed_for_test(0x7EC0_0001);
+
+    let cold_first = cold
+        .propose_next_with_temporal_memory(&snapshot, &tracks[0], &tracks, &[], None, 0)
+        .expect("cold ticket proposal should prepare");
+    let _liked_first = liked
+        .propose_next_with_temporal_memory(&snapshot, &liked_tracks[0], &liked_tracks, &[], None, 0)
+        .expect("Like ticket proposal should prepare");
+    let cold_tickets = cold
+        .opportunity_ticket_snapshot_for_test()
+        .expect("cold proposal should allocate one ticket per class");
+    let liked_tickets = liked
+        .opportunity_ticket_snapshot_for_test()
+        .expect("Like proposal should allocate one ticket per class");
+    assert_eq!(cold_tickets.0, liked_tickets.0);
+    assert_eq!(cold_tickets.2, liked_tickets.2);
+
+    let mut independent_a = AudioStyleSymbolicPlaybackSession::default();
+    independent_a.set_rng_seed_for_test(0x7EC0_0011);
+    independent_a
+        .propose_next_with_temporal_memory(&snapshot, &tracks[0], &tracks, &[], None, 0)
+        .expect("first independent ticket draw should prepare");
+    let independent_a_tickets = independent_a
+        .opportunity_ticket_snapshot_for_test()
+        .expect("first independent ticket draw should expose tickets");
+    let mut independent_b = AudioStyleSymbolicPlaybackSession::default();
+    independent_b.set_rng_seed_for_test(0x7EC0_0012);
+    independent_b
+        .propose_next_with_temporal_memory(&snapshot, &tracks[0], &tracks, &[], None, 0)
+        .expect("second independent ticket draw should prepare");
+    let independent_b_tickets = independent_b
+        .opportunity_ticket_snapshot_for_test()
+        .expect("second independent ticket draw should expose tickets");
+    assert_ne!(
+        independent_a_tickets.2, independent_b_tickets.2,
+        "independent MC draw seeds must generate distinct epoch tickets"
+    );
+
+    // With every admitted class fully retrievable, the opportunity rates are
+    // zero even though the corresponding p values are one.  The chooser must
+    // return the native planned successor and skip geometry RNG, so distinct
+    // ticket/geometry seeds still produce the same fallback track.
+    let mut primed = AudioStyleSymbolicPlaybackSession::default();
+    primed.set_rng_seed_for_test(0x7EC0_0020);
+    let first = primed
+        .propose_next_with_temporal_memory(&snapshot, &tracks[0], &tracks, &[], None, 0)
+        .expect("fallback control first proposal should prepare");
+    primed
+        .observe_active_track(&first.track)
+        .expect("fallback control first proposal should commit");
+    let mut fully_retrievable = PlaylistPlaybackTemporalMemory::default();
+    for track in &tracks {
+        fully_retrievable.observe(&track.canonical_music_id, 0);
+    }
+    let mut fallback_a = primed.committed_snapshot();
+    let mut fallback_b = primed.committed_snapshot();
+    fallback_a.clear_opportunity_tickets_for_test();
+    fallback_b.clear_opportunity_tickets_for_test();
+    fallback_a.set_rng_seed_for_test(0x7EC0_0021);
+    fallback_b.set_rng_seed_for_test(0x7EC0_0022);
+    let fallback_a_next = fallback_a
+        .propose_next_with_temporal_memory(
+            &snapshot,
+            &first.track,
+            &tracks,
+            &[],
+            Some(&fully_retrievable),
+            0,
+        )
+        .expect("all-zero-rate fallback A should prepare");
+    let fallback_a_tickets = fallback_a
+        .opportunity_ticket_snapshot_for_test()
+        .expect("all-zero-rate fallback A should retain tickets");
+    let fallback_b_next = fallback_b
+        .propose_next_with_temporal_memory(
+            &snapshot,
+            &first.track,
+            &tracks,
+            &[],
+            Some(&fully_retrievable),
+            0,
+        )
+        .expect("all-zero-rate fallback B should prepare");
+    let fallback_b_tickets = fallback_b
+        .opportunity_ticket_snapshot_for_test()
+        .expect("all-zero-rate fallback B should retain tickets");
+    assert_ne!(fallback_a_tickets.2, fallback_b_tickets.2);
+    assert_eq!(
+        native_playback_track_key(&fallback_a_next.track),
+        native_playback_track_key(&fallback_b_next.track),
+        "all-zero opportunity rates must return the shared native planned successor"
+    );
+
+    cold.rollback_proposal()
+        .expect("rollback should restore the pre-proposal RNG and execution");
+    let cold_replayed = cold
+        .propose_next_with_temporal_memory(&snapshot, &tracks[0], &tracks, &[], None, 0)
+        .expect("rolled-back ticket proposal should prepare again");
+    let replayed_tickets = cold
+        .opportunity_ticket_snapshot_for_test()
+        .expect("replayed proposal should retain tickets");
+    assert_eq!(cold_first.track.music_url, cold_replayed.track.music_url);
+    assert_eq!(cold_tickets.0, replayed_tickets.0);
+    assert_eq!(cold_tickets.2, replayed_tickets.2);
+
+    cold.commit_proposal()
+        .expect("replayed ticket proposal should commit");
+    let committed_tickets = cold
+        .opportunity_ticket_snapshot_for_test()
+        .expect("committed proposal should retain tickets");
+    let current = cold_replayed.track.clone();
+    let _ = cold
+        .propose_next_with_temporal_memory(&snapshot, &current, &tracks, &[], None, 0)
+        .expect("same-epoch continuation should prepare");
+    let continued_tickets = cold
+        .opportunity_ticket_snapshot_for_test()
+        .expect("same-epoch continuation should retain tickets");
+    assert_eq!(committed_tickets.0, continued_tickets.0);
+    assert_eq!(committed_tickets.2, continued_tickets.2);
+
+    let mut memory = PlaylistPlaybackTemporalMemory::default();
+    memory.observe(&current.canonical_music_id, 0);
+    let memory_before = memory.clone();
+    cold.rollback_proposal()
+        .expect("the memory control proposal should roll back");
+    let _ = cold
+        .propose_next_with_temporal_memory(&snapshot, &current, &tracks, &[], Some(&memory), 1_000)
+        .expect("memory-backed proposal should prepare");
+    assert_eq!(
+        memory, memory_before,
+        "planning must not observe a new exposure"
+    );
 }
 
 #[test]
