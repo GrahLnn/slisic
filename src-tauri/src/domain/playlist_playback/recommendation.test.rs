@@ -214,6 +214,87 @@ fn symbolic_playback_session_commits_and_rolls_back_program_state() {
 }
 
 #[test]
+fn symbolic_committed_planning_anchor_uses_checkpoint_not_tentative_destination() {
+    let tracks = (0..6)
+        .map(|index| track(&format!("planning-anchor-{index}")))
+        .collect::<Vec<_>>();
+    let snapshot = AudioStyleModelSnapshot::from_test_embeddings(
+        91,
+        tracks
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(index, track)| (track, dense_embedding(&[(index, 1.0)]))),
+    );
+    let mut session = AudioStyleSymbolicPlaybackSession::default();
+    let first = session
+        .propose_next(&snapshot, &tracks[0], &tracks, &[])
+        .expect("first symbolic proposal should prepare");
+    session
+        .commit_proposal()
+        .expect("first symbolic proposal should commit");
+
+    let second = session
+        .propose_next(&snapshot, &first.track, &tracks, &[])
+        .expect("continued symbolic proposal should prepare");
+    let planning_anchor = session
+        .committed_planning_anchor()
+        .expect("pending proposal should retain a committed planning anchor");
+
+    assert_eq!(planning_anchor.music_url, first.track.music_url);
+    assert_ne!(planning_anchor.music_url, second.track.music_url);
+}
+
+#[test]
+fn symbolic_committed_planning_anchor_is_empty_without_committed_execution() {
+    assert!(
+        AudioStyleSymbolicPlaybackSession::default()
+            .committed_planning_anchor()
+            .is_none()
+    );
+}
+
+#[test]
+fn symbolic_resume_planning_anchor_preserves_next_track_equivalence() {
+    let tracks = (0..6)
+        .map(|index| track(&format!("resume-equivalence-{index}")))
+        .collect::<Vec<_>>();
+    let snapshot = AudioStyleModelSnapshot::from_test_embeddings(
+        92,
+        tracks
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(index, track)| (track, dense_embedding(&[(index, 1.0)]))),
+    );
+    let mut uninterrupted = AudioStyleSymbolicPlaybackSession::default();
+    let first = uninterrupted
+        .propose_next(&snapshot, &tracks[0], &tracks, &[])
+        .expect("first symbolic proposal should prepare");
+    uninterrupted
+        .commit_proposal()
+        .expect("first symbolic proposal should commit");
+    let planning_anchor = uninterrupted
+        .committed_planning_anchor()
+        .expect("committed execution should expose its current class");
+
+    let mut uninterrupted_next = uninterrupted.clone();
+    let expected = uninterrupted_next
+        .propose_next(&snapshot, &planning_anchor, &tracks, &[])
+        .expect("uninterrupted continuation should prepare");
+    let mut resumed = uninterrupted.committed_snapshot();
+    let resumed_anchor = resumed
+        .committed_planning_anchor()
+        .expect("reopened committed execution should expose its current class");
+    let actual = resumed
+        .propose_next(&snapshot, &resumed_anchor, &tracks, &[])
+        .expect("resumed continuation should prepare");
+
+    assert_eq!(resumed_anchor.music_url, first.track.music_url);
+    assert_eq!(expected.track.music_url, actual.track.music_url);
+}
+
+#[test]
 fn symbolic_active_observation_commits_only_the_proposed_track() {
     let tracks = (0..6)
         .map(|index| track(&format!("active-observation-{index}")))
