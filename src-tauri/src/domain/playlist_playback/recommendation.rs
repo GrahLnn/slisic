@@ -6972,6 +6972,28 @@ impl AudioStyleSymbolicPlaybackSession {
         })
     }
 
+    #[cfg(test)]
+    pub(crate) fn execution_snapshot_for_test(
+        &self,
+    ) -> Option<(
+        usize,
+        usize,
+        usize,
+        ProgramOwnedTraversalState,
+        Vec<PlaybackTrack>,
+        Vec<Vec<PlaybackTrack>>,
+    )> {
+        let execution = self.execution.as_ref()?;
+        Some((
+            Arc::as_ptr(&execution.atlas) as usize,
+            Arc::as_ptr(&execution.orbit_index) as usize,
+            Arc::as_ptr(&execution.local_by_key) as usize,
+            execution.state.clone(),
+            execution.tracks.as_ref().clone(),
+            execution.materializations.as_ref().clone(),
+        ))
+    }
+
     pub(crate) fn propose_next(
         &mut self,
         snapshot: &AudioStyleModelSnapshot,
@@ -7162,10 +7184,43 @@ impl AudioStyleSymbolicPlaybackSession {
                     materializations,
                 }
             } else {
-                self.execution
+                let previous = self
+                    .execution
                     .as_ref()
-                    .expect("unchanged scope has a symbolic execution")
-                    .clone()
+                    .expect("unchanged scope has a symbolic execution");
+                let mut refreshed_by_key = HashMap::<PlaybackTrackKey, PlaybackTrack>::new();
+                for tracks in tracks_by_global.values() {
+                    for track in tracks {
+                        // `tracks_by_global` is normalized with candidates before the
+                        // current snapshot, so first-wins keeps a fresher candidate
+                        // when the current key is duplicated.
+                        refreshed_by_key
+                            .entry(PlaybackTrackKey::from_track(track))
+                            .or_insert_with(|| track.clone());
+                    }
+                }
+                let refresh_track = |track: &PlaybackTrack| {
+                    refreshed_by_key
+                        .get(&PlaybackTrackKey::from_track(track))
+                        .cloned()
+                        .unwrap_or_else(|| track.clone())
+                };
+                let mut execution = previous.clone();
+                execution.tracks = Arc::new(
+                    previous
+                        .tracks
+                        .iter()
+                        .map(refresh_track)
+                        .collect::<Vec<_>>(),
+                );
+                execution.materializations = Arc::new(
+                    previous
+                        .materializations
+                        .iter()
+                        .map(|tracks| tracks.iter().map(refresh_track).collect::<Vec<_>>())
+                        .collect::<Vec<_>>(),
+                );
+                execution
             }
         };
         let current_local = *execution

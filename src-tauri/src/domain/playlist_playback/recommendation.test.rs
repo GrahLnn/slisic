@@ -103,6 +103,14 @@ fn native_playback_track_key(track: &PlaybackTrack) -> NativeStableTrackKey {
     }
 }
 
+fn assert_playback_metadata_matches(actual: &PlaybackTrack, expected: &PlaybackTrack) {
+    assert_eq!(actual.playlist_name, expected.playlist_name);
+    assert_eq!(actual.music_name, expected.music_name);
+    assert_eq!(actual.canonical_music_id, expected.canonical_music_id);
+    assert_eq!(actual.liked, expected.liked);
+    assert_eq!(actual.loudness_profile, expected.loudness_profile);
+}
+
 fn native_stable_indexed_tracks_projection(
     path: &std::path::Path,
 ) -> NativeStableIndexedTracksDocument {
@@ -1040,6 +1048,242 @@ fn symbolic_playback_session_exposes_reusable_materialized_scope() {
             .cached_scope_tracks_for(&next_generation, &tracks[0])
             .is_none()
     );
+}
+
+#[test]
+fn symbolic_scope_refreshes_like_metadata_when_scope_keys_are_unchanged() {
+    let mut initial_tracks = (0..6)
+        .map(|index| track(&format!("metadata-refresh-{index}")))
+        .collect::<Vec<_>>();
+    initial_tracks[0].liked = true;
+    let snapshot = AudioStyleModelSnapshot::from_test_content_embeddings(
+        90,
+        initial_tracks
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(index, track)| {
+                let content_key = if index < 2 {
+                    "metadata-refresh-shared".to_string()
+                } else {
+                    format!("metadata-refresh-content-{index}")
+                };
+                (track, dense_embedding(&[(index, 1.0)]), content_key)
+            }),
+    );
+    let mut session = AudioStyleSymbolicPlaybackSession::default();
+    session.observe_scope_revision(1);
+    session
+        .propose_next(&snapshot, &initial_tracks[0], &initial_tracks, &[])
+        .expect("initial symbolic scope should materialize");
+    session
+        .commit_proposal()
+        .expect("initial symbolic scope should commit");
+    let baseline = session
+        .execution_snapshot_for_test()
+        .expect("initial proposal should expose its committed execution");
+
+    let mut refreshed_tracks = initial_tracks.clone();
+    for (index, track) in refreshed_tracks.iter_mut().enumerate() {
+        track.liked = !track.liked;
+        track.music_name = format!("metadata-refresh-current-{index}");
+    }
+    refreshed_tracks.reverse();
+    session.observe_scope_revision(2);
+    let mut control = session.clone();
+    let control_next = control
+        .propose_next(&snapshot, &initial_tracks[0], &initial_tracks, &[])
+        .expect("unchanged metadata control should remain executable");
+    let control_after = control
+        .execution_snapshot_for_test()
+        .expect("control proposal should expose its execution state");
+
+    let pending_next = session
+        .propose_next(&snapshot, &initial_tracks[0], &refreshed_tracks, &[])
+        .expect("metadata-only revision should keep the symbolic scope executable");
+    assert_eq!(
+        native_playback_track_key(&pending_next.track),
+        native_playback_track_key(&control_next.track),
+        "metadata refresh must preserve the symbolic traversal key"
+    );
+    assert_eq!(
+        pending_next.style_sector_departure,
+        control_next.style_sector_departure
+    );
+    assert_eq!(
+        pending_next.coverage_epoch_transition,
+        control_next.coverage_epoch_transition
+    );
+
+    session
+        .rollback_proposal()
+        .expect("a pending metadata refresh should roll back cleanly");
+    let rolled_back = session
+        .execution_snapshot_for_test()
+        .expect("rollback should restore the committed execution");
+    assert_eq!(
+        rolled_back.0, baseline.0,
+        "rollback must retain the atlas Arc"
+    );
+    assert_eq!(
+        rolled_back.1, baseline.1,
+        "rollback must retain the orbit Arc"
+    );
+    assert_eq!(
+        rolled_back.2, baseline.2,
+        "rollback must retain the canonical key map Arc"
+    );
+    assert_eq!(
+        rolled_back.3, baseline.3,
+        "rollback must restore the committed traversal state"
+    );
+    let expected_initial = |actual: &PlaybackTrack| {
+        initial_tracks
+            .iter()
+            .find(|candidate| {
+                native_playback_track_key(candidate) == native_playback_track_key(actual)
+            })
+            .expect("rollback track should retain its canonical key")
+    };
+    for (actual, expected) in rolled_back.4.iter().zip(&baseline.4) {
+        assert_eq!(
+            native_playback_track_key(actual),
+            native_playback_track_key(expected),
+            "rollback must preserve representative ordering"
+        );
+        assert_playback_metadata_matches(actual, expected_initial(actual));
+    }
+    for (actual_class, expected_class) in rolled_back.5.iter().zip(&baseline.5) {
+        assert_eq!(
+            actual_class
+                .iter()
+                .map(native_playback_track_key)
+                .collect::<Vec<_>>(),
+            expected_class
+                .iter()
+                .map(native_playback_track_key)
+                .collect::<Vec<_>>(),
+            "rollback must preserve materialization ordering"
+        );
+        for actual in actual_class {
+            assert_playback_metadata_matches(actual, expected_initial(actual));
+        }
+    }
+    assert!(
+        session
+            .cached_scope_tracks_for(&snapshot, &initial_tracks[0])
+            .is_none(),
+        "rollback after a scope revision must keep the refresh dirty"
+    );
+
+    let refreshed_next = session
+        .propose_next(&snapshot, &initial_tracks[0], &refreshed_tracks, &[])
+        .expect("replayed metadata refresh should remain executable");
+    assert_eq!(
+        native_playback_track_key(&refreshed_next.track),
+        native_playback_track_key(&control_next.track),
+        "refresh replay must preserve the committed traversal key"
+    );
+    assert_eq!(
+        refreshed_next.style_sector_departure,
+        control_next.style_sector_departure
+    );
+    assert_eq!(
+        refreshed_next.coverage_epoch_transition,
+        control_next.coverage_epoch_transition
+    );
+    session
+        .commit_proposal()
+        .expect("replayed metadata refresh should commit");
+
+    let final_execution = session
+        .execution_snapshot_for_test()
+        .expect("committed metadata refresh should expose its execution");
+    assert_eq!(
+        final_execution.0, baseline.0,
+        "metadata transport must retain the atlas Arc"
+    );
+    assert_eq!(
+        final_execution.1, baseline.1,
+        "metadata transport must retain the orbit Arc"
+    );
+    assert_eq!(
+        final_execution.2, baseline.2,
+        "metadata transport must retain the canonical key map Arc"
+    );
+    assert_eq!(
+        final_execution.3, control_after.3,
+        "metadata transport must not reset realized classes or traversal state"
+    );
+    assert_eq!(
+        final_execution.3.realized_tracks(0),
+        control_after.3.realized_tracks(0),
+        "realized class membership must follow the unchanged traversal"
+    );
+    assert_eq!(
+        final_execution.3.coverage_epoch(0),
+        control_after.3.coverage_epoch(0),
+        "coverage epoch must follow the unchanged traversal"
+    );
+
+    let expected_refreshed = |actual: &PlaybackTrack| {
+        refreshed_tracks
+            .iter()
+            .find(|candidate| {
+                native_playback_track_key(candidate) == native_playback_track_key(actual)
+            })
+            .expect("refreshed track should retain its canonical key")
+    };
+    assert_playback_metadata_matches(&pending_next.track, expected_refreshed(&pending_next.track));
+    assert_playback_metadata_matches(
+        &refreshed_next.track,
+        expected_refreshed(&refreshed_next.track),
+    );
+    assert_eq!(
+        final_execution
+            .4
+            .iter()
+            .map(native_playback_track_key)
+            .collect::<Vec<_>>(),
+        baseline
+            .4
+            .iter()
+            .map(native_playback_track_key)
+            .collect::<Vec<_>>(),
+        "reordered candidates must preserve representative ordering"
+    );
+    assert_eq!(
+        final_execution.5.len(),
+        baseline.5.len(),
+        "metadata refresh must preserve materialization class count"
+    );
+    for (representative, materializations) in final_execution.4.iter().zip(&final_execution.5) {
+        let first = materializations
+            .first()
+            .expect("every symbolic class should retain a materialization");
+        assert_eq!(
+            native_playback_track_key(representative),
+            native_playback_track_key(first),
+            "representatives and materializations must retain the same exact key"
+        );
+        assert_playback_metadata_matches(representative, expected_refreshed(representative));
+        for actual in materializations {
+            assert_playback_metadata_matches(actual, expected_refreshed(actual));
+        }
+    }
+    for (actual_class, expected_class) in final_execution.5.iter().zip(&baseline.5) {
+        assert_eq!(
+            actual_class
+                .iter()
+                .map(native_playback_track_key)
+                .collect::<Vec<_>>(),
+            expected_class
+                .iter()
+                .map(native_playback_track_key)
+                .collect::<Vec<_>>(),
+            "same-content aliases must remain ordered by canonical exact key"
+        );
+    }
 }
 
 #[test]
