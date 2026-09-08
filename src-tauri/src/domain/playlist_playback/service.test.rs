@@ -1,5 +1,5 @@
 use super::recommendation::{
-    filter_recently_played_recommendation_candidates,
+    AudioStyleSymbolicPendingObservationOutcome, filter_recently_played_recommendation_candidates,
     recommendation_candidate_allowed_by_recent_history,
 };
 use super::service::{
@@ -9,8 +9,8 @@ use super::service::{
     PlaylistTrackQueueRefreshOutcome, RandomPlaylistPlaybackRecommender,
     apply_initial_track_loudness_profile, create_exclude_current_cargo_queue,
     create_start_anchor_playback_queue, exclude_current_next_cargo_queue,
-    initial_track_release_requires_loudness_gate, place_track_at_queue_start,
-    playlist_playback_proposal_contains_next_track,
+    initial_track_release_requires_loudness_gate, new_playlist_symbolic_playback_session,
+    place_track_at_queue_start, playlist_playback_proposal_contains_next_track,
     playlist_playback_queue_contains_next_track_after_anchor,
     playlist_selection_has_relevant_active_downloads, playlist_track_needs_loudness_evidence,
     prepared_first_track_can_replace_excluded_current,
@@ -37,6 +37,7 @@ use crate::domain::playlists::repo::{
 };
 use appdb::Id;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const TEST_EMBEDDING_WIDTH: usize = 64 * 2 + 64 * 2 + 64 * 64;
@@ -360,6 +361,31 @@ fn playlist_playback_always_starts_in_random_continuation_mode() {
     assert_eq!(
         resolve_playlist_playback_continuation_mode(),
         PlaybackContinuationMode::Random
+    );
+}
+
+#[test]
+fn new_playback_requests_receive_distinct_fresh_symbolic_sessions() {
+    let first = new_playlist_symbolic_playback_session();
+    let second = new_playlist_symbolic_playback_session();
+    let probe = playback_track("fresh-session-probe");
+
+    assert!(!Arc::ptr_eq(&first, &second));
+    assert_eq!(
+        first
+            .lock()
+            .expect("first symbolic session should be available")
+            .observe_active_track(&probe)
+            .expect("first fresh session should accept an active observation"),
+        AudioStyleSymbolicPendingObservationOutcome::NoPending
+    );
+    assert_eq!(
+        second
+            .lock()
+            .expect("second symbolic session should be available")
+            .observe_active_track(&probe)
+            .expect("second fresh session should accept an active observation"),
+        AudioStyleSymbolicPendingObservationOutcome::NoPending
     );
 }
 

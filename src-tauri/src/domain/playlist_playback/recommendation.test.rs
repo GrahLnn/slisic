@@ -324,87 +324,6 @@ fn symbolic_playback_session_commits_and_rolls_back_program_state() {
 }
 
 #[test]
-fn symbolic_committed_planning_anchor_uses_checkpoint_not_tentative_destination() {
-    let tracks = (0..6)
-        .map(|index| track(&format!("planning-anchor-{index}")))
-        .collect::<Vec<_>>();
-    let snapshot = AudioStyleModelSnapshot::from_test_embeddings(
-        91,
-        tracks
-            .iter()
-            .cloned()
-            .enumerate()
-            .map(|(index, track)| (track, dense_embedding(&[(index, 1.0)]))),
-    );
-    let mut session = AudioStyleSymbolicPlaybackSession::default();
-    let first = session
-        .propose_next(&snapshot, &tracks[0], &tracks, &[])
-        .expect("first symbolic proposal should prepare");
-    session
-        .commit_proposal()
-        .expect("first symbolic proposal should commit");
-
-    let second = session
-        .propose_next(&snapshot, &first.track, &tracks, &[])
-        .expect("continued symbolic proposal should prepare");
-    let planning_anchor = session
-        .committed_planning_anchor()
-        .expect("pending proposal should retain a committed planning anchor");
-
-    assert_eq!(planning_anchor.music_url, first.track.music_url);
-    assert_ne!(planning_anchor.music_url, second.track.music_url);
-}
-
-#[test]
-fn symbolic_committed_planning_anchor_is_empty_without_committed_execution() {
-    assert!(
-        AudioStyleSymbolicPlaybackSession::default()
-            .committed_planning_anchor()
-            .is_none()
-    );
-}
-
-#[test]
-fn symbolic_resume_planning_anchor_preserves_next_track_equivalence() {
-    let tracks = (0..6)
-        .map(|index| track(&format!("resume-equivalence-{index}")))
-        .collect::<Vec<_>>();
-    let snapshot = AudioStyleModelSnapshot::from_test_embeddings(
-        92,
-        tracks
-            .iter()
-            .cloned()
-            .enumerate()
-            .map(|(index, track)| (track, dense_embedding(&[(index, 1.0)]))),
-    );
-    let mut uninterrupted = AudioStyleSymbolicPlaybackSession::default();
-    let first = uninterrupted
-        .propose_next(&snapshot, &tracks[0], &tracks, &[])
-        .expect("first symbolic proposal should prepare");
-    uninterrupted
-        .commit_proposal()
-        .expect("first symbolic proposal should commit");
-    let planning_anchor = uninterrupted
-        .committed_planning_anchor()
-        .expect("committed execution should expose its current class");
-
-    let mut uninterrupted_next = uninterrupted.clone();
-    let expected = uninterrupted_next
-        .propose_next(&snapshot, &planning_anchor, &tracks, &[])
-        .expect("uninterrupted continuation should prepare");
-    let mut resumed = uninterrupted.committed_snapshot();
-    let resumed_anchor = resumed
-        .committed_planning_anchor()
-        .expect("reopened committed execution should expose its current class");
-    let actual = resumed
-        .propose_next(&snapshot, &resumed_anchor, &tracks, &[])
-        .expect("resumed continuation should prepare");
-
-    assert_eq!(resumed_anchor.music_url, first.track.music_url);
-    assert_eq!(expected.track.music_url, actual.track.music_url);
-}
-
-#[test]
 fn symbolic_active_observation_commits_only_the_proposed_track() {
     let tracks = (0..6)
         .map(|index| track(&format!("active-observation-{index}")))
@@ -1043,7 +962,6 @@ fn large_content_clusters_keep_their_epoch_mass_across_scope_and_session_continu
     exposure.observe(&current);
     let mut completed_epochs = 0;
     let mut scope_revision_injected = false;
-    let mut committed_session_reloaded = false;
 
     while completed_epochs < 4 {
         let next = match session.propose_next(&snapshot, &current, &active_candidates, &recent) {
@@ -1084,14 +1002,9 @@ fn large_content_clusters_keep_their_epoch_mass_across_scope_and_session_continu
             .expect("large symbolic proposal should commit");
         current = next.track;
         recent.push(current.clone());
-        if completed_epochs == 2 && !committed_session_reloaded {
-            session = session.committed_snapshot();
-            committed_session_reloaded = true;
-        }
     }
 
     assert!(scope_revision_injected);
-    assert!(committed_session_reloaded);
 }
 
 #[derive(Debug)]
@@ -1141,7 +1054,6 @@ fn run_large_content_route(
     let mut completed_epochs = 0;
     let mut proposals = 0;
     let mut scope_revision_injected = false;
-    let mut committed_session_reloaded = false;
     let mut epoch_exposures = Vec::new();
 
     while completed_epochs < 4 {
@@ -1193,10 +1105,6 @@ fn run_large_content_route(
             .expect("large symbolic proposal should commit");
         current = next.track;
         recent.push(current.clone());
-        if completed_epochs == 2 && !committed_session_reloaded {
-            session = session.committed_snapshot();
-            committed_session_reloaded = true;
-        }
     }
 
     LargeContentRouteResult {
@@ -1525,44 +1433,6 @@ fn symbolic_scope_refreshes_like_metadata_when_scope_keys_are_unchanged() {
 }
 
 #[test]
-fn symbolic_snapshot_drops_pending_proposal_before_persistence() {
-    let tracks = (0..6)
-        .map(|index| track(&format!("snapshot-symbolic-{index}")))
-        .collect::<Vec<_>>();
-    let snapshot = AudioStyleModelSnapshot::from_test_embeddings(
-        90,
-        tracks
-            .iter()
-            .cloned()
-            .enumerate()
-            .map(|(index, track)| (track, dense_embedding(&[(index, 1.0)]))),
-    );
-    let mut session = AudioStyleSymbolicPlaybackSession::default();
-    session.set_rng_seed_for_test(0x51A7_0001);
-    session
-        .propose_next(&snapshot, &tracks[0], &tracks, &[])
-        .expect("symbolic proposal should prepare");
-    let mut pending_snapshot = session.committed_snapshot();
-    let mut fresh = AudioStyleSymbolicPlaybackSession::default();
-    fresh.set_rng_seed_for_test(0x51A7_0001);
-    let pending_next = pending_snapshot
-        .propose_next(&snapshot, &tracks[0], &tracks, &[])
-        .expect("persisted committed state should remain usable");
-    let fresh_next = fresh
-        .propose_next(&snapshot, &tracks[0], &tracks, &[])
-        .expect("fresh state should remain usable");
-    assert_eq!(pending_next.track.music_url, fresh_next.track.music_url);
-
-    session
-        .commit_proposal()
-        .expect("symbolic proposal should commit");
-    let mut committed = session.committed_snapshot();
-    committed
-        .propose_next(&snapshot, &pending_next.track, &tracks, &[])
-        .expect("committed snapshot should remain usable");
-}
-
-#[test]
 fn native_opportunity_probability_preserves_ticket_rate_ordering() {
     let energy = std::f32::consts::LN_2;
     let cold = native_opportunity_probability_for_test(energy, 0.0, false);
@@ -1669,8 +1539,8 @@ fn native_opportunity_tickets_are_epoch_stable_and_rng_transactional() {
     for track in &tracks {
         fully_retrievable.observe(&track.canonical_music_id, 0);
     }
-    let mut fallback_a = primed.committed_snapshot();
-    let mut fallback_b = primed.committed_snapshot();
+    let mut fallback_a = primed.clone();
+    let mut fallback_b = primed.clone();
     fallback_a.clear_opportunity_tickets_for_test();
     fallback_b.clear_opportunity_tickets_for_test();
     fallback_a.set_rng_seed_for_test(0x7EC0_0021);

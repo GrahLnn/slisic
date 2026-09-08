@@ -7296,32 +7296,6 @@ fn choose_native_region_opportunity(
 }
 
 impl AudioStyleSymbolicPlaybackSession {
-    pub(crate) fn committed_snapshot(&self) -> Self {
-        let (execution, rng) = self
-            .pending_checkpoint
-            .as_ref()
-            .map(|checkpoint| (checkpoint.execution.clone(), checkpoint.rng.clone()))
-            .unwrap_or_else(|| (self.execution.clone(), self.rng.clone()));
-        Self {
-            execution,
-            pending_checkpoint: None,
-            scope_revision: self.scope_revision,
-            scope_dirty: self.scope_dirty,
-            rng,
-        }
-    }
-
-    pub(crate) fn committed_planning_anchor(&self) -> Option<PlaybackTrack> {
-        // This class representative is planning-only. It must not enter
-        // audible history, the player queue, or temporal memory.
-        let execution = match self.pending_checkpoint.as_ref() {
-            Some(checkpoint) => checkpoint.execution.as_ref(),
-            None => self.execution.as_ref(),
-        }?;
-        let current_class = execution.state.current_track(0)?;
-        execution.tracks.get(current_class).cloned()
-    }
-
     // @forma implements architecture Domain.PlaybackSessionProgramState as propose_next
     pub(crate) fn observe_scope_revision(&mut self, revision: u64) {
         if self.scope_revision != Some(revision) {

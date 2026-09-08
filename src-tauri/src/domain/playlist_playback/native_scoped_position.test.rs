@@ -304,7 +304,7 @@ fn like_baseline_cached_session(
     carrier: &LikeBaselineCarrier,
     anchor_key: &PlaybackTrackKey,
 ) -> AudioStyleSymbolicPlaybackSession {
-    let mut session = formed.committed_snapshot();
+    let mut session = formed.clone();
     let execution = session
         .execution
         .as_mut()
@@ -614,11 +614,8 @@ fn like_baseline_control_check(
         carrier,
         "committed snapshot first",
     );
-    let committed = before_snapshot.committed_snapshot();
-    let reopen_anchor = committed
-        .committed_planning_anchor()
-        .expect("committed snapshot must retain a planning anchor");
-    let mut reopened = committed.committed_snapshot();
+    let reopen_anchor = first_snapshot.clone();
+    let mut reopened = before_snapshot.clone();
     let second_snapshot = like_baseline_propose_and_commit(
         snapshot,
         &mut reopened,
@@ -1094,7 +1091,7 @@ fn native_scoped_position_ticket_window_generation163_scope3420() {
         super::AudioStyleSymbolicPendingObservationOutcome::Committed
     );
     let formation_ms = formation_started.elapsed().as_millis() as usize;
-    let formed = session.committed_snapshot();
+    let formed = session.clone();
     let execution = formed
         .execution
         .as_ref()

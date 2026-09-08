@@ -22,16 +22,18 @@ use crate::domain::player::service::{self as player_service, PlaybackQueueExhaus
 use crate::domain::player::strategy::PlaybackQueueMode;
 #[cfg(not(test))]
 use crate::domain::playlist_playback::playable_index;
-use crate::domain::playlist_playback::recommendation::filter_recently_played_recommendation_candidates;
 #[cfg(not(test))]
 use crate::domain::playlist_playback::recommendation::recommendation_candidate_allowed_by_recent_history;
 #[cfg(not(test))]
 use crate::domain::playlist_playback::recommendation::{
     AudioStyleCandidateSelection, AudioStyleModelSnapshot, AudioStyleSymbolicNextTrack,
-    AudioStyleSymbolicPendingObservationOutcome, AudioStyleSymbolicPlaybackSession,
-    initialize_audio_style_recommendation_runtime, notify_audio_style_library_inputs_changed,
-    notify_audio_style_music_input_changed, notify_audio_style_training_inputs_ready,
-    published_audio_style_model_snapshot, published_audio_style_model_snapshots_for_anchor,
+    AudioStyleSymbolicPendingObservationOutcome, initialize_audio_style_recommendation_runtime,
+    notify_audio_style_library_inputs_changed, notify_audio_style_music_input_changed,
+    notify_audio_style_training_inputs_ready, published_audio_style_model_snapshot,
+    published_audio_style_model_snapshots_for_anchor,
+};
+use crate::domain::playlist_playback::recommendation::{
+    AudioStyleSymbolicPlaybackSession, filter_recently_played_recommendation_candidates,
 };
 use crate::domain::playlist_playback::temporal_memory::PlaylistPlaybackTemporalMemory;
 #[cfg(not(test))]
@@ -44,20 +46,15 @@ use crate::domain::playlists::repo::{PlaylistPlaybackSelection, PlaylistPlayback
 #[cfg(not(test))]
 use anyhow::{Result, anyhow, bail};
 use rand::RngExt;
-#[cfg(not(test))]
-use std::collections::HashMap;
 use std::collections::HashSet;
 #[cfg(not(test))]
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 #[cfg(not(test))]
-use std::sync::Arc;
-#[cfg(not(test))]
-use std::sync::Mutex;
-#[cfg(not(test))]
 use std::sync::OnceLock;
 #[cfg(not(test))]
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 #[cfg(not(test))]
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 #[cfg(not(test))]
@@ -81,17 +78,11 @@ const PLAYLIST_PLAYBACK_LOG_TARGET: &str = "playlist_playback";
 type SharedPlaylistPlaybackRecentHistory = Arc<Mutex<PlaylistPlaybackRecentHistory>>;
 #[cfg(not(test))]
 type SharedPlaylistPlaybackQueueRefreshGate = Arc<tokio::sync::Mutex<()>>;
-#[cfg(not(test))]
 type SharedAudioStyleSymbolicPlaybackSession = Arc<Mutex<AudioStyleSymbolicPlaybackSession>>;
 
 #[cfg(not(test))]
 static PLAYLIST_PLAYBACK_TEMPORAL_MEMORY: OnceLock<Mutex<PlaylistPlaybackTemporalMemory>> =
     OnceLock::new();
-
-#[cfg(not(test))]
-static PLAYLIST_SYMBOLIC_PLAYBACK_SESSIONS: OnceLock<
-    Mutex<HashMap<String, AudioStyleSymbolicPlaybackSession>>,
-> = OnceLock::new();
 
 #[cfg(not(test))]
 static PLAYLIST_QUEUE_REFRESH_ATTEMPT_ID: AtomicU64 = AtomicU64::new(0);
@@ -146,39 +137,8 @@ fn playlist_playback_temporal_memory() -> &'static Mutex<PlaylistPlaybackTempora
         .get_or_init(|| Mutex::new(PlaylistPlaybackTemporalMemory::default()))
 }
 
-#[cfg(not(test))]
-fn playlist_symbolic_playback_sessions()
--> &'static Mutex<HashMap<String, AudioStyleSymbolicPlaybackSession>> {
-    PLAYLIST_SYMBOLIC_PLAYBACK_SESSIONS.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-#[cfg(not(test))]
-fn new_playlist_symbolic_playback_session(
-    playlist_name: &str,
-) -> Result<SharedAudioStyleSymbolicPlaybackSession> {
-    let persisted = playlist_symbolic_playback_sessions()
-        .lock()
-        .map_err(|_| anyhow!("playlist symbolic playback session cache lock poisoned"))?
-        .get(playlist_name)
-        .map(AudioStyleSymbolicPlaybackSession::committed_snapshot)
-        .unwrap_or_default();
-    Ok(Arc::new(Mutex::new(persisted)))
-}
-
-#[cfg(not(test))]
-fn persist_playlist_symbolic_playback_session(
-    playlist_name: &str,
-    session: &SharedAudioStyleSymbolicPlaybackSession,
-) -> Result<()> {
-    let snapshot = session
-        .lock()
-        .map_err(|_| anyhow!("symbolic playback session lock poisoned"))?
-        .committed_snapshot();
-    playlist_symbolic_playback_sessions()
-        .lock()
-        .map_err(|_| anyhow!("playlist symbolic playback session cache lock poisoned"))?
-        .insert(playlist_name.to_string(), snapshot);
-    Ok(())
+pub(crate) fn new_playlist_symbolic_playback_session() -> SharedAudioStyleSymbolicPlaybackSession {
+    Arc::new(Mutex::new(AudioStyleSymbolicPlaybackSession::default()))
 }
 
 #[cfg(not(test))]
@@ -408,7 +368,7 @@ pub async fn play_playlist(app: &AppHandle, name: String) -> Result<PlayPlaylist
         PlaylistPlaybackTrace::new(app).playlist_name(&name),
     );
 
-    let mut download_changes = download_service::subscribe_download_task_changes();
+    let download_changes = download_service::subscribe_download_task_changes();
     let request = player_service::claim_playback_start_request()?;
     emit_playlist_playback_trace(
         "playlist-play-request-claimed",
@@ -416,16 +376,8 @@ pub async fn play_playlist(app: &AppHandle, name: String) -> Result<PlayPlaylist
             .playlist_name(&name)
             .elapsed(trace_start),
     );
-    let symbolic_session = new_playlist_symbolic_playback_session(&name)?;
-
-    let material_result = build_playlist_playback_material(
-        app,
-        &name,
-        &request,
-        &mut download_changes,
-        &symbolic_session,
-    )
-    .await;
+    let material_result = build_playlist_playback_material(app, &name, &request).await;
+    let symbolic_session = new_playlist_symbolic_playback_session();
     let material = match material_result {
         Ok(Some(material)) => material,
         Ok(None) => {
@@ -492,9 +444,6 @@ pub async fn play_playlist(app: &AppHandle, name: String) -> Result<PlayPlaylist
     let queue_refresh_gate = Arc::new(tokio::sync::Mutex::new(()));
 
     if let Err(error) = ensure_playlist_playback_request_current(&request) {
-        if initial_prepared_source.is_none() {
-            rollback_playlist_symbolic_proposal(&symbolic_session)?;
-        }
         return Err(error);
     }
     emit_playlist_playback_trace(
@@ -507,9 +456,6 @@ pub async fn play_playlist(app: &AppHandle, name: String) -> Result<PlayPlaylist
     );
     let continuation_mode = resolve_playlist_playback_continuation_mode();
     if let Err(error) = player_service::set_playback_continuation_mode(continuation_mode) {
-        if initial_prepared_source.is_none() {
-            rollback_playlist_symbolic_proposal(&symbolic_session)?;
-        }
         return Err(error);
     }
     emit_playlist_playback_trace(
@@ -543,9 +489,6 @@ pub async fn play_playlist(app: &AppHandle, name: String) -> Result<PlayPlaylist
             observe_playlist_playback_temporal_memory(&initial_track);
             consume_playlist_initial_prepared_source(&initial_prepared_source);
             if let Err(error) = ensure_playlist_playback_request_current(&request) {
-                if initial_prepared_source.is_none() {
-                    rollback_playlist_symbolic_proposal(&symbolic_session)?;
-                }
                 let _ = player_service::mark_session_queue_terminal(&session);
                 return Err(error);
             }
@@ -564,9 +507,6 @@ pub async fn play_playlist(app: &AppHandle, name: String) -> Result<PlayPlaylist
             session
         }
         Err(error) => {
-            if initial_prepared_source.is_none() {
-                rollback_playlist_symbolic_proposal(&symbolic_session)?;
-            }
             emit_playlist_playback_trace(
                 "playlist-play-player-submit-error",
                 PlaylistPlaybackTrace::new(app)
@@ -749,13 +689,10 @@ async fn resolve_prepared_playlist_replacement_track_after_exclude(
                 .track(&initial.track)
                 .status("current_track"),
         );
-        let Some(prepared_source) = initial.prepared_source.as_ref() else {
-            continue;
-        };
-        if let Err(error) = playable_index::discard_playlist_source(prepared_source) {
+        if let Err(error) = playable_index::discard_playlist_source(&initial.prepared_source) {
             eprintln!(
                 "[playlist_playback] failed to discard excluded-current first slot playlist=\"{}\" generation={}: {error}",
-                prepared_source.playlist_name, prepared_source.generation
+                initial.prepared_source.playlist_name, initial.prepared_source.generation
             );
         }
     }
@@ -935,7 +872,7 @@ fn playlist_playback_continuation_mode_name(mode: PlaybackContinuationMode) -> &
 struct PlaylistPlaybackMaterial {
     playlist_name: String,
     initial_track: PlaybackTrack,
-    initial_prepared_source: Option<playable_index::PlaylistPlayableIndexSnapshot>,
+    initial_prepared_source: playable_index::PlaylistPlayableIndexSnapshot,
     tracks: Vec<PlaybackTrack>,
 }
 
@@ -948,8 +885,7 @@ struct PlaylistTrackResolutionSource {
 #[cfg(not(test))]
 struct ResolvedPlaylistInitialTrack {
     track: PlaybackTrack,
-    prepared_source: Option<playable_index::PlaylistPlayableIndexSnapshot>,
-    resume_scope_revision: Option<u64>,
+    prepared_source: playable_index::PlaylistPlayableIndexSnapshot,
 }
 
 pub(crate) struct PlaylistTrackResolution {
@@ -1006,31 +942,20 @@ async fn build_playlist_playback_material(
     app: &AppHandle,
     playlist_name: &str,
     request: &player_service::PlaybackStartRequestHandle,
-    _download_changes: &mut tokio::sync::broadcast::Receiver<
-        download_service::DownloadTaskChangeSignal,
-    >,
-    symbolic_session: &SharedAudioStyleSymbolicPlaybackSession,
 ) -> Result<Option<PlaylistPlaybackMaterial>> {
     let trace_start = Instant::now();
     if let Some(initial) = resolve_playlist_initial_track_for_release(
         app,
         playlist_name,
         request,
-        symbolic_session,
         PlaylistInitialTrackRelease::DirectFirstSlot,
         trace_start,
     )
     .await?
     {
-        let is_resumed = initial.resume_scope_revision.is_some();
         let initial_track = initial.track;
         let tracks = create_start_anchor_playback_queue(initial_track.clone());
-        if let Err(error) = ensure_playlist_playback_request_current(request) {
-            if is_resumed {
-                rollback_playlist_symbolic_proposal(symbolic_session)?;
-            }
-            return Err(error);
-        }
+        ensure_playlist_playback_request_current(request)?;
         emit_playlist_playback_trace(
             "playlist-play-material-prepared-initial-track-ok",
             PlaylistPlaybackTrace::new(app)
@@ -1062,43 +987,24 @@ async fn resolve_playlist_initial_track_for_release(
     app: &AppHandle,
     playlist_name: &str,
     request: &player_service::PlaybackStartRequestHandle,
-    symbolic_session: &SharedAudioStyleSymbolicPlaybackSession,
     release: PlaylistInitialTrackRelease,
     trace_start: Instant,
 ) -> Result<Option<ResolvedPlaylistInitialTrack>> {
     ensure_playlist_playback_request_current(request)?;
-    let Some(initial) =
-        resolve_playlist_initial_track(app, playlist_name, symbolic_session).await?
-    else {
+    let Some(initial) = resolve_prepared_playlist_initial_track(app, playlist_name).await? else {
         return Ok(None);
     };
-    if let Some(initial) = prepare_playlist_initial_track_for_release(
-        app,
-        playlist_name,
-        request,
-        symbolic_session,
-        release,
-        initial,
-        trace_start,
-    )
-    .await?
-    {
-        return Ok(Some(initial));
-    }
-
-    let Some(fallback) = resolve_prepared_playlist_initial_track(app, playlist_name).await? else {
-        return Ok(None);
-    };
-    prepare_playlist_initial_track_for_release(
-        app,
-        playlist_name,
-        request,
-        symbolic_session,
-        release,
-        fallback,
-        trace_start,
-    )
-    .await
+    Ok(Some(
+        prepare_playlist_initial_track_for_release(
+            app,
+            playlist_name,
+            request,
+            release,
+            initial,
+            trace_start,
+        )
+        .await?,
+    ))
 }
 
 #[cfg(not(test))]
@@ -1106,292 +1012,20 @@ async fn prepare_playlist_initial_track_for_release(
     app: &AppHandle,
     playlist_name: &str,
     request: &player_service::PlaybackStartRequestHandle,
-    symbolic_session: &SharedAudioStyleSymbolicPlaybackSession,
     release: PlaylistInitialTrackRelease,
     mut initial: ResolvedPlaylistInitialTrack,
     trace_start: Instant,
-) -> Result<Option<ResolvedPlaylistInitialTrack>> {
-    let is_resumed = initial.resume_scope_revision.is_some();
-    initial.track = match wait_for_initial_track_loudness_evidence(
+) -> Result<ResolvedPlaylistInitialTrack> {
+    initial.track = wait_for_initial_track_loudness_evidence(
         app,
         playlist_name,
         release,
         initial.track,
         trace_start,
     )
-    .await
-    {
-        Ok(track) => track,
-        Err(error) => {
-            if is_resumed {
-                rollback_playlist_symbolic_proposal(symbolic_session)?;
-            }
-            return Err(error);
-        }
-    };
-    if let Err(error) = ensure_playlist_playback_request_current(request) {
-        if is_resumed {
-            rollback_playlist_symbolic_proposal(symbolic_session)?;
-        }
-        return Err(error);
-    }
-
-    if let Some(scope_revision) = initial.resume_scope_revision {
-        let current_scope_revision =
-            match playable_index::current_playlist_scope_revision(playlist_name) {
-                Ok(revision) => revision,
-                Err(error) => {
-                    rollback_playlist_symbolic_proposal(symbolic_session)?;
-                    return Err(error.into());
-                }
-            };
-        if current_scope_revision != scope_revision {
-            rollback_playlist_symbolic_proposal(symbolic_session)?;
-            log::info!(
-                target: PLAYLIST_PLAYBACK_LOG_TARGET,
-                "playlist-play-initial-resume-stale playlist=\"{}\" scope_revision={} current_revision={}",
-                escape_log_value(playlist_name),
-                scope_revision,
-                current_scope_revision,
-            );
-            emit_playlist_playback_trace(
-                "playlist-play-initial-resume-stale",
-                PlaylistPlaybackTrace::new(app)
-                    .playlist_name(playlist_name)
-                    .track(&initial.track)
-                    .status("scope_changed"),
-            );
-            return Ok(None);
-        }
-    }
-    Ok(Some(initial))
-}
-
-#[cfg(not(test))]
-async fn resolve_playlist_initial_track(
-    app: &AppHandle,
-    playlist_name: &str,
-    symbolic_session: &SharedAudioStyleSymbolicPlaybackSession,
-) -> Result<Option<ResolvedPlaylistInitialTrack>> {
-    if let Some(initial) =
-        resolve_resumed_playlist_initial_track(app, playlist_name, symbolic_session).await?
-    {
-        return Ok(Some(initial));
-    }
-    resolve_prepared_playlist_initial_track(app, playlist_name).await
-}
-
-#[cfg(not(test))]
-async fn resolve_resumed_playlist_initial_track(
-    app: &AppHandle,
-    playlist_name: &str,
-    symbolic_session: &SharedAudioStyleSymbolicPlaybackSession,
-) -> Result<Option<ResolvedPlaylistInitialTrack>> {
-    let scope_revision = playable_index::current_playlist_scope_revision(playlist_name)?;
-    let committed_anchor = {
-        let mut session = symbolic_session
-            .lock()
-            .map_err(|_| anyhow!("symbolic playback session lock poisoned"))?;
-        session.observe_scope_revision(scope_revision);
-        session.committed_planning_anchor()
-    };
-    let Some(committed_anchor) = committed_anchor else {
-        emit_playlist_playback_trace(
-            "playlist-play-initial-resume-miss",
-            PlaylistPlaybackTrace::new(app)
-                .playlist_name(playlist_name)
-                .status("no_committed_anchor"),
-        );
-        return Ok(None);
-    };
-
-    let readiness = audio_style_playlist_queue_readiness_for_anchor(&committed_anchor);
-    if !readiness.is_ready() {
-        log::info!(
-            target: PLAYLIST_PLAYBACK_LOG_TARGET,
-            "playlist-play-initial-resume-obstructed playlist=\"{}\" anchor_title=\"{}\" reason={}",
-            escape_log_value(playlist_name),
-            escape_log_value(&committed_anchor.music_name),
-            readiness.diagnostic_status(),
-        );
-        emit_playlist_playback_trace(
-            "playlist-play-initial-resume-miss",
-            PlaylistPlaybackTrace::new(app)
-                .playlist_name(playlist_name)
-                .track(&committed_anchor)
-                .status(readiness.diagnostic_status()),
-        );
-        return Ok(None);
-    }
-
-    let snapshots = published_audio_style_model_snapshots_for_anchor(&committed_anchor);
-    if !snapshots
-        .iter()
-        .any(|snapshot| snapshot.has_symbolic_program_encoding())
-    {
-        log::info!(
-            target: PLAYLIST_PLAYBACK_LOG_TARGET,
-            "playlist-play-initial-resume-obstructed playlist=\"{}\" anchor_title=\"{}\" reason=no_symbolic_snapshot",
-            escape_log_value(playlist_name),
-            escape_log_value(&committed_anchor.music_name),
-        );
-        emit_playlist_playback_trace(
-            "playlist-play-initial-resume-miss",
-            PlaylistPlaybackTrace::new(app)
-                .playlist_name(playlist_name)
-                .track(&committed_anchor)
-                .status("no_symbolic_snapshot"),
-        );
-        return Ok(None);
-    }
-
-    let (candidates, scope_source) = match load_audio_style_playlist_candidates(
-        app,
-        playlist_name,
-        &snapshots,
-        &committed_anchor,
-        symbolic_session,
-    )
-    .await
-    {
-        Ok(result) => result,
-        Err(error) => {
-            log::warn!(
-                target: PLAYLIST_PLAYBACK_LOG_TARGET,
-                "playlist-play-initial-resume-obstructed playlist=\"{}\" anchor_title=\"{}\" reason=candidate_load_failed error=\"{}\"",
-                escape_log_value(playlist_name),
-                escape_log_value(&committed_anchor.music_name),
-                escape_log_value(&error.to_string()),
-            );
-            emit_playlist_playback_trace(
-                "playlist-play-initial-resume-miss",
-                PlaylistPlaybackTrace::new(app)
-                    .playlist_name(playlist_name)
-                    .track(&committed_anchor)
-                    .status("candidate_load_failed"),
-            );
-            return Ok(None);
-        }
-    };
-    if !candidates
-        .iter()
-        .any(|candidate| are_playlist_playback_tracks_equal(candidate, &committed_anchor))
-    {
-        log::info!(
-            target: PLAYLIST_PLAYBACK_LOG_TARGET,
-            "playlist-play-initial-resume-obstructed playlist=\"{}\" anchor_title=\"{}\" reason=committed_anchor_not_eligible scope_source={} candidates={}",
-            escape_log_value(playlist_name),
-            escape_log_value(&committed_anchor.music_name),
-            scope_source,
-            candidates.len(),
-        );
-        emit_playlist_playback_trace(
-            "playlist-play-initial-resume-miss",
-            PlaylistPlaybackTrace::new(app)
-                .playlist_name(playlist_name)
-                .track(&committed_anchor)
-                .queue_count(candidates.len())
-                .status("committed_anchor_not_eligible"),
-        );
-        return Ok(None);
-    }
-
-    let next = match propose_playlist_symbolic_next_track(
-        symbolic_session,
-        snapshots,
-        committed_anchor.clone(),
-        candidates,
-        Vec::new(),
-    )
-    .await
-    {
-        Ok(next) => next,
-        Err(error) => {
-            log::warn!(
-                target: PLAYLIST_PLAYBACK_LOG_TARGET,
-                "playlist-play-initial-resume-obstructed playlist=\"{}\" anchor_title=\"{}\" reason=symbolic_proposal_failed error=\"{}\"",
-                escape_log_value(playlist_name),
-                escape_log_value(&committed_anchor.music_name),
-                escape_log_value(&error.to_string()),
-            );
-            emit_playlist_playback_trace(
-                "playlist-play-initial-resume-miss",
-                PlaylistPlaybackTrace::new(app)
-                    .playlist_name(playlist_name)
-                    .track(&committed_anchor)
-                    .status("symbolic_proposal_failed"),
-            );
-            return Ok(None);
-        }
-    };
-    if !next.track.file_path.is_file() {
-        rollback_playlist_symbolic_proposal(symbolic_session)?;
-        log::warn!(
-            target: PLAYLIST_PLAYBACK_LOG_TARGET,
-            "playlist-play-initial-resume-obstructed playlist=\"{}\" anchor_title=\"{}\" reason=proposed_track_unplayable title=\"{}\"",
-            escape_log_value(playlist_name),
-            escape_log_value(&committed_anchor.music_name),
-            escape_log_value(&next.track.music_name),
-        );
-        emit_playlist_playback_trace(
-            "playlist-play-initial-resume-miss",
-            PlaylistPlaybackTrace::new(app)
-                .playlist_name(playlist_name)
-                .track(&next.track)
-                .status("proposed_track_unplayable"),
-        );
-        return Ok(None);
-    }
-
-    let current_scope_revision =
-        match playable_index::current_playlist_scope_revision(playlist_name) {
-            Ok(revision) => revision,
-            Err(error) => {
-                rollback_playlist_symbolic_proposal(symbolic_session)?;
-                return Err(error.into());
-            }
-        };
-    if current_scope_revision != scope_revision {
-        rollback_playlist_symbolic_proposal(symbolic_session)?;
-        log::info!(
-            target: PLAYLIST_PLAYBACK_LOG_TARGET,
-            "playlist-play-initial-resume-obstructed playlist=\"{}\" anchor_title=\"{}\" reason=scope_changed scope_revision={} current_revision={}",
-            escape_log_value(playlist_name),
-            escape_log_value(&committed_anchor.music_name),
-            scope_revision,
-            current_scope_revision,
-        );
-        emit_playlist_playback_trace(
-            "playlist-play-initial-resume-miss",
-            PlaylistPlaybackTrace::new(app)
-                .playlist_name(playlist_name)
-                .track(&next.track)
-                .status("scope_changed"),
-        );
-        return Ok(None);
-    }
-
-    log::info!(
-        target: PLAYLIST_PLAYBACK_LOG_TARGET,
-        "playlist-play-initial-resume-prepared playlist=\"{}\" committed_anchor=\"{}\" next_title=\"{}\" scope_source={} scope_revision={}",
-        escape_log_value(playlist_name),
-        escape_log_value(&committed_anchor.music_name),
-        escape_log_value(&next.track.music_name),
-        scope_source,
-        scope_revision,
-    );
-    emit_playlist_playback_trace(
-        "playlist-play-initial-resume-hit",
-        PlaylistPlaybackTrace::new(app)
-            .playlist_name(playlist_name)
-            .track(&next.track)
-            .status("committed_continuation"),
-    );
-    Ok(Some(ResolvedPlaylistInitialTrack {
-        track: next.track,
-        prepared_source: None,
-        resume_scope_revision: Some(scope_revision),
-    }))
+    .await?;
+    ensure_playlist_playback_request_current(request)?;
+    Ok(initial)
 }
 
 #[cfg(not(test))]
@@ -1465,8 +1099,7 @@ async fn resolve_prepared_playlist_initial_track(
         );
         return Ok(Some(ResolvedPlaylistInitialTrack {
             track,
-            prepared_source: Some(snapshot),
-            resume_scope_revision: None,
+            prepared_source: snapshot,
         }));
     }
 }
@@ -1478,11 +1111,7 @@ pub(crate) async fn peek_prepared_playlist_initial_track(
 ) -> Result<Option<(PlaybackTrack, playable_index::PlaylistPlayableIndexSnapshot)>> {
     Ok(resolve_prepared_playlist_initial_track(app, playlist_name)
         .await?
-        .and_then(|initial| {
-            initial
-                .prepared_source
-                .map(|prepared_source| (initial.track, prepared_source))
-        }))
+        .map(|initial| (initial.track, initial.prepared_source)))
 }
 
 #[cfg(not(test))]
@@ -1494,27 +1123,14 @@ fn request_first_track_loudness_evidence(track: &PlaybackTrack) {
 
 #[cfg(not(test))]
 fn consume_playlist_initial_prepared_source(
-    prepared_source: &Option<playable_index::PlaylistPlayableIndexSnapshot>,
+    prepared_source: &playable_index::PlaylistPlayableIndexSnapshot,
 ) {
-    if let Some(snapshot) = prepared_source
-        && let Err(error) = playable_index::consume_playlist_source(snapshot)
-    {
+    if let Err(error) = playable_index::consume_playlist_source(prepared_source) {
         eprintln!(
             "[playlist_playback] failed to consume prepared first track source playlist=\"{}\" generation={}: {error}",
-            snapshot.playlist_name, snapshot.generation
+            prepared_source.playlist_name, prepared_source.generation
         );
     }
-}
-
-#[cfg(not(test))]
-fn rollback_playlist_symbolic_proposal(
-    symbolic_session: &SharedAudioStyleSymbolicPlaybackSession,
-) -> Result<()> {
-    symbolic_session
-        .lock()
-        .map_err(|_| anyhow!("symbolic playback session lock poisoned"))?
-        .rollback_proposal()
-        .map_err(|error| anyhow!(error))
 }
 
 #[cfg(not(test))]
@@ -1561,7 +1177,7 @@ fn seed_playlist_session_next_from_prepared_pool(
             .map(playable_index::source_kind_as_str)
             .unwrap_or("unknown");
         let loudness_requested = request_session_next_track_loudness_evidence(&next);
-        consume_playlist_initial_prepared_source(&Some(snapshot));
+        consume_playlist_initial_prepared_source(&snapshot);
         log::info!(
             target: PLAYLIST_PLAYBACK_LOG_TARGET,
             "next track seeded source=prepared_first_slot_pool prepared_source={} mode=keep_current playlist=\"{}\" anchor_title=\"{}\" title=\"{}\" generation={} loudness_requested={}",
@@ -1604,7 +1220,7 @@ fn read_prepared_next_cargo_from_first_slot_pool(
             return Ok(None);
         };
         let Some(track) = snapshot.track.clone() else {
-            consume_playlist_initial_prepared_source(&Some(snapshot));
+            consume_playlist_initial_prepared_source(&snapshot);
             continue;
         };
         if !are_playlist_playback_tracks_equal(&track, anchor) && track.file_path.is_file() {
@@ -1616,12 +1232,12 @@ fn read_prepared_next_cargo_from_first_slot_pool(
                         .track(&track)
                         .status("recent_history"),
                 );
-                consume_playlist_initial_prepared_source(&Some(snapshot));
+                consume_playlist_initial_prepared_source(&snapshot);
                 continue;
             }
             return Ok(Some((snapshot, track)));
         }
-        consume_playlist_initial_prepared_source(&Some(snapshot));
+        consume_playlist_initial_prepared_source(&snapshot);
     }
     Ok(None)
 }
@@ -1771,50 +1387,16 @@ async fn wait_for_playlist_initial_track_and_start_queue(
             .elapsed(trace_start)
             .status("waiting_first_slot"),
     );
-    let initial = wait_for_playlist_initial_track(
-        &app,
-        &playlist_name,
-        &request,
-        &symbolic_session,
-        trace_start,
-    )
-    .await?;
-    let is_resumed = initial.resume_scope_revision.is_some();
-    if let Err(error) = ensure_playlist_playback_request_current(&request) {
-        if is_resumed {
-            rollback_playlist_symbolic_proposal(&symbolic_session)?;
-        }
-        return Err(error);
-    }
-    let session_current = match player_service::is_session_current(&session) {
-        Ok(current) => current,
-        Err(error) => {
-            if is_resumed {
-                rollback_playlist_symbolic_proposal(&symbolic_session)?;
-            }
-            return Err(error);
-        }
-    };
+    let initial =
+        wait_for_playlist_initial_track(&app, &playlist_name, &request, trace_start).await?;
+    ensure_playlist_playback_request_current(&request)?;
+    let session_current = player_service::is_session_current(&session)?;
     if !session_current {
-        if is_resumed {
-            rollback_playlist_symbolic_proposal(&symbolic_session)?;
-        }
         return Err(player_service::PlaybackStartRequestSuperseded.into());
     }
     let tracks = create_start_anchor_playback_queue(initial.track.clone());
-    let updated = match player_service::update_session_tracks(&session, tracks.clone()) {
-        Ok(updated) => updated,
-        Err(error) => {
-            if is_resumed {
-                rollback_playlist_symbolic_proposal(&symbolic_session)?;
-            }
-            return Err(error);
-        }
-    };
+    let updated = player_service::update_session_tracks(&session, tracks.clone())?;
     if !updated {
-        if is_resumed {
-            rollback_playlist_symbolic_proposal(&symbolic_session)?;
-        }
         return Err(player_service::PlaybackStartRequestSuperseded.into());
     }
     consume_playlist_initial_prepared_source(&initial.prepared_source);
@@ -1933,7 +1515,6 @@ async fn wait_for_playlist_initial_track(
     app: &AppHandle,
     playlist_name: &str,
     request: &player_service::PlaybackStartRequestHandle,
-    symbolic_session: &SharedAudioStyleSymbolicPlaybackSession,
     trace_start: Instant,
 ) -> Result<ResolvedPlaylistInitialTrack> {
     let mut index_revision = playable_index::subscribe_index_revision()?;
@@ -1945,7 +1526,6 @@ async fn wait_for_playlist_initial_track(
             app,
             playlist_name,
             request,
-            symbolic_session,
             PlaylistInitialTrackRelease::PreparingFirstSlot,
             trace_start,
         )
@@ -2841,9 +2421,6 @@ fn observe_playlist_symbolic_active_track(
     };
 
     match outcome {
-        AudioStyleSymbolicPendingObservationOutcome::Committed => {
-            persist_playlist_symbolic_playback_session(playlist_name, symbolic_session)?;
-        }
         AudioStyleSymbolicPendingObservationOutcome::RolledBack => {
             log::info!(
                 target: PLAYLIST_PLAYBACK_LOG_TARGET,
@@ -2852,7 +2429,8 @@ fn observe_playlist_symbolic_active_track(
                 escape_log_value(&active_track.music_name),
             );
         }
-        AudioStyleSymbolicPendingObservationOutcome::StillPending
+        AudioStyleSymbolicPendingObservationOutcome::Committed
+        | AudioStyleSymbolicPendingObservationOutcome::StillPending
         | AudioStyleSymbolicPendingObservationOutcome::NoPending => {}
     }
     Ok(())
