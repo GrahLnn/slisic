@@ -5,7 +5,7 @@ use super::playable_index::{
     current_index_revision, current_playlist_scope_revision, defer_global_refresh_for_test,
     discard_playlist_source, first_slot_loudness_request_order_for_test,
     initialize_runtime_for_test, mark_playlist_source_kind_for_test,
-    mark_startup_cache_restore_finished_for_test, notify_playlist_renamed,
+    mark_startup_cache_restore_finished_for_test, notify_library_changed, notify_playlist_renamed,
     pending_global_refresh_for_test, playlist_bootstrap_ready_for_test,
     publish_first_slot_loudness_evidence, queue_global_refresh_for_test, read_playlist_source,
     record_playlist_bootstrap_ready, refresh_playlist_now_for_reason_for_test,
@@ -197,6 +197,32 @@ async fn playlist_candidate_change_advances_symbolic_scope_revision() {
     let scope_after =
         current_playlist_scope_revision("Focus").expect("scope revision should be readable");
     assert_ne!(scope_after, scope_before);
+}
+
+#[tokio::test]
+async fn downloaded_library_extension_preserves_existing_symbolic_scope_revision() {
+    let _guard = setup_playable_index_test();
+    refresh_playlist_now_for_test(selection("Focus"), Some(source(3)))
+        .await
+        .expect("test snapshot should commit");
+    let scope_before =
+        current_playlist_scope_revision("Focus").expect("scope revision should be readable");
+
+    notify_library_changed(PlayableIndexRefreshReason::LibraryExtended);
+
+    let scope_after =
+        current_playlist_scope_revision("Focus").expect("scope revision should be readable");
+    assert_eq!(
+        scope_after, scope_before,
+        "an additive download cannot change the candidate set of an already committed model"
+    );
+
+    notify_library_changed(PlayableIndexRefreshReason::LibraryChanged);
+    assert_ne!(
+        current_playlist_scope_revision("Focus").expect("scope revision should be readable"),
+        scope_before,
+        "mutating library changes must continue to invalidate the existing symbolic scope"
+    );
 }
 
 #[tokio::test]

@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::ops::Bound::{Excluded, Unbounded};
 use std::sync::Arc;
 
+const SYMBOLIC_PARALLEL_MIN_ITEMS: usize = 128;
 const FATIGUE_RECOVERY_REBALANCE_STEPS: usize = 64;
 const FATIGUE_RECOVERY_CANDIDATES_PER_STEP: usize = 128;
 const FATIGUE_RECOVERY_DECAY_NUMERATORS: [u128; 4] = [1, 3, 7, 15];
@@ -562,6 +563,43 @@ fn permutation_cycle_ids(successors: &[usize]) -> Vec<usize> {
     cycle_ids
 }
 
+fn symbolic_parallel_map<T, F>(item_count: usize, map: F) -> Vec<T>
+where
+    T: Send,
+    F: Fn(usize) -> T + Sync,
+{
+    let worker_count = if item_count < SYMBOLIC_PARALLEL_MIN_ITEMS {
+        1
+    } else {
+        std::thread::available_parallelism()
+            .map(|parallelism| parallelism.get().saturating_sub(2).max(1))
+            .unwrap_or(1)
+            .min(item_count)
+    };
+    if worker_count == 1 {
+        return (0..item_count).map(&map).collect();
+    }
+    let chunk_size = item_count.div_ceil(worker_count);
+    std::thread::scope(|scope| {
+        let handles = (0..item_count)
+            .step_by(chunk_size)
+            .map(|start| {
+                let end = (start + chunk_size).min(item_count);
+                let map = &map;
+                scope.spawn(move || (start..end).map(map).collect::<Vec<_>>())
+            })
+            .collect::<Vec<_>>();
+        handles
+            .into_iter()
+            .flat_map(|handle| {
+                handle
+                    .join()
+                    .expect("symbolic compilation worker must not panic")
+            })
+            .collect()
+    })
+}
+
 pub(crate) fn program_cycle_separations(
     atlas: &NeuralProgramAtlas,
     neighbors: &[usize],
@@ -574,21 +612,26 @@ pub(crate) fn program_cycle_separations(
         .iter()
         .map(|program| permutation_cycle_ids(&program.successors))
         .collect::<Vec<_>>();
-    let mut separations = vec![0; neighbors.len()];
-    for source in 0..atlas.track_count {
-        for (rank, destination) in neighbors
-            [source * atlas.candidate_count..(source + 1) * atlas.candidate_count]
-            .iter()
-            .copied()
-            .enumerate()
-        {
-            separations[source * atlas.candidate_count + rank] = cycle_ids
-                .iter()
-                .filter(|program_cycles| program_cycles[source] != program_cycles[destination])
-                .count();
-        }
+    if neighbors
+        .iter()
+        .any(|destination| *destination >= atlas.track_count)
+    {
+        return Err("candidate relation contains an invalid track".to_string());
     }
-    Ok(separations)
+    Ok(symbolic_parallel_map(atlas.track_count, |source| {
+        neighbors[source * atlas.candidate_count..(source + 1) * atlas.candidate_count]
+            .iter()
+            .map(|destination| {
+                cycle_ids
+                    .iter()
+                    .filter(|program_cycles| program_cycles[source] != program_cycles[*destination])
+                    .count()
+            })
+            .collect::<Vec<_>>()
+    })
+    .into_iter()
+    .flatten()
+    .collect())
 }
 
 pub(crate) fn candidate_neighborhood_overlaps(
@@ -599,19 +642,63 @@ pub(crate) fn candidate_neighborhood_overlaps(
     if neighbors.len() != track_count * candidate_count {
         return Err("candidate relation shape is invalid".to_string());
     }
-    let sets = neighbors
-        .chunks_exact(candidate_count)
-        .map(|row| row.iter().copied().collect::<HashSet<_>>())
-        .collect::<Vec<_>>();
-    Ok(neighbors
-        .chunks_exact(candidate_count)
-        .enumerate()
-        .flat_map(|(source, row)| {
-            row.iter()
-                .map(|destination| sets[source].intersection(&sets[*destination]).count())
-                .collect::<Vec<_>>()
-        })
-        .collect())
+    if neighbors
+        .iter()
+        .any(|destination| *destination >= track_count)
+    {
+        return Err("candidate relation contains an invalid track".to_string());
+    }
+    let word_count = track_count.div_ceil(u64::BITS as usize);
+    let mut neighborhood_masks = vec![vec![0_u64; word_count]; track_count];
+    for (source, row) in neighbors.chunks_exact(candidate_count).enumerate() {
+        for destination in row {
+            neighborhood_masks[source][destination / u64::BITS as usize] |=
+                1_u64 << (destination % u64::BITS as usize);
+        }
+    }
+    Ok(symbolic_parallel_map(track_count, |source| {
+        neighbors[source * candidate_count..(source + 1) * candidate_count]
+            .iter()
+            .map(|destination| {
+                neighborhood_masks[source]
+                    .iter()
+                    .zip(&neighborhood_masks[*destination])
+                    .map(|(left, right)| (left & right).count_ones() as usize)
+                    .sum()
+            })
+            .collect::<Vec<_>>()
+    })
+    .into_iter()
+    .flatten()
+    .collect())
+}
+
+fn candidate_rank(row_index: &[(usize, usize)], destination: usize) -> Option<usize> {
+    row_index
+        .binary_search_by_key(&destination, |(candidate, _)| *candidate)
+        .ok()
+        .map(|index| row_index[index].1)
+}
+
+fn replace_trial_changed_flag(
+    changed_flags: &mut [bool],
+    changed_source_membership: &[bool],
+    predecessor: &[usize],
+    violating_changed_edges: &mut usize,
+    destination: usize,
+    value: bool,
+) {
+    if changed_flags[destination] == value {
+        return;
+    }
+    if changed_source_membership[predecessor[destination]] {
+        if value {
+            *violating_changed_edges += 1;
+        } else {
+            *violating_changed_edges -= 1;
+        }
+    }
+    changed_flags[destination] = value;
 }
 
 fn close_successor_law_to_single_cycle(
@@ -620,12 +707,13 @@ fn close_successor_law_to_single_cycle(
     neighbors: &[usize],
     candidate_separations: &[usize],
     candidate_local_overlaps: &[usize],
-    candidate_ranks_by_source: &[Vec<usize>],
+    candidate_ranks_by_source: &[Vec<(usize, usize)>],
+    candidate_membership_masks: &[Vec<u64>],
     track_keys: &[String],
 ) -> Option<Vec<usize>> {
     let original = successors.to_vec();
     let mut closed = original.clone();
-    let mut changed_sources = Vec::<usize>::new();
+    let mut changed_source_membership = vec![false; closed.len()];
     let mut changed_flags = vec![false; closed.len()];
 
     loop {
@@ -637,6 +725,11 @@ fn close_successor_law_to_single_cycle(
         for (source, destination) in closed.iter().copied().enumerate() {
             predecessor[destination] = source;
         }
+        let mut violating_changed_edges = (0..closed.len())
+            .filter(|destination| {
+                changed_flags[*destination] && changed_source_membership[predecessor[*destination]]
+            })
+            .count();
         let mut best = None;
         for left_source in 0..closed.len() {
             let left_destination = closed[left_source];
@@ -647,26 +740,70 @@ fn close_successor_law_to_single_cycle(
                 if cycle_ids[left_source] == cycle_ids[right_source] {
                     continue;
                 }
-                let right_rank = candidate_ranks_by_source[right_source][left_destination];
-                if right_rank == usize::MAX {
+                if !candidate_mask_contains(
+                    candidate_membership_masks,
+                    right_source,
+                    left_destination,
+                ) {
                     continue;
                 }
+                let Some(right_rank) =
+                    candidate_rank(&candidate_ranks_by_source[right_source], left_destination)
+                else {
+                    continue;
+                };
                 let left_changed = right_destination != original[left_source];
                 let right_changed = left_destination != original[right_source];
                 let previous_left_changed = changed_flags[left_source];
                 let previous_right_changed = changed_flags[right_source];
-                changed_flags[left_source] = left_changed;
-                changed_flags[right_source] = right_changed;
-                let changed_mapping_is_closed = changed_sources
-                    .iter()
-                    .copied()
-                    .filter(|source| *source != left_source && *source != right_source)
-                    .any(|source| changed_flags[closed[source]])
+                replace_trial_changed_flag(
+                    &mut changed_flags,
+                    &changed_source_membership,
+                    &predecessor,
+                    &mut violating_changed_edges,
+                    left_source,
+                    left_changed,
+                );
+                replace_trial_changed_flag(
+                    &mut changed_flags,
+                    &changed_source_membership,
+                    &predecessor,
+                    &mut violating_changed_edges,
+                    right_source,
+                    right_changed,
+                );
+                // The previous implementation scanned every changed source for
+                // every candidate. Since `closed` is a permutation, each source
+                // owns exactly one contribution to that predicate. Remove the
+                // two trial sources from the maintained count, then evaluate
+                // their swapped destinations explicitly.
+                let mut unchanged_source_violations = violating_changed_edges;
+                if changed_source_membership[left_source] && changed_flags[left_destination] {
+                    unchanged_source_violations -= 1;
+                }
+                if changed_source_membership[right_source] && changed_flags[right_destination] {
+                    unchanged_source_violations -= 1;
+                }
+                let changed_mapping_is_closed = unchanged_source_violations > 0
                     || (left_changed && changed_flags[right_destination])
                     || (right_changed && changed_flags[left_destination]);
                 if changed_mapping_is_closed {
-                    changed_flags[left_source] = previous_left_changed;
-                    changed_flags[right_source] = previous_right_changed;
+                    replace_trial_changed_flag(
+                        &mut changed_flags,
+                        &changed_source_membership,
+                        &predecessor,
+                        &mut violating_changed_edges,
+                        left_source,
+                        previous_left_changed,
+                    );
+                    replace_trial_changed_flag(
+                        &mut changed_flags,
+                        &changed_source_membership,
+                        &predecessor,
+                        &mut violating_changed_edges,
+                        right_source,
+                        previous_right_changed,
+                    );
                     continue;
                 }
                 let left_separation =
@@ -697,13 +834,8 @@ fn close_successor_law_to_single_cycle(
         let left_destination = closed[left_source];
         closed[left_source] = closed[right_source];
         closed[right_source] = left_destination;
-        changed_sources.retain(|source| *source != left_source && *source != right_source);
-        if closed[left_source] != original[left_source] {
-            changed_sources.push(left_source);
-        }
-        if closed[right_source] != original[right_source] {
-            changed_sources.push(right_source);
-        }
+        changed_source_membership[left_source] = closed[left_source] != original[left_source];
+        changed_source_membership[right_source] = closed[right_source] != original[right_source];
         changed_flags[left_source] = closed[left_source] != original[left_source];
         changed_flags[right_source] = closed[right_source] != original[right_source];
     }
@@ -727,39 +859,40 @@ pub(crate) fn close_neural_program_atlas_cycles(
     let candidate_ranks_by_source = neighbors
         .chunks_exact(atlas.candidate_count)
         .map(|row| {
-            let mut ranks = vec![usize::MAX; atlas.track_count];
+            let mut ranks = Vec::with_capacity(row.len());
             for (rank, destination) in row.iter().copied().enumerate() {
-                ranks[destination] = rank;
+                ranks.push((destination, rank));
             }
+            ranks.sort_unstable_by_key(|(destination, _)| *destination);
             ranks
         })
         .collect::<Vec<_>>();
-    let overlap_by_destination = (0..atlas.track_count)
-        .map(|source| {
-            let row =
-                &neighbors[source * atlas.candidate_count..(source + 1) * atlas.candidate_count];
-            let overlap_row = &candidate_local_overlaps
-                [source * atlas.candidate_count..(source + 1) * atlas.candidate_count];
-            let mut overlaps = vec![0; atlas.track_count];
-            for (destination, overlap) in row.iter().copied().zip(overlap_row.iter().copied()) {
-                overlaps[destination] = overlap;
-            }
-            overlaps
-        })
-        .collect::<Vec<_>>();
-    let mut programs = Vec::<ProgramMorphism>::new();
-    let mut program_by_code = HashMap::<(Vec<usize>, Vec<usize>), usize>::new();
-    let mut retracted = Vec::new();
-    for program in &atlas.programs {
-        let Some(successors) = close_successor_law_to_single_cycle(
-            &program.successors,
+    let membership_word_count = atlas.track_count.div_ceil(u64::BITS as usize);
+    let mut candidate_membership_masks =
+        vec![vec![0_u64; membership_word_count]; atlas.track_count];
+    for (source, row) in neighbors.chunks_exact(atlas.candidate_count).enumerate() {
+        for destination in row {
+            candidate_membership_masks[source][destination / u64::BITS as usize] |=
+                1_u64 << (destination % u64::BITS as usize);
+        }
+    }
+    let closed_successors = symbolic_parallel_map(atlas.programs.len(), |program_ordinal| {
+        close_successor_law_to_single_cycle(
+            &atlas.programs[program_ordinal].successors,
             atlas.candidate_count,
             neighbors,
             &candidate_separations,
             &candidate_local_overlaps,
             &candidate_ranks_by_source,
+            &candidate_membership_masks,
             track_keys,
-        ) else {
+        )
+    });
+    let mut programs = Vec::<ProgramMorphism>::new();
+    let mut program_by_code = HashMap::<(Vec<usize>, Vec<usize>), usize>::new();
+    let mut retracted = Vec::new();
+    for (program, successors) in atlas.programs.iter().zip(closed_successors) {
+        let Some(successors) = successors else {
             retracted.extend(program.presentation_ordinals.iter().copied());
             continue;
         };
@@ -770,10 +903,16 @@ pub(crate) fn close_neural_program_atlas_cycles(
             .zip(successors.iter().copied())
             .enumerate()
             .filter_map(|(source, (before, after))| {
-                (before != after
-                    && overlap_by_destination[source][after]
-                        < overlap_by_destination[source][before])
-                    .then_some(source)
+                if before == after {
+                    return None;
+                }
+                let before_rank = candidate_rank(&candidate_ranks_by_source[source], before)
+                    .expect("program successor must belong to its candidate row");
+                let after_rank = candidate_rank(&candidate_ranks_by_source[source], after)
+                    .expect("closed successor must belong to its candidate row");
+                let overlap_row = &candidate_local_overlaps
+                    [source * atlas.candidate_count..(source + 1) * atlas.candidate_count];
+                (overlap_row[after_rank] < overlap_row[before_rank]).then_some(source)
             })
             .collect::<Vec<_>>();
         let code = (successors.clone(), boundary_sources.clone());
@@ -975,10 +1114,8 @@ pub(crate) fn compile_program_orbit_index(
     atlas: &NeuralProgramAtlas,
 ) -> Result<ProgramOrbitIndex, String> {
     let word_count = atlas.track_count.div_ceil(64);
-    let mut all_cycle_ids = Vec::with_capacity(atlas.programs.len());
-    let mut all_cycle_masks = Vec::with_capacity(atlas.programs.len());
-    let mut all_predecessors = Vec::with_capacity(atlas.programs.len());
-    for program in &atlas.programs {
+    let compiled_programs = symbolic_parallel_map(atlas.programs.len(), |program_ordinal| {
+        let program = &atlas.programs[program_ordinal];
         let predecessors = successor_predecessors(&program.successors)?;
         let mut cycle_ids = vec![usize::MAX; atlas.track_count];
         let mut cycle_masks = Vec::new();
@@ -1004,38 +1141,42 @@ pub(crate) fn compile_program_orbit_index(
             }
             cycle_masks.push(mask);
         }
+        Ok::<_, String>((cycle_ids, cycle_masks, predecessors))
+    })
+    .into_iter()
+    .collect::<Result<Vec<_>, _>>()?;
+    let mut all_cycle_ids = Vec::with_capacity(compiled_programs.len());
+    let mut all_cycle_masks = Vec::with_capacity(compiled_programs.len());
+    let mut all_predecessors = Vec::with_capacity(compiled_programs.len());
+    for (cycle_ids, cycle_masks, predecessors) in compiled_programs {
         all_cycle_ids.push(cycle_ids);
         all_cycle_masks.push(cycle_masks);
         all_predecessors.push(predecessors);
     }
-    let coverage_successors = atlas
-        .programs
-        .iter()
-        .enumerate()
-        .map(|(program_ordinal, program)| {
-            atlas
-                .programs
-                .iter()
-                .enumerate()
-                .filter(|(candidate_ordinal, _)| *candidate_ordinal != program_ordinal)
-                .map(|(candidate_ordinal, candidate)| {
-                    (
-                        maximum_common_successor_run(program, candidate),
-                        program
-                            .successors
-                            .iter()
-                            .zip(&candidate.successors)
-                            .filter(|(left, right)| left == right)
-                            .count(),
-                        candidate.lineage.as_str(),
-                        candidate_ordinal,
-                    )
-                })
-                .min()
-                .map(|(_, _, _, candidate_ordinal)| (candidate_ordinal, 1))
-                .unwrap_or((program_ordinal, 0))
-        })
-        .collect();
+    let coverage_successors = symbolic_parallel_map(atlas.programs.len(), |program_ordinal| {
+        let program = &atlas.programs[program_ordinal];
+        atlas
+            .programs
+            .iter()
+            .enumerate()
+            .filter(|(candidate_ordinal, _)| *candidate_ordinal != program_ordinal)
+            .map(|(candidate_ordinal, candidate)| {
+                (
+                    maximum_common_successor_run(program, candidate),
+                    program
+                        .successors
+                        .iter()
+                        .zip(&candidate.successors)
+                        .filter(|(left, right)| left == right)
+                        .count(),
+                    candidate.lineage.as_str(),
+                    candidate_ordinal,
+                )
+            })
+            .min()
+            .map(|(_, _, _, candidate_ordinal)| (candidate_ordinal, 1))
+            .unwrap_or((program_ordinal, 0))
+    });
     Ok(ProgramOrbitIndex {
         cycle_ids: all_cycle_ids,
         cycle_masks: all_cycle_masks,
@@ -1214,38 +1355,73 @@ fn fatigue_carrier_score(
     carrier_ordinals: &[usize],
     pressure_lookup: &[[u128; 4]],
 ) -> FatigueCarrierScore {
-    let mut chunks_by_carrier = HashMap::<usize, Vec<FatigueChunk>>::new();
-    for chunk in fatigue_chunks(cycle, carrier_ordinals) {
-        chunks_by_carrier
-            .entry(chunk.carrier)
-            .or_default()
-            .push(chunk);
+    #[derive(Clone, Copy)]
+    struct CarrierRuns {
+        first_start: usize,
+        last_end: usize,
+        count: usize,
+        minimum_gap: usize,
+        short_returns: usize,
+        gap_sum: usize,
+        recovery_pressures: [u128; FATIGUE_RECOVERY_DECAY_NUMERATORS.len()],
     }
-    let mut short_returns = 0;
-    let mut event_count = 0;
-    let mut recovery_witness = Vec::new();
-    let mut gap_sum = 0;
-    let mut recovery_pressures = [0_u128; FATIGUE_RECOVERY_DECAY_NUMERATORS.len()];
-    for chunks in chunks_by_carrier.into_values() {
-        let occurrence_count = chunks.len();
-        for (index, chunk) in chunks.iter().enumerate() {
-            let following = chunks[(index + 1) % occurrence_count];
-            let gap =
-                (cycle.len() + following.start_position - chunk.end_position - 1) % cycle.len();
-            short_returns += usize::from(gap <= 2);
-            event_count += 1;
-            gap_sum += gap;
-            recovery_witness.push(gap * occurrence_count);
-            for (target, pressure) in recovery_pressures.iter_mut().zip(pressure_lookup[gap]) {
-                *target += pressure;
+
+    fn observe_gap(runs: &mut CarrierRuns, gap: usize, pressure_lookup: &[[u128; 4]]) {
+        runs.minimum_gap = runs.minimum_gap.min(gap);
+        runs.short_returns += usize::from(gap <= 2);
+        runs.gap_sum += gap;
+        for (target, pressure) in runs.recovery_pressures.iter_mut().zip(pressure_lookup[gap]) {
+            *target += pressure;
+        }
+    }
+
+    let mut runs_by_carrier = HashMap::<usize, CarrierRuns>::new();
+    for chunk in fatigue_chunks(cycle, carrier_ordinals) {
+        match runs_by_carrier.entry(chunk.carrier) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(CarrierRuns {
+                    first_start: chunk.start_position,
+                    last_end: chunk.end_position,
+                    count: 1,
+                    minimum_gap: usize::MAX,
+                    short_returns: 0,
+                    gap_sum: 0,
+                    recovery_pressures: [0; FATIGUE_RECOVERY_DECAY_NUMERATORS.len()],
+                });
+            }
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                let runs = entry.get_mut();
+                let gap = chunk.start_position - runs.last_end - 1;
+                observe_gap(runs, gap, pressure_lookup);
+                runs.last_end = chunk.end_position;
+                runs.count += 1;
             }
         }
     }
-    recovery_witness.sort_unstable();
+    let mut short_returns = 0;
+    let mut event_count = 0;
+    let mut minimum_recovery = usize::MAX;
+    let mut gap_sum = 0;
+    let mut recovery_pressures = [0_u128; FATIGUE_RECOVERY_DECAY_NUMERATORS.len()];
+    for mut runs in runs_by_carrier.into_values() {
+        let wrap_gap = (cycle.len() + runs.first_start - runs.last_end - 1) % cycle.len().max(1);
+        observe_gap(&mut runs, wrap_gap, pressure_lookup);
+        short_returns += runs.short_returns;
+        event_count += runs.count;
+        gap_sum += runs.gap_sum;
+        minimum_recovery = minimum_recovery.min(runs.minimum_gap * runs.count);
+        for (target, pressure) in recovery_pressures.iter_mut().zip(runs.recovery_pressures) {
+            *target += pressure;
+        }
+    }
     FatigueCarrierScore {
         short_returns,
         event_count,
-        minimum_recovery: recovery_witness.first().copied().unwrap_or(0),
+        minimum_recovery: if minimum_recovery == usize::MAX {
+            0
+        } else {
+            minimum_recovery
+        },
         gap_sum,
         recovery_pressures,
     }
@@ -1358,7 +1534,7 @@ fn same_carrier_edge_count(successors: &[usize], carrier_ordinals: &[usize]) -> 
 
 fn pair_isolated_fatigue_visits(
     successors: &mut [usize],
-    candidate_sets: &[HashSet<usize>],
+    candidate_masks: &[Vec<u64>],
     incoming: &[Vec<usize>],
     acoustic_basins: &[usize],
     track_keys: &[String],
@@ -1367,13 +1543,13 @@ fn pair_isolated_fatigue_visits(
     loop {
         let predecessors = successor_predecessors(successors)?;
         let mut selected = None::<(usize, usize, usize, usize, usize)>;
-        for track in 0..successors.len() {
+        'tracks: for track in 0..successors.len() {
             let previous = predecessors[track];
             let following = successors[track];
             let basin = acoustic_basins[track];
             if acoustic_basins[previous] == basin
                 || acoustic_basins[following] == basin
-                || !candidate_sets[previous].contains(&following)
+                || !candidate_mask_contains(candidate_masks, previous, following)
             {
                 continue;
             }
@@ -1385,7 +1561,7 @@ fn pair_isolated_fatigue_visits(
                     || acoustic_basins[insertion_source] != basin
                     || acoustic_basins[predecessors[insertion_source]] == basin
                     || acoustic_basins[insertion_destination] == basin
-                    || !candidate_sets[track].contains(&insertion_destination)
+                    || !candidate_mask_contains(candidate_masks, track, insertion_destination)
                 {
                     continue;
                 }
@@ -1404,9 +1580,8 @@ fn pair_isolated_fatigue_visits(
                 {
                     continue;
                 }
-                if selected.is_none_or(|current| candidate < current) {
-                    selected = Some(candidate);
-                }
+                selected = Some(candidate);
+                break 'tracks;
             }
         }
         let Some((track, insertion_source, previous, following, insertion_destination)) = selected
@@ -1422,24 +1597,27 @@ fn pair_isolated_fatigue_visits(
 fn fatigue_chunk_relocations(
     successors: &[usize],
     cycle: &[usize],
-    candidate_sets: &[HashSet<usize>],
+    candidate_masks: &[Vec<u64>],
     incoming: &[Vec<usize>],
     acoustic_basins: &[usize],
 ) -> Result<Vec<FatigueChunkRelocation>, String> {
     let predecessors = successor_predecessors(successors)?;
     let chunks = fatigue_chunks(cycle, acoustic_basins);
-    let chunk_ends = chunks.iter().map(|chunk| chunk.end).collect::<HashSet<_>>();
+    let mut chunk_ends = vec![false; successors.len()];
+    for chunk in &chunks {
+        chunk_ends[chunk.end] = true;
+    }
     let mut relocations = Vec::new();
     for chunk in chunks {
         let previous = predecessors[chunk.start];
         let following = successors[chunk.end];
-        if !candidate_sets[previous].contains(&following) {
+        if !candidate_mask_contains(candidate_masks, previous, following) {
             continue;
         }
-        let mut members = HashSet::new();
+        let mut members = vec![false; successors.len()];
         let mut node = chunk.start;
         loop {
-            members.insert(node);
+            members[node] = true;
             if node == chunk.end {
                 break;
             }
@@ -1447,11 +1625,11 @@ fn fatigue_chunk_relocations(
         }
         for insertion_source in incoming[chunk.start].iter().copied() {
             let insertion_destination = successors[insertion_source];
-            if !chunk_ends.contains(&insertion_source)
-                || members.contains(&insertion_source)
-                || members.contains(&insertion_destination)
+            if !chunk_ends[insertion_source]
+                || members[insertion_source]
+                || members[insertion_destination]
                 || insertion_source == previous
-                || !candidate_sets[chunk.end].contains(&insertion_destination)
+                || !candidate_mask_contains(candidate_masks, chunk.end, insertion_destination)
             {
                 continue;
             }
@@ -1467,6 +1645,11 @@ fn fatigue_chunk_relocations(
     }
     relocations.sort_unstable();
     Ok(relocations)
+}
+
+fn candidate_mask_contains(masks: &[Vec<u64>], source: usize, destination: usize) -> bool {
+    masks[source][destination / u64::BITS as usize] & (1_u64 << (destination % u64::BITS as usize))
+        != 0
 }
 
 fn evenly_sampled_relocations(length: usize, step: usize) -> Vec<usize> {
@@ -1500,10 +1683,8 @@ pub(crate) fn form_neural_adaptation_cycle(
     let original = atlas.programs[0].clone();
     let original_cycle = single_program_cycle(&original)
         .ok_or_else(|| "neural-adaptation formation requires one complete cycle".to_string())?;
-    let candidate_sets = candidate_neighbors
-        .chunks_exact(atlas.candidate_count)
-        .map(|row| row.iter().copied().collect::<HashSet<_>>())
-        .collect::<Vec<_>>();
+    let word_count = atlas.track_count.div_ceil(u64::BITS as usize);
+    let mut candidate_masks = vec![vec![0_u64; word_count]; atlas.track_count];
     let mut incoming = vec![Vec::new(); atlas.track_count];
     for (source, row) in candidate_neighbors
         .chunks_exact(atlas.candidate_count)
@@ -1513,6 +1694,8 @@ pub(crate) fn form_neural_adaptation_cycle(
             if destination >= atlas.track_count {
                 return Err("candidate relation contains an invalid track".to_string());
             }
+            candidate_masks[source][destination / u64::BITS as usize] |=
+                1_u64 << (destination % u64::BITS as usize);
             incoming[destination].push(source);
         }
     }
@@ -1524,7 +1707,7 @@ pub(crate) fn form_neural_adaptation_cycle(
     let mut fatigue_ceiling_successors = original.successors.clone();
     pair_isolated_fatigue_visits(
         &mut fatigue_ceiling_successors,
-        &candidate_sets,
+        &candidate_masks,
         &incoming,
         acoustic_basins,
         track_keys,
@@ -1544,7 +1727,7 @@ pub(crate) fn form_neural_adaptation_cycle(
     let mut successors = original.successors.clone();
     pair_isolated_fatigue_visits(
         &mut successors,
-        &candidate_sets,
+        &candidate_masks,
         &incoming,
         acoustic_basins,
         track_keys,
@@ -1565,7 +1748,7 @@ pub(crate) fn form_neural_adaptation_cycle(
         let relocations = fatigue_chunk_relocations(
             &successors,
             &cycle,
-            &candidate_sets,
+            &candidate_masks,
             &incoming,
             acoustic_basins,
         )?;
@@ -1607,10 +1790,9 @@ pub(crate) fn form_neural_adaptation_cycle(
         cycle = next_cycle;
     }
 
-    let all_edges_admitted = successors
-        .iter()
-        .enumerate()
-        .all(|(source, destination)| candidate_sets[source].contains(destination));
+    let all_edges_admitted = successors.iter().enumerate().all(|(source, destination)| {
+        candidate_mask_contains(&candidate_masks, source, *destination)
+    });
     let local_edges = same_carrier_edge_count(&successors, acoustic_basins);
     let maximum_local_run = fatigue_chunks(&cycle, acoustic_basins)
         .iter()
@@ -1641,15 +1823,16 @@ pub(crate) fn form_neural_adaptation_cycle(
 }
 
 fn maximum_common_successor_run(left: &ProgramMorphism, right: &ProgramMorphism) -> usize {
-    let mut visited = HashSet::new();
+    let mut visited = vec![false; left.successors.len()];
     let mut maximum = 0;
     for root in 0..left.successors.len() {
-        if visited.contains(&root) {
+        if visited[root] {
             continue;
         }
         let mut cycle = Vec::new();
         let mut node = root;
-        while visited.insert(node) {
+        while !visited[node] {
+            visited[node] = true;
             cycle.push(left.successors[node] == right.successors[node]);
             node = left.successors[node];
         }

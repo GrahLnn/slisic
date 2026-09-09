@@ -767,24 +767,79 @@ pub async fn get_playlist_playback_selection_by_name(
         return Ok(None);
     };
 
+    let group_records = unique_record_ids(row.groups.iter());
+    let (group_rows, parent_rows) = tokio::try_join!(
+        load_group_shell_rows(group_records.clone()),
+        load_group_parent_collection_record_rows(group_records),
+    )?;
+    let collection_records = unique_record_ids(
+        row.collections
+            .iter()
+            .chain(parent_rows.iter().map(|parent| &parent.collection_record)),
+    );
+    let collection_rows = load_collection_shell_rows(collection_records).await?;
+    let collections_by_record = collection_rows
+        .into_iter()
+        .map(|row| (row.id.clone(), row))
+        .collect::<HashMap<_, _>>();
+    let groups_by_record = group_rows
+        .into_iter()
+        .map(|row| (row.id.clone(), row))
+        .collect::<HashMap<_, _>>();
+    let mut parents_by_group = HashMap::<RecordId, Vec<GroupParentCollectionRecordRow>>::new();
+    for parent in parent_rows {
+        parents_by_group
+            .entry(parent.group_record.clone())
+            .or_default()
+            .push(parent);
+    }
+    for parents in parents_by_group.values_mut() {
+        parents.sort_by_key(|parent| parent.position);
+    }
+
     let mut collections = Vec::with_capacity(row.collections.len());
     let mut download_scopes = Vec::new();
     for record in row.collections {
-        if let Some(collection) = load_playlist_playback_collection_ref(&record).await? {
-            push_unique_download_scope(&mut download_scopes, &collection.url);
-            collections.push(collection);
-        }
+        let Some(collection) = collections_by_record.get(&record) else {
+            continue;
+        };
+        push_unique_download_scope(&mut download_scopes, &collection.url);
+        collections.push(PlaylistPlaybackCollectionRef {
+            record: collection.id.clone(),
+            name: collection.name.clone(),
+            url: collection.url.clone(),
+            folder: collection.folder.clone(),
+            last_updated: collection.last_updated.clone(),
+            enable_updates: collection.enable_updates,
+        });
     }
 
     let mut groups = Vec::with_capacity(row.groups.len());
     for record in row.groups {
-        if let Some(group) = load_playlist_playback_group_ref(&record).await? {
-            push_unique_download_scope(&mut download_scopes, &group.url);
-            for url in load_group_parent_collection_urls(&group).await? {
-                push_unique_download_scope(&mut download_scopes, &url);
+        let Some(group) = groups_by_record.get(&record) else {
+            continue;
+        };
+        push_unique_download_scope(&mut download_scopes, &group.url);
+        let mut parent_collection_records = Vec::new();
+        let mut seen_parent_records = HashSet::new();
+        if let Some(parents) = parents_by_group.get(&record) {
+            for parent in parents {
+                if !seen_parent_records.insert(parent.collection_record.clone()) {
+                    continue;
+                }
+                parent_collection_records.push(parent.collection_record.clone());
+                if let Some(collection) = collections_by_record.get(&parent.collection_record) {
+                    push_unique_download_scope(&mut download_scopes, &collection.url);
+                }
             }
-            groups.push(group);
         }
+        groups.push(PlaylistPlaybackGroupRef {
+            record: group.id.clone(),
+            name: group.name.clone(),
+            url: group.url.clone(),
+            folder: group.folder.clone(),
+            parent_collection_records,
+        });
     }
 
     let extra = row
@@ -845,13 +900,12 @@ pub async fn load_model_playlist_playback_track_sources(
         return Ok(vec![]);
     }
 
-    let music_records = rows.iter().map(|row| &row.music_record);
-    let source_collections = load_music_source_collections_for_playback(music_records).await?;
-    let current_groups =
-        load_music_groups_with_parents_for_playback(rows.iter().map(|row| &row.music_record))
-            .await?;
-    let excluded_canonical_music_ids =
-        load_excluded_canonical_music_ids(&canonical_music_ids).await?;
+    let music_records = unique_record_ids(rows.iter().map(|row| &row.music_record));
+    let (source_collections, current_groups, excluded_canonical_music_ids) = tokio::try_join!(
+        load_music_source_collections_for_playback(music_records.iter()),
+        load_music_groups_with_parents_for_playback(music_records.iter()),
+        load_excluded_canonical_music_ids(&canonical_music_ids),
+    )?;
 
     let model_member_set = model_members.iter().cloned().collect::<HashSet<_>>();
     let selected_extra_records = selection
@@ -2576,40 +2630,6 @@ async fn update_playlist_extra_record_ids(record: &RecordId, extra: &[RecordId])
     Ok(())
 }
 
-async fn load_playlist_playback_collection_ref(
-    record: &RecordId,
-) -> Result<Option<PlaylistPlaybackCollectionRef>> {
-    let Some(row) = load_collection_shell_row(record).await? else {
-        return Ok(None);
-    };
-
-    Ok(Some(PlaylistPlaybackCollectionRef {
-        record: row.id,
-        name: row.name,
-        url: row.url,
-        folder: row.folder,
-        last_updated: row.last_updated,
-        enable_updates: row.enable_updates,
-    }))
-}
-
-async fn load_playlist_playback_group_ref(
-    record: &RecordId,
-) -> Result<Option<PlaylistPlaybackGroupRef>> {
-    let Some(row) = load_group_shell_row(record).await? else {
-        return Ok(None);
-    };
-    let parent_collection_records = load_group_parent_collection_records(record).await?;
-
-    Ok(Some(PlaylistPlaybackGroupRef {
-        record: row.id,
-        name: row.name,
-        url: row.url,
-        folder: row.folder,
-        parent_collection_records,
-    }))
-}
-
 async fn load_group_shell_row(record: &RecordId) -> Result<Option<GroupShellRow>> {
     let db = get_db()?;
     let mut result = match db
@@ -2634,6 +2654,56 @@ async fn load_group_shell_row(record: &RecordId) -> Result<Option<GroupShellRow>
     Ok(row)
 }
 
+async fn load_group_shell_rows(records: Vec<RecordId>) -> Result<Vec<GroupShellRow>> {
+    if records.is_empty() {
+        return Ok(vec![]);
+    }
+    let db = get_db()?;
+    let mut result = match db
+        .query("SELECT id, name, url, folder FROM $table WHERE id IN $records;")
+        .bind(("table", Table::from(Group::table_name())))
+        .bind(("records", records))
+        .await
+    {
+        Ok(result) => match result.check() {
+            Ok(result) => result,
+            Err(error) => match DBError::from(error) {
+                DBError::MissingTable(_) => return Ok(vec![]),
+                other => return Err(other.into()),
+            },
+        },
+        Err(error) => match classify_db_error(&error.into()) {
+            DBError::MissingTable(_) => return Ok(vec![]),
+            other => return Err(other.into()),
+        },
+    };
+
+    Ok(result.take(0)?)
+}
+
+async fn load_group_parent_collection_record_rows(
+    group_records: Vec<RecordId>,
+) -> Result<Vec<GroupParentCollectionRecordRow>> {
+    if group_records.is_empty() {
+        return Ok(vec![]);
+    }
+    let db = get_db()?;
+    let mut result = db
+        .query(
+            "SELECT out AS group_record, in AS collection_record, position
+             FROM $relation
+             WHERE out IN $group_records AND record::tb(in) = $collection_table
+             ORDER BY position ASC;",
+        )
+        .bind(("relation", Table::from("include")))
+        .bind(("group_records", group_records))
+        .bind(("collection_table", Collection::table_name().to_string()))
+        .await?
+        .check()?;
+
+    Ok(result.take(0)?)
+}
+
 async fn load_collection_shell_row(record: &RecordId) -> Result<Option<CollectionShellRow>> {
     let db = get_db()?;
     let mut result = match db
@@ -2650,6 +2720,36 @@ async fn load_collection_shell_row(record: &RecordId) -> Result<Option<Collectio
         },
         Err(error) => match classify_db_error(&error.into()) {
             DBError::MissingTable(_) | DBError::NotFound => return Ok(None),
+            other => return Err(other.into()),
+        },
+    };
+
+    Ok(result.take(0)?)
+}
+
+async fn load_collection_shell_rows(records: Vec<RecordId>) -> Result<Vec<CollectionShellRow>> {
+    if records.is_empty() {
+        return Ok(vec![]);
+    }
+    let db = get_db()?;
+    let mut result = match db
+        .query(
+            "SELECT id, name, url, folder, last_updated, enable_updates
+             FROM $table WHERE id IN $records;",
+        )
+        .bind(("table", Table::from(Collection::table_name())))
+        .bind(("records", records))
+        .await
+    {
+        Ok(result) => match result.check() {
+            Ok(result) => result,
+            Err(error) => match DBError::from(error) {
+                DBError::MissingTable(_) => return Ok(vec![]),
+                other => return Err(other.into()),
+            },
+        },
+        Err(error) => match classify_db_error(&error.into()) {
+            DBError::MissingTable(_) => return Ok(vec![]),
             other => return Err(other.into()),
         },
     };
@@ -3479,25 +3579,6 @@ fn random_index(len: usize) -> Option<usize> {
     }
 
     Some(rand::rng().random_range(0..len))
-}
-
-async fn load_group_parent_collection_urls(
-    group: &PlaylistPlaybackGroupRef,
-) -> Result<Vec<String>> {
-    let mut seen = HashSet::new();
-    let mut urls = Vec::new();
-
-    for record in &group.parent_collection_records {
-        if !seen.insert(record.clone()) {
-            continue;
-        }
-
-        if let Some(collection) = load_playlist_playback_collection_ref(record).await? {
-            urls.push(collection.url);
-        }
-    }
-
-    Ok(urls)
 }
 
 async fn load_group_parent_collection_records(group_record: &RecordId) -> Result<Vec<RecordId>> {
@@ -4614,4 +4695,13 @@ struct GroupShellRow {
     name: String,
     url: String,
     folder: String,
+}
+
+#[derive(Debug, Clone, Deserialize, SurrealValue)]
+struct GroupParentCollectionRecordRow {
+    #[serde(deserialize_with = "appdb::serde_utils::id::deserialize_record_id_or_compat_string")]
+    group_record: RecordId,
+    #[serde(deserialize_with = "appdb::serde_utils::id::deserialize_record_id_or_compat_string")]
+    collection_record: RecordId,
+    position: i64,
 }

@@ -863,7 +863,7 @@ struct AudioStyleNativeOpportunityTickets {
 
 #[derive(Clone)]
 struct AudioStyleSymbolicPlaylistExecution {
-    generation: u64,
+    model_snapshot: AudioStyleModelSnapshot,
     scope_signature: String,
     atlas: Arc<NeuralProgramAtlas>,
     orbit_index: Arc<ProgramOrbitIndex>,
@@ -7323,8 +7323,32 @@ impl AudioStyleSymbolicPlaybackSession {
                             .iter()
                             .any(|track| PlaybackTrackKey::from_track(track) == current_key)
                     });
-                execution.generation == snapshot.generation && materialized_current
+                execution.model_snapshot.generation == snapshot.generation && materialized_current
             })
+    }
+
+    /// Keep a committed playback session on the model that owns its executable
+    /// traversal. A later background publication starts owning new sessions;
+    /// it does not invalidate an execution already admitted by this session.
+    pub(crate) fn owned_model_snapshot_for_current_track(
+        &self,
+        current_track: &PlaybackTrack,
+    ) -> Option<Arc<AudioStyleModelSnapshot>> {
+        if self.pending_checkpoint.is_some() || self.scope_dirty {
+            return None;
+        }
+        let current_key = PlaybackTrackKey::from_track(current_track);
+        let execution = self.execution.as_ref()?;
+        let materialized_current = execution
+            .local_by_key
+            .get(&current_key)
+            .and_then(|local| execution.materializations.get(*local))
+            .is_some_and(|tracks| {
+                tracks
+                    .iter()
+                    .any(|track| PlaybackTrackKey::from_track(track) == current_key)
+            });
+        materialized_current.then(|| Arc::new(execution.model_snapshot.clone()))
     }
 
     pub(crate) fn cached_scope_tracks_for(
@@ -7520,7 +7544,7 @@ impl AudioStyleSymbolicPlaybackSession {
             let scope_signature =
                 audio_style_symbolic_scope_signature(encoding, &scope_globals, &tracks_by_global);
             let scope_changed = self.execution.as_ref().is_none_or(|execution| {
-                execution.generation != snapshot.generation
+                execution.model_snapshot.generation != snapshot.generation
                     || execution.scope_signature != scope_signature
             });
             if scope_changed {
@@ -7657,7 +7681,7 @@ impl AudioStyleSymbolicPlaybackSession {
                     &[realized],
                 )?;
                 AudioStyleSymbolicPlaylistExecution {
-                    generation: snapshot.generation,
+                    model_snapshot: snapshot.clone(),
                     scope_signature,
                     atlas,
                     orbit_index,

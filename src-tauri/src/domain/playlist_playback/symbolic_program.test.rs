@@ -10,7 +10,7 @@ use super::symbolic_program::{
 };
 
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 #[derive(Debug, Deserialize)]
@@ -165,6 +165,266 @@ fn cycle_atlas(track_count: usize, boundary_sources: Vec<usize>) -> NeuralProgra
             boundary_sources,
         }],
     }
+}
+
+fn reference_cycle_ids(successors: &[usize]) -> Vec<usize> {
+    let mut cycle_ids = vec![usize::MAX; successors.len()];
+    let mut cycle = 0;
+    for root in 0..successors.len() {
+        if cycle_ids[root] != usize::MAX {
+            continue;
+        }
+        let mut node = root;
+        while cycle_ids[node] == usize::MAX {
+            cycle_ids[node] = cycle;
+            node = successors[node];
+        }
+        cycle += 1;
+    }
+    cycle_ids
+}
+
+fn reference_candidate_neighborhood_overlaps(
+    candidate_count: usize,
+    neighbors: &[usize],
+) -> Vec<usize> {
+    let sets = neighbors
+        .chunks_exact(candidate_count)
+        .map(|row| row.iter().copied().collect::<HashSet<_>>())
+        .collect::<Vec<_>>();
+    neighbors
+        .chunks_exact(candidate_count)
+        .enumerate()
+        .flat_map(|(source, row)| {
+            row.iter()
+                .map(|destination| sets[source].intersection(&sets[*destination]).count())
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+fn reference_program_cycle_separations(
+    atlas: &NeuralProgramAtlas,
+    neighbors: &[usize],
+) -> Vec<usize> {
+    let cycle_ids = atlas
+        .programs
+        .iter()
+        .map(|program| reference_cycle_ids(&program.successors))
+        .collect::<Vec<_>>();
+    neighbors
+        .chunks_exact(atlas.candidate_count)
+        .enumerate()
+        .flat_map(|(source, row)| {
+            row.iter()
+                .map(|destination| {
+                    cycle_ids
+                        .iter()
+                        .filter(|program_cycles| {
+                            program_cycles[source] != program_cycles[*destination]
+                        })
+                        .count()
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+fn reference_close_successor_law_to_single_cycle(
+    successors: &[usize],
+    candidate_count: usize,
+    neighbors: &[usize],
+    candidate_separations: &[usize],
+    candidate_local_overlaps: &[usize],
+    candidate_ranks_by_source: &[Vec<usize>],
+    track_keys: &[String],
+) -> Option<Vec<usize>> {
+    let original = successors.to_vec();
+    let mut closed = original.clone();
+    let mut changed_sources = Vec::<usize>::new();
+    let mut changed_flags = vec![false; closed.len()];
+
+    loop {
+        let cycle_ids = reference_cycle_ids(&closed);
+        if cycle_ids.iter().copied().max().unwrap_or(0) == 0 {
+            return Some(closed);
+        }
+        let mut predecessor = vec![0; closed.len()];
+        for (source, destination) in closed.iter().copied().enumerate() {
+            predecessor[destination] = source;
+        }
+        let mut best = None;
+        for left_source in 0..closed.len() {
+            let left_destination = closed[left_source];
+            let left_row =
+                &neighbors[left_source * candidate_count..(left_source + 1) * candidate_count];
+            for (left_rank, right_destination) in left_row.iter().copied().enumerate() {
+                let right_source = predecessor[right_destination];
+                if cycle_ids[left_source] == cycle_ids[right_source] {
+                    continue;
+                }
+                let right_rank = candidate_ranks_by_source[right_source][left_destination];
+                if right_rank == usize::MAX {
+                    continue;
+                }
+                let left_changed = right_destination != original[left_source];
+                let right_changed = left_destination != original[right_source];
+                let previous_left_changed = changed_flags[left_source];
+                let previous_right_changed = changed_flags[right_source];
+                changed_flags[left_source] = left_changed;
+                changed_flags[right_source] = right_changed;
+                let changed_mapping_is_closed = changed_sources
+                    .iter()
+                    .copied()
+                    .filter(|source| *source != left_source && *source != right_source)
+                    .any(|source| changed_flags[closed[source]])
+                    || (left_changed && changed_flags[right_destination])
+                    || (right_changed && changed_flags[left_destination]);
+                if changed_mapping_is_closed {
+                    changed_flags[left_source] = previous_left_changed;
+                    changed_flags[right_source] = previous_right_changed;
+                    continue;
+                }
+                let left_separation =
+                    candidate_separations[left_source * candidate_count + left_rank];
+                let right_separation =
+                    candidate_separations[right_source * candidate_count + right_rank];
+                let left_overlap =
+                    candidate_local_overlaps[left_source * candidate_count + left_rank];
+                let right_overlap =
+                    candidate_local_overlaps[right_source * candidate_count + right_rank];
+                let score = (
+                    left_overlap.max(right_overlap),
+                    left_overlap + right_overlap,
+                    std::cmp::Reverse(left_separation.min(right_separation)),
+                    std::cmp::Reverse(left_separation + right_separation),
+                    track_keys[left_source].as_str(),
+                    track_keys[right_source].as_str(),
+                );
+                if best
+                    .as_ref()
+                    .is_none_or(|(best_score, _, _)| score < *best_score)
+                {
+                    best = Some((score, left_source, right_source));
+                }
+            }
+        }
+        let (_, left_source, right_source) = best?;
+        let left_destination = closed[left_source];
+        closed[left_source] = closed[right_source];
+        closed[right_source] = left_destination;
+        changed_sources.retain(|source| *source != left_source && *source != right_source);
+        if closed[left_source] != original[left_source] {
+            changed_sources.push(left_source);
+        }
+        if closed[right_source] != original[right_source] {
+            changed_sources.push(right_source);
+        }
+        changed_flags[left_source] = closed[left_source] != original[left_source];
+        changed_flags[right_source] = closed[right_source] != original[right_source];
+    }
+}
+
+type ProgramShape = (Vec<usize>, Vec<usize>, Vec<usize>);
+
+fn reference_closed_atlas_shape(
+    atlas: &NeuralProgramAtlas,
+    neighbors: &[usize],
+    track_keys: &[String],
+) -> (Option<Vec<ProgramShape>>, Vec<usize>) {
+    let separations = reference_program_cycle_separations(atlas, neighbors);
+    let overlaps = reference_candidate_neighborhood_overlaps(atlas.candidate_count, neighbors);
+    let ranks = neighbors
+        .chunks_exact(atlas.candidate_count)
+        .map(|row| {
+            let mut ranks = vec![usize::MAX; atlas.track_count];
+            for (rank, destination) in row.iter().copied().enumerate() {
+                ranks[destination] = rank;
+            }
+            ranks
+        })
+        .collect::<Vec<_>>();
+    let overlap_by_destination = (0..atlas.track_count)
+        .map(|source| {
+            let mut by_destination = vec![0; atlas.track_count];
+            for (destination, overlap) in neighbors
+                [source * atlas.candidate_count..(source + 1) * atlas.candidate_count]
+                .iter()
+                .copied()
+                .zip(
+                    overlaps[source * atlas.candidate_count..(source + 1) * atlas.candidate_count]
+                        .iter()
+                        .copied(),
+                )
+            {
+                by_destination[destination] = overlap;
+            }
+            by_destination
+        })
+        .collect::<Vec<_>>();
+    let mut programs = Vec::<ProgramShape>::new();
+    let mut program_by_code = HashMap::<(Vec<usize>, Vec<usize>), usize>::new();
+    let mut retracted = Vec::new();
+    for program in &atlas.programs {
+        let Some(successors) = reference_close_successor_law_to_single_cycle(
+            &program.successors,
+            atlas.candidate_count,
+            neighbors,
+            &separations,
+            &overlaps,
+            &ranks,
+            track_keys,
+        ) else {
+            retracted.extend(program.presentation_ordinals.iter().copied());
+            continue;
+        };
+        let boundary_sources = program
+            .successors
+            .iter()
+            .copied()
+            .zip(successors.iter().copied())
+            .enumerate()
+            .filter_map(|(source, (before, after))| {
+                (before != after
+                    && overlap_by_destination[source][after]
+                        < overlap_by_destination[source][before])
+                    .then_some(source)
+            })
+            .collect::<Vec<_>>();
+        let code = (successors.clone(), boundary_sources.clone());
+        if let Some(index) = program_by_code.get(&code).copied() {
+            programs[index]
+                .0
+                .extend(program.presentation_ordinals.iter().copied());
+            programs[index].0.sort_unstable();
+            programs[index].0.dedup();
+            continue;
+        }
+        program_by_code.insert(code, programs.len());
+        programs.push((
+            program.presentation_ordinals.clone(),
+            successors,
+            boundary_sources,
+        ));
+    }
+    retracted.sort_unstable();
+    ((!programs.is_empty()).then_some(programs), retracted)
+}
+
+fn next_deterministic(seed: &mut u64) -> u64 {
+    *seed = seed
+        .wrapping_mul(6_364_136_223_846_793_005)
+        .wrapping_add(1_442_695_040_888_963_407);
+    *seed
+}
+
+fn shuffled_permutation(count: usize, seed: &mut u64) -> Vec<usize> {
+    let mut values = (0..count).collect::<Vec<_>>();
+    for upper in (1..count).rev() {
+        let selected = next_deterministic(seed) as usize % (upper + 1);
+        values.swap(upper, selected);
+    }
+    values
 }
 
 fn two_full_cycle_atlas() -> NeuralProgramAtlas {
@@ -619,6 +879,81 @@ fn candidate_cycle_cover_closes_to_path_fair_single_cycles() {
             .iter()
             .all(|program| program.boundary_sources.is_empty())
     );
+}
+
+#[test]
+fn optimized_cycle_closure_matches_dense_reference_on_generated_relations() {
+    let mut seed = 0x6c_69_73_69_63_u64;
+    for case in 0..2_048 {
+        let track_count = 4 + next_deterministic(&mut seed) as usize % 8;
+        let program_count = 1 + next_deterministic(&mut seed) as usize % track_count.min(4);
+        let candidate_count = (program_count + 1).min(track_count);
+        let mut programs = (0..program_count)
+            .map(|program| ProgramMorphism {
+                lineage: format!("reference-source-{case}-{program}"),
+                presentation_ordinals: vec![program, program + program_count],
+                successors: shuffled_permutation(track_count, &mut seed),
+                boundary_sources: Vec::new(),
+            })
+            .collect::<Vec<_>>();
+        if case % 11 == 0 && programs.len() > 1 {
+            let duplicate = programs[0].successors.clone();
+            programs.last_mut().unwrap().successors = duplicate;
+        }
+        let mut neighbors = Vec::with_capacity(track_count * candidate_count);
+        for source in 0..track_count {
+            let mut row = Vec::with_capacity(candidate_count);
+            for program in &programs {
+                let destination = program.successors[source];
+                if !row.contains(&destination) {
+                    row.push(destination);
+                }
+            }
+            for destination in shuffled_permutation(track_count, &mut seed) {
+                if row.len() == candidate_count {
+                    break;
+                }
+                if !row.contains(&destination) {
+                    row.push(destination);
+                }
+            }
+            neighbors.extend(row);
+        }
+        let keys = (0..track_count)
+            .map(|track| format!("{:016x}-{track}", next_deterministic(&mut seed)))
+            .collect::<Vec<_>>();
+        let atlas = NeuralProgramAtlas {
+            track_count,
+            candidate_count,
+            programs,
+        };
+
+        assert_eq!(
+            candidate_neighborhood_overlaps(track_count, candidate_count, &neighbors).unwrap(),
+            reference_candidate_neighborhood_overlaps(candidate_count, &neighbors),
+            "candidate overlap mismatch in generated case {case}"
+        );
+        let expected = reference_closed_atlas_shape(&atlas, &neighbors, &keys);
+        let actual = close_neural_program_atlas_cycles(&atlas, &neighbors, &keys).unwrap();
+        let actual_shape = actual.atlas.map(|atlas| {
+            atlas
+                .programs
+                .into_iter()
+                .map(|program| {
+                    (
+                        program.presentation_ordinals,
+                        program.successors,
+                        program.boundary_sources,
+                    )
+                })
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(
+            (actual_shape, actual.retracted_presentations),
+            expected,
+            "cycle closure mismatch in generated case {case}: atlas={atlas:?} neighbors={neighbors:?} keys={keys:?}"
+        );
+    }
 }
 
 #[test]

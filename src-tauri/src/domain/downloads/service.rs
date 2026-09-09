@@ -1669,7 +1669,7 @@ async fn run_task_with_deps(
 
     if task_snapshot.leafs.is_empty() {
         if collection_changed {
-            collection_import::notify_downloaded_leaf_collection_committed();
+            collection_import::notify_downloaded_leaf_collection_extended();
         }
         let next_status = if plan.partial_reason.is_some() {
             DownloadTaskStatus::CompletedWithErrors
@@ -1787,7 +1787,7 @@ async fn run_task_with_deps(
     }
 
     if collection_changed {
-        collection_import::notify_downloaded_leaf_collection_committed();
+        collection_import::notify_downloaded_leaf_collection_extended();
     }
 
     if task_snapshot.status == DownloadTaskStatus::AwaitingCredentials {

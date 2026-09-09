@@ -1105,7 +1105,10 @@ fn native_scoped_position_ticket_window_generation163_scope3420() {
     ) = formed
         .opportunity_projection_snapshot_for_test()
         .expect("formed native scope must retain its immutable opportunity projection");
-    assert_eq!(execution.generation, LIKE_BASELINE_EXPECTED_GENERATION);
+    assert_eq!(
+        execution.model_snapshot.generation,
+        LIKE_BASELINE_EXPECTED_GENERATION
+    );
     let scope_signature = execution.scope_signature.clone();
     let native_scope_keys = execution
         .materializations
@@ -2144,8 +2147,8 @@ fn native_scoped_position_export_generation163_scope3420() {
         .execution
         .as_ref()
         .expect("successful native proposal must retain its formed execution carrier");
-    assert_eq!(execution.generation, EXPECTED_GENERATION);
-    let generation = execution.generation;
+    assert_eq!(execution.model_snapshot.generation, EXPECTED_GENERATION);
+    let generation = execution.model_snapshot.generation;
     let scope_signature = execution.scope_signature.clone();
     let atlas = Arc::clone(&execution.atlas);
     let orbit_index = Arc::clone(&execution.orbit_index);

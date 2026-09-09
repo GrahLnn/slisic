@@ -604,8 +604,13 @@ pub(crate) fn notify_downloaded_leaf_collection_committed() {
     notify_playlist_playback_library_changed();
 }
 
+pub(crate) fn notify_downloaded_leaf_collection_extended() {
+    notify_audio_style_inputs_changed("downloaded_leaf_collection_committed");
+    notify_playlist_playback_library_extended();
+}
+
 pub(crate) fn notify_downloaded_leaf_foreground_playable_committed() {
-    notify_playlist_playback_library_changed();
+    notify_playlist_playback_library_extended();
 }
 
 fn music_collections_are_semantically_equal(left: &[Music], right: &[Music]) -> bool {
@@ -2839,6 +2844,11 @@ fn audio_style_training_inputs_from_scope(
         })
         .filter_map(|music| audio_style_training_input_from_music(save_root, collection, music))
         .collect()
+}
+
+fn notify_playlist_playback_library_extended() {
+    #[cfg(not(test))]
+    playlist_playback_service::notify_playable_library_extended();
 }
 
 fn notify_playlist_playback_library_changed() {

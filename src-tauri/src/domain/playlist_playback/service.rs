@@ -259,6 +259,13 @@ pub(crate) fn notify_playable_library_changed() {
 }
 
 #[cfg(not(test))]
+pub(crate) fn notify_playable_library_extended() {
+    playable_index::notify_library_changed(
+        playable_index::PlayableIndexRefreshReason::LibraryExtended,
+    );
+}
+
+#[cfg(not(test))]
 struct PlaylistPlaybackTrace<'a> {
     app: &'a AppHandle,
     playlist_name: Option<&'a str>,
@@ -2034,7 +2041,16 @@ async fn refresh_playlist_track_queue_for_anchor(
         attempt_id,
         scope_revision,
     );
-    let readiness = audio_style_playlist_queue_readiness_for_anchor(&current_track);
+    let session_owned_snapshot = {
+        let symbolic_session = symbolic_session
+            .lock()
+            .map_err(|_| anyhow!("symbolic playback session lock poisoned"))?;
+        symbolic_session.owned_model_snapshot_for_current_track(&current_track)
+    };
+    let readiness = session_owned_snapshot
+        .as_ref()
+        .map(|snapshot| PlaylistQueueRecommendationReadiness::ready(snapshot.generation()))
+        .unwrap_or_else(|| audio_style_playlist_queue_readiness_for_anchor(&current_track));
     if !readiness.is_ready() {
         emit_playlist_playback_trace(
             "playlist-playback-next-slot-waiting-for-model",
@@ -2049,10 +2065,14 @@ async fn refresh_playlist_track_queue_for_anchor(
         return Ok(PlaylistTrackQueueRefreshOutcome::StaleAnchor);
     }
 
-    let snapshots = readiness
-        .is_ready()
-        .then(|| published_audio_style_model_snapshots_for_anchor(&current_track))
-        .unwrap_or_default();
+    let snapshots = if let Some(snapshot) = session_owned_snapshot {
+        vec![snapshot]
+    } else {
+        readiness
+            .is_ready()
+            .then(|| published_audio_style_model_snapshots_for_anchor(&current_track))
+            .unwrap_or_default()
+    };
     let symbolic_next = if snapshots
         .iter()
         .any(|snapshot| snapshot.has_symbolic_program_encoding())

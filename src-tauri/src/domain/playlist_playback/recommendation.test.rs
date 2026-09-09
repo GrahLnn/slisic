@@ -1197,6 +1197,78 @@ fn symbolic_playback_session_exposes_reusable_materialized_scope() {
 }
 
 #[test]
+fn committed_symbolic_session_keeps_its_model_across_new_publications() {
+    let tracks = (0..6)
+        .map(|index| track(&format!("owned-model-{index}")))
+        .collect::<Vec<_>>();
+    let snapshot = AudioStyleModelSnapshot::from_test_embeddings(
+        90,
+        tracks
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(index, track)| (track, dense_embedding(&[(index, 1.0)]))),
+    );
+    let mut session = AudioStyleSymbolicPlaybackSession::default();
+    let first = session
+        .propose_next(&snapshot, &tracks[0], &tracks, &[])
+        .expect("initial symbolic proposal should compile");
+    session
+        .commit_proposal()
+        .expect("initial symbolic proposal should commit");
+    let baseline = session
+        .execution_snapshot_for_test()
+        .expect("committed execution should remain observable");
+
+    let newer_snapshot = AudioStyleModelSnapshot::from_test_embeddings(
+        91,
+        tracks
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(index, track)| (track, dense_embedding(&[(index, 1.0)]))),
+    );
+    assert_eq!(newer_snapshot.generation(), 91);
+    let owned = session
+        .owned_model_snapshot_for_current_track(&first.track)
+        .expect("committed execution should retain its owning model");
+    assert_eq!(owned.generation(), 90);
+
+    session
+        .propose_next(owned.as_ref(), &first.track, &tracks, &[])
+        .expect("newer publication must not invalidate the committed execution");
+    let reused = session
+        .execution_snapshot_for_test()
+        .expect("reused execution should remain observable");
+    assert_eq!(
+        reused.0, baseline.0,
+        "model publication must retain atlas Arc"
+    );
+    assert_eq!(
+        reused.1, baseline.1,
+        "model publication must retain orbit Arc"
+    );
+    session
+        .rollback_proposal()
+        .expect("test proposal should roll back");
+
+    session.observe_scope_revision(1);
+    session.observe_scope_revision(2);
+    assert!(
+        session
+            .owned_model_snapshot_for_current_track(&first.track)
+            .is_none(),
+        "a real scope revision must release model ownership so current publication selection can run"
+    );
+    assert!(
+        session
+            .cached_scope_tracks_for(&snapshot, &first.track)
+            .is_none(),
+        "scope revision must still force current database materialization"
+    );
+}
+
+#[test]
 fn symbolic_scope_refreshes_like_metadata_when_scope_keys_are_unchanged() {
     let mut initial_tracks = (0..6)
         .map(|index| track(&format!("metadata-refresh-{index}")))

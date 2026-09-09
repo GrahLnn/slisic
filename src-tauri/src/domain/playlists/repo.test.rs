@@ -461,14 +461,23 @@ async fn insert_group_row(id: &str, group: &Group) -> RecordId {
 }
 
 async fn insert_collection_group_edge(collection: &RecordId, group: &RecordId) {
+    insert_collection_group_edge_at_position(collection, group, 0).await;
+}
+
+async fn insert_collection_group_edge_at_position(
+    collection: &RecordId,
+    group: &RecordId,
+    position: i64,
+) {
     let db = get_db().expect("global playlist repo database handle should exist");
 
     db.query(
-        "INSERT RELATION INTO $rel { in: $collection, out: $group, position: 0 } RETURN NONE;",
+        "INSERT RELATION INTO $rel { in: $collection, out: $group, position: $position } RETURN NONE;",
     )
     .bind(("rel", Table::from("include")))
     .bind(("collection", collection.clone()))
     .bind(("group", group.clone()))
+    .bind(("position", position))
     .await
     .expect("collection group edge insert query should succeed")
     .check()
@@ -5325,6 +5334,123 @@ fn playlist_playback_selection_adds_parent_download_scope_for_group_only_refs() 
         assert_eq!(
             selection.download_scopes,
             vec![selected_group.url.clone(), selected_collection.url.clone()]
+        );
+
+        reset_db();
+    });
+}
+
+#[test]
+fn playlist_playback_selection_batch_hydration_preserves_ref_order_and_missing_ref_semantics() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+        bootstrap_playlist_read_schema().await;
+
+        let first_collection =
+            sample_collection("https://example.com/batch-selection-first", Some(false));
+        let second_collection =
+            sample_collection("https://example.com/batch-selection-second", Some(false));
+        let first_group = collection_group(
+            "Batch Group First",
+            "https://example.com/batch-selection-group-first",
+            "Disc 1",
+        );
+        let second_group = collection_group(
+            "Batch Group Second",
+            "https://example.com/batch-selection-group-second",
+            "Disc 2",
+        );
+        let first_collection_record =
+            insert_collection_row("batch-selection-first", &first_collection).await;
+        let second_collection_record =
+            insert_collection_row("batch-selection-second", &second_collection).await;
+        let first_group_record =
+            insert_group_row("batch-selection-group-first", &first_group).await;
+        let second_group_record =
+            insert_group_row("batch-selection-group-second", &second_group).await;
+        let missing_collection = RecordId::new(Collection::table_name(), "batch-selection-missing");
+        let missing_group = RecordId::new(Group::table_name(), "batch-selection-missing");
+        insert_collection_group_edge_at_position(&first_collection_record, &first_group_record, 0)
+            .await;
+        insert_collection_group_edge_at_position(&second_collection_record, &first_group_record, 1)
+            .await;
+        insert_collection_group_edge_at_position(&first_collection_record, &first_group_record, 2)
+            .await;
+        insert_collection_group_edge_at_position(&missing_collection, &first_group_record, 3).await;
+        insert_collection_group_edge_at_position(
+            &second_collection_record,
+            &second_group_record,
+            0,
+        )
+        .await;
+
+        let playlist = PlayList {
+            name: "Batch Playback Selection".to_string(),
+            collections: vec![],
+            groups: vec![],
+            extra: vec![],
+            created_at: AutoFill::pending(),
+        };
+        insert_playlist_row(
+            "batch-playback-selection",
+            &playlist,
+            &[
+                second_collection_record.clone(),
+                missing_collection,
+                first_collection_record.clone(),
+                second_collection_record,
+            ],
+            &[
+                second_group_record.clone(),
+                missing_group,
+                first_group_record,
+                second_group_record,
+            ],
+            &[],
+        )
+        .await;
+
+        let selection = get_playlist_playback_selection_by_name(&playlist.name)
+            .await
+            .expect("batched playback selection should load")
+            .expect("batched playback selection should exist");
+
+        assert_eq!(
+            selection
+                .collections
+                .iter()
+                .map(|collection| collection.url.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                second_collection.url.as_str(),
+                first_collection.url.as_str(),
+                second_collection.url.as_str(),
+            ],
+            "missing refs are skipped while duplicate playlist refs retain their positions"
+        );
+        assert_eq!(
+            selection
+                .groups
+                .iter()
+                .map(|group| group.url.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                second_group.url.as_str(),
+                first_group.url.as_str(),
+                second_group.url.as_str(),
+            ]
+        );
+        assert_eq!(
+            selection.download_scopes,
+            vec![
+                second_collection.url,
+                first_collection.url,
+                second_group.url,
+                first_group.url,
+            ],
+            "download scopes retain collection-first playlist order and deduplicate group parents"
         );
 
         reset_db();
