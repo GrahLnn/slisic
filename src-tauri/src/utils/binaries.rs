@@ -66,7 +66,7 @@ pub(crate) struct StagedBinary {
     pub(crate) executable_path: PathBuf,
     pub(crate) remote: RemoteIdentity,
     pub(crate) stage_dir: PathBuf,
-    pub(crate) version: Option<String>,
+    pub(crate) version: String,
 }
 
 #[derive(Clone, Default)]
@@ -411,53 +411,9 @@ fn install_binary(
     state_path: &Path,
     client: &Client,
 ) -> Result<(), String> {
-    let cache_dir = app
-        .path()
-        .app_cache_dir()
-        .map_err(|error| error.to_string())?;
-    fs::create_dir_all(&cache_dir).map_err(|error| error.to_string())?;
-
-    let download_path = cache_dir.join(format!("{}.download", kind.key()));
-    let remote = download_to_path(
-        client,
-        &plan.download_url,
-        &download_path,
-        checksum_for_plan(client, plan)?.as_deref(),
-    )?;
-
-    if let Some(parent) = install_path.parent() {
-        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    }
-
-    match plan.archive_kind {
-        ArchiveKind::Raw => replace_file(&download_path, install_path)?,
-        ArchiveKind::Zip | ArchiveKind::TarXz => {
-            extract_and_place_executable(&download_path, install_path, plan.archive_kind)?
-        }
-    }
-
-    make_executable(install_path)?;
-    remove_quarantine(install_path);
-
-    let installed_version = read_binary_version(kind, install_path);
-    write_install_state(
-        state_path,
-        &BinaryInstallState {
-            remote,
-            installed_version: installed_version.clone(),
-        },
-    )?;
-
-    println!(
-        "[binary-maintenance] {} ready at {}{}",
-        kind.key(),
-        install_path.display(),
-        installed_version
-            .as_deref()
-            .map(|version| format!(" ({version})"))
-            .unwrap_or_default()
-    );
-
+    let staged = stage_binary_update(app, kind, plan, client)?;
+    activate_staged_binary(kind, install_path, state_path, &staged)?;
+    let _ = fs::remove_dir_all(&staged.stage_dir);
     Ok(())
 }
 
@@ -495,7 +451,7 @@ fn stage_binary_update(
 
     make_executable(&executable_path)?;
     remove_quarantine(&executable_path);
-    let version = read_binary_version(kind, &executable_path);
+    let version = read_binary_version(kind, &executable_path)?;
 
     Ok(StagedBinary {
         executable_path,
@@ -562,19 +518,15 @@ pub(crate) fn activate_staged_binary(
         state_path,
         &BinaryInstallState {
             remote: staged.remote.clone(),
-            installed_version: staged.version.clone(),
+            installed_version: Some(staged.version.clone()),
         },
     )?;
 
     println!(
-        "[binary-maintenance] {} ready at {}{}",
+        "[binary-maintenance] {} ready at {} ({})",
         kind.key(),
         install_path.display(),
-        staged
-            .version
-            .as_deref()
-            .map(|version| format!(" ({version})"))
-            .unwrap_or_default()
+        staged.version
     );
 
     Ok(())
@@ -867,7 +819,7 @@ fn find_file_recursive(dir: &Path, file_name: &str) -> Option<PathBuf> {
     None
 }
 
-fn read_binary_version(kind: ManagedBinary, exec: &Path) -> Option<String> {
+pub(crate) fn read_binary_version(kind: ManagedBinary, exec: &Path) -> Result<String, String> {
     let mut command = Command::new(exec);
     match kind {
         ManagedBinary::Ffmpeg => {
@@ -888,13 +840,25 @@ fn read_binary_version(kind: ManagedBinary, exec: &Path) -> Option<String> {
         command.creation_flags(CREATE_NO_WINDOW);
     }
 
-    let output = command.output().ok()?;
+    let output = command.output().map_err(|error| {
+        format!(
+            "{} version probe failed for {}: {error}",
+            kind.key(),
+            exec.display()
+        )
+    })?;
     if !output.status.success() {
-        return None;
+        return Err(format!(
+            "{} version probe failed for {} ({}): {}",
+            kind.key(),
+            exec.display(),
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    match kind {
+    let version = match kind {
         ManagedBinary::Ffmpeg => stdout
             .lines()
             .next()
@@ -908,7 +872,14 @@ fn read_binary_version(kind: ManagedBinary, exec: &Path) -> Option<String> {
                 Some(version.to_string())
             }
         }
-    }
+    };
+    version.ok_or_else(|| {
+        format!(
+            "{} version probe returned no version for {}",
+            kind.key(),
+            exec.display()
+        )
+    })
 }
 
 fn write_install_state(path: &Path, state: &BinaryInstallState) -> Result<(), String> {
@@ -1031,18 +1002,20 @@ fn ffmpeg_plan(client: &Client) -> Result<DownloadPlan, String> {
     let install_name = install_name_for_kind(ManagedBinary::Ffmpeg);
     match (std::env::consts::OS, std::env::consts::ARCH) {
         ("windows", "x86") | ("windows", "x86_64") | ("windows", "aarch64") => {
-            let release = fetch_github_latest_release(client, "BtbN", "FFmpeg-Builds")?;
+            // Use Gyan's full release build. The BtbN Windows nightly's GLib
+            // startup can race stack-guard initialization before main runs.
+            let release = fetch_github_latest_release(client, "GyanD", "codexffmpeg")?;
             let asset_name = select_release_asset_name(
                 &release.assets,
-                GitHubReleaseAssetMatcher::Suffix("-win64-gpl.zip"),
+                GitHubReleaseAssetMatcher::Suffix("-full_build.zip"),
             )?
             .to_string();
             Ok(DownloadPlan {
                 install_name,
                 checksum_asset_name: None,
                 download_url: build_github_relay_url(
-                    "BtbN",
-                    "FFmpeg-Builds",
+                    "GyanD",
+                    "codexffmpeg",
                     &format!("releases/latest/download/{asset_name}"),
                 ),
                 checksum_url: None,

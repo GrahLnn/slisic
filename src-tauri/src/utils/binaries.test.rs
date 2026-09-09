@@ -3,7 +3,7 @@ use super::binaries::{
     GitHubReleaseAssetMatcher, ManagedBinary, RemoteIdentity, StagedBinary,
     acquire_managed_binary_usage, activate_managed_binary_if_idle, activate_staged_binary,
     binary_http_retry_delay, build_github_api_url, build_github_relay_url,
-    managed_binary_usage_snapshot, needs_install_or_update, parse_sha256,
+    managed_binary_usage_snapshot, needs_install_or_update, parse_sha256, read_binary_version,
     release_asset_matcher_matches, select_release_asset_name, should_retry_binary_http_status,
     with_binary_kind_lock,
 };
@@ -25,6 +25,76 @@ fn temp_binary_test_dir(prefix: &str) -> PathBuf {
         "slisic-binary-{prefix}-{}-{nanos}",
         std::process::id()
     ))
+}
+
+fn version_probe_fixture(root: &std::path::Path, stdout: &str, exit_code: u32) -> PathBuf {
+    std::fs::create_dir_all(root).expect("probe directory should be created");
+    #[cfg(windows)]
+    let (name, script) = (
+        "probe.cmd",
+        format!(
+            "@echo off\r\n{}exit /b {exit_code}\r\n",
+            if stdout.is_empty() {
+                String::new()
+            } else {
+                format!("echo {stdout}\r\n")
+            }
+        ),
+    );
+    #[cfg(not(windows))]
+    let (name, script) = (
+        "probe",
+        format!("#!/bin/sh\nprintf '%s' '{stdout}'\nexit {exit_code}\n"),
+    );
+    let path = root.join(name);
+    std::fs::write(&path, script).expect("probe script should be written");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .expect("probe should be executable");
+    }
+    path
+}
+
+#[test]
+fn binary_version_probe_rejects_failed_process_even_with_version_output() {
+    let root = temp_binary_test_dir("version-failed");
+    let executable = version_probe_fixture(&root, "ffmpeg version N-test", 19);
+    let error = read_binary_version(ManagedBinary::Ffmpeg, &executable)
+        .expect_err("a failed probe must not produce a version for activation");
+    assert!(error.contains("version probe failed"));
+    assert!(error.contains("19") || error.contains("0x13"));
+    std::fs::remove_dir_all(root).expect("probe directory should be removed");
+}
+
+#[test]
+fn binary_version_probe_rejects_success_without_version_output() {
+    let root = temp_binary_test_dir("version-empty");
+    let executable = version_probe_fixture(&root, "", 0);
+    for kind in [ManagedBinary::Ffmpeg, ManagedBinary::YtDlp] {
+        let error = read_binary_version(kind, &executable)
+            .expect_err("an empty successful probe must not be accepted for activation");
+        assert!(error.contains("returned no version"));
+    }
+    std::fs::remove_dir_all(root).expect("probe directory should be removed");
+}
+
+#[test]
+fn binary_version_probe_preserves_successful_ffmpeg_and_ytdlp_versions() {
+    let root = temp_binary_test_dir("version-ready");
+    for (kind, output, expected) in [
+        (
+            ManagedBinary::Ffmpeg,
+            "ffmpeg version N-test Copyright",
+            "N-test",
+        ),
+        (ManagedBinary::YtDlp, "2026.09.08", "2026.09.08"),
+    ] {
+        let executable = version_probe_fixture(&root, output, 0);
+        assert_eq!(read_binary_version(kind, &executable).unwrap(), expected);
+    }
+    std::fs::remove_dir_all(root).expect("probe directory should be removed");
 }
 
 #[test]
@@ -128,6 +198,33 @@ fn select_release_asset_name_picks_the_current_release_asset_without_hardcoding_
             .expect("suffix matcher should resolve the non-shared win64 gpl asset");
 
     assert_eq!(selected, "ffmpeg-N-124055-gc67a4554d1-win64-gpl.zip");
+}
+
+#[test]
+fn select_release_asset_name_picks_full_static_zip_from_release_assets() {
+    let assets = vec![
+        GitHubLatestReleaseAsset {
+            name: "ffmpeg-9.0.1-essentials_build.zip".to_string(),
+        },
+        GitHubLatestReleaseAsset {
+            name: "ffmpeg-9.0.1-full_build-shared.zip".to_string(),
+        },
+        GitHubLatestReleaseAsset {
+            name: "ffmpeg-9.0.1-full_build.7z".to_string(),
+        },
+        GitHubLatestReleaseAsset {
+            name: "ffmpeg-9.0.1-full_build.zip".to_string(),
+        },
+    ];
+
+    assert_eq!(
+        select_release_asset_name(
+            &assets,
+            GitHubReleaseAssetMatcher::Suffix("-full_build.zip"),
+        )
+        .expect("full static ZIP should be selected"),
+        "ffmpeg-9.0.1-full_build.zip",
+    );
 }
 
 #[test]
@@ -351,7 +448,7 @@ fn activate_staged_binary_replaces_current_binary_only_when_called() {
             content_length: Some(3),
         },
         stage_dir: staged_dir,
-        version: Some("2026.05.02".to_string()),
+        version: "2026.05.02".to_string(),
     };
 
     activate_staged_binary(ManagedBinary::YtDlp, &install_path, &state_path, &staged)
@@ -388,7 +485,7 @@ fn activate_staged_binary_keeps_current_binary_when_staged_source_is_missing() {
             content_length: Some(3),
         },
         stage_dir: staged_dir,
-        version: Some("N-124300".to_string()),
+        version: "N-124300".to_string(),
     };
 
     let result = activate_staged_binary(ManagedBinary::Ffmpeg, &install_path, &state_path, &staged);

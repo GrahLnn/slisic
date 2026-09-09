@@ -6,6 +6,7 @@ import {
   resolveArcTrackItemFrame,
   resolveArcTrackItemIndexByLayoutId,
   resolveArcTrackItemMountState,
+  resolveArcTrackInsertionNeighbors,
   resolveArcTrackPathClassName,
   resolveArcTrackPathStrokeWidth,
   resolveArcTrackVisibleInsertion,
@@ -229,6 +230,96 @@ describe("resolveArcTrackVisibleInsertion", () => {
       {
         previousLayoutId: null,
         nextLayoutId: "playlist:collection:upper",
+      },
+    );
+  });
+});
+
+describe("resolveArcTrackInsertionNeighbors", () => {
+  test("preserves measured visible neighbors when mounted arc items are available", () => {
+    assert.deepEqual(
+      resolveArcTrackInsertionNeighbors({
+        itemFrames: [
+          {
+            layoutId: "playlist:collection:upper",
+            top: 140,
+            bottom: 170,
+            centerY: 155,
+          },
+          {
+            layoutId: "playlist:collection:lower",
+            top: 240,
+            bottom: 270,
+            centerY: 255,
+          },
+        ],
+        layoutOrder: ["playlist:collection:upper", "playlist:collection:lower"],
+        scrollOffset: 2_000,
+        sourceCenterY: 210,
+        viewportTop: 100,
+        viewportBottom: 500,
+      }),
+      {
+        previousLayoutId: "playlist:collection:upper",
+        nextLayoutId: "playlist:collection:lower",
+      },
+    );
+  });
+
+  test("uses virtual track positions when the item registry has not mounted yet", () => {
+    const layoutOrder = [
+      "playlist:collection:alpha",
+      "playlist:collection:bravo",
+      "playlist:collection:charlie",
+      "playlist:collection:delta",
+      "playlist:collection:echo",
+    ];
+    const insertion = resolveArcTrackInsertionNeighbors({
+      itemFrames: [],
+      layoutOrder,
+      scrollOffset: 300,
+      sourceCenterY: 256,
+      viewportTop: 100,
+      viewportBottom: 500,
+    });
+
+    assert.deepEqual(insertion, {
+      previousLayoutId: "playlist:collection:delta",
+      nextLayoutId: "playlist:collection:echo",
+    });
+    assert.deepEqual(
+      resolveArcTrackDisplayItems({
+        items: [
+          createItem("Alpha", "alpha"),
+          createItem("Bravo", "bravo"),
+          createItem("Charlie", "charlie"),
+          createItem("Delta", "delta"),
+          createItem("Echo", "echo"),
+          createItem("Returning", "returning"),
+        ],
+        previousLayoutOrder: layoutOrder,
+        pendingInsertion: {
+          ...insertion,
+          targetLayoutId: "playlist:collection:returning",
+        },
+      }).items.map((item) => item.url),
+      ["alpha", "bravo", "charlie", "delta", "returning", "echo"],
+    );
+  });
+
+  test("keeps an insertion plan for an empty track", () => {
+    assert.deepEqual(
+      resolveArcTrackInsertionNeighbors({
+        itemFrames: [],
+        layoutOrder: [],
+        scrollOffset: 0,
+        sourceCenterY: 200,
+        viewportTop: 0,
+        viewportBottom: 640,
+      }),
+      {
+        previousLayoutId: null,
+        nextLayoutId: null,
       },
     );
   });

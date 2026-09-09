@@ -233,6 +233,37 @@ export function resolveArcTrackVisibleInsertion(args: {
   } satisfies Omit<ArcTrackPendingInsertion, "targetLayoutId">;
 }
 
+export function resolveArcTrackInsertionNeighbors(args: {
+  itemFrames: readonly ArcTrackVisibleItemFrame[];
+  layoutOrder: readonly string[];
+  scrollOffset: number;
+  sourceCenterY: number;
+  viewportBottom: number;
+  viewportTop: number;
+}) {
+  const visibleInsertion = resolveArcTrackVisibleInsertion({
+    itemFrames: args.itemFrames,
+    sourceCenterY: args.sourceCenterY,
+    viewportBottom: args.viewportBottom,
+    viewportTop: args.viewportTop,
+  });
+
+  if (visibleInsertion) {
+    return visibleInsertion;
+  }
+
+  const sourceTrackStart = args.scrollOffset + args.sourceCenterY - args.viewportTop;
+  const nextIndex = Math.min(
+    Math.max(Math.ceil((sourceTrackStart - ARC_LEADING_PADDING) / ARC_ITEM_GAP), 0),
+    args.layoutOrder.length,
+  );
+
+  return {
+    previousLayoutId: args.layoutOrder[nextIndex - 1] ?? null,
+    nextLayoutId: args.layoutOrder[nextIndex] ?? null,
+  } satisfies Omit<ArcTrackPendingInsertion, "targetLayoutId">;
+}
+
 export function resolveArcTrackDisplayItems(args: {
   items: readonly ConfigSidebarItem[];
   pendingInsertion: ArcTrackPendingInsertion | null;
@@ -976,7 +1007,7 @@ function ArcTrackListBody({
       }
 
       const viewportRect = scrollElement.getBoundingClientRect();
-      const insertion = resolveArcTrackVisibleInsertion({
+      const insertion = resolveArcTrackInsertionNeighbors({
         itemFrames: Array.from(itemRegistryRef.current.values()).map((state) => {
           const rect = state.node.getBoundingClientRect();
 
@@ -987,17 +1018,17 @@ function ArcTrackListBody({
             top: rect.top,
           } satisfies ArcTrackVisibleItemFrame;
         }),
+        layoutOrder: displayOrderRef.current,
+        scrollOffset: scrollOffsetRef.current,
         sourceCenterY: sourceRect.top + sourceRect.height / 2,
         viewportBottom: viewportRect.bottom,
         viewportTop: viewportRect.top,
       });
 
-      pendingInsertionRef.current = insertion
-        ? {
-            ...insertion,
-            targetLayoutId: layoutId,
-          }
-        : null;
+      pendingInsertionRef.current = {
+        ...insertion,
+        targetLayoutId: layoutId,
+      };
     },
     [],
   );

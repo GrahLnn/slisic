@@ -33,6 +33,25 @@ export const closedToolLabelHoverLease = {
   reason: "outside",
 } satisfies ToolLabelHoverLease;
 
+export function resolveToolLabelHoverLeaseUpdate(
+  current: ToolLabelHoverLease,
+  next: ToolLabelHoverLease,
+) {
+  if (current.kind !== next.kind) {
+    return next;
+  }
+
+  if (current.kind === "open" && next.kind === "open") {
+    return current.source === next.source ? current : next;
+  }
+
+  if (current.kind === "closed" && next.kind === "closed") {
+    return current.reason === next.reason ? current : next;
+  }
+
+  return next;
+}
+
 export function resolveToolLabelOverlayVisibility(args: {
   lease: ToolLabelHoverLease;
   hasTool: boolean;

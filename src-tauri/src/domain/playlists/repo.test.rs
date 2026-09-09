@@ -3369,6 +3369,66 @@ fn get_playlist_config_reads_one_level_surfaces_without_music() {
 }
 
 #[test]
+fn list_config_library_batches_excludes_without_changing_hydrated_rows() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+        bootstrap_playlist_read_schema().await;
+
+        let collection_url = "https://example.com/batched-config-excludes";
+        let group = collection_group("Disc 1", &format!("{collection_url}#disc-1"), "Disc 1");
+        let mut first_music = named_music("Batched Exclude A", group.clone(), "Disc 1/A.m4a");
+        first_music.alias = "Batched Alias A".to_string();
+        first_music.path = None;
+        first_music.liked = true;
+        first_music.loudness_profile = LoudnessProfile::from_integrated_lufs(-17.25);
+        let mut second_music = named_music("Batched Exclude B", group.clone(), "Disc 1/B.m4a");
+        second_music.alias = "Batched Alias B".to_string();
+        second_music.start_ms = 12_345;
+        second_music.end_ms = 234_567;
+        second_music.canonical_music_id = music_canonical_id(
+            &second_music.url,
+            second_music.start_ms,
+            second_music.end_ms,
+        );
+        let collection = collection_with_musics(
+            collection_url,
+            "youtube/batched-config-excludes",
+            Some(false),
+            vec![first_music.clone(), second_music.clone()],
+        );
+        upsert_collection(&collection)
+            .await
+            .expect("exclude music graph should exist before exclude writes");
+
+        let first = add_exclude(first_music)
+            .await
+            .expect("first exclude should save");
+        let second = add_exclude(second_music)
+            .await
+            .expect("second exclude should save");
+        let library = list_config_library()
+            .await
+            .expect("batched config excludes should load");
+
+        assert_eq!(library.excludes.len(), 2);
+        assert_eq!(library.excludes[0].created_at, second.exclude.created_at);
+        assert_eq!(library.excludes[1].created_at, first.exclude.created_at);
+        assert_eq!(
+            serde_json::to_value(&library.excludes[0]).expect("loaded exclude should serialize"),
+            serde_json::to_value(&second.exclude).expect("saved exclude should serialize")
+        );
+        assert_eq!(
+            serde_json::to_value(&library.excludes[1]).expect("loaded exclude should serialize"),
+            serde_json::to_value(&first.exclude).expect("saved exclude should serialize")
+        );
+
+        reset_db();
+    });
+}
+
+#[test]
 fn list_config_library_reads_collection_and_group_surfaces() {
     let _guard = acquire_db_test_lock();
 

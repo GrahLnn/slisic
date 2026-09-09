@@ -12,6 +12,7 @@ import { createPortal } from "react-dom";
 import { Torph } from "@grahlnn/comps";
 import {
   closedToolLabelHoverLease,
+  resolveToolLabelHoverLeaseUpdate,
   resolveToolLabelHoverLeaseFromPointerProbe,
   resolveToolLabelOverlayVisibility,
   type ToolLabelHoverLease,
@@ -295,7 +296,7 @@ export function ToolLabel({
       overlay: overlayRef.current,
     });
 
-    setHoverLease(nextLease);
+    setHoverLease((current) => resolveToolLabelHoverLeaseUpdate(current, nextLease));
   }, [effectiveInteractionDisabled, hasTool, hoverMode]);
 
   const scheduleHoverSync = useCallback(() => {

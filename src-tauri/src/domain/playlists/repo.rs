@@ -187,13 +187,7 @@ pub async fn list_config_library() -> Result<ConfigLibraryView> {
             other => return Err(other.into()),
         },
     };
-    let excludes = match Exclude::list().order_by("created_at", Order::Desc).await {
-        Ok(excludes) => excludes,
-        Err(error) => match classify_db_error(&error) {
-            DBError::MissingTable(_) => vec![],
-            other => return Err(other.into()),
-        },
-    };
+    let excludes = load_config_excludes().await?;
 
     Ok(ConfigLibraryView {
         collections,
@@ -202,6 +196,145 @@ pub async fn list_config_library() -> Result<ConfigLibraryView> {
         excludes,
         exclude_availability: load_exclude_availability().await?,
     })
+}
+
+async fn load_config_excludes() -> Result<Vec<Exclude>> {
+    let db = get_db()?;
+    let mut result = match db
+        .query(
+            "SELECT id AS exclude_record, music AS music_record, created_at
+             FROM $table
+             ORDER BY created_at DESC, exclude_record DESC;",
+        )
+        .bind(("table", Table::from(StoredExclude::table_name())))
+        .await
+    {
+        Ok(result) => match result.check() {
+            Ok(result) => result,
+            Err(error) => match DBError::from(error) {
+                DBError::MissingTable(_) => return Ok(vec![]),
+                other => return Err(other.into()),
+            },
+        },
+        Err(error) => match classify_db_error(&error.into()) {
+            DBError::MissingTable(_) => return Ok(vec![]),
+            other => return Err(other.into()),
+        },
+    };
+    let exclude_rows: Vec<ConfigExcludeRow> = result.take(0)?;
+    if exclude_rows.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let music_records = unique_record_ids(exclude_rows.iter().map(|row| &row.music_record));
+    let mut result = db
+        .query(
+            "SELECT
+                id AS music_record,
+                occurrence_id,
+                name,
+                alias,
+                canonical_music_id,
+                url,
+                path,
+                start_ms,
+                end_ms,
+                liked,
+                loudness_profile
+             FROM $table
+             WHERE id IN $music_records;",
+        )
+        .bind(("table", Table::from(Music::table_name())))
+        .bind(("music_records", music_records.clone()))
+        .await?
+        .check()?;
+    let music_rows: Vec<ConfigExcludeMusicRow> = result.take(0)?;
+    let music_by_record = music_rows
+        .into_iter()
+        .map(|row| (row.music_record.clone(), row))
+        .collect::<HashMap<_, _>>();
+
+    let group_rows = PlaylistMusicGroupView::query(PlaylistMusicGroupViewParams {
+        music_records: music_records.clone(),
+    })
+    .await?;
+    let mut groups_by_music = HashMap::<RecordId, Vec<PlaylistMusicGroupView>>::new();
+    for row in group_rows {
+        groups_by_music
+            .entry(row.music_record.clone())
+            .or_default()
+            .push(row);
+    }
+
+    let group_records = unique_record_ids(
+        groups_by_music
+            .values()
+            .flatten()
+            .map(|row| &row.group_record),
+    );
+    let parent_rows =
+        PlaylistGroupParentCollectionView::query(PlaylistGroupParentCollectionViewParams {
+            group_records,
+        })
+        .await?;
+    let mut parents_by_group = HashMap::<RecordId, Vec<PlaylistGroupParentCollectionView>>::new();
+    for row in parent_rows {
+        parents_by_group
+            .entry(row.group_record.clone())
+            .or_default()
+            .push(row);
+    }
+
+    let mut excludes = Vec::with_capacity(exclude_rows.len());
+    for row in exclude_rows {
+        let music_row = music_by_record.get(&row.music_record).ok_or_else(|| {
+            anyhow::anyhow!(
+                "exclude record `{:?}` references missing music record `{:?}`",
+                row.exclude_record,
+                row.music_record,
+            )
+        })?;
+        let group_rows = groups_by_music
+            .get(&row.music_record)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        let [group_row] = group_rows else {
+            bail!(
+                "exclude music record `{:?}` requires exactly one group relation, found {}",
+                row.music_record,
+                group_rows.len()
+            );
+        };
+        let parent_rows = parents_by_group
+            .get(&group_row.group_record)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        let [parent_row] = parent_rows else {
+            bail!(
+                "exclude group record `{:?}` requires exactly one collection relation, found {}",
+                group_row.group_record,
+                parent_rows.len()
+            );
+        };
+
+        excludes.push(Exclude {
+            music: music_row.clone().into_music(Group {
+                name: group_row.group_name.clone(),
+                url: group_row.group_url.clone(),
+                collection: CollectionGroupOwner {
+                    name: parent_row.collection_name.clone(),
+                    url: parent_row.collection_url.clone(),
+                    folder: parent_row.collection_folder.clone(),
+                    last_updated: parent_row.collection_last_updated.clone(),
+                    enable_updates: parent_row.collection_enable_updates,
+                },
+                folder: group_row.group_folder.clone(),
+            }),
+            created_at: row.created_at,
+        });
+    }
+
+    Ok(excludes)
 }
 
 pub async fn add_exclude(music: Music) -> Result<AddExcludeResult> {
@@ -4286,6 +4419,51 @@ fn same_music_file_path(left: &Path, right: &Path) -> bool {
 
 fn normalize_music_file_path_key(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/").to_lowercase()
+}
+
+#[derive(Debug, Clone, Deserialize, SurrealValue)]
+struct ConfigExcludeRow {
+    #[serde(deserialize_with = "appdb::serde_utils::id::deserialize_record_id_or_compat_string")]
+    exclude_record: RecordId,
+    #[serde(deserialize_with = "appdb::serde_utils::id::deserialize_record_id_or_compat_string")]
+    music_record: RecordId,
+    created_at: AutoFill,
+}
+
+#[derive(Debug, Clone, Deserialize, SurrealValue)]
+struct ConfigExcludeMusicRow {
+    #[serde(deserialize_with = "appdb::serde_utils::id::deserialize_record_id_or_compat_string")]
+    music_record: RecordId,
+    #[serde(default)]
+    occurrence_id: String,
+    name: String,
+    alias: String,
+    canonical_music_id: String,
+    url: String,
+    path: Option<String>,
+    start_ms: u32,
+    end_ms: u32,
+    liked: bool,
+    #[serde(default)]
+    loudness_profile: Option<LoudnessProfile>,
+}
+
+impl ConfigExcludeMusicRow {
+    fn into_music(self, group: Group) -> Music {
+        Music {
+            occurrence_id: self.occurrence_id,
+            name: self.name,
+            alias: self.alias,
+            group,
+            canonical_music_id: self.canonical_music_id,
+            url: self.url,
+            path: self.path,
+            start_ms: self.start_ms,
+            end_ms: self.end_ms,
+            liked: self.liked,
+            loudness_profile: self.loudness_profile,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, SurrealValue, Store)]

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import {
   resolveToolLabelHoverLeaseFromPointerProbe,
+  resolveToolLabelHoverLeaseUpdate,
   resolveToolLabelOverlayVisibility,
   type ToolLabelHoverProbeElement,
 } from "./toolLabelHoverLease";
@@ -21,6 +22,50 @@ function createProbeElement(args: {
 }
 
 describe("ToolLabel hover lease", () => {
+  test("preserves state identity when a wheel probe repeats the current lease", () => {
+    const closedLease = {
+      kind: "closed",
+      reason: "outside",
+    } as const;
+    const openLease = {
+      kind: "open",
+      source: "geometry",
+    } as const;
+
+    assert.equal(
+      resolveToolLabelHoverLeaseUpdate(closedLease, {
+        kind: "closed",
+        reason: "outside",
+      }),
+      closedLease,
+    );
+    assert.equal(
+      resolveToolLabelHoverLeaseUpdate(openLease, {
+        kind: "open",
+        source: "geometry",
+      }),
+      openLease,
+    );
+  });
+
+  test("publishes a changed lease when scrolling changes the pointer target", () => {
+    const nextLease = {
+      kind: "open",
+      source: "geometry",
+    } as const;
+
+    assert.equal(
+      resolveToolLabelHoverLeaseUpdate(
+        {
+          kind: "closed",
+          reason: "outside",
+        },
+        nextLease,
+      ),
+      nextLease,
+    );
+  });
+
   test("shows the overlay only when the lease is open and interaction is enabled", () => {
     assert.equal(
       resolveToolLabelOverlayVisibility({
