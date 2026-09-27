@@ -15,7 +15,7 @@ import type {
   PlayPlaylistSession,
   SpectrumMusicSourceContext,
 } from "@/src/cmd";
-import { CREATE_COLLECTION_LAYOUT_ID, type ConfigDraft } from "./core";
+import { BUILTIN_LIKES_PLAYLIST_NAME, CREATE_COLLECTION_LAYOUT_ID, type ConfigDraft } from "./core";
 import { machine } from "./machine";
 import {
   payloads,
@@ -552,6 +552,40 @@ describe("appLogic machine", () => {
       ["Focus Session"],
     );
     assert.deepEqual(actor.getSnapshot().context.configLibrary, createConfigLibrary([]));
+  });
+
+  test("adds and removes Likes without changing the library bootstrap state", async () => {
+    const actor = createActor(
+      machine.provide({
+        actors: {
+          loadCollections: fromPromise<BootstrapResult>(async () => ({
+            hasPlayList: true,
+            playlists: [],
+            collections: [],
+            configLibrary: createConfigLibrary([]),
+            savePath: "C:/Music",
+          })),
+        },
+      }),
+    );
+
+    actor.start();
+    actor.send(sig.mainx.run);
+    await waitForState(actor, "ready");
+    actor.send(
+      payloads["playlist.builtin_likes.changed"].load({
+        name: BUILTIN_LIKES_PLAYLIST_NAME,
+        created_at: "1970-01-01T00:00:00Z",
+      }),
+    );
+    assert.deepEqual(
+      actor.getSnapshot().context.playlists.map((playlist) => playlist.name),
+      [BUILTIN_LIKES_PLAYLIST_NAME],
+    );
+
+    actor.send(payloads["playlist.builtin_likes.changed"].load(null));
+    assert.deepEqual(actor.getSnapshot().context.playlists, []);
+    assert.equal(actor.getSnapshot().context.hasPlayList, true);
   });
 
   test("keeps playback intent out of the accepted play state until backend acceptance", async () => {

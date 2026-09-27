@@ -1,5 +1,6 @@
 import { assign } from "xstate";
 import {
+  BUILTIN_LIKES_PLAYLIST_NAME,
   CREATE_COLLECTION_LAYOUT_ID,
   createCollectionTitleHandoff,
   createConfigSidebarItemsFromLibrary,
@@ -898,6 +899,7 @@ const playlistPlaybackAccepted = payloads["playlist.playback.accepted"];
 const playlistPlaybackStopped = payloads["playlist.playback.stopped"];
 const playlistUpserted = payloads["playlist.upserted"];
 const playlistDeleted = payloads["playlist.deleted"];
+const builtinLikesChanged = payloads["playlist.builtin_likes.changed"];
 const playlistPreviewChanged = payloads["playlist.preview.changed"];
 const draftNameChanged = payloads["draft.name.changed"];
 const spectrumMusicNameChanged = payloads["spectrum.music_name.changed"];
@@ -998,6 +1000,15 @@ export const machine = src.createMachine({
               : context.pendingPlaybackSurfaceStatusEvidence,
         };
       }),
+    },
+    [builtinLikesChanged.evt]: {
+      actions: assign(({ context, event }) => ({
+        playlists: event.output
+          ? context.playlists.some((playlist) => playlist.name === BUILTIN_LIKES_PLAYLIST_NAME)
+            ? upsertPlaylistIntoPlaylists(context.playlists, event.output)
+            : [event.output, ...context.playlists]
+          : removePlaylistFromPlaylists(context.playlists, BUILTIN_LIKES_PLAYLIST_NAME),
+      })),
     },
     [playlistPreviewChanged.evt]: {
       actions: assign({

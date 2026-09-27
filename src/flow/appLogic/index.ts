@@ -1,6 +1,11 @@
 import { useSelector } from "@xstate/react";
 import { me } from "@grahlnn/fn";
-import type { ConfigSidebarItemRef, PlaylistPreview, PlaylistUpsertResult } from "./core";
+import {
+  BUILTIN_LIKES_PLAYLIST_NAME,
+  type ConfigSidebarItemRef,
+  type PlaylistPreview,
+  type PlaylistUpsertResult,
+} from "./core";
 import {
   chooseSavePath,
   chooseCollectionFolder,
@@ -17,6 +22,7 @@ import {
   listenPlaybackSurfaceStatusChanged,
   listenNowPlayingTrackLikedChanged,
   listenNowPlayingTrackChanged,
+  loadBuiltinLikesPlaylist,
   MainStateT,
   persistSavePath,
   removeExclude,
@@ -27,6 +33,7 @@ import {
 } from "./events";
 import {
   actor,
+  builtinLikesChanged,
   collectionUpserted,
   collectionUpdatesRequested,
   draftCollectionUpserted,
@@ -106,6 +113,7 @@ const playbackContinuationModeEffectOwner = createPlaybackContinuationModeEffect
   setPlaybackContinuationMode,
 });
 let playlistPlaybackStartEpoch = 0;
+let builtinLikesRefreshEpoch = 0;
 
 type StablePlaylistTarget = {
   kind: "stable";
@@ -308,10 +316,38 @@ function createOptimisticExcludeAddedChange(exclude: Exclude) {
   };
 }
 
-function requestSetCurrentPlaybackMusicLiked(liked: boolean) {
-  void setCurrentMusicLiked(liked).catch((error) => {
-    console.error("Failed to update current music like", error);
+async function refreshBuiltinLikesPlaylist() {
+  const epoch = ++builtinLikesRefreshEpoch;
+  const likesPlaylist = await loadBuiltinLikesPlaylist();
+  if (epoch !== builtinLikesRefreshEpoch) {
+    return;
+  }
+  if (
+    likesPlaylist === null &&
+    actor.getSnapshot().context.playingPlaylistName === BUILTIN_LIKES_PLAYLIST_NAME
+  ) {
+    requestPlaybackStop();
+    actor.send(sig.mainx.back);
+  }
+  send(builtinLikesChanged.load(likesPlaylist));
+}
+
+function requestRefreshBuiltinLikesPlaylist() {
+  void refreshBuiltinLikesPlaylist().catch((error) => {
+    console.error("Failed to refresh Likes", error);
   });
+}
+
+function requestSetCurrentPlaybackMusicLiked(liked: boolean) {
+  void setCurrentMusicLiked(liked)
+    .then((music) => {
+      if (music !== null) {
+        requestRefreshBuiltinLikesPlaylist();
+      }
+    })
+    .catch((error) => {
+      console.error("Failed to update current music like", error);
+    });
 }
 
 function toPlaylistPlaybackErrorMessage(error: unknown) {
@@ -399,7 +435,8 @@ function waitForStablePlaylistTarget(args: {
   recordTrace("playlist-stable-target-wait-start", {
     elapsedMs: currentPerformanceNow() - args.actionStartedAt,
     pendingPreviewName: initialSnapshot.context.pendingPlaylistPreview?.playlist.name ?? null,
-    pendingPreviewPreviousName: initialSnapshot.context.pendingPlaylistPreview?.previousName ?? null,
+    pendingPreviewPreviousName:
+      initialSnapshot.context.pendingPlaylistPreview?.previousName ?? null,
     playlistName: args.playlistName,
     requestId: args.requestId ?? null,
     source: args.source,
@@ -456,10 +493,7 @@ function waitForStablePlaylistTarget(args: {
   });
 }
 
-function openPlaylistAfterStableTarget(args: {
-  actionStartedAt: number;
-  playlistName: string;
-}) {
+function openPlaylistAfterStableTarget(args: { actionStartedAt: number; playlistName: string }) {
   const stableTarget = findStablePlaylistTarget(actor.getSnapshot(), args.playlistName);
   if (stableTarget) {
     send(openPlaylist.load(stableTarget.playlistName));
@@ -506,11 +540,11 @@ function startPlaylistPlaybackAfterStableTarget(args: {
               send(
                 playlistPlaybackStopped.load({
                   error: "playlist preview closed before stable playback target",
-                playlistName: args.playlistName,
+                  playlistName: args.playlistName,
                   reason: "unstable_target",
-                requestId: args.requestId,
-                session: null,
-              }),
+                  requestId: args.requestId,
+                  session: null,
+                }),
               );
             }
 
@@ -788,6 +822,7 @@ function requestSpectrumMusicCommit(snapshot: ActorSnapshot) {
         } catch (error) {
           console.error("Failed to record spectrum music commit completion", error);
         }
+        requestRefreshBuiltinLikesPlaylist();
       },
     },
   }).catch((error) => {
@@ -1242,6 +1277,7 @@ export const action = {
         (collection) => {
           send(collectionUpserted.load(collection));
           send(draftCollectionUpserted.load(collection));
+          requestRefreshBuiltinLikesPlaylist();
         },
         (error) => {
           console.error("Failed to import local collection", error);

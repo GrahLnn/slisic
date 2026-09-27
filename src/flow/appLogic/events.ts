@@ -34,6 +34,7 @@ import { recordTrace } from "@/src/debug/trace";
 import { documentDir, join } from "@tauri-apps/api/path";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
+  BUILTIN_LIKES_PLAYLIST_NAME,
   cloneDraft,
   createDraft,
   createDraftFromPlayListConfig,
@@ -481,6 +482,17 @@ export async function setCurrentMusicLiked(liked: boolean): Promise<Music | null
   });
 }
 
+export async function loadBuiltinLikesPlaylist(): Promise<PlayListListView | null> {
+  const result = await crab.listPlaylists();
+  return result.match({
+    Ok: (playlists) =>
+      playlists.find((playlist) => playlist.name === BUILTIN_LIKES_PLAYLIST_NAME) ?? null,
+    Err: (error) => {
+      throw new Error(error);
+    },
+  });
+}
+
 export async function removeExclude(change: ExcludeRemovedChange): Promise<ExcludeRemovedChange> {
   const result = await crab.removeExclude(change.music);
 
@@ -781,6 +793,7 @@ export const payloads = collect(
   ...event<PlaylistPlaybackStopped>()("playlist.playback.stopped"),
   ...event<PlaylistUpsertResult>()("playlist.upserted"),
   ...event<string>()("playlist.deleted"),
+  ...event<PlayListListView | null>()("playlist.builtin_likes.changed"),
   ...event<PlaylistPreview | null>()("playlist.preview.changed"),
   ...event<string>()("draft.name.changed"),
   ...event<{ id: string; name: string }>()("spectrum.music_name.changed"),

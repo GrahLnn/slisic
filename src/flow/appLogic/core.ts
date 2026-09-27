@@ -23,6 +23,7 @@ import type {
 } from "./spectrumEditTransaction";
 
 export const CREATE_COLLECTION_LAYOUT_ID = "collection-title:create";
+export const BUILTIN_LIKES_PLAYLIST_NAME = "__slisic_builtin_likes__";
 
 export type CollectionTitleTone = "solid" | "muted";
 
@@ -394,7 +395,8 @@ export function resolveDraftCommitTitle(args: {
 
   return {
     kind: "generate",
-    name: normalizeDraftName(args.generatedNameClaim ?? "") ||
+    name:
+      normalizeDraftName(args.generatedNameClaim ?? "") ||
       resolveNextGeneratedPlaylistName(args.playlists),
   };
 }

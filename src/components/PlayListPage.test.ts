@@ -10,6 +10,7 @@ import {
   shouldRenderPlayListPageContent,
 } from "./PlayListPage.view-model";
 import type { PlayListPlaybackSurfaceSnapshot } from "./playListPlaybackSurface.model";
+import { BUILTIN_LIKES_PLAYLIST_NAME } from "@/src/flow/appLogic/core";
 
 function createPlayListFixture(args: {
   name: string;
@@ -94,6 +95,44 @@ describe("PlayListPage", () => {
       }),
       true,
     );
+  });
+
+  test("shows built-in Likes as playable and keeps it out of playlist editing", () => {
+    const viewModel = resolvePlayListPageViewModel({
+      pageState: "ready",
+      activeLayoutId: null,
+      hasPlayList: true,
+      playlists: [createPlayListFixture({ name: BUILTIN_LIKES_PLAYLIST_NAME })],
+      pendingPlaylistPreview: null,
+      playingPlaylistName: null,
+      titleToneHandoff: null,
+      pressedLayoutId: null,
+      playbackSurface: null,
+      titleReturnSurface: null,
+    });
+
+    assert.equal(viewModel.itemViewModels[0]?.text, "Likes");
+    assert.equal(viewModel.itemViewModels[0]?.playlistName, BUILTIN_LIKES_PLAYLIST_NAME);
+    assert.equal(viewModel.itemViewModels[0]?.commitGesture, "disabled");
+
+    const playingViewModel = resolvePlayListPageViewModel({
+      pageState: "play",
+      activeLayoutId: null,
+      hasPlayList: true,
+      playlists: [createPlayListFixture({ name: BUILTIN_LIKES_PLAYLIST_NAME })],
+      playingPlaylistName: BUILTIN_LIKES_PLAYLIST_NAME,
+      titleToneHandoff: null,
+      pressedLayoutId: null,
+      playbackSurface: createPlaybackSurfaceFixture({
+        phase: "playing",
+        playlistName: BUILTIN_LIKES_PLAYLIST_NAME,
+        displayedTrackName: null,
+        displayedTrackLiked: null,
+        displayedTrackIsPlayable: false,
+      }),
+      titleReturnSurface: null,
+    });
+    assert.equal(playingViewModel.itemViewModels[0]?.text, "Likes");
   });
 
   test("disables config commits when the item gesture is disabled", () => {

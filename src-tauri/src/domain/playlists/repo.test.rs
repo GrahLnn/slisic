@@ -4,13 +4,14 @@ use super::model::{
     PlaylistPlaybackModelMemberKey, canonical_music_id_for_source,
 };
 use super::repo::{
-    MusicEndTrim, PlaylistPlaybackCollectionRef, PlaylistPlaybackGroupRef,
-    PlaylistPlaybackSelection, PlaylistPlaybackTrackSource, SpectrumMusicSourceIdentity,
-    add_exclude, claim_generated_playlist_name, create_music, delete_music,
-    delete_playlist_by_name, get_collection_by_url, get_music_loudness_profile_by_identity,
-    get_playlist_by_name, get_playlist_config_by_name, get_playlist_playback_selection_by_name,
-    has_collections, is_music_identity_excluded_for_playback, list_auto_update_collection_urls,
-    list_collections, list_config_library, list_musics_by_file_path, list_playlists,
+    BUILTIN_LIKES_PLAYLIST_NAME, MusicEndTrim, PlaylistPlaybackCollectionRef,
+    PlaylistPlaybackGroupRef, PlaylistPlaybackSelection, PlaylistPlaybackTrackSource,
+    SpectrumMusicSourceIdentity, add_exclude, claim_generated_playlist_name, create_music,
+    delete_music, delete_playlist_by_name, get_collection_by_url,
+    get_music_loudness_profile_by_identity, get_playlist_by_name, get_playlist_config_by_name,
+    get_playlist_playback_selection_by_name, has_collections,
+    is_music_identity_excluded_for_playback, list_auto_update_collection_urls, list_collections,
+    list_config_library, list_musics_by_file_path, list_playlists,
     load_liked_playlist_playback_track_sources, load_model_playlist_playback_track_sources,
     load_playlist_playback_track_sources, load_random_playlist_playback_track_sources,
     load_spectrum_music_context, music_occurrence_id, playlist_playback_owner_attempt_order,
@@ -45,6 +46,74 @@ mod first_slot_snapshot_test;
 
 static DB_TEST_RT: LazyLock<Runtime> =
     LazyLock::new(|| Runtime::new().expect("playlist repo test runtime should be created"));
+
+#[test]
+fn builtin_likes_playlist_tracks_persisted_likes_without_a_playlist_row() {
+    let _lock = acquire_db_test_lock();
+    run_async(async {
+        ensure_db().await;
+        let collection =
+            upsert_collection(&grouped_collection("https://example.com/builtin-likes"))
+                .await
+                .expect("collection should save");
+        let music = &collection.musics[0];
+
+        assert!(
+            list_playlists()
+                .await
+                .expect("playlist list should load")
+                .iter()
+                .all(|playlist| playlist.name != BUILTIN_LIKES_PLAYLIST_NAME)
+        );
+        assert!(
+            get_playlist_playback_selection_by_name(BUILTIN_LIKES_PLAYLIST_NAME)
+                .await
+                .expect("empty Likes selection should load")
+                .is_none()
+        );
+
+        set_music_liked_by_identity(&music.url, music.start_ms, music.end_ms, true)
+            .await
+            .expect("like should save");
+        assert_eq!(
+            list_playlists().await.expect("playlist list should load")[0].name,
+            BUILTIN_LIKES_PLAYLIST_NAME
+        );
+        let selection = get_playlist_playback_selection_by_name(BUILTIN_LIKES_PLAYLIST_NAME)
+            .await
+            .expect("Likes selection should load")
+            .expect("liked music should create a selection");
+        let sources = load_playlist_playback_track_sources(&selection, 4)
+            .await
+            .expect("liked sources should load");
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].music.url, music.url);
+        assert!(
+            get_playlist_by_name(BUILTIN_LIKES_PLAYLIST_NAME)
+                .await
+                .expect("stored playlist lookup should load")
+                .is_none()
+        );
+
+        set_music_liked_by_identity(&music.url, music.start_ms, music.end_ms, false)
+            .await
+            .expect("unlike should save");
+        assert!(
+            list_playlists()
+                .await
+                .expect("playlist list should load")
+                .iter()
+                .all(|playlist| playlist.name != BUILTIN_LIKES_PLAYLIST_NAME)
+        );
+        assert!(
+            load_playlist_playback_track_sources(&selection, 4)
+                .await
+                .expect("stale selection should load")
+                .is_empty()
+        );
+        reset_db();
+    });
+}
 
 fn test_db_path() -> PathBuf {
     let nanos = SystemTime::now()

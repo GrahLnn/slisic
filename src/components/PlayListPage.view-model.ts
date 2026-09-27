@@ -6,6 +6,7 @@ import type {
   PlaylistPreview,
 } from "@/src/flow/appLogic/core";
 import {
+  BUILTIN_LIKES_PLAYLIST_NAME,
   CREATE_COLLECTION_LAYOUT_ID,
   createCollectionTitleHandoff,
   playlistTitleLayoutId,
@@ -102,10 +103,7 @@ function resolvePendingPlaybackPlaylistName(args: {
     : null;
 }
 
-function isPlaybackSurfaceTrackText(args: {
-  playlistName: string;
-  trackName: string | undefined;
-}) {
+function isPlaybackSurfaceTrackText(args: { playlistName: string; trackName: string | undefined }) {
   return args.trackName !== undefined && args.trackName !== args.playlistName;
 }
 
@@ -232,7 +230,8 @@ function createPlayListPageItemViewModel(args: {
     shouldAnimateSlotPosition: args.shouldAnimateSlotPosition,
     titleHoverVisual: args.titleHandoffInstruction.titleHoverVisual,
     titleHoverRetainLease: args.titleHandoffInstruction.titleHoverRetainLease,
-    commitGesture: args.commitGesture,
+    commitGesture:
+      args.playlist.name === BUILTIN_LIKES_PLAYLIST_NAME ? "disabled" : args.commitGesture,
     playlistName: args.playlist.name,
   } satisfies PlayListPageItemViewModel;
 }
@@ -287,6 +286,8 @@ function resolvePlayListPageVisibleItems(args: {
   return args.visiblePlaylists.map((playlist) =>
     (() => {
       const itemLayoutId = playlistTitleLayoutId(playlist.name);
+      const displayPlaylistName =
+        playlist.name === BUILTIN_LIKES_PLAYLIST_NAME ? "Likes" : playlist.name;
       const isPlaybackTarget = hasPlaybackTarget && playlist.name === playbackSurfacePlaylistName;
       const isPendingPlaybackTarget = playlist.name === pendingPlaybackPlaylistName;
       const isPendingPlaybackPreparingTarget =
@@ -310,18 +311,18 @@ function resolvePlayListPageVisibleItems(args: {
         text: shouldShowPendingPreparing
           ? PREPARING_PLAYBACK_SURFACE_TEXT
           : hasPlaybackTarget && playlist.name === playbackSurfacePlaylistName
-            ? playbackSurfaceTrackName || playlist.name
-            : playlist.name,
+            ? playbackSurfaceTrackName || displayPlaylistName
+            : displayPlaylistName,
         titleShareEnabled: args.titleShareEnabled,
         transition: args.transition,
         titleToneHandoff: args.titleToneHandoff,
         isPlaybackTarget: isPlaybackTarget || isPendingPlaybackTarget,
         shouldShowPlaybackIcons:
           playbackActionsEnabled &&
-            isPlaybackSurfacePlaying &&
-            hasPlaybackTarget &&
-            playlist.name === playbackSurfacePlaylistName &&
-            hasPlaybackSurfaceTrackText,
+          isPlaybackSurfacePlaying &&
+          hasPlaybackTarget &&
+          playlist.name === playbackSurfacePlaylistName &&
+          hasPlaybackSurfaceTrackText,
         isCurrentMusicLiked:
           isPlaybackSurfacePlaying &&
           hasPlaybackTarget &&
@@ -348,10 +349,10 @@ function resolvePlayListPageVisibleItems(args: {
         }),
         playbackIconWidthText:
           (isPlaybackSurfacePlaying &&
-              playlist.name === playbackSurfacePlaylistName &&
-              hasPlaybackSurfaceTrackText &&
-              playbackSurfaceTrackName) ||
-            undefined,
+            playlist.name === playbackSurfacePlaylistName &&
+            hasPlaybackSurfaceTrackText &&
+            playbackSurfaceTrackName) ||
+          undefined,
         isHiddenInPlay: hasDisplayLockTarget && playlist.name !== displayLockPlaylistName,
         shouldStartHiddenInPlay:
           shouldStartHiddenItemsInPlay && playlist.name !== displayLockPlaylistName,

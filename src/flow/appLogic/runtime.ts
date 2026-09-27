@@ -12,6 +12,7 @@ export const playlistPlaybackAccepted = payloads["playlist.playback.accepted"];
 export const playlistPlaybackStopped = payloads["playlist.playback.stopped"];
 export const playlistUpserted = payloads["playlist.upserted"];
 export const playlistDeleted = payloads["playlist.deleted"];
+export const builtinLikesChanged = payloads["playlist.builtin_likes.changed"];
 export const playlistPreviewChanged = payloads["playlist.preview.changed"];
 export const draftNameChanged = payloads["draft.name.changed"];
 export const spectrumMusicNameChanged = payloads["spectrum.music_name.changed"];

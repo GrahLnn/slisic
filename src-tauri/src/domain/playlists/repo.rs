@@ -41,6 +41,7 @@ const PLAYLIST_PLAYBACK_RANDOM_SINGLE_OWNER_ATTEMPT_LIMIT: usize = 16;
 const PLAYLIST_PLAYBACK_RANDOM_WINDOW_OWNER_ATTEMPT_LIMIT: usize = 96;
 const PLAYLIST_PLAYBACK_RANDOM_MIN_TRACK_PROBE_LIMIT: usize = 8;
 const PLAYLIST_PLAYBACK_RANDOM_MAX_TRACK_PROBE_LIMIT: usize = 128;
+pub const BUILTIN_LIKES_PLAYLIST_NAME: &str = "__slisic_builtin_likes__";
 
 #[derive(Debug, Clone)]
 struct CollectionWriteOwnerScope {
@@ -139,16 +140,46 @@ pub async fn list_collections() -> Result<Vec<Collection>> {
 pub async fn list_playlists() -> Result<Vec<PlayListListView>> {
     ensure_collection_graph_schema().await?;
 
-    match PlayListListView::list()
+    let mut playlists = match PlayListListView::list()
         .order_by("created_at", Order::Asc)
         .await
     {
-        Ok(playlists) => Ok(playlists),
+        Ok(playlists) => playlists,
         Err(error) => match classify_db_error(&error) {
-            DBError::MissingTable(_) => Ok(vec![]),
-            other => Err(other.into()),
+            DBError::MissingTable(_) => vec![],
+            other => return Err(other.into()),
         },
+    };
+    if has_liked_music().await? {
+        playlists.insert(0, builtin_likes_playlist());
     }
+    Ok(playlists)
+}
+
+fn builtin_likes_playlist() -> PlayListListView {
+    PlayListListView {
+        name: BUILTIN_LIKES_PLAYLIST_NAME.to_string(),
+        created_at: AutoFill::resolved("1970-01-01T00:00:00.000000000Z".to_string()),
+    }
+}
+
+async fn liked_music_records(only_first: bool) -> Result<Vec<RecordId>> {
+    let db = get_db()?;
+    let query = if only_first {
+        "SELECT VALUE id FROM $table WHERE liked = true LIMIT 1;"
+    } else {
+        "SELECT VALUE id FROM $table WHERE liked = true;"
+    };
+    let mut result = db
+        .query(query)
+        .bind(("table", Table::from(Music::table_name())))
+        .await?
+        .check()?;
+    Ok(result.take(0)?)
+}
+
+async fn has_liked_music() -> Result<bool> {
+    Ok(!liked_music_records(true).await?.is_empty())
 }
 
 pub async fn claim_generated_playlist_name(seed_names: &[String]) -> Result<String> {
@@ -763,6 +794,21 @@ pub async fn get_playlist_playback_selection_by_name(
 ) -> Result<Option<PlaylistPlaybackSelection>> {
     ensure_collection_graph_schema().await?;
 
+    if name == BUILTIN_LIKES_PLAYLIST_NAME {
+        let extra = liked_music_records(false)
+            .await?
+            .into_iter()
+            .map(|record| PlaylistPlaybackExtraRef { record })
+            .collect::<Vec<_>>();
+        return Ok((!extra.is_empty()).then(|| PlaylistPlaybackSelection {
+            playlist_name: name.to_string(),
+            collections: vec![],
+            groups: vec![],
+            extra,
+            download_scopes: vec![],
+        }));
+    }
+
     let Some(row) = load_playlist_playback_row_by_name(name).await? else {
         return Ok(None);
     };
@@ -861,7 +907,12 @@ pub async fn load_playlist_playback_track_sources(
     selection: &PlaylistPlaybackSelection,
     limit: usize,
 ) -> Result<Vec<PlaylistPlaybackTrackSource>> {
-    load_playlist_playback_track_sources_by_filter(selection, limit, false).await
+    load_playlist_playback_track_sources_by_filter(
+        selection,
+        limit,
+        selection.playlist_name == BUILTIN_LIKES_PLAYLIST_NAME,
+    )
+    .await
 }
 
 /// Resolve the cold symbolic playlist scope from current database ownership.
@@ -916,6 +967,9 @@ pub async fn load_model_playlist_playback_track_sources(
 
     let mut sources_by_member = HashMap::new();
     for row in rows {
+        if selection.playlist_name == BUILTIN_LIKES_PLAYLIST_NAME && !row.liked {
+            continue;
+        }
         if excluded_canonical_music_ids.contains(&row.canonical_music_id) {
             continue;
         }
@@ -1111,6 +1165,7 @@ pub async fn load_random_playlist_playback_track_sources(
             append_random_extra_playback_track_sources(
                 selection,
                 owner_source_limit,
+                selection.playlist_name == BUILTIN_LIKES_PLAYLIST_NAME,
                 &mut seen,
                 &mut sources,
             )
@@ -1175,6 +1230,9 @@ fn shuffle_indices(indices: &mut [usize]) {
 }
 
 pub async fn delete_playlist_by_name(name: &str) -> Result<bool> {
+    if name == BUILTIN_LIKES_PLAYLIST_NAME {
+        return Ok(false);
+    }
     let Some(record) = find_unique_record_id_by_string_field::<PlayList>("name", name).await?
     else {
         return Ok(false);
@@ -1219,6 +1277,11 @@ pub async fn upsert_playlist_surface(
     playlist: &PlayListWriteRequest,
     previous_name: Option<&str>,
 ) -> Result<PlaylistSurfaceUpsertResult> {
+    if playlist.name == BUILTIN_LIKES_PLAYLIST_NAME
+        || previous_name == Some(BUILTIN_LIKES_PLAYLIST_NAME)
+    {
+        bail!("the built-in Likes playlist cannot be edited");
+    }
     let foreign_ids = resolve_playlist_foreign_record_ids(playlist).await?;
     let storage = playlist_surface_storage_row_from_request(playlist);
     let existing_record = match previous_name {
@@ -3064,8 +3127,9 @@ async fn append_random_group_playback_track_sources(
 
 async fn load_extra_playback_track_source(
     extra: &PlaylistPlaybackExtraRef,
+    liked_only: bool,
 ) -> Result<Option<PlaylistPlaybackTrackSource>> {
-    let mut rows = load_record_playable_track_rows(vec![extra.record.clone()], false).await?;
+    let mut rows = load_record_playable_track_rows(vec![extra.record.clone()], liked_only).await?;
     let Some(row) = rows.pop() else {
         return Ok(None);
     };
@@ -3302,6 +3366,7 @@ fn append_model_member_source(
 async fn append_random_extra_playback_track_sources(
     selection: &PlaylistPlaybackSelection,
     limit: usize,
+    liked_only: bool,
     seen: &mut HashSet<String>,
     sources: &mut Vec<PlaylistPlaybackTrackSource>,
 ) -> Result<()> {
@@ -3320,7 +3385,8 @@ async fn append_random_extra_playback_track_sources(
             return Ok(());
         }
 
-        let Some(source) = load_extra_playback_track_source(&selection.extra[extra_index]).await?
+        let Some(source) =
+            load_extra_playback_track_source(&selection.extra[extra_index], liked_only).await?
         else {
             continue;
         };
