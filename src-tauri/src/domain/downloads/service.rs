@@ -1372,7 +1372,7 @@ async fn prepare_task_enqueue_once(
 async fn prepare_existing_stable_task_enqueue(
     mut task: DownloadTask,
 ) -> Result<PreparedTaskEnqueue> {
-    if should_revive_stable_download_task(task.status) {
+    if should_revive_stable_download_task(&task) {
         task.revive_for_retry();
         let saved = repo::save_task(task).await?;
         publish_download_task_change(&saved);
@@ -1386,14 +1386,15 @@ async fn prepare_existing_stable_task_enqueue(
     ))
 }
 
-fn should_revive_stable_download_task(status: DownloadTaskStatus) -> bool {
-    matches!(
-        status,
+fn should_revive_stable_download_task(task: &DownloadTask) -> bool {
+    match task.status {
         DownloadTaskStatus::Failed
-            | DownloadTaskStatus::Cancelled
-            | DownloadTaskStatus::Interrupted
-            | DownloadTaskStatus::CompletedWithErrors
-    )
+        | DownloadTaskStatus::Cancelled
+        | DownloadTaskStatus::Interrupted
+        | DownloadTaskStatus::CompletedWithErrors => true,
+        DownloadTaskStatus::Completed => task.trigger == DownloadTrigger::AutoUpdate,
+        _ => false,
+    }
 }
 
 async fn attach_existing_collection_shell_to_task(mut task: DownloadTask) -> Result<DownloadTask> {

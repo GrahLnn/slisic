@@ -17,6 +17,8 @@ import {
   upsertCollectionIntoConfigLibrary,
   upsertCollectionIntoDraft,
   upsertCollectionIntoCollections,
+  updateCollectionSurfaceIntoCollections,
+  updateCollectionSurfaceIntoDraft,
   type ConfigChartLoadInput,
   type Context,
   type ContextResetLifecycle,
@@ -1844,8 +1846,8 @@ export const machine = src.createMachine({
         onDone: {
           target: ss.mainx.State.config,
           actions: assign(({ context, event }) => ({
-            collections: upsertCollectionIntoCollections(context.collections, event.output),
-            draft: upsertCollectionIntoDraft(context.draft, event.output),
+            collections: updateCollectionSurfaceIntoCollections(context.collections, event.output),
+            draft: updateCollectionSurfaceIntoDraft(context.draft, event.output),
             pendingCollectionUpdatesChange: null,
           })),
         },

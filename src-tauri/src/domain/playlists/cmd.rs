@@ -1,6 +1,7 @@
 use super::model::{
-    AddExcludeResult, Collection, ConfigLibraryView, Music, PlayList, PlayListConfigView,
-    PlayListListView, PlayListWriteRequest, RemoveExcludeResult, SpectrumMusicContext,
+    AddExcludeResult, Collection, CollectionSurfaceView, ConfigLibraryView, Music, PlayList,
+    PlayListConfigView, PlayListListView, PlayListWriteRequest, RemoveExcludeResult,
+    SpectrumMusicContext,
 };
 use crate::domain::player::service::{
     PlaybackTrackLikedUpdate, active_request_track_snapshot,
@@ -140,7 +141,7 @@ pub async fn remove_extra(
 pub async fn set_collection_updates(
     url: String,
     enabled: bool,
-) -> Result<Option<Collection>, String> {
+) -> Result<Option<CollectionSurfaceView>, String> {
     super::repo::set_collection_updates(&url, enabled)
         .await
         .map_err(|error| error.to_string())

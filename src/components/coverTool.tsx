@@ -15,7 +15,7 @@ export function CoverTool({ text, onClick }: ComponentProps<"div"> & { text: str
         "dark:shadow-[inset_0_0_0_1px_rgb(255_255_255_/_0.08),0_4px_18px_rgb(0_0_0_/_0.22)]",
         "[corner-shape:squircle_squircle_squircle_squircle]",
         "rounded-[25px] px-1 py-1.5",
-        "pointer-events-auto cursor-pointer whitespace-nowrap",
+        "pointer-events-auto cursor-pointer select-none whitespace-nowrap",
       )}
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}

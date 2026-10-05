@@ -1085,13 +1085,20 @@ describe("appLogic machine", () => {
       ...sampleCollection,
       enable_updates: true,
     };
+    const updateEnabledCollectionSurface = {
+      name: updateEnabledCollection.name,
+      url: updateEnabledCollection.url,
+      folder: updateEnabledCollection.folder,
+      last_updated: updateEnabledCollection.last_updated,
+      enable_updates: updateEnabledCollection.enable_updates,
+    };
 
     setCheckListMock(async () => Ok(true));
     setListPlaylistsMock(async () => Ok([createPlaylistSurface(samplePlaylist)]));
     setSetCollectionUpdatesMock(async (url, enabled) => {
       expect(url).toBe(sampleCollection.url);
       expect(enabled).toBe(true);
-      return Ok(updateEnabledCollection);
+      return Ok(updateEnabledCollectionSurface);
     });
 
     const actor = createActor(machine);
@@ -1128,12 +1135,13 @@ describe("appLogic machine", () => {
     await waitForState(actor, ss.mainx.State.configUpdatingCollectionUpdates);
     await waitForContext(
       actor,
-      (context: { collections: Collection[] }) => context.collections[0]?.enable_updates === true,
+      (context: { draft: { collections: Array<{ enable_updates: boolean | null }> } | null }) =>
+        context.draft?.collections[0]?.enable_updates === true,
     );
     await waitForState(actor, ss.mainx.State.config);
 
     expect(actor.getSnapshot().context.pendingCollectionUpdatesChange).toBeNull();
-    expect(actor.getSnapshot().context.collections).toEqual([updateEnabledCollection]);
+    expect(actor.getSnapshot().context.collections).toEqual([]);
     expect(actor.getSnapshot().context.draft).toEqual({
       mode: "edit",
       name: samplePlaylist.name,

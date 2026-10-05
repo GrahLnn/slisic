@@ -682,6 +682,41 @@ export function upsertCollectionIntoCollections(
   );
 }
 
+export function updateCollectionSurfaceIntoCollections(
+  collections: readonly Collection[],
+  nextCollection: CollectionSurfaceView,
+): Collection[] {
+  return collections.map((collection) =>
+    collection.url === nextCollection.url
+      ? {
+          ...collection,
+          ...nextCollection,
+        }
+      : collection,
+  );
+}
+
+export function updateCollectionSurfaceIntoDraft(
+  draft: ConfigDraft | null,
+  nextCollection: CollectionSurfaceView,
+): ConfigDraft | null {
+  if (!draft) {
+    return null;
+  }
+
+  return {
+    ...draft,
+    collections: draft.collections.map((collection) =>
+      collection.url === nextCollection.url
+        ? {
+            ...collection,
+            ...nextCollection,
+          }
+        : collection,
+    ),
+  };
+}
+
 export function upsertCollectionIntoDraft(
   draft: ConfigDraft | null,
   nextCollection: Collection,

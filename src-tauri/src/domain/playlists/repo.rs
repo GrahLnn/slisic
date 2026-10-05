@@ -1405,17 +1405,34 @@ pub async fn remove_extra(
     get_playlist_config_by_name(playlist_name).await
 }
 
-pub async fn set_collection_updates(url: &str, enabled: bool) -> Result<Option<Collection>> {
-    let Some(mut collection) = get_collection_by_url(url).await? else {
+pub async fn set_collection_updates(
+    url: &str,
+    enabled: bool,
+) -> Result<Option<CollectionSurfaceView>> {
+    let Some(record) = find_unique_record_id_by_string_field::<Collection>("url", url).await?
+    else {
         return Ok(None);
     };
 
-    if collection.enable_updates.is_none() {
+    let db = get_db()?;
+    let mut result = db
+        .query(
+            "UPDATE $record
+             SET enable_updates = $enabled
+             WHERE enable_updates IS NOT NONE
+             RETURN AFTER;",
+        )
+        .bind(("record", record.clone()))
+        .bind(("enabled", enabled))
+        .await?
+        .check()?;
+    let updated: Vec<CollectionSurfaceView> = result.take(0)?;
+
+    if let Some(collection) = updated.into_iter().next() {
         return Ok(Some(collection));
     }
 
-    collection.enable_updates = Some(enabled);
-    Ok(Some(upsert_collection(&collection).await?))
+    Ok(Some(CollectionSurfaceView::get_record(record).await?))
 }
 
 pub async fn update_music(

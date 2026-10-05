@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import type {
+  CollectionSurfaceView,
   CollectionGroupOwner,
   Group,
   Music,
@@ -29,6 +30,8 @@ import {
   upsertCollectionIntoDraft,
   upsertCollectionIntoCollections,
   upsertCollectionIntoConfigLibrary,
+  updateCollectionSurfaceIntoCollections,
+  updateCollectionSurfaceIntoDraft,
 } from "./core";
 
 function createPlayListFixture(args: {
@@ -291,11 +294,59 @@ describe("upsertCollectionIntoCollections", () => {
           start_ms: 0,
           end_ms: 120_000,
           liked: false,
-              },
+        },
       ],
     };
 
     assert.deepEqual(upsertCollectionIntoCollections([first, second], updated), [first, updated]);
+  });
+});
+
+describe("collection update surface patches", () => {
+  test("updates only the scalar surface and preserves loaded music evidence", () => {
+    const collection = {
+      name: "Quiet Morning",
+      url: "https://example.com/quiet-morning",
+      folder: "youtube/quiet-morning",
+      musics: [createMusicFixture()],
+      last_updated: "2026-04-13T00:00:00Z",
+      enable_updates: false,
+    };
+    const surface: CollectionSurfaceView = {
+      name: collection.name,
+      url: collection.url,
+      folder: collection.folder,
+      last_updated: collection.last_updated,
+      enable_updates: true,
+    };
+
+    assert.deepEqual(updateCollectionSurfaceIntoCollections([collection], surface), [
+      {
+        ...collection,
+        enable_updates: true,
+      },
+    ]);
+
+    const draft = {
+      mode: "edit" as const,
+      name: "Focus Session",
+      collections: [
+        {
+          name: collection.name,
+          url: collection.url,
+          folder: collection.folder,
+          last_updated: collection.last_updated,
+          enable_updates: false,
+        },
+      ],
+      groups: [],
+      extra: [],
+      createdAt: null,
+    };
+    assert.deepEqual(updateCollectionSurfaceIntoDraft(draft, surface), {
+      ...draft,
+      collections: [surface],
+    });
   });
 });
 
@@ -902,7 +953,7 @@ describe("includeDraftSidebarItem", () => {
           start_ms: 0,
           end_ms: 120_000,
           liked: false,
-              },
+        },
       ],
       last_updated: "2026-04-13T00:00:00Z",
       enable_updates: null,

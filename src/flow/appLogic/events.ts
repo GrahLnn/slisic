@@ -14,6 +14,7 @@ import {
 import {
   crab,
   type Collection,
+  type CollectionSurfaceView,
   type ConfigLibraryView,
   type ExcludeCurrentMusicAndSkipResult,
   type Music,
@@ -590,7 +591,7 @@ export const invoker = createActors({
   loadCollections: async (): Promise<BootstrapResult> => loadCollectionsFromBackend(),
   loadConfigChart: async (input: ConfigChartLoadInput): Promise<ConfigChartLoadResult> =>
     loadConfigChartFromBackend(input),
-  setCollectionUpdates: async (input: CollectionUpdatesChange): Promise<Collection> => {
+  setCollectionUpdates: async (input: CollectionUpdatesChange): Promise<CollectionSurfaceView> => {
     const result = await crab.setCollectionUpdates(input.url, input.enabled);
 
     return result.match({

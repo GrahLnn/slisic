@@ -99,7 +99,6 @@ export const commands = {
 	name: string,
 	url: string,
 	folder: string,
-	musics: Music[],
 	last_updated: string,
 	enable_updates: boolean | null,
 } | null, string>(__TAURI_INVOKE("set_collection_updates", { url, enabled })),
@@ -750,4 +749,3 @@ function makeEvent<T>(name: string, serialize?: (payload: T) => unknown, deseria
 
     return Object.assign(fn, base);
 }
-

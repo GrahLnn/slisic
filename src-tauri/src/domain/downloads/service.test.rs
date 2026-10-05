@@ -3589,6 +3589,46 @@ fn prepare_task_enqueue_reuses_completed_same_url_task() {
 }
 
 #[test]
+fn prepare_auto_update_enqueue_revives_completed_same_url_task_for_next_cycle() {
+    let _guard = acquire_db_test_lock();
+
+    run_async(async {
+        ensure_db().await;
+
+        let url = "https://example.com/list";
+        let mut first = prepare_task_enqueue(url.to_string(), DownloadTrigger::AutoUpdate)
+            .await
+            .expect("initial auto-update enqueue should succeed");
+        first.status = DownloadTaskStatus::Completed;
+        first.total_leaves = 1;
+        first.completed_leaves = 1;
+        first.leafs.push(DownloadLeaf::new(
+            Id::from("completed-leaf"),
+            url.to_string(),
+            0,
+        ));
+        let first = save_task(first)
+            .await
+            .expect("completed auto-update task should persist");
+
+        let second = prepare_task_enqueue(url.to_string(), DownloadTrigger::AutoUpdate)
+            .await
+            .expect("next auto-update enqueue should revive the stable task");
+        let tasks = list_tasks().await.expect("task listing should succeed");
+
+        assert_eq!(first.id, second.id);
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].status, DownloadTaskStatus::Queued);
+        assert!(tasks[0].leafs.is_empty());
+        assert_eq!(tasks[0].total_leaves, 0);
+        assert_eq!(tasks[0].completed_leaves, 1);
+        assert_eq!(tasks[0].failed_leaves, 0);
+
+        reset_db();
+    });
+}
+
+#[test]
 fn prepare_task_enqueue_revives_failed_same_url_task_for_retry() {
     let _guard = acquire_db_test_lock();
 
