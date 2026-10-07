@@ -413,11 +413,21 @@ fn symbolic_snapshot_exposes_exact_member_keys_without_playlist_owner_metadata()
         }),
     );
     let members = snapshot.symbolic_playlist_track_member_keys();
+    let representatives = snapshot.symbolic_playlist_track_representative_keys();
     let member_urls = members
         .iter()
         .map(|member| member.music_url.as_str())
         .collect::<Vec<_>>();
     assert_eq!(members.len(), tracks.len());
+    assert_eq!(
+        representatives.len(),
+        snapshot.symbolic_track_count().unwrap()
+    );
+    assert!(
+        representatives
+            .iter()
+            .all(|representative| { member_urls.contains(&representative.music_url.as_str()) })
+    );
     assert!(member_urls.contains(&tracks[0].music_url.as_str()));
     assert!(member_urls.contains(&tracks[1].music_url.as_str()));
     assert!(!member_urls.contains(&non_model_track.music_url.as_str()));

@@ -6693,6 +6693,25 @@ impl AudioStyleModelSnapshot {
             .collect()
     }
 
+    pub(crate) fn symbolic_playlist_track_representative_keys(
+        &self,
+    ) -> Vec<PlaylistPlaybackModelMemberKey> {
+        let Some(encoding) = self.state.symbolic_program_encoding.as_deref() else {
+            return Vec::new();
+        };
+
+        encoding
+            .ordered_keys
+            .iter()
+            .map(|key| PlaylistPlaybackModelMemberKey {
+                music_url: key.music_url.clone(),
+                absolute_path: key.file_path.clone(),
+                start_ms: key.start_ms,
+                end_ms: key.end_ms,
+            })
+            .collect()
+    }
+
     #[cfg(test)]
     pub(crate) fn symbolic_program_signatures_for_test(&self) -> Option<(&str, &str, &str)> {
         let encoding = self.state.symbolic_program_encoding.as_deref()?;

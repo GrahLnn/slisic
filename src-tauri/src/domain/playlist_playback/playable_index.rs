@@ -25,6 +25,8 @@ use crate::domain::playlists::repo::{PlaylistPlaybackSelection, PlaylistPlayback
 #[cfg(not(test))]
 use crate::domain::remote_share;
 use anyhow::{Result, anyhow};
+#[cfg(not(test))]
+use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 #[cfg(not(test))]
@@ -2740,11 +2742,36 @@ async fn prepare_audio_style_candidate_tracks(
     excluded_source_keys: &HashSet<String>,
 ) -> Result<Vec<(PlaylistPlaybackTrackSource, PlaybackTrack)>> {
     let save_root = meta_service::resolve_save_root(app).await?;
-    let sources = playlist_repo::load_random_playlist_playback_track_sources(
-        selection,
-        FIRST_SLOT_AUDIO_STYLE_CANDIDATE_PROBE_LIMIT,
-    )
-    .await?;
+    let sources = if let Some(snapshot) = published_audio_style_model_snapshot() {
+        let model_members = snapshot.symbolic_playlist_track_representative_keys();
+        if model_members.is_empty() {
+            playlist_repo::load_random_playlist_playback_track_sources(
+                selection,
+                FIRST_SLOT_AUDIO_STYLE_CANDIDATE_PROBE_LIMIT,
+            )
+            .await?
+        } else {
+            let mut sources = playlist_repo::load_model_playlist_playback_track_sources(
+                selection,
+                &model_members,
+                &save_root,
+            )
+            .await?;
+            let mut rng = rand::rng();
+            for index in (1..sources.len()).rev() {
+                let swap_index = rng.random_range(0..=index);
+                sources.swap(index, swap_index);
+            }
+            sources.truncate(FIRST_SLOT_AUDIO_STYLE_CANDIDATE_PROBE_LIMIT);
+            sources
+        }
+    } else {
+        playlist_repo::load_random_playlist_playback_track_sources(
+            selection,
+            FIRST_SLOT_AUDIO_STYLE_CANDIDATE_PROBE_LIMIT,
+        )
+        .await?
+    };
     let mut candidates = Vec::with_capacity(sources.len());
 
     for source in sources {
