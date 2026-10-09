@@ -11,15 +11,16 @@ use super::service::{
     LeafReadinessCargo, accept_collection_download_for_test,
     accept_collection_download_with_root_shell_for_test,
     apply_collection_plan_to_task_with_existing_music_evidence,
-    apply_completed_audio_duration_evidence, attach_root_shell_to_task,
-    discard_materialized_planned_leaves, existing_file_completions_from_task_leaves,
-    existing_file_finalization_batch_limit, existing_file_finalization_batch_take_limit,
-    handle_finished_leaf_download, is_non_retryable_leaf_access_error_message,
-    is_retryable_leaf_download_error, is_youtube_cookie_challenge_error_message,
-    leaf_download_parallelism, leaf_finalization_insert_index, leaf_finalization_parallelism,
-    leaf_pipeline_has_work, leaf_pipeline_next_stage, leaf_prepare_cpu_budget,
-    leaf_prepare_parallelism_for_cpu, leaf_work_item_insert_index, normalize_youtube_cookies_text,
-    prepare_task_enqueue, probe_download_root_title_with_client, resolve_pasted_download_url,
+    apply_completed_audio_duration_evidence, attach_root_shell_to_task, auto_update_spacing,
+    discard_existing_auto_update_source_leaves, discard_materialized_planned_leaves,
+    existing_file_completions_from_task_leaves, existing_file_finalization_batch_limit,
+    existing_file_finalization_batch_take_limit, handle_finished_leaf_download,
+    is_non_retryable_leaf_access_error_message, is_retryable_leaf_download_error,
+    is_youtube_cookie_challenge_error_message, leaf_download_parallelism,
+    leaf_finalization_insert_index, leaf_finalization_parallelism, leaf_pipeline_has_work,
+    leaf_pipeline_next_stage, leaf_prepare_cpu_budget, leaf_prepare_parallelism_for_cpu,
+    leaf_work_item_insert_index, normalize_youtube_cookies_text, prepare_task_enqueue,
+    probe_download_root_title_with_client, resolve_pasted_download_url,
     resolve_residual_temp_downloaded_file, resume_download_task, runnable_task_leaf_work_items,
     should_interrupt_unresumable_active_task_after_restart,
     should_recover_download_task_after_restart, should_resume_download_task_after_restart,
@@ -62,7 +63,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier, LazyLock, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::runtime::Runtime;
 
 #[test]
@@ -99,6 +100,28 @@ fn leaf_download_parallelism_keeps_single_downloads_serial_and_batches_lists() {
     );
     assert_eq!(leaf_download_parallelism(CollectionSourceKind::List, 3), 3);
     assert_eq!(leaf_download_parallelism(CollectionSourceKind::List, 8), 4);
+}
+
+#[test]
+fn auto_update_spacing_distributes_requests_across_one_day() {
+    assert_eq!(auto_update_spacing(0), Duration::ZERO);
+    assert_eq!(auto_update_spacing(1), Duration::ZERO);
+    assert_eq!(auto_update_spacing(2), Duration::from_secs(12 * 60 * 60));
+    assert_eq!(auto_update_spacing(24), Duration::from_secs(60 * 60));
+}
+
+#[test]
+fn auto_update_downloads_are_serial_while_manual_list_downloads_keep_batching() {
+    assert_eq!(
+        LeafDownloadWindow::for_trigger(DownloadTrigger::AutoUpdate, CollectionSourceKind::List, 8)
+            .current_limit(),
+        1
+    );
+    assert_eq!(
+        LeafDownloadWindow::for_trigger(DownloadTrigger::Manual, CollectionSourceKind::List, 8)
+            .current_limit(),
+        4
+    );
 }
 
 #[test]
@@ -2596,6 +2619,83 @@ fn apply_collection_plan_to_task_consumes_existing_music_before_pipeline_schedul
 
     assert_eq!(task.completed_leaves, 1);
     assert!(task.leafs.is_empty());
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn auto_update_source_identity_skips_existing_track_before_leaf_probe() {
+    let root = temp_test_dir();
+    let collection_folder = "youtube/auto-update-source-identity";
+    let relative_path = "Album/Existing Track.m4a";
+    let absolute_path = root.join(collection_folder).join(relative_path);
+    std::fs::create_dir_all(
+        absolute_path
+            .parent()
+            .expect("existing music file should have a parent"),
+    )
+    .expect("existing music folder should be created");
+    std::fs::write(&absolute_path, b"ok").expect("existing audio file should exist");
+
+    let group = collection_group("Album", "https://example.com/album", "Album");
+    let collection = Collection {
+        name: "Auto Update Source Identity".to_string(),
+        url: "https://example.com/root".to_string(),
+        folder: collection_folder.to_string(),
+        musics: vec![Music {
+            occurrence_id: String::new(),
+            name: "Existing Track".to_string(),
+            alias: "Existing Track".to_string(),
+            group,
+            url: "https://www.youtube.com/watch?v=existing".to_string(),
+            path: Some(relative_path.to_string()),
+            canonical_music_id: canonical_music_id_for_source(
+                "https://www.youtube.com/watch?v=existing",
+                0,
+                180_000,
+            ),
+            start_ms: 0,
+            end_ms: 180_000,
+            liked: false,
+            loudness_profile: None,
+        }],
+        last_updated: "2026-04-12T00:00:00+00:00".to_string(),
+        enable_updates: Some(true),
+    };
+    let plan = CollectionSyncPlan {
+        source_kind: CollectionSourceKind::List,
+        collection_name: collection.name.clone(),
+        collection_url: collection.url.clone(),
+        collection_folder: collection.folder.clone(),
+        enable_updates: Some(true),
+        partial_reason: None,
+        leaves: vec![PlannedLeaf {
+            id: Id::from("leaf-existing-source"),
+            url: "https://www.youtube.com/watch?v=existing".to_string(),
+            sequence: 0,
+            initial_probe: None,
+            music_title: Some("Existing Track".to_string()),
+            group_hint: None,
+        }],
+    };
+    let mut task = DownloadTask::new(
+        "task-existing-source",
+        &collection.url,
+        DownloadTrigger::AutoUpdate,
+    );
+
+    apply_collection_plan_to_task(&mut task, &plan);
+    apply_collection_plan_to_task_with_existing_music_evidence(
+        &mut task,
+        &collection,
+        &plan,
+        &root,
+    );
+    assert_eq!(task.leafs.len(), 1);
+    discard_existing_auto_update_source_leaves(&mut task, &collection, &plan, &root);
+
+    assert!(task.leafs.is_empty());
+    assert_eq!(task.completed_leaves, 1);
 
     let _ = std::fs::remove_dir_all(root);
 }

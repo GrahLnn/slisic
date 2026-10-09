@@ -64,8 +64,9 @@ use tokio::task;
 #[cfg(not(test))]
 use tokio::task::JoinSet;
 
+const AUTO_UPDATE_DISTRIBUTION_WINDOW: Duration = Duration::from_secs(60 * 60 * 24);
 #[cfg(not(test))]
-const AUTO_UPDATE_INTERVAL: Duration = Duration::from_secs(60 * 60 * 24);
+const AUTO_UPDATE_INTERVAL: Duration = AUTO_UPDATE_DISTRIBUTION_WINDOW;
 const MIN_PARALLEL_LEAF_DOWNLOADS: usize = 1;
 const INITIAL_PARALLEL_LEAF_DOWNLOADS: usize = 4;
 const MAX_PARALLEL_LEAF_DOWNLOADS: usize = 8;
@@ -79,6 +80,14 @@ const MAX_LEAF_DOWNLOAD_ATTEMPTS: usize = 3;
 const LEAF_DOWNLOAD_RETRY_BASE_DELAY_SECS: u64 = 2;
 const LEAF_DOWNLOAD_RETRY_MAX_JITTER_MILLIS: u64 = 750;
 const PREPARE_TASK_ENQUEUE_RETRY_ATTEMPTS: usize = 6;
+
+pub(crate) fn auto_update_spacing(item_count: usize) -> Duration {
+    if item_count <= 1 {
+        return Duration::ZERO;
+    }
+
+    Duration::from_secs((AUTO_UPDATE_DISTRIBUTION_WINDOW.as_secs() / item_count as u64).max(1))
+}
 #[cfg(not(test))]
 static DOWNLOAD_RUNTIME: OnceLock<DownloadRuntime> = OnceLock::new();
 #[cfg(not(test))]
@@ -460,13 +469,27 @@ struct LeafPipelineState {
     prepare_parallelism: usize,
     finalization_parallelism: usize,
     download_window: LeafDownloadWindow,
+    auto_update_prepare_interval: Option<Duration>,
+    next_auto_update_prepare_at: Option<Instant>,
 }
 
 #[cfg(not(test))]
 impl LeafPipelineState {
-    fn new(leaves: Vec<LeafWorkItem>, download_window: LeafDownloadWindow) -> Self {
-        let prepare_parallelism = leaf_prepare_parallelism(leaves.len(), &download_window);
+    fn new(
+        leaves: Vec<LeafWorkItem>,
+        download_window: LeafDownloadWindow,
+        trigger: DownloadTrigger,
+    ) -> Self {
+        let auto_update = trigger == DownloadTrigger::AutoUpdate;
+        let prepare_parallelism = if auto_update {
+            if leaves.is_empty() { 0 } else { 1 }
+        } else {
+            leaf_prepare_parallelism(leaves.len(), &download_window)
+        };
         let finalization_parallelism = leaf_finalization_parallelism(leaves.len());
+        let auto_update_prepare_interval = auto_update
+            .then(|| auto_update_spacing(leaves.len()))
+            .filter(|interval| !interval.is_zero());
         let mut pending_prepares = VecDeque::new();
         for leaf in leaves {
             push_leaf_work_item(&mut pending_prepares, leaf);
@@ -482,6 +505,8 @@ impl LeafPipelineState {
             prepare_parallelism,
             finalization_parallelism,
             download_window,
+            auto_update_prepare_interval,
+            next_auto_update_prepare_at: None,
         }
     }
 
@@ -547,6 +572,18 @@ impl Default for LeafDownloadWindow {
 }
 
 impl LeafDownloadWindow {
+    pub(crate) fn for_trigger(
+        trigger: DownloadTrigger,
+        source_kind: CollectionSourceKind,
+        leaf_count: usize,
+    ) -> Self {
+        if trigger == DownloadTrigger::AutoUpdate {
+            return Self::fixed(if leaf_count > 0 { 1 } else { 0 });
+        }
+
+        Self::for_collection(source_kind, leaf_count)
+    }
+
     pub(crate) fn for_collection(source_kind: CollectionSourceKind, leaf_count: usize) -> Self {
         if leaf_count == 0 {
             return Self::fixed(0);
@@ -1641,6 +1678,7 @@ async fn run_task_with_deps(
         &plan,
         &save_root,
     );
+    discard_existing_auto_update_source_leaves(&mut task_snapshot, &collection, &plan, &save_root);
     task_snapshot = repo::save_task(task_snapshot.clone()).await?;
     let shell = collection_import::persist_download_collection_shell_from_task(&task_snapshot)
         .await?
@@ -1682,8 +1720,11 @@ async fn run_task_with_deps(
     }
 
     let runnable_leaves = runnable_task_leaf_work_items(&task_snapshot, &plan);
-    let download_window =
-        LeafDownloadWindow::for_collection(plan.source_kind, runnable_leaves.len());
+    let download_window = LeafDownloadWindow::for_trigger(
+        task_snapshot.trigger,
+        plan.source_kind,
+        runnable_leaves.len(),
+    );
     let parallelism = download_window.current_limit();
     log::info!(
         target: "downloads",
@@ -1707,7 +1748,8 @@ async fn run_task_with_deps(
     task_snapshot = repo::save_task(task_snapshot.clone()).await?;
     publish_download_task_change(&task_snapshot);
 
-    let mut pipeline = LeafPipelineState::new(runnable_leaves, download_window);
+    let mut pipeline =
+        LeafPipelineState::new(runnable_leaves, download_window, task_snapshot.trigger);
     fill_leaf_pipeline(
         &mut pipeline,
         &mut task_snapshot,
@@ -1905,6 +1947,75 @@ pub(crate) fn apply_collection_plan_to_task_with_existing_music_evidence(
     );
 }
 
+pub(crate) fn discard_existing_auto_update_source_leaves(
+    task: &mut DownloadTask,
+    collection: &Collection,
+    plan: &CollectionSyncPlan,
+    save_root: &Path,
+) {
+    if task.trigger != DownloadTrigger::AutoUpdate || plan.source_kind != CollectionSourceKind::List
+    {
+        return;
+    }
+
+    let planned_by_id = plan
+        .leaves
+        .iter()
+        .map(|leaf| (leaf.id.clone(), leaf))
+        .collect::<HashMap<_, _>>();
+    let mut existing_group_urls_by_source = HashMap::<String, HashSet<String>>::new();
+    for music in &collection.musics {
+        let Some(relative_path) = music.path.as_deref().map(str::trim) else {
+            continue;
+        };
+        if relative_path.is_empty()
+            || !save_root
+                .join(&collection.folder)
+                .join(relative_path)
+                .is_file()
+        {
+            continue;
+        }
+
+        existing_group_urls_by_source
+            .entry(music.url.clone())
+            .or_default()
+            .insert(music.group.url.clone());
+    }
+
+    let mut consumed_by_source = HashMap::<String, usize>::new();
+    let mut existing_leaf_ids = Vec::new();
+    for leaf in &task.leafs {
+        let Some(planned) = planned_by_id.get(&leaf.id) else {
+            continue;
+        };
+        if planned.group_hint.is_some() {
+            continue;
+        }
+
+        let Some(existing_count) = existing_group_urls_by_source
+            .get(&planned.url)
+            .map(HashSet::len)
+        else {
+            continue;
+        };
+        let consumed = consumed_by_source.entry(planned.url.clone()).or_default();
+        if *consumed >= existing_count {
+            continue;
+        }
+
+        *consumed += 1;
+        existing_leaf_ids.push(leaf.id.clone());
+    }
+
+    for leaf_id in existing_leaf_ids {
+        if task.remove_leaf(&leaf_id).is_some() {
+            task.completed_leaves = task.completed_leaves.saturating_add(1);
+            task.touch();
+        }
+    }
+}
+
 async fn mark_unresolved_leaves_failed(task_snapshot: &mut DownloadTask) -> Result<()> {
     let unresolved = task_snapshot
         .leafs
@@ -1957,6 +2068,13 @@ async fn spawn_ready_leaf_preparations(
     while pipeline.active_prepares < pipeline.prepare_parallelism
         && !pipeline.pending_prepares.is_empty()
     {
+        if let Some(next_prepare_at) = pipeline.next_auto_update_prepare_at {
+            let delay = next_prepare_at.saturating_duration_since(Instant::now());
+            if !delay.is_zero() {
+                tokio::time::sleep(delay).await;
+            }
+        }
+
         let Some(mut work_item) = pipeline.pending_prepares.pop_front() else {
             break;
         };
@@ -1984,6 +2102,10 @@ async fn spawn_ready_leaf_preparations(
             LeafPreparationInput { work_item },
         ));
         pipeline.active_prepares += 1;
+
+        if let Some(interval) = pipeline.auto_update_prepare_interval {
+            pipeline.next_auto_update_prepare_at = Some(Instant::now() + interval);
+        }
     }
 
     Ok(())
@@ -3911,8 +4033,14 @@ fn spawn_auto_update_loop(app: AppHandle) {
 
 #[cfg(not(test))]
 async fn run_auto_update_cycle() -> Result<()> {
+    let collection_urls = collection_import::list_auto_update_collection_urls().await?;
+    let collection_spacing = auto_update_spacing(collection_urls.len());
     let mut errors = Vec::new();
-    for collection_url in collection_import::list_auto_update_collection_urls().await? {
+    for (index, collection_url) in collection_urls.into_iter().enumerate() {
+        if index > 0 && !collection_spacing.is_zero() {
+            tokio::time::sleep(collection_spacing).await;
+        }
+
         if let Err(error) = enqueue_collection_download_with_trigger(
             collection_url.clone(),
             DownloadTrigger::AutoUpdate,
