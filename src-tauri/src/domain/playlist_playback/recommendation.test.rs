@@ -1547,6 +1547,82 @@ fn native_opportunity_probability_preserves_ticket_rate_ordering() {
 }
 
 #[test]
+fn shared_work_fatigue_changes_native_opportunity_rate_without_merging_candidates() {
+    use super::temporal_memory_test::work_version_track;
+
+    let mut tracks = (0..8)
+        .map(|index| track(&format!("variant-candidate-{index}")))
+        .collect::<Vec<_>>();
+    tracks[1] = work_version_track("artist:a", "Black Hole", "recording:live", 286_680);
+    tracks[2] = work_version_track("artist:a", "Black Hole", "recording:studio", 234_493);
+    let snapshot = AudioStyleModelSnapshot::from_test_indexed_embeddings(
+        416,
+        tracks.iter().cloned().enumerate().map(|(index, track)| {
+            (
+                track,
+                dense_embedding(&[(index, 1.0)]),
+                "variant-test".to_string(),
+            )
+        }),
+    );
+    assert_eq!(snapshot.content_partition_classes_for_test().len(), 8);
+    let mut session = AudioStyleSymbolicPlaybackSession::default();
+    session.set_rng_seed_for_test(0xFA71_6001);
+    session
+        .propose_next_with_temporal_memory(&snapshot, &tracks[0], &tracks, &[], None, 0)
+        .expect("native candidate formation should succeed");
+    let cold = PlaylistPlaybackTemporalMemory::default();
+    let mut warm = PlaylistPlaybackTemporalMemory::default();
+    warm.observe_track(&tracks[1], 0);
+    let before = session.execution_snapshot_for_test().unwrap();
+    let (cold_rate, cold_ticket) = session
+        .opportunity_rate_for_track_for_test(&tracks[2], &cold, 8 * 60 * 1_000)
+        .unwrap();
+    let (warm_rate, warm_ticket) = session
+        .opportunity_rate_for_track_for_test(&tracks[2], &warm, 8 * 60 * 1_000)
+        .unwrap();
+    assert!(warm_rate > 0.0 && warm_rate < cold_rate);
+    assert!(warm_ticket > cold_ticket);
+    assert_eq!(
+        warm.retrievability_for(&tracks[2].canonical_music_id, 0),
+        0.0
+    );
+    let after = session.execution_snapshot_for_test().unwrap();
+    assert_eq!(before.3, after.3);
+    assert_eq!(before.4.len(), after.4.len());
+    for recording in [&tracks[1], &tracks[2]] {
+        assert!(
+            after
+                .5
+                .iter()
+                .flatten()
+                .any(|member| member.canonical_music_id == recording.canonical_music_id)
+        );
+    }
+    session.rollback_proposal().unwrap();
+    let mut current = tracks[0].clone();
+    let mut played = BTreeSet::from([current.canonical_music_id.clone()]);
+    for step in 0..tracks.len() - 1 {
+        let next = session
+            .propose_next_with_temporal_memory(
+                &snapshot,
+                &current,
+                &tracks,
+                &[],
+                Some(&warm),
+                1_000 + step as u64,
+            )
+            .expect("soft work pressure must retain native finite coverage");
+        session.observe_active_track(&next.track).unwrap();
+        played.insert(next.track.canonical_music_id.clone());
+        current = next.track;
+    }
+    assert_eq!(played.len(), tracks.len());
+    assert!(played.contains(&tracks[1].canonical_music_id));
+    assert!(played.contains(&tracks[2].canonical_music_id));
+}
+
+#[test]
 fn native_opportunity_tickets_are_epoch_stable_and_rng_transactional() {
     let tracks = (0..8)
         .map(|index| track(&format!("ticket-stability-{index}")))

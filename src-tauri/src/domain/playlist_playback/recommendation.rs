@@ -7488,6 +7488,25 @@ impl AudioStyleSymbolicPlaybackSession {
     }
 
     #[cfg(test)]
+    pub(crate) fn opportunity_rate_for_track_for_test(
+        &self,
+        track: &PlaybackTrack,
+        memory: &PlaylistPlaybackTemporalMemory,
+        now_ms: u64,
+    ) -> Option<(f32, f32)> {
+        let execution = self.execution.as_ref()?;
+        let local = *execution
+            .local_by_key
+            .get(&PlaybackTrackKey::from_track(track))?;
+        Some(native_opportunity_rate_and_probability(
+            execution,
+            local,
+            Some(memory),
+            now_ms,
+        ))
+    }
+
+    #[cfg(test)]
     pub(crate) fn propose_next(
         &mut self,
         snapshot: &AudioStyleModelSnapshot,

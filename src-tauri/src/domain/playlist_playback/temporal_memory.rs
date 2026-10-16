@@ -7,6 +7,9 @@ const TEMPORAL_MEMORY_TRACK_STABILITY_MS: u64 = 20 * 60 * 60 * 1_000;
 const TEMPORAL_MEMORY_STABILITY_REPEAT_GAIN: f32 = 0.35;
 const TEMPORAL_MEMORY_STABILITY_CAP_MS: u64 = 120 * 60 * 60 * 1_000;
 const TEMPORAL_MEMORY_PRUNE_RETRIEVABILITY: f32 = 0.05;
+// Metadata association is softer than exact recording familiarity. Even a
+// just-heard work leaves another recording at least a quarter of its cold rate.
+const TEMPORAL_MEMORY_WORK_TRANSFER: f32 = 0.75;
 // FSRS's default target retention; this is a memory semantic, not a model knob.
 const TEMPORAL_MEMORY_TARGET_RETENTION: f32 = 0.9;
 
@@ -15,6 +18,8 @@ const TEMPORAL_MEMORY_TARGET_RETENTION: f32 = 0.9;
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub(crate) struct PlaylistPlaybackTemporalMemory {
     exposures: HashMap<String, PlaylistPlaybackTemporalExposure>,
+    #[serde(default)]
+    work_exposures: HashMap<String, PlaylistPlaybackTemporalExposure>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -24,30 +29,36 @@ pub(crate) struct PlaylistPlaybackTemporalExposure {
 }
 
 impl PlaylistPlaybackTemporalMemory {
+    pub(crate) fn observe_track(&mut self, track: &PlaybackTrack, now_ms: u64) {
+        let music_id = if track.canonical_music_id.is_empty() {
+            track.music_url.as_str()
+        } else {
+            track.canonical_music_id.as_str()
+        };
+        if music_id.is_empty() {
+            return;
+        }
+        self.observe(music_id, now_ms);
+        if let Some(work_key) = track_work_association(track) {
+            let exposure = PlaylistPlaybackTemporalExposure::after_observation(
+                self.work_exposures.get(&work_key).copied(),
+                now_ms,
+            );
+            self.work_exposures.insert(work_key, exposure);
+        }
+    }
+
     pub(crate) fn observe(&mut self, canonical_music_id: &str, now_ms: u64) {
         if canonical_music_id.is_empty() {
             return;
         }
 
-        let stability_ms = self
-            .exposures
-            .get(canonical_music_id)
-            .map(|previous| {
-                ((previous.stability_ms as f32 * (1.0 + TEMPORAL_MEMORY_STABILITY_REPEAT_GAIN))
-                    .round() as u64)
-                    .clamp(
-                        TEMPORAL_MEMORY_TRACK_STABILITY_MS,
-                        TEMPORAL_MEMORY_STABILITY_CAP_MS,
-                    )
-            })
-            .unwrap_or(TEMPORAL_MEMORY_TRACK_STABILITY_MS);
-        self.exposures.insert(
-            canonical_music_id.to_string(),
-            PlaylistPlaybackTemporalExposure {
-                last_played_at_ms: now_ms,
-                stability_ms,
-            },
+        let exposure = PlaylistPlaybackTemporalExposure::after_observation(
+            self.exposures.get(canonical_music_id).copied(),
+            now_ms,
         );
+        self.exposures
+            .insert(canonical_music_id.to_string(), exposure);
     }
 
     pub(crate) fn retrievability_for(&self, canonical_music_id: &str, now_ms: u64) -> f32 {
@@ -86,7 +97,14 @@ impl PlaylistPlaybackTemporalMemory {
             aliases.push(source.canonical_music_id.as_str());
             aliases.push(source.url.as_str());
         }
-        self.retrievability_for_aliases(aliases, now_ms)
+        let recording = self.retrievability_for_aliases(aliases, now_ms);
+        let work = track_work_association(track)
+            .and_then(|key| self.work_exposures.get(&key))
+            .map(|exposure| {
+                TEMPORAL_MEMORY_WORK_TRANSFER * temporal_memory_retrievability(now_ms, *exposure)
+            })
+            .unwrap_or(0.0);
+        recording.max(work)
     }
 
     #[cfg(test)]
@@ -135,7 +153,49 @@ impl PlaylistPlaybackTemporalMemory {
             temporal_memory_retrievability(now_ms, *exposure)
                 >= TEMPORAL_MEMORY_PRUNE_RETRIEVABILITY
         });
+        self.work_exposures.retain(|_, exposure| {
+            TEMPORAL_MEMORY_WORK_TRANSFER * temporal_memory_retrievability(now_ms, *exposure)
+                >= TEMPORAL_MEMORY_PRUNE_RETRIEVABILITY
+        });
     }
+}
+
+impl PlaylistPlaybackTemporalExposure {
+    fn after_observation(previous: Option<Self>, now_ms: u64) -> Self {
+        let stability_ms = previous
+            .map(|previous| {
+                ((previous.stability_ms as f32 * (1.0 + TEMPORAL_MEMORY_STABILITY_REPEAT_GAIN))
+                    .round() as u64)
+                    .clamp(
+                        TEMPORAL_MEMORY_TRACK_STABILITY_MS,
+                        TEMPORAL_MEMORY_STABILITY_CAP_MS,
+                    )
+            })
+            .unwrap_or(TEMPORAL_MEMORY_TRACK_STABILITY_MS);
+        Self {
+            last_played_at_ms: now_ms,
+            stability_ms,
+        }
+    }
+}
+
+/// Existing normalized source names are association evidence, never recording
+/// identity. Scope them to their collection authority to avoid linking unrelated
+/// works merely because their titles match. Group/album, display aliases and
+/// playlist placement must not change the relation between versions.
+fn track_work_association(track: &PlaybackTrack) -> Option<String> {
+    let source = track.source_music.as_deref()?;
+    let collection_url = source.group.collection.url.trim();
+    let name = source
+        .name
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+    if collection_url.is_empty() || name.is_empty() {
+        return None;
+    }
+    serde_json::to_string(&(collection_url, name)).ok()
 }
 
 /// FSRS-6 forgetting curve. Production callers use its inverse as a soft

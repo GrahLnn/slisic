@@ -143,14 +143,6 @@ pub(crate) fn new_playlist_symbolic_playback_session() -> SharedAudioStyleSymbol
 
 #[cfg(not(test))]
 pub(crate) fn observe_playlist_playback_temporal_memory(track: &PlaybackTrack) {
-    let music_id = if track.canonical_music_id.is_empty() {
-        &track.music_url
-    } else {
-        &track.canonical_music_id
-    };
-    if music_id.is_empty() {
-        return;
-    }
     let now_ms = current_playback_time_ms();
     let Ok(mut memory) = playlist_playback_temporal_memory().lock() else {
         log::warn!(
@@ -159,7 +151,7 @@ pub(crate) fn observe_playlist_playback_temporal_memory(track: &PlaybackTrack) {
         );
         return;
     };
-    memory.observe(music_id, now_ms);
+    memory.observe_track(track, now_ms);
     memory.prune_expired(now_ms);
 }
 
