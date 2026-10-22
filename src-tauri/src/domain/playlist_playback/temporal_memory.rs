@@ -105,11 +105,11 @@ impl PlaylistPlaybackTemporalMemory {
             .map(|(_, count)| *count)
             .min()
             .unwrap_or(0);
-        progress
-            .into_iter()
+        let mut weights = progress
+            .iter()
             .map(|(liked, count)| {
-                if liked {
-                    1.0
+                if *liked {
+                    1.0_f32
                 } else {
                     // Each play ahead of the least exposed class divides weight by
                     // four. Normalize completed rounds away; keep at least 1/64
@@ -117,7 +117,25 @@ impl PlaylistPlaybackTemporalMemory {
                     0.25_f32.powi(count.saturating_sub(baseline).min(3) as i32)
                 }
             })
-            .collect()
+            .collect::<Vec<_>>();
+        let (count, total) = progress
+            .iter()
+            .zip(&weights)
+            .filter(|((liked, _), _)| !liked)
+            .fold((0_usize, 0.0_f64), |(count, total), (_, weight)| {
+                (count + 1, total + f64::from(*weight))
+            });
+        if count > 0 {
+            // Redistribute only the non-Like budget. Otherwise cumulative
+            // attenuation would silently increase the total Like preference.
+            let scale = count as f64 / total;
+            for ((liked, _), weight) in progress.iter().zip(&mut weights) {
+                if !liked {
+                    *weight = (f64::from(*weight) * scale) as f32;
+                }
+            }
+        }
+        weights
     }
 
     pub(crate) fn retrievability_for(&self, canonical_music_id: &str, now_ms: u64) -> f32 {

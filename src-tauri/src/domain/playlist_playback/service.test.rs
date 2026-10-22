@@ -64,14 +64,13 @@ fn playback_memory_file_survives_restart_and_atomic_replacement() {
     memory.observe_track(&a, 0);
     write_playlist_playback_temporal_memory(&path, &memory).unwrap();
     let mut reopened = read_playlist_playback_temporal_memory(&path).unwrap();
-    assert_eq!(reopened.coverage_weights([vec![&a], vec![&b]]), [0.25, 1.0]);
+    assert_eq!(reopened.coverage_weights([vec![&a], vec![&b]]), [0.4, 1.6]);
     reopened.observe_track(&a, 1);
     write_playlist_playback_temporal_memory(&path, &reopened).unwrap();
     let reopened = read_playlist_playback_temporal_memory(&path).unwrap();
-    assert_eq!(
-        reopened.coverage_weights([vec![&a], vec![&b]]),
-        [0.0625, 1.0]
-    );
+    let weights = reopened.coverage_weights([vec![&a], vec![&b]]);
+    assert_eq!(weights[0] / weights[1], 0.0625);
+    assert!((weights.iter().sum::<f32>() - 2.0).abs() < 1e-6);
     assert!(!path.with_extension("json.tmp").exists());
     std::fs::remove_file(path).unwrap();
     std::fs::remove_dir(root).unwrap();

@@ -105,14 +105,11 @@ fn centerless_soft_coverage_preserves_positive_repeat_probability_and_like_boost
     }
     assert!(counts[0] > 0);
     let repeat_ratio = counts[0] as f64 / counts[1] as f64;
-    let like_ratio = counts[2] as f64 / counts[1] as f64;
+    let like_ratio = counts[2] as f64 / (counts[0] + counts[1]) as f64;
     assert!(
         (0.20..0.30).contains(&repeat_ratio),
         "repeat ratio {repeat_ratio}"
     );
-    assert!(
-        (14.5..17.5).contains(&like_ratio),
-        "Like ratio {like_ratio}"
-    );
+    assert!((7.4..8.6).contains(&like_ratio), "Like ratio {like_ratio}");
     assert_eq!(original, memory, "preparation never consumes coverage");
 }
