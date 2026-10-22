@@ -51,6 +51,32 @@ fn temp_root() -> PathBuf {
     std::env::temp_dir().join(format!("slisic_playlist_playback_service_test_{nanos}"))
 }
 
+#[test]
+fn playback_memory_file_survives_restart_and_atomic_replacement() {
+    use super::service::{
+        read_playlist_playback_temporal_memory, write_playlist_playback_temporal_memory,
+    };
+    let root = temp_root();
+    let path = root.join("playlist-playback-memory.json");
+    let a = playback_track("heard");
+    let b = playback_track("unheard");
+    let mut memory = read_playlist_playback_temporal_memory(&path).unwrap();
+    memory.observe_track(&a, 0);
+    write_playlist_playback_temporal_memory(&path, &memory).unwrap();
+    let mut reopened = read_playlist_playback_temporal_memory(&path).unwrap();
+    assert_eq!(reopened.coverage_weights([vec![&a], vec![&b]]), [0.25, 1.0]);
+    reopened.observe_track(&a, 1);
+    write_playlist_playback_temporal_memory(&path, &reopened).unwrap();
+    let reopened = read_playlist_playback_temporal_memory(&path).unwrap();
+    assert_eq!(
+        reopened.coverage_weights([vec![&a], vec![&b]]),
+        [0.0625, 1.0]
+    );
+    assert!(!path.with_extension("json.tmp").exists());
+    std::fs::remove_file(path).unwrap();
+    std::fs::remove_dir(root).unwrap();
+}
+
 fn playback_track(name: &str) -> PlaybackTrack {
     PlaybackTrack {
         playlist_name: "Focus".to_string(),

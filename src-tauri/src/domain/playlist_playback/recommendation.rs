@@ -33,6 +33,7 @@ use burn_wgpu::{
 use cubecl::{Runtime as CubeRuntime, device::Device as CubeDevice};
 #[cfg(test)]
 use rand::SeedableRng;
+use rand::distr::{Distribution, weighted::WeightedIndex};
 use rand::{RngExt, rngs::SmallRng};
 use rustfft::{FftPlanner, num_complex::Complex};
 use serde::{Deserialize, Serialize};
@@ -2649,7 +2650,6 @@ pub(crate) fn published_audio_style_model_snapshot() -> Option<Arc<AudioStyleMod
         .and_then(|runtime| runtime.stable_snapshot())
 }
 
-#[cfg(not(test))]
 #[derive(Debug)]
 pub(crate) enum AudioStyleCenterlessSourceStatus {
     Ready(
@@ -2661,32 +2661,47 @@ pub(crate) enum AudioStyleCenterlessSourceStatus {
     NoScopedCandidate,
 }
 
-#[cfg(not(test))]
-pub(crate) fn published_audio_style_centerless_source_from_candidates(
-    candidates: Vec<(PlaylistPlaybackTrackSource, PlaybackTrack)>,
+pub(crate) fn choose_audio_style_centerless_source(
+    snapshot: &AudioStyleModelSnapshot,
+    candidates: &[(PlaylistPlaybackTrackSource, PlaybackTrack)],
+    memory: &PlaylistPlaybackTemporalMemory,
+    rng: &mut impl rand::Rng,
 ) -> AudioStyleCenterlessSourceStatus {
-    let Some(snapshot) = AUDIO_STYLE_RECOMMENDATION_RUNTIME
-        .get()
-        .and_then(|runtime| runtime.stable_snapshot())
-    else {
-        return AudioStyleCenterlessSourceStatus::ModelUnavailable;
-    };
-
     let Some(encoding) = snapshot.state.symbolic_program_encoding.as_deref() else {
         return AudioStyleCenterlessSourceStatus::ModelUnavailable;
     };
-    let scoped = candidates
-        .into_iter()
-        .filter(|(_, track)| {
-            encoding
-                .ordinal_by_key
-                .contains_key(&PlaybackTrackKey::from_track(track))
-        })
-        .collect::<Vec<_>>();
+    // Restrict concrete recordings first, then form the scoped quotient. A
+    // missing global representative cannot retract an otherwise playable class.
+    let mut classes = BTreeMap::<usize, Vec<usize>>::new();
+    for (index, (_, track)) in candidates.iter().enumerate() {
+        if let Some(ordinal) = encoding
+            .ordinal_by_key
+            .get(&PlaybackTrackKey::from_track(track))
+        {
+            classes.entry(*ordinal).or_default().push(index);
+        }
+    }
+    let scoped = classes.into_values().collect::<Vec<_>>();
     if scoped.is_empty() {
         return AudioStyleCenterlessSourceStatus::NoScopedCandidate;
     }
-    let index = rand::rng().random_range(0..scoped.len());
+    let coverage = memory.coverage_weights(
+        scoped
+            .iter()
+            .map(|indices| indices.iter().map(|i| &candidates[*i].1)),
+    );
+    let weights = scoped
+        .iter()
+        .zip(coverage)
+        .map(|(indices, coverage)| {
+            f64::from(coverage * audio_style_like_factor(indices.iter().map(|i| &candidates[*i].1)))
+        })
+        .collect::<Vec<_>>();
+    let distribution =
+        WeightedIndex::new(&weights).expect("scoped coverage weights are positive and finite");
+    let index = distribution.sample(rng);
+    let members = &scoped[index];
+    let member = members[rng.random_range(0..members.len())];
     let diagnostics = AudioStyleCandidateDiagnostics {
         anchor_embedded: false,
         embedded_candidate_count: scoped.len(),
@@ -2698,7 +2713,7 @@ pub(crate) fn published_audio_style_centerless_source_from_candidates(
         topology_health: None,
     };
     let selection = AudioStyleCandidateSelection {
-        probability: 1.0 / scoped.len() as f32,
+        probability: (weights[index] / distribution.total_weight()) as f32,
         uniform_probability: 1.0 / scoped.len() as f32,
         similarity: None,
         best_similarity: None,
@@ -2710,7 +2725,7 @@ pub(crate) fn published_audio_style_centerless_source_from_candidates(
         model_generation: Some(snapshot.generation()),
         diagnostics,
     };
-    let (source, track) = scoped[index].clone();
+    let (source, track) = candidates[member].clone();
     AudioStyleCenterlessSourceStatus::Ready(source, track, selection)
 }
 
@@ -6693,6 +6708,7 @@ impl AudioStyleModelSnapshot {
             .collect()
     }
 
+    #[cfg(test)]
     pub(crate) fn symbolic_playlist_track_representative_keys(
         &self,
     ) -> Vec<PlaylistPlaybackModelMemberKey> {
@@ -6710,6 +6726,15 @@ impl AudioStyleModelSnapshot {
                 end_ms: key.end_ms,
             })
             .collect()
+    }
+
+    pub(crate) fn symbolic_track_ordinal(&self, track: &PlaybackTrack) -> Option<usize> {
+        self.state
+            .symbolic_program_encoding
+            .as_ref()?
+            .ordinal_by_key
+            .get(&PlaybackTrackKey::from_track(track))
+            .copied()
     }
 
     #[cfg(test)]
@@ -7090,6 +7115,7 @@ fn native_opportunity_rate_and_probability(
     local: usize,
     temporal_memory: Option<&PlaylistPlaybackTemporalMemory>,
     now_ms: u64,
+    coverage_weight: f32,
 ) -> (f32, f32) {
     let Some(tickets) = execution.opportunity_tickets.as_ref() else {
         return (0.0, 0.0);
@@ -7097,18 +7123,21 @@ fn native_opportunity_rate_and_probability(
     let energy = tickets.energies.get(local).copied().unwrap_or(0.0);
     let retrievability =
         native_opportunity_retrievability(execution, local, temporal_memory, now_ms);
-    let like_factor = if execution
-        .materializations
-        .get(local)
-        .into_iter()
-        .flatten()
-        .any(|track| track.liked)
-    {
+    let like_factor =
+        audio_style_like_factor(execution.materializations.get(local).into_iter().flatten());
+    native_opportunity_rate_and_probability_from_values(
+        energy,
+        retrievability,
+        like_factor * coverage_weight,
+    )
+}
+
+fn audio_style_like_factor<'a>(tracks: impl IntoIterator<Item = &'a PlaybackTrack>) -> f32 {
+    if tracks.into_iter().any(|track| track.liked) {
         AUDIO_STYLE_NATIVE_REGION_OPPORTUNITY_LIKE_FACTOR
     } else {
         1.0
-    };
-    native_opportunity_rate_and_probability_from_values(energy, retrievability, like_factor)
+    }
 }
 
 fn native_opportunity_rate_and_probability_from_values(
@@ -7213,11 +7242,19 @@ fn choose_native_region_opportunity(
         candidates.push(planned);
     }
 
+    let coverage = temporal_memory
+        .map(|memory| memory.coverage_weights(execution.materializations.iter()))
+        .unwrap_or_else(|| vec![1.0; execution.materializations.len()]);
     let mut candidate_rates = candidates
         .into_iter()
         .map(|local| {
-            let (rate, probability) =
-                native_opportunity_rate_and_probability(execution, local, temporal_memory, now_ms);
+            let (rate, probability) = native_opportunity_rate_and_probability(
+                execution,
+                local,
+                temporal_memory,
+                now_ms,
+                coverage[local],
+            );
             (local, rate, probability)
         })
         .collect::<Vec<_>>();
@@ -7503,6 +7540,7 @@ impl AudioStyleSymbolicPlaybackSession {
             local,
             Some(memory),
             now_ms,
+            memory.coverage_weights(execution.materializations.iter())[local],
         ))
     }
 
@@ -9452,3 +9490,7 @@ pub(crate) fn audio_style_training_path_is_transient_for_test(path: &Path) -> bo
 #[cfg(test)]
 #[path = "native_scoped_position.test.rs"]
 mod native_scoped_position_test;
+
+#[cfg(test)]
+#[path = "centerless_source.test.rs"]
+mod centerless_source_test;

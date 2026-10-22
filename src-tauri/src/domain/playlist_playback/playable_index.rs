@@ -8,8 +8,8 @@ use crate::domain::player::event::{PlaybackDiagnosticTraceDetail, PlaybackDiagno
 use crate::domain::player::model::{PlaybackTrack, PlaybackTrackPayload};
 #[cfg(not(test))]
 use crate::domain::playlist_playback::recommendation::{
-    AudioStyleCandidateSelection, AudioStyleCenterlessSourceStatus,
-    published_audio_style_centerless_source_from_candidates, published_audio_style_model_snapshot,
+    AudioStyleCandidateSelection, AudioStyleCenterlessSourceStatus, AudioStyleModelSnapshot,
+    choose_audio_style_centerless_source, published_audio_style_model_snapshot,
 };
 #[cfg(not(test))]
 use crate::domain::playlist_playback::service as playlist_playback_service;
@@ -25,8 +25,6 @@ use crate::domain::playlists::repo::{PlaylistPlaybackSelection, PlaylistPlayback
 #[cfg(not(test))]
 use crate::domain::remote_share;
 use anyhow::{Result, anyhow};
-#[cfg(not(test))]
-use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 #[cfg(not(test))]
@@ -50,8 +48,6 @@ const PLAYABLE_INDEX_LOG_TARGET: &str = "playlist_playback_index";
 pub(crate) const FIRST_SLOT_CACHE_FILE_NAME: &str = "first-slot-cache.json";
 const FIRST_SLOT_CACHE_VERSION: &str = "first-slot-cache.v2";
 const FIRST_SLOT_PREPARED_POOL_TARGET: usize = 3;
-#[cfg(not(test))]
-const FIRST_SLOT_AUDIO_STYLE_CANDIDATE_PROBE_LIMIT: usize = 96;
 
 static PLAYABLE_INDEX_RUNTIME: OnceLock<Arc<PlayableIndexRuntime>> = OnceLock::new();
 
@@ -2611,7 +2607,7 @@ async fn prepare_playlist_source(
     selection: &PlaylistPlaybackSelection,
     excluded_source_keys: &HashSet<String>,
 ) -> Result<Option<PreparedPlaylistSource>> {
-    if published_audio_style_model_snapshot().is_none() {
+    let Some(snapshot) = published_audio_style_model_snapshot() else {
         return prepare_playlist_random_fallback_source(
             app,
             selection,
@@ -2619,11 +2615,15 @@ async fn prepare_playlist_source(
             "model_unavailable",
         )
         .await;
-    }
+    };
 
     let candidates =
-        prepare_audio_style_candidate_tracks(app, selection, excluded_source_keys).await?;
-    match published_audio_style_centerless_source_from_candidates(candidates) {
+        prepare_audio_style_candidate_tracks(app, selection, excluded_source_keys, &snapshot)
+            .await?;
+    let (memory, _) = playlist_playback_service::snapshot_playlist_playback_temporal_memory()?;
+    let selected =
+        choose_audio_style_centerless_source(&snapshot, &candidates, &memory, &mut rand::rng());
+    match selected {
         AudioStyleCenterlessSourceStatus::Ready(source, track, selection_trace) => {
             let selected_basin = selection_trace
                 .diagnostics
@@ -2740,44 +2740,18 @@ async fn prepare_audio_style_candidate_tracks(
     app: &tauri::AppHandle,
     selection: &PlaylistPlaybackSelection,
     excluded_source_keys: &HashSet<String>,
+    snapshot: &AudioStyleModelSnapshot,
 ) -> Result<Vec<(PlaylistPlaybackTrackSource, PlaybackTrack)>> {
     let save_root = meta_service::resolve_save_root(app).await?;
-    let sources = if let Some(snapshot) = published_audio_style_model_snapshot() {
-        let model_members = snapshot.symbolic_playlist_track_representative_keys();
-        if model_members.is_empty() {
-            playlist_repo::load_random_playlist_playback_track_sources(
-                selection,
-                FIRST_SLOT_AUDIO_STYLE_CANDIDATE_PROBE_LIMIT,
-            )
-            .await?
-        } else {
-            let mut sources = playlist_repo::load_model_playlist_playback_track_sources(
-                selection,
-                &model_members,
-                &save_root,
-            )
-            .await?;
-            let mut rng = rand::rng();
-            for index in (1..sources.len()).rev() {
-                let swap_index = rng.random_range(0..=index);
-                sources.swap(index, swap_index);
-            }
-            sources.truncate(FIRST_SLOT_AUDIO_STYLE_CANDIDATE_PROBE_LIMIT);
-            sources
-        }
-    } else {
-        playlist_repo::load_random_playlist_playback_track_sources(
-            selection,
-            FIRST_SLOT_AUDIO_STYLE_CANDIDATE_PROBE_LIMIT,
-        )
-        .await?
-    };
+    let sources = playlist_repo::load_model_playlist_playback_track_sources(
+        selection,
+        &snapshot.symbolic_playlist_track_member_keys(),
+        &save_root,
+    )
+    .await?;
     let mut candidates = Vec::with_capacity(sources.len());
 
     for source in sources {
-        if excluded_source_keys.contains(&playlist_source_key(&source)) {
-            continue;
-        }
         let Some(file_path) =
             playlist_playback_service::resolve_source_music_file_path(&save_root, &source)
         else {
@@ -2794,6 +2768,20 @@ async fn prepare_audio_style_candidate_tracks(
         candidates.push((source, track));
     }
 
+    // Preserve the existing prepared pool's exclusion at the same acoustic
+    // class boundary used for sampling, including alternative recordings.
+    let excluded_classes = candidates
+        .iter()
+        .filter(|(source, _)| excluded_source_keys.contains(&playlist_source_key(source)))
+        .filter_map(|(_, track)| snapshot.symbolic_track_ordinal(track))
+        .collect::<HashSet<_>>();
+    candidates.retain(|(source, track)| {
+        !excluded_source_keys.contains(&playlist_source_key(source))
+            && !snapshot
+                .symbolic_track_ordinal(track)
+                .is_some_and(|class| excluded_classes.contains(&class))
+    });
+
     Ok(candidates)
 }
 
@@ -2807,8 +2795,10 @@ async fn prepare_playlist_sources(
     let mut prepared_sources = Vec::with_capacity(target_count);
     let mut seen = excluded_source_keys.clone();
 
-    if target_count > 0 && published_audio_style_model_snapshot().is_some() {
-        let mut candidates = prepare_audio_style_candidate_tracks(app, selection, &seen).await?;
+    if let Some(snapshot) = published_audio_style_model_snapshot().filter(|_| target_count > 0) {
+        let mut candidates =
+            prepare_audio_style_candidate_tracks(app, selection, &seen, &snapshot).await?;
+        let (memory, _) = playlist_playback_service::snapshot_playlist_playback_temporal_memory()?;
         while prepared_sources.len() < target_count && !candidates.is_empty() {
             let candidate_view = candidates
                 .iter()
@@ -2818,8 +2808,15 @@ async fn prepare_playlist_sources(
             if candidate_view.is_empty() {
                 break;
             }
-            match published_audio_style_centerless_source_from_candidates(candidate_view) {
+            let selected = choose_audio_style_centerless_source(
+                &snapshot,
+                &candidate_view,
+                &memory,
+                &mut rand::rng(),
+            );
+            match selected {
                 AudioStyleCenterlessSourceStatus::Ready(source, track, selection_trace) => {
+                    let selected_class = snapshot.symbolic_track_ordinal(&track);
                     let source_key = playlist_source_key(&source);
                     if !seen.insert(source_key.clone()) {
                         candidates.retain(|(candidate_source, _)| {
@@ -2858,8 +2855,11 @@ async fn prepare_playlist_sources(
                             ),
                         ],
                     );
-                    candidates.retain(|(candidate_source, _)| {
+                    candidates.retain(|(candidate_source, candidate_track)| {
                         playlist_source_key(candidate_source) != source_key
+                            && (selected_class.is_none()
+                                || snapshot.symbolic_track_ordinal(candidate_track)
+                                    != selected_class)
                     });
                     prepared_sources.push(prepared);
                 }

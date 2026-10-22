@@ -58,7 +58,7 @@ use std::sync::{Arc, Mutex};
 #[cfg(not(test))]
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 #[cfg(not(test))]
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 #[cfg(not(test))]
 use tauri_specta::Event;
 
@@ -83,6 +83,9 @@ type SharedAudioStyleSymbolicPlaybackSession = Arc<Mutex<AudioStyleSymbolicPlayb
 #[cfg(not(test))]
 static PLAYLIST_PLAYBACK_TEMPORAL_MEMORY: OnceLock<Mutex<PlaylistPlaybackTemporalMemory>> =
     OnceLock::new();
+
+#[cfg(not(test))]
+static PLAYLIST_PLAYBACK_TEMPORAL_MEMORY_PATH: OnceLock<PathBuf> = OnceLock::new();
 
 #[cfg(not(test))]
 static PLAYLIST_QUEUE_REFRESH_ATTEMPT_ID: AtomicU64 = AtomicU64::new(0);
@@ -153,6 +156,35 @@ pub(crate) fn observe_playlist_playback_temporal_memory(track: &PlaybackTrack) {
     };
     memory.observe_track(track, now_ms);
     memory.prune_expired(now_ms);
+    if let Some(path) = PLAYLIST_PLAYBACK_TEMPORAL_MEMORY_PATH.get()
+        && let Err(error) = write_playlist_playback_temporal_memory(path, &memory)
+    {
+        log::warn!(target: PLAYLIST_PLAYBACK_LOG_TARGET,
+            "playlist_playback_temporal_memory_save_failed error=\"{error}\"");
+    }
+}
+
+pub(super) fn read_playlist_playback_temporal_memory(
+    path: &Path,
+) -> anyhow::Result<PlaylistPlaybackTemporalMemory> {
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Default::default()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+pub(super) fn write_playlist_playback_temporal_memory(
+    path: &Path,
+    memory: &PlaylistPlaybackTemporalMemory,
+) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let temporary = path.with_extension("json.tmp");
+    std::fs::write(&temporary, serde_json::to_vec(memory)?)?;
+    std::fs::rename(temporary, path)?;
+    Ok(())
 }
 
 #[cfg(not(test))]
@@ -210,7 +242,8 @@ pub(crate) fn recently_played_tracks_with_anti_fsrs_for_test(
 }
 
 #[cfg(not(test))]
-fn snapshot_playlist_playback_temporal_memory() -> Result<(PlaylistPlaybackTemporalMemory, u64)> {
+pub(crate) fn snapshot_playlist_playback_temporal_memory()
+-> Result<(PlaylistPlaybackTemporalMemory, u64)> {
     let now_ms = current_playback_time_ms();
     let memory = playlist_playback_temporal_memory()
         .lock()
@@ -221,6 +254,21 @@ fn snapshot_playlist_playback_temporal_memory() -> Result<(PlaylistPlaybackTempo
 
 #[cfg(not(test))]
 pub fn initialize_runtime(app: AppHandle) {
+    // Restore listener state before model/index workers can prepare new starts.
+    match app.path().app_local_data_dir() {
+        Ok(directory) => {
+            let path = directory.join("playlist-playback-memory.json");
+            let memory = read_playlist_playback_temporal_memory(&path).unwrap_or_else(|error| {
+                log::warn!(target: PLAYLIST_PLAYBACK_LOG_TARGET,
+                    "playlist_playback_temporal_memory_restore_failed error=\"{error}\"");
+                Default::default()
+            });
+            let _ = PLAYLIST_PLAYBACK_TEMPORAL_MEMORY_PATH.set(path);
+            let _ = PLAYLIST_PLAYBACK_TEMPORAL_MEMORY.set(Mutex::new(memory));
+        }
+        Err(error) => log::warn!(target: PLAYLIST_PLAYBACK_LOG_TARGET,
+            "playlist_playback_temporal_memory_path_failed error=\"{error}\""),
+    }
     initialize_audio_style_recommendation_runtime(app.clone());
     playable_index::initialize_runtime(app);
 }

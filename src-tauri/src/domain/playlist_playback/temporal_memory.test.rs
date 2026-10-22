@@ -5,6 +5,59 @@ use super::temporal_memory::{
 
 const HOUR_MS: u64 = 60 * 60 * 1_000;
 
+#[test]
+fn coverage_is_soft_persistent_and_independent_of_expiring_familiarity() {
+    let a = work_version_track("collection", "a", "source:a", 60_000);
+    let b = work_version_track("collection", "b", "source:b", 60_000);
+    let mut memory = PlaylistPlaybackTemporalMemory::default();
+    memory.observe_track(&a, 0);
+    assert_eq!(memory.coverage_weights([vec![&a], vec![&b]]), [0.25, 1.0]);
+    memory.prune_expired(1_000_000 * HOUR_MS);
+    let restored: PlaylistPlaybackTemporalMemory =
+        serde_json::from_slice(&serde_json::to_vec(&memory).unwrap()).unwrap();
+    assert_eq!(
+        restored.retrievability_for_track(&a, 1_000_000 * HOUR_MS),
+        0.0
+    );
+    assert_eq!(restored.coverage_weights([vec![&a], vec![&b]]), [0.25, 1.0]);
+    memory.observe_track(&b, 1);
+    assert_eq!(memory.coverage_weights([vec![&a], vec![&b]]), [1.0, 1.0]);
+    for _ in 0..100 {
+        memory.observe_track(&a, 1);
+    }
+    let weights = memory.coverage_weights([vec![&a], vec![&b]]);
+    assert!(
+        weights[0] > 0.0 && weights[0] < weights[1],
+        "heard tracks remain eligible"
+    );
+}
+
+#[test]
+fn coverage_keeps_likes_recording_identity_and_alias_multiplicity_separate() {
+    let a = work_version_track("collection", "a", "source:a", 60_000);
+    let b = work_version_track("collection", "a", "source:b", 60_001);
+    let mut liked = work_version_track("collection", "liked", "source:liked", 60_000);
+    liked.liked = true;
+    let mut memory = PlaylistPlaybackTemporalMemory::default();
+    memory.observe_track(&a, 0);
+    for _ in 0..20 {
+        memory.observe_track(&liked, 0);
+    }
+    let before = memory.clone();
+    assert_eq!(
+        memory.coverage_weights([vec![&a], vec![&b], vec![&liked]]),
+        [0.25, 1.0, 1.0]
+    );
+    assert_eq!(
+        memory.coverage_weights([vec![&a, &a], vec![&b]]),
+        [0.25, 1.0]
+    );
+    assert_eq!(before, memory, "projection cannot observe playback");
+    let legacy: PlaylistPlaybackTemporalMemory =
+        serde_json::from_str(r#"{"exposures":{},"work_exposures":{}}"#).unwrap();
+    assert_eq!(legacy.coverage_weights([vec![&a], vec![&b]]), [1.0, 1.0]);
+}
+
 pub(super) fn work_version_track(
     collection_url: &str,
     name: &str,

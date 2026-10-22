@@ -1,6 +1,6 @@
 use crate::domain::player::model::PlaybackTrack;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 const TEMPORAL_MEMORY_FSRS_DECAY: f32 = 0.5;
 const TEMPORAL_MEMORY_TRACK_STABILITY_MS: u64 = 20 * 60 * 60 * 1_000;
@@ -20,6 +20,10 @@ pub(crate) struct PlaylistPlaybackTemporalMemory {
     exposures: HashMap<String, PlaylistPlaybackTemporalExposure>,
     #[serde(default)]
     work_exposures: HashMap<String, PlaylistPlaybackTemporalExposure>,
+    // Cumulative coverage has a different lifetime from decaying familiarity.
+    // Keep stable recording identities; never persist generation-local classes.
+    #[serde(default)]
+    play_counts: HashMap<String, u64>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -59,6 +63,61 @@ impl PlaylistPlaybackTemporalMemory {
         );
         self.exposures
             .insert(canonical_music_id.to_string(), exposure);
+        let count = self
+            .play_counts
+            .entry(canonical_music_id.to_string())
+            .or_default();
+        *count = count.saturating_add(1);
+    }
+
+    /// Project listener coverage through the current, already scoped acoustic
+    /// classes. Aliases of one recording count once. Likes retain their existing
+    /// preference; only non-Like classes receive cumulative soft attenuation.
+    pub(crate) fn coverage_weights<'a, G, T>(&self, groups: G) -> Vec<f32>
+    where
+        G: IntoIterator<Item = T>,
+        T: IntoIterator<Item = &'a PlaybackTrack>,
+    {
+        let progress = groups
+            .into_iter()
+            .map(|tracks| {
+                let mut seen = HashSet::new();
+                let mut count = 0_u64;
+                let mut liked = false;
+                for track in tracks {
+                    liked |= track.liked;
+                    let id = if track.canonical_music_id.is_empty() {
+                        track.music_url.as_str()
+                    } else {
+                        track.canonical_music_id.as_str()
+                    };
+                    if seen.insert(id) {
+                        count =
+                            count.saturating_add(self.play_counts.get(id).copied().unwrap_or(0));
+                    }
+                }
+                (liked, count)
+            })
+            .collect::<Vec<_>>();
+        let baseline = progress
+            .iter()
+            .filter(|(liked, _)| !liked)
+            .map(|(_, count)| *count)
+            .min()
+            .unwrap_or(0);
+        progress
+            .into_iter()
+            .map(|(liked, count)| {
+                if liked {
+                    1.0
+                } else {
+                    // Each play ahead of the least exposed class divides weight by
+                    // four. Normalize completed rounds away; keep at least 1/64
+                    // of the cold weight so progress remains a soft preference.
+                    0.25_f32.powi(count.saturating_sub(baseline).min(3) as i32)
+                }
+            })
+            .collect()
     }
 
     pub(crate) fn retrievability_for(&self, canonical_music_id: &str, now_ms: u64) -> f32 {
