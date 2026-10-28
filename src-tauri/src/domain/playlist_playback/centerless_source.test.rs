@@ -113,3 +113,148 @@ fn centerless_soft_coverage_preserves_positive_repeat_probability_and_like_boost
     assert!((7.4..8.6).contains(&like_ratio), "Like ratio {like_ratio}");
     assert_eq!(original, memory, "preparation never consumes coverage");
 }
+
+#[test]
+fn centerless_recording_coverage_survives_restore_without_alias_multiplicity_bias() {
+    let (snapshot, candidates) = fixture();
+    let mut scoped = candidates[..2].to_vec();
+    // Seven occurrences of one recording still own one recording opportunity.
+    for _ in 0..6 {
+        scoped.push(candidates[0].clone());
+    }
+    let mut memory = PlaylistPlaybackTemporalMemory::default();
+    memory.observe_track(&candidates[0].1, 0);
+    memory.prune_expired(u64::MAX);
+    let restored: PlaylistPlaybackTemporalMemory =
+        serde_json::from_slice(&serde_json::to_vec(&memory).unwrap()).unwrap();
+    let mut rng = SmallRng::seed_from_u64(2910);
+    let mut counts = [0_usize; 2];
+    for _ in 0..32_768 {
+        let AudioStyleCenterlessSourceStatus::Ready(source, track, trace) =
+            choose_audio_style_centerless_source(&snapshot, &scoped, &restored, &mut rng)
+        else {
+            panic!("both recordings must stay eligible")
+        };
+        assert_eq!(
+            trace.probability, 1.0,
+            "conditional choice conserves class mass"
+        );
+        assert_eq!(source.music.canonical_music_id, track.canonical_music_id);
+        counts[usize::from(track.canonical_music_id == candidates[1].1.canonical_music_id)] += 1;
+    }
+    let ratio = counts[0] as f64 / counts[1] as f64;
+    assert!((0.23..0.27).contains(&ratio), "heard/unheard ratio {ratio}");
+    assert_eq!(restored, memory, "preparation cannot observe listening");
+}
+
+#[test]
+fn recording_selection_preserves_likes_positive_floor_identity_and_permutation() {
+    let (_, pairs) = fixture();
+    let mut tracks = pairs.into_iter().map(|(_, t)| t).collect::<Vec<_>>();
+    tracks.truncate(3);
+    tracks[1].music_name = tracks[0].music_name.clone();
+    tracks[2].liked = true;
+    let mut memory = PlaylistPlaybackTemporalMemory::default();
+    for _ in 0..100 {
+        memory.observe_track(&tracks[0], 0);
+        memory.observe_track(&tracks[2], 0);
+    }
+    let original = tracks.clone();
+    let mut rng = SmallRng::seed_from_u64(2911);
+    let mut reverse_rng = rng.clone();
+    let mut counts = [0_usize; 3];
+    for _ in 0..65_536 {
+        let index =
+            choose_audio_style_recording_index(tracks.iter(), Some(&memory), &mut rng).unwrap();
+        let reverse = choose_audio_style_recording_index(
+            tracks.iter().rev(),
+            Some(&memory),
+            &mut reverse_rng,
+        )
+        .unwrap();
+        assert_eq!(
+            tracks[index].canonical_music_id,
+            tracks[2 - reverse].canonical_music_id
+        );
+        counts[index] += 1;
+    }
+    assert!(
+        counts[0] > 0,
+        "even heavily played recordings keep positive probability"
+    );
+    let repeated = counts[0] as f64 / counts[1] as f64;
+    let liked = counts[2] as f64 / (counts[0] + counts[1]) as f64;
+    assert!((0.010..0.023).contains(&repeated), "floor ratio {repeated}");
+    assert!((7.5..8.5).contains(&liked), "Like/cohort ratio {liked}");
+    for (before, after) in original.iter().zip(&tracks) {
+        assert_eq!(
+            PlaybackTrackKey::from_track(before),
+            PlaybackTrackKey::from_track(after)
+        );
+        assert_eq!(before.canonical_music_id, after.canonical_music_id);
+        assert_eq!(before.liked, after.liked);
+    }
+}
+
+#[test]
+fn continuation_recordings_share_persisted_progress_across_fresh_sessions_and_rollback() {
+    let (snapshot, pairs) = fixture();
+    let tracks = pairs.into_iter().map(|(_, t)| t).collect::<Vec<_>>();
+    let mut memory = PlaylistPlaybackTemporalMemory::default();
+    let mut counts = [4_u64, 0];
+    for _ in 0..counts[0] {
+        memory.observe_track(&tracks[0], 0);
+    }
+    for restart in 0..96 {
+        memory = serde_json::from_slice(&serde_json::to_vec(&memory).unwrap()).unwrap();
+        let mut session = AudioStyleSymbolicPlaybackSession::default();
+        session.set_rng_seed_for_test(0x291000 + restart);
+        let mut current = tracks[3].clone();
+        for position in 0..3 {
+            let before = memory.clone();
+            let next = session
+                .propose_next_with_temporal_memory(
+                    &snapshot,
+                    &current,
+                    &tracks,
+                    &[],
+                    Some(&memory),
+                    u64::MAX,
+                )
+                .unwrap();
+            session.rollback_proposal().unwrap();
+            let replay = session
+                .propose_next_with_temporal_memory(
+                    &snapshot,
+                    &current,
+                    &tracks,
+                    &[],
+                    Some(&memory),
+                    u64::MAX,
+                )
+                .unwrap();
+            assert_eq!(
+                PlaybackTrackKey::from_track(&next.track),
+                PlaybackTrackKey::from_track(&replay.track)
+            );
+            assert_eq!(memory, before, "pending and rollback are not observations");
+            session.observe_active_track(&next.track).unwrap();
+            if let Some(index) = tracks[..2]
+                .iter()
+                .position(|t| t.canonical_music_id == next.track.canonical_music_id)
+            {
+                counts[index] += 1;
+            }
+            memory.observe_track(&next.track, restart * 3 + position);
+            current = next.track;
+        }
+    }
+    assert!(
+        counts[0] > 4 && counts[1] > 0,
+        "both recordings must be heard: {counts:?}"
+    );
+    assert!(
+        counts[0].abs_diff(counts[1]) <= 6,
+        "soft progress must balance versions: {counts:?}"
+    );
+}

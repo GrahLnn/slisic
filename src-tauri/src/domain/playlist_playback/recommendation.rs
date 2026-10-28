@@ -9,7 +9,9 @@ use crate::domain::playlist_playback::symbolic_program::{
     program_encoding_signature, restrict_neural_program_atlas_to_playlist,
     transport_traversal_state,
 };
-use crate::domain::playlist_playback::temporal_memory::PlaylistPlaybackTemporalMemory;
+use crate::domain::playlist_playback::temporal_memory::{
+    PlaylistPlaybackTemporalMemory, playlist_playback_recording_identity,
+};
 use crate::domain::playlists::model::{
     AudioStyleTrainingTrackInput, LoudnessProfile, PlaylistPlaybackModelMemberKey,
 };
@@ -2661,6 +2663,55 @@ pub(crate) enum AudioStyleCenterlessSourceStatus {
     NoScopedCandidate,
 }
 
+/// Select a recording conditional on an already selected acoustic class.
+/// Durable listener coverage owns recording opportunity; paths only split that
+/// recording's mass. Session epochs and class ordinals cannot select versions.
+fn choose_audio_style_recording_index<'a>(
+    tracks: impl IntoIterator<Item = &'a PlaybackTrack>,
+    memory: Option<&PlaylistPlaybackTemporalMemory>,
+    rng: &mut impl rand::Rng,
+) -> Option<usize> {
+    let tracks = tracks.into_iter().collect::<Vec<_>>();
+    if tracks.len() == 1 {
+        return Some(0);
+    }
+    let mut recordings = BTreeMap::<&str, Vec<usize>>::new();
+    for (index, track) in tracks.iter().enumerate() {
+        recordings
+            .entry(playlist_playback_recording_identity(track))
+            .or_default()
+            .push(index);
+    }
+    let recordings = recordings.into_values().collect::<Vec<_>>();
+    if recordings.is_empty() {
+        return None;
+    }
+    let recording = if recordings.len() == 1 {
+        0
+    } else {
+        let empty_memory = PlaylistPlaybackTemporalMemory::default();
+        let coverage = memory.unwrap_or(&empty_memory).coverage_weights(
+            recordings
+                .iter()
+                .map(|indices| indices.iter().map(|i| tracks[*i])),
+        );
+        let weights = recordings.iter().zip(coverage).map(|(indices, coverage)| {
+            f64::from(coverage * audio_style_like_factor(indices.iter().map(|i| tracks[*i])))
+        });
+        WeightedIndex::new(weights)
+            .expect("recording coverage weights are positive and finite")
+            .sample(rng)
+    };
+    let aliases = &recordings[recording];
+    Some(
+        aliases[if aliases.len() == 1 {
+            0
+        } else {
+            rng.random_range(0..aliases.len())
+        }],
+    )
+}
+
 pub(crate) fn choose_audio_style_centerless_source(
     snapshot: &AudioStyleModelSnapshot,
     candidates: &[(PlaylistPlaybackTrackSource, PlaybackTrack)],
@@ -2701,7 +2752,12 @@ pub(crate) fn choose_audio_style_centerless_source(
         WeightedIndex::new(&weights).expect("scoped coverage weights are positive and finite");
     let index = distribution.sample(rng);
     let members = &scoped[index];
-    let member = members[rng.random_range(0..members.len())];
+    let member = members[choose_audio_style_recording_index(
+        members.iter().map(|i| &candidates[*i].1),
+        Some(memory),
+        rng,
+    )
+    .expect("a scoped class always has a concrete recording")];
     let diagnostics = AudioStyleCandidateDiagnostics {
         anchor_embedded: false,
         embedded_candidate_count: scoped.len(),
@@ -7831,7 +7887,6 @@ impl AudioStyleSymbolicPlaybackSession {
             &execution.state,
         )
         .map_err(|error| error.to_string())?;
-        let coverage_epoch = list.next_state.coverage_epoch(0).unwrap_or_default();
         let planned_local = list.order[0];
         let mut planning_rng = rng_before.clone();
         let selected_local = choose_native_region_opportunity(
@@ -7857,12 +7912,13 @@ impl AudioStyleSymbolicPlaybackSession {
             .materializations
             .get(next_local)
             .ok_or_else(|| "symbolic execution selected an invalid local track".to_string())?;
-        let track = materializations
-            .get((coverage_epoch + next_local) % materializations.len())
-            .cloned()
-            .ok_or_else(|| {
-                "symbolic execution selected an empty materialization class".to_string()
-            })?;
+        let recording = choose_audio_style_recording_index(
+            materializations.iter(),
+            temporal_memory,
+            &mut planning_rng,
+        )
+        .ok_or_else(|| "symbolic execution selected an empty materialization class".to_string())?;
+        let track = materializations[recording].clone();
         execution.state = list.next_state;
         self.pending_checkpoint = Some(Box::new(AudioStyleSymbolicPendingCheckpoint {
             execution: self.execution.clone(),

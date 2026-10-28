@@ -32,13 +32,17 @@ pub(crate) struct PlaylistPlaybackTemporalExposure {
     pub(crate) stability_ms: u64,
 }
 
+pub(super) fn playlist_playback_recording_identity(track: &PlaybackTrack) -> &str {
+    if track.canonical_music_id.is_empty() {
+        track.music_url.as_str()
+    } else {
+        track.canonical_music_id.as_str()
+    }
+}
+
 impl PlaylistPlaybackTemporalMemory {
     pub(crate) fn observe_track(&mut self, track: &PlaybackTrack, now_ms: u64) {
-        let music_id = if track.canonical_music_id.is_empty() {
-            track.music_url.as_str()
-        } else {
-            track.canonical_music_id.as_str()
-        };
+        let music_id = playlist_playback_recording_identity(track);
         if music_id.is_empty() {
             return;
         }
@@ -86,11 +90,7 @@ impl PlaylistPlaybackTemporalMemory {
                 let mut liked = false;
                 for track in tracks {
                     liked |= track.liked;
-                    let id = if track.canonical_music_id.is_empty() {
-                        track.music_url.as_str()
-                    } else {
-                        track.canonical_music_id.as_str()
-                    };
+                    let id = playlist_playback_recording_identity(track);
                     if seen.insert(id) {
                         count =
                             count.saturating_add(self.play_counts.get(id).copied().unwrap_or(0));

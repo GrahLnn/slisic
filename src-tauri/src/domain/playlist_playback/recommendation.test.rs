@@ -453,6 +453,7 @@ fn exact_content_class_owns_one_symbolic_position_and_one_history_slot() {
     assert_eq!(snapshot.symbolic_track_count(), Some(5));
 
     let mut session = AudioStyleSymbolicPlaybackSession::default();
+    session.set_rng_seed_for_test(0x2910);
     let mut current = tracks[0].clone();
     let mut recent = vec![current.clone()];
     for _ in 0..4 {
@@ -469,7 +470,9 @@ fn exact_content_class_owns_one_symbolic_position_and_one_history_slot() {
     }
 
     let mut reached_second_materialization = false;
-    for _ in 0..6 {
+    // Concrete recordings now have positive soft probabilities; an epoch no
+    // longer determines a particular alias. Keep this history check reproducible.
+    for _ in 0..64 {
         let next = session
             .propose_next(&snapshot, &current, &tracks, &recent)
             .expect("later coverage epochs should keep the content class materializable");
