@@ -185,7 +185,7 @@ fn recording_selection_preserves_likes_positive_floor_identity_and_permutation()
     let repeated = counts[0] as f64 / counts[1] as f64;
     let liked = counts[2] as f64 / (counts[0] + counts[1]) as f64;
     assert!((0.010..0.023).contains(&repeated), "floor ratio {repeated}");
-    assert!((7.5..8.5).contains(&liked), "Like/cohort ratio {liked}");
+    assert!((0.48..0.52).contains(&liked), "Like/cohort ratio {liked}");
     for (before, after) in original.iter().zip(&tracks) {
         assert_eq!(
             PlaybackTrackKey::from_track(before),
@@ -194,6 +194,44 @@ fn recording_selection_preserves_likes_positive_floor_identity_and_permutation()
         assert_eq!(before.canonical_music_id, after.canonical_music_id);
         assert_eq!(before.liked, after.liked);
     }
+}
+
+#[test]
+fn mixed_class_keeps_its_like_budget_without_a_second_recording_like_boost() {
+    let (snapshot, mut candidates) = fixture();
+    candidates[1].1.liked = true;
+    candidates[1].0.music.liked = true;
+    let shared = snapshot.symbolic_track_ordinal(&candidates[0].1).unwrap();
+    let mut memory = PlaylistPlaybackTemporalMemory::default();
+    for _ in 0..100 {
+        memory.observe_track(&candidates[0].1, 0);
+        memory.observe_track(&candidates[1].1, 0);
+    }
+    let mut rng = SmallRng::seed_from_u64(2912);
+    let mut counts = [0_usize; 3];
+    for _ in 0..32_768 {
+        let AudioStyleCenterlessSourceStatus::Ready(_, track, _) =
+            choose_audio_style_centerless_source(&snapshot, &candidates, &memory, &mut rng)
+        else {
+            panic!("mixed classes retain all recording opportunities")
+        };
+        let index = if snapshot.symbolic_track_ordinal(&track) != Some(shared) {
+            2
+        } else {
+            usize::from(track.liked)
+        };
+        counts[index] += 1;
+    }
+    let class_ratio = (counts[0] + counts[1]) as f64 / counts[2] as f64;
+    let liked_within_class = counts[1] as f64 / (counts[0] + counts[1]) as f64;
+    assert!(
+        (7.6..8.4).contains(&class_ratio),
+        "existing class Like ratio {class_ratio}"
+    );
+    assert!(
+        (0.48..0.52).contains(&liked_within_class),
+        "conditional Like mass {liked_within_class}"
+    );
 }
 
 #[test]

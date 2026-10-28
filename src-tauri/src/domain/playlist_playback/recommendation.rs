@@ -2695,10 +2695,9 @@ fn choose_audio_style_recording_index<'a>(
                 .iter()
                 .map(|indices| indices.iter().map(|i| tracks[*i])),
         );
-        let weights = recordings.iter().zip(coverage).map(|(indices, coverage)| {
-            f64::from(coverage * audio_style_like_factor(indices.iter().map(|i| tracks[*i])))
-        });
-        WeightedIndex::new(weights)
+        // The class sampler already owns Like preference. Normalized coverage
+        // only redistributes non-Like recording mass, without applying it twice.
+        WeightedIndex::new(coverage.into_iter().map(f64::from))
             .expect("recording coverage weights are positive and finite")
             .sample(rng)
     };
@@ -9550,4 +9549,3 @@ mod native_scoped_position_test;
 #[cfg(test)]
 #[path = "centerless_source.test.rs"]
 mod centerless_source_test;
-
